@@ -9,10 +9,10 @@
       
       
       
-        <link rel="prev" href="../stream/">
+        <link rel="prev" href="../parallel/">
       
       
-        <link rel="next" href="../collectors/">
+        <link rel="next" href="../option/">
       
       
         
@@ -23,7 +23,7 @@
     
     
       
-        <title>ParallelStream - fpstreams</title>
+        <title>Collectors - fpstreams</title>
       
     
     
@@ -66,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#parallelstream-api" class="md-skip">
+        <a href="#collectors-api" class="md-skip">
           Skip to content
         </a>
       
@@ -102,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ParallelStream
+              Collectors
             
           </span>
         </div>
@@ -304,6 +304,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../parallel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ParallelStream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -323,7 +351,7 @@
   <span class="md-ellipsis">
     
   
-    ParallelStream
+    Collectors
   
 
     
@@ -341,7 +369,7 @@
   <span class="md-ellipsis">
     
   
-    ParallelStream
+    Collectors
   
 
     
@@ -367,22 +395,99 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#fpstreams.ParallelStream" class="md-nav__link">
+  <a href="#fpstreams.Collectors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ParallelStream
+        Collectors
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="ParallelStream">
+    <nav class="md-nav" aria-label="Collectors">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.ParallelStream.__iter__" class="md-nav__link">
+  <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
     <span class="md-ellipsis">
       
-        __iter__
+        to_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.joining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        joining
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        grouping_by
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_dict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.partitioning_by" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        partitioning_by
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_columns
       
     </span>
   </a>
@@ -398,34 +503,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../collectors/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Collectors
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -549,22 +626,99 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#fpstreams.ParallelStream" class="md-nav__link">
+  <a href="#fpstreams.Collectors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ParallelStream
+        Collectors
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="ParallelStream">
+    <nav class="md-nav" aria-label="Collectors">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.ParallelStream.__iter__" class="md-nav__link">
+  <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
     <span class="md-ellipsis">
       
-        __iter__
+        to_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.joining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        joining
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        grouping_by
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_dict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.partitioning_by" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        partitioning_by
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.to_columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_columns
       
     </span>
   </a>
@@ -593,23 +747,22 @@
 
 
 
-<h1 id="parallelstream-api">ParallelStream API</h1>
+<h1 id="collectors-api">Collectors API</h1>
+<p>The <code>Collectors</code> class provides common reduction operations for <code>Stream.collect()</code>.</p>
 
 
 <div class="doc doc-object doc-class">
 
 
 
-<h2 id="fpstreams.ParallelStream" class="doc doc-heading">
-            <code>fpstreams.ParallelStream</code>
+<h2 id="fpstreams.Collectors" class="doc doc-heading">
+            <code>fpstreams.Collectors</code>
 
 
 </h2>
 
 
     <div class="doc doc-contents first">
-            <p class="doc doc-class-bases">
-              Bases: <code><span title="fpstreams.core.stream_interface.BaseStream">BaseStream</span>[<span title="fpstreams.core.common.T">T</span>]</code></p>
 
 
 
@@ -637,16 +790,178 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.ParallelStream.__iter__" class="doc doc-heading">
-            <code class="highlight language-python"><span class="fm">__iter__</span><span class="p">()</span></code>
+<h3 id="fpstreams.Collectors.to_list" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_list</span><span class="p">()</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Materializes the parallel results and returns an iterator.
-Allows: for item in Stream(data).parallel(): ...</p>
+        <p>Collects elements into a List.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.to_set" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_set</span><span class="p">()</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Collects elements into a Set.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.counting" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">counting</span><span class="p">()</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Counts the number of elements.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.joining" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">joining</span><span class="p">(</span><span class="n">delimiter</span><span class="o">=</span><span class="s1">&#39;&#39;</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Joins string elements.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.grouping_by" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">grouping_by</span><span class="p">(</span><span class="n">key_mapper</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Groups elements by a classification function.
+Example: Stream(["apple", "ant"]).collect(grouping_by(lambda s: s[0]))
+Result: {'a': ['apple', 'ant']}</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.to_dict" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_dict</span><span class="p">(</span><span class="n">key_mapper</span><span class="p">,</span> <span class="n">value_mapper</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Collects elements into a Dictionary.
+Example: Stream(users).collect(to_dict(lambda u: u.id, lambda u: u.name))</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.partitioning_by" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">partitioning_by</span><span class="p">(</span><span class="n">predicate</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Partitions elements into two lists based on a predicate.
+Returns a dict: {True: [matches], False: [non-matches]}</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.to_columns" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_columns</span><span class="p">()</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Transposes a list of dicts into a dict of lists.
+Handles missing keys by inserting None to ensure alignment.</p>
 
 
     </div>
