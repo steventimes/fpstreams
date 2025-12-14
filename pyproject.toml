@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pystream"
+name = "fpstreams"
 version = "0.1.0"
 description = "A functional programming library for Python mimicking Java Streams and JS Arrays."
 readme = "README.md"
@@ -20,8 +20,8 @@ classifiers = [
 requires-python = ">=3.10" # Leveraging new union types (X | Y)
 
 [project.urls]
-"Homepage" = "https://github.com/steventimes/pyflow"
-"Bug Tracker" = "https://github.com/steventimes/pyflow/issues"
+"Homepage" = "https://github.com/steventimes/fpstreams"
+"Bug Tracker" = "https://github.com/steventimes/fpstreams/issues"
 
 [tool.mypy]
 strict = true

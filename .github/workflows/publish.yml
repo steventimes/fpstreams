@@ -15,7 +15,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://pypi.org/p/pystream
+      url: https://pypi.org/p/fpstreams
 
     steps:
     - uses: actions/checkout@v3
