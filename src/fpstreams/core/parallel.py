@@ -1,206 +1,227 @@
 import multiprocessing
+import statistics
+import functools
+import numbers
 from typing import (
-    Iterable, Callable, Optional, List, Any, Union, Tuple, TypeVar, Generic
+    Iterable, Callable, Optional, List, Any, Union, Tuple, Set, cast, Dict, Iterator
 )
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
 from .common import T, R
+from .sequential import SequentialStream
 
+def _sum_wrapper(it: Iterable[Any]) -> Any:
+    return ops.sum_op(iter(it))
 
-def _sum_wrapper(it):
-    return ops.sum_op(it)
-
-def _count_wrapper(it):
+def _count_wrapper(it: Iterable[Any]) -> int:
     return sum(1 for _ in it)
 
 class _MinMaxHelper:
-    """Helper to carry state (key) for min/max operations across processes."""
-    def __init__(self, mode: str, key: Optional[Callable] = None):
+    def __init__(self, mode: str, key: Optional[Callable[[Any], Any]] = None):
         self.mode = mode
         self.key = key
     
-    def __call__(self, iterator):
+    def __call__(self, iterator: Iterable[Any]) -> Any:
         if self.mode == "min":
-            return ops.min_op(iterator, self.key)
-        return ops.max_op(iterator, self.key)
+            return ops.min_op(iter(iterator), self.key)
+        return ops.max_op(iter(iterator), self.key)
 
+class _ReduceHelper:
+    """Helper to perform local reduction in worker processes."""
+    def __init__(self, identity: Any, accumulator: Callable[[Any, Any], Any]):
+        self.identity = identity
+        self.accumulator = accumulator
 
-def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Callable]], Optional[Callable]]) -> Any:
+    def __call__(self, iterator: Iterable[Any]) -> Any:
+        return functools.reduce(self.accumulator, iterator, self.identity)
+
+def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Any]], Optional[Callable]]) -> Any:
     chunk, operations, reducer_func = payload
     
     iterator = iter(chunk)
-    for op_type, func in operations:
+    
+    for op_type, arg in operations:
         if op_type == "map":
-            iterator = ops.map_gen(iterator, func)
+            iterator = ops.map_gen(iterator, arg)
         elif op_type == "filter":
-            iterator = ops.filter_gen(iterator, func)
+            iterator = ops.filter_gen(iterator, arg)
         elif op_type == "flat_map":
-            iterator = ops.flat_map_gen(iterator, func)
+            iterator = ops.flat_map_gen(iterator, arg)
+        elif op_type == "pick":
+            iterator = ops.pick_gen(iterator, arg)
+        elif op_type == "filter_none":
+            # arg is the key (or None)
+            iterator = ops.filter_none_gen(iterator, arg)
         elif op_type == "peek":
-            iterator = ops.peek_gen(iterator, func)
+            iterator = ops.peek_gen(iterator, arg)
+        elif op_type == "distinct":
+            iterator = ops.distinct_gen(iterator)
+        elif op_type == "limit":
+            iterator = ops.limit_gen(iterator, arg)
+        elif op_type == "skip":
+            iterator = ops.skip_gen(iterator, arg)
 
     if reducer_func:
         return reducer_func(iterator)
     
     return list(iterator)
 
-
 class ParallelStream(BaseStream[T]):
+
     def __init__(self, iterable: Iterable[T], processes: Optional[int] = None):
         self._iterable = iterable
+        self._pipeline: List[Tuple[str, Any]] = []
         self._processes = processes or multiprocessing.cpu_count()
-        self._pipeline: List[Tuple[str, Callable]] = []
+        
+    def __iter__(self) -> Iterator[T]:
+        """
+        Materializes the parallel results and returns an iterator.
+        Allows: for item in Stream(data).parallel(): ...
+        """
+        return iter(self.to_list())
 
+    def _fallback(self) -> SequentialStream[T]:
+        return SequentialStream(self.to_list())
+
+    # --- Transformations ---
 
     def map(self, mapper: Callable[[T], R]) -> "ParallelStream[R]":
         self._pipeline.append(("map", mapper))
-        return self  # type: ignore
+        return cast("ParallelStream[R]", self)
 
     def filter(self, predicate: Callable[[T], bool]) -> "ParallelStream[T]":
         self._pipeline.append(("filter", predicate))
         return self
-    
+
     def flat_map(self, mapper: Callable[[T], Iterable[R]]) -> "ParallelStream[R]":
         self._pipeline.append(("flat_map", mapper))
-        return self  # type: ignore
+        return cast("ParallelStream[R]", self)
+    
+    def pick(self, key: Any) -> "ParallelStream[Any]":
+        self._pipeline.append(("pick", key))
+        return cast("ParallelStream[Any]", self)
+
+    def filter_none(self, key: Any = None) -> "ParallelStream[T]":
+        self._pipeline.append(("filter_none", key))
+        return self
 
     def peek(self, action: Callable[[T], None]) -> "ParallelStream[T]":
         self._pipeline.append(("peek", action))
         return self
 
-    def sorted(self, key=None, reverse=False):
-        results = self.to_list()
-        from .sequential import SequentialStream
-        return SequentialStream(results).sorted(key, reverse)
+    def distinct(self) -> "ParallelStream[T]":
+        self._pipeline.append(("distinct", None))
+        return self
 
-    def distinct(self):
-        results = self.to_list()
-        from .sequential import SequentialStream
-        return SequentialStream(results).distinct()
+    # --- Sequential Fallbacks ---
 
-    def limit(self, max_size):
-        results = self.to_list()
-        from .sequential import SequentialStream
-        return SequentialStream(results).limit(max_size)
+    def sorted(self, key: Optional[Callable[[T], Any]] = None, reverse: bool = False) -> "BaseStream[T]":
+        return self._fallback().sorted(key, reverse)
 
-    def skip(self, n):
-        results = self.to_list()
-        from .sequential import SequentialStream
-        return SequentialStream(results).skip(n)
+    def limit(self, max_size: int) -> "BaseStream[T]":
+        return self._fallback().limit(max_size)
 
+    def skip(self, n: int) -> "BaseStream[T]":
+        return self._fallback().skip(n)
 
-    def _get_chunks(self) -> List[List[T]]:
-        data = list(self._iterable)
-        if not data: return []
+    def take_while(self, predicate: Callable[[T], bool]) -> "BaseStream[T]":
+        return self._fallback().take_while(predicate)
+
+    def drop_while(self, predicate: Callable[[T], bool]) -> "BaseStream[T]":
+        return self._fallback().drop_while(predicate)
+
+    def zip(self, other: Iterable[R]) -> "BaseStream[Tuple[T, R]]":
+        return self._fallback().zip(other)
+
+    def zip_with_index(self, start: int = 0) -> "BaseStream[Tuple[int, T]]":
+        return self._fallback().zip_with_index(start)
+
+    # --- Terminals ---
+
+    def _execute(self, reducer: Optional[Callable[[Iterable[Any]], Any]] = None) -> List[Any]:
+        data = list(self._iterable) if not isinstance(self._iterable, list) else self._iterable
+        if not data:
+            return []
+
         chunk_size = max(1, len(data) // self._processes)
-        return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
+        
+        payloads = [(chunk, self._pipeline, reducer) for chunk in chunks]
 
-    def _execute_map_reduce(self, local_reduce: Callable, global_reduce: Callable) -> Any:
-        # logic for auto fallback to sequential if data is small. Might implement in future version.
-        # data = list(self._iterable)
-        # if len(data) < 1000:
-        #      from .sequential import SequentialStream
-        #      pass
-        chunks = self._get_chunks()
-        if not chunks: return None
+        with multiprocessing.Pool(self._processes) as pool:
+            results = pool.map(_worker_process, payloads)
 
-        payloads = [(chunk, self._pipeline, local_reduce) for chunk in chunks]
-
-        with multiprocessing.Pool(processes=self._processes) as pool:
-            chunk_results = pool.map(_worker_process, payloads)
-
-        valid_results = [r for r in chunk_results if r is not None]
-        if not valid_results:
-            return None
-            
-        return global_reduce(valid_results)
+        return results
 
     def to_list(self) -> List[T]:
-        chunks = self._get_chunks()
-        if not chunks: return []
+        nested_results = self._execute(reducer=None) 
+        flat_list = []
+        for sublist in nested_results:
+            flat_list.extend(sublist)
+        
+        if any(op[0] == "distinct" for op in self._pipeline):
+            return list(set(flat_list))
+            
+        return flat_list
 
-        payloads = [(chunk, self._pipeline, None) for chunk in chunks]
-
-        with multiprocessing.Pool(processes=self._processes) as pool:
-            result_chunks = pool.map(_worker_process, payloads)
-
-        flat_results = []
-        for r in result_chunks:
-            flat_results.extend(r)
-        return flat_results
-
-
-    def reduce(self, accumulator: Callable[[T, T], T], identity: Union[T, None] = None) -> Union[T, None]:
-        processed_list = self.to_list()
-        return ops.reduce_op(iter(processed_list), accumulator, identity)
-
-    def min(self, key: Optional[Callable[[T], Any]] = None) -> "Option[T]":
-        helper = _MinMaxHelper("min", key)
-        val = self._execute_map_reduce(local_reduce=helper, global_reduce=helper)
-        return Option.of_nullable(val)
-
-    def max(self, key: Optional[Callable[[T], Any]] = None) -> "Option[T]":
-        helper = _MinMaxHelper("max", key)
-        val = self._execute_map_reduce(local_reduce=helper, global_reduce=helper)
-        return Option.of_nullable(val)
-
-    def sum(self) -> Any:
-        val = self._execute_map_reduce(local_reduce=_sum_wrapper, global_reduce=_sum_wrapper)
-        return val or 0
-
-    def count(self) -> int:
-        val = self._execute_map_reduce(local_reduce=_count_wrapper, global_reduce=sum)
-        return val or 0
+    def to_set(self) -> Set[T]:
+        return set(self.to_list())
     
     def for_each(self, action: Callable[[T], None]) -> None:
-        self.peek(action).to_list()
+        self._pipeline.append(("peek", action))
+        self._execute(reducer=None)
 
-    def find_first(self) -> "Option[T]":
+    def count(self) -> int:
+        counts = self._execute(reducer=_count_wrapper)
+        return sum(counts)
+
+    def find_first(self) -> Option[T]:
         res = self.to_list()
-        val = res[0] if res else None
-        return Option.of_nullable(val)
+        if res:
+            return Option.of(res[0])
+        return Option.empty()
+
+    def any_match(self, predicate: Callable[[T], bool]) -> bool:
+        return self._fallback().any_match(predicate)
+
+    def all_match(self, predicate: Callable[[T], bool]) -> bool:
+        return self._fallback().all_match(predicate)
+
+    def none_match(self, predicate: Callable[[T], bool]) -> bool:
+        return self._fallback().none_match(predicate)
+
+    def collect(self, collector: Callable[[Iterable[T]], R]) -> R:
+        return collector(self.to_list())
+
+    def reduce(self, identity: R, accumulator: Callable[[R, T], R]) -> R:
+        # Map Phase: Reduce each chunk locally
+        local_results = self._execute(reducer=_ReduceHelper(identity, accumulator))
+        # Reduce Phase: Reduce the results from each worker
+        return functools.reduce(accumulator, local_results, identity)
     
-    def take_while(self, predicate): return self._fallback().take_while(predicate)
-    def drop_while(self, predicate): return self._fallback().drop_while(predicate)
-    def zip(self, other): return self._fallback().zip(other)
-    def zip_with_index(self): return self._fallback().zip_with_index()
-    def collect(self, collector): return collector(self.to_list())
-    def any_match(self, predicate): return any(predicate(x) for x in self.to_list())
-    def all_match(self, predicate): return all(predicate(x) for x in self.to_list())
-    def none_match(self, predicate): return not self.any_match(predicate)
-    def to_set(self): return set(self.to_list())
+    def min(self, key: Optional[Callable[[T], Any]] = None) -> Option[T]:
+        local_mins = self._execute(reducer=_MinMaxHelper("min", key))
+        valid_mins = [x for x in local_mins if x is not None]
+        if not valid_mins:
+            return Option.empty()
+        return Option.of_nullable(ops.min_op(iter(valid_mins), key))
 
-    def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]":
-        if processes: self._processes = processes
-        return self
+    def max(self, key: Optional[Callable[[T], Any]] = None) -> Option[T]:
+        local_maxs = self._execute(reducer=_MinMaxHelper("max", key))
+        valid_maxs = [x for x in local_maxs if x is not None]
+        if not valid_maxs:
+            return Option.empty()
+        return Option.of_nullable(ops.max_op(iter(valid_maxs), key))
 
-    def pluck(self, key: Any) -> "ParallelStream[Any]":
-        """
-        Extracts a value by key. (Parallelized as a Map operation)
-        """
-        # We wrap the key access in a function so it can be pickled
-        def _pluck_wrapper(item):
-            return item[key]
-        
-        self._pipeline.append(("map", _pluck_wrapper))
-        return self # type: ignore
+    def sum(self) -> Any:
+        local_sums = self._execute(reducer=_sum_wrapper)
+        return sum(local_sums)
+    
+    def join(self, delimiter: str = "") -> str:
+        return delimiter.join(map(str, self.to_list()))
 
-    def drop_none(self, key: Any = None) -> "ParallelStream[T]":
-        """
-        Drops None values. (Parallelized as a Filter operation)
-        """
-        if key is not None:
-            def _filter_key(item):
-                return item.get(key) is not None
-            self._pipeline.append(("filter", _filter_key))
-        else:
-            def _filter_none(item):
-                return item is not None
-            self._pipeline.append(("filter", _filter_none))
-        return self
-
-    # --- Terminals (Materialize -> Convert) ---
+    # --- I/O & Data Science ---
 
     def to_df(self, columns: Optional[List[str]] = None) -> Any:
         results = self.to_list()
@@ -218,20 +239,37 @@ class ParallelStream(BaseStream[T]):
             raise ImportError("NumPy is required. `pip install numpy`")
         return np.array(results)
 
-    def join(self, delimiter: str = "") -> str:
-        return delimiter.join(map(str, self.to_list()))
-
     def to_csv(self, filepath: str, header: Optional[List[str]] = None) -> None:
-        # Fallback to sequential write
         self._fallback().to_csv(filepath, header)
 
     def to_json(self, filepath: str) -> None:
         self._fallback().to_json(filepath)
 
-    def describe(self) -> dict:
-        return self._fallback().describe()
-    
-    def _fallback(self):
-        results = self.to_list()
-        from .sequential import SequentialStream
-        return SequentialStream(results)
+    def describe(self) -> Dict[str, Union[int, float]]:
+        data = self.to_list()
+        if not data: 
+            return {}
+        
+        count = len(data)
+        result: Dict[str, Union[int, float]] = {"count": count}
+
+        first_val = next((x for x in data if x is not None), None)
+        is_numeric = isinstance(first_val, numbers.Number)
+
+        if is_numeric:
+            numeric_data = [x for x in data if isinstance(x, numbers.Number)]
+            if numeric_data:
+                summable_data = cast(List[Union[int, float]], numeric_data)
+                result["sum"] = sum(summable_data)
+                result["min"] = min(summable_data)
+                result["max"] = max(summable_data)
+                result["mean"] = statistics.mean(summable_data)
+                if len(summable_data) > 1:
+                    result["std"] = statistics.stdev(summable_data)
+        
+        return result
+
+    def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]":
+        if processes:
+            self._processes = processes
+        return self

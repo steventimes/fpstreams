@@ -1,14 +1,27 @@
 site_name: fpstreams
 theme:
   name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+
 plugins:
   - search
-  - mkdocstrings
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: false
 
 nav:
   - Home: index.md
   - API Reference:
       - Stream: reference/stream.md
       - ParallelStream: reference/parallel.md
+      - Collectors: reference/collectors.md
       - Option: reference/option.md
       - Result: reference/result.md
+      - Functional Utils: reference/functional.md

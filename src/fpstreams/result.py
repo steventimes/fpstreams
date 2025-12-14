@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Callable, Union, Any, cast
+from typing import TypeVar, Generic, Callable, Union, Optional, cast
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -35,6 +35,11 @@ class Result(Generic[T]):
             return cls.success(func())
         except Exception as e:
             return cls.failure(e)
+        
+    @property
+    def error(self) -> Optional[Exception]:
+        """Returns the exception if this is a Failure, otherwise None."""
+        return self._error
 
     def is_success(self) -> bool:
         return self._is_success

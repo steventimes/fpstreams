@@ -16,7 +16,7 @@ class Collectors:
         return set
 
     @staticmethod
-    def counting() -> Callable[[Iterable[T]], int]: # type: ignore
+    def counting() -> Callable[[Iterable[T]], int]:  # type: ignore
         """Counts the number of elements."""
         def accumulator(iterable: Iterable[T]) -> int:
             return sum(1 for _ in iterable)
@@ -40,17 +40,12 @@ class Collectors:
             result: Dict[K, List[T]] = {}
             for item in iterable:
                 key = key_mapper(item)
-                if key not in result:
-                    result[key] = []
-                result[key].append(item)
+                result.setdefault(key, []).append(item)
             return result
         return accumulator
-
+    
     @staticmethod
-    def to_dict(
-        key_mapper: Callable[[T], K], 
-        value_mapper: Callable[[T], V] = lambda x: x # type: ignore
-    ) -> Callable[[Iterable[T]], Dict[K, V]]:
+    def to_dict(key_mapper: Callable[[T], K], value_mapper: Callable[[T], V]) -> Callable[[Iterable[T]], Dict[K, V]]:
         """
         Collects elements into a Dictionary.
         Example: Stream(users).collect(to_dict(lambda u: u.id, lambda u: u.name))
@@ -77,14 +72,22 @@ class Collectors:
     def to_columns() -> Callable[[Iterable[dict]], dict]:
         """
         Transposes a list of dicts into a dict of lists.
-        [{'a':1, 'b':2}, {'a':3, 'b':4}] -> {'a': [1,3], 'b': [2,4]}
+        Handles missing keys by inserting None to ensure alignment.
         """
         def accumulator(iterable: Iterable[dict]) -> dict:
-            result = {}
-            for item in iterable:
-                for k, v in item.items():
-                    if k not in result:
-                        result[k] = []
-                    result[k].append(v)
+            data = list(iterable)
+            if not data:
+                return {}
+            
+            all_keys = set()
+            for item in data:
+                all_keys.update(item.keys())
+
+            result = {k: [] for k in all_keys}
+
+            for item in data:
+                for k in all_keys:
+                    result[k].append(item.get(k, None))
+                    
             return result
         return accumulator

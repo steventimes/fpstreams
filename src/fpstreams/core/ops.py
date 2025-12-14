@@ -1,8 +1,6 @@
 import itertools
-import functools
 from typing import Iterator, Callable, Iterable, Optional, Any, cast, Tuple, Union
 from .common import T, R, SupportsRichComparison
-
 
 def map_gen(iterator: Iterator[T], mapper: Callable[[T], R]) -> Iterator[R]:
     return map(mapper, iterator)
@@ -27,10 +25,10 @@ def distinct_gen(iterator: Iterator[T]) -> Iterator[T]:
             yield item
 
 def sorted_gen(iterator: Iterator[T], key: Optional[Callable[[T], Any]], reverse: bool) -> Iterator[T]:
-    # sorted() returns a list, so turn it back into an iterator
     if key is None:
         sortable_iter = cast(Iterator[SupportsRichComparison], iterator)
-        return iter(sorted(sortable_iter, reverse=reverse))  # type: ignore
+        sorted_list = sorted(sortable_iter, reverse=reverse)
+        return cast(Iterator[T], iter(sorted_list))
     return iter(sorted(iterator, key=key, reverse=reverse))
 
 def limit_gen(iterator: Iterator[T], max_size: int) -> Iterator[T]:
@@ -48,22 +46,10 @@ def drop_while_gen(iterator: Iterator[T], predicate: Callable[[T], bool]) -> Ite
 def zip_gen(iterator: Iterator[T], other: Iterable[R]) -> Iterator[Tuple[T, R]]:
     return zip(iterator, other)
 
-def zip_with_index_gen(iterator: Iterator[T]) -> Iterator[Tuple[int, T]]:
-    return enumerate(iterator)
+def zip_with_index_gen(iterator: Iterator[T], start: int = 0) -> Iterator[Tuple[int, T]]:
+    return enumerate(iterator, start)
 
-def reduce_op(iterator: Iterator[T], accumulator: Callable[[T, T], T], identity: Union[T, None]) -> Union[T, None]:
-    if identity is not None:
-        return functools.reduce(accumulator, iterator, identity)
-    try:
-        return functools.reduce(accumulator, iterator)
-    except TypeError:
-        return None
-
-def count_op(iterator: Iterator[T]) -> int:
-    return sum(1 for _ in iterator)
-
-def find_first_op(iterator: Iterator[T]) -> Optional[T]:
-    return next(iterator, None)
+# --- Terminals ---
 
 def any_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
     return any(predicate(item) for item in iterator)
@@ -89,18 +75,29 @@ def max_op(iterator: Iterator[T], key: Optional[Callable[[T], Any]] = None) -> O
 def sum_op(iterator: Iterator[T], start: Any = 0) -> Any:
     return sum(cast(Iterable[Any], iterator), start)
 
-def pluck_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
-    """Changed input from Iterator[dict] to Iterator[Any] for flexibility."""
+def pick_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
     for item in iterator:
-        yield item[key]
+        try:
+            yield item[key]
+        except (TypeError, KeyError, IndexError):
+            yield None
 
-def drop_none_gen(iterator: Iterator[T]) -> Iterator[T]:
-    for item in iterator:
-        if item is not None:
-            yield item
-
-def drop_none_key_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
-    """Changed input/output from Iterator[dict] to Iterator[Any]."""
-    for item in iterator:
-        if isinstance(item, dict) and item.get(key) is not None:
-            yield item
+def filter_none_gen(iterator: Iterator[T], key: Any = None) -> Iterator[T]:
+    """
+    Filters None values.
+    If key is provided, filters items where item[key] is None.
+    """
+    if key is None:
+        for item in iterator:
+            if item is not None:
+                yield item
+    else:
+        for item in iterator:
+            try:
+                # Cast to Any to allow subscripting on generic T
+                val = cast(Any, item)[key]
+                if val is not None:
+                    yield item
+            except (TypeError, KeyError, IndexError):
+                # If key is missing, treat as None and drop it (strict)
+                continue
