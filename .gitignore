@@ -21,3 +21,4 @@ htmlcov/
 
 .mypy_cache/
 site/
+next.txt

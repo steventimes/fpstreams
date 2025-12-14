@@ -1,13 +1,27 @@
-from typing import Iterator, Iterable, Callable, Optional, Any, List, Set, Union, Tuple
+from typing import Iterator, Iterable, Callable, Optional, Any, List, Set, Union, Tuple, cast
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
 from .common import T, R
+import json
+import csv
+import statistics
 
 class SequentialStream(BaseStream[T]):
     def __init__(self, iterable: Iterable[T]):
         self._iterator: Iterator[T] = iter(iterable)
 
+    @staticmethod
+    def concat(stream1: "BaseStream[T]", stream2: "BaseStream[T]") -> "SequentialStream[T]":
+        """
+        Concatenates two streams into one.
+        """
+        def iterator_yielder():
+            yield from stream1.to_list() if isinstance(stream1, BaseStream) and not isinstance(stream1, SequentialStream) else stream1._iterator # type: ignore
+            yield from stream2.to_list() if isinstance(stream2, BaseStream) and not isinstance(stream2, SequentialStream) else stream2._iterator # type: ignore
+
+        return SequentialStream(iterator_yielder())
+    
     def map(self, mapper: Callable[[T], R]) -> "SequentialStream[R]":
         return SequentialStream(ops.map_gen(self._iterator, mapper))
 
@@ -90,3 +104,65 @@ class SequentialStream(BaseStream[T]):
     def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]":
         from .parallel import ParallelStream
         return ParallelStream(self._iterator, processes)
+    
+    def join(self, delimiter: str = "") -> str:
+        return delimiter.join(map(str, self._iterator))
+
+    def to_csv(self, filepath: str, header: Optional[List[str]] = None) -> None:
+        with open(filepath, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if header:
+                writer.writerow(header)
+            for item in self._iterator:
+                if isinstance(item, (list, tuple)):
+                    writer.writerow(item)
+                elif isinstance(item, dict) and header:
+                    writer.writerow([str(item.get(col, "")) for col in header])
+                else:
+                    writer.writerow([str(item)])
+
+    def to_json(self, filepath: str) -> None:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(self.to_list(), f, default=str)
+
+    def to_df(self, columns: Optional[List[str]] = None) -> Any:
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError("Pandas is required for to_df(). Install via `pip install pandas`.")
+        return pd.DataFrame(self.to_list(), columns=columns)
+
+    def to_np(self) -> Any:
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("NumPy is required for to_np(). Install via `pip install numpy`.")
+        return np.array(self.to_list())
+
+    def pluck(self, key: Any) -> "SequentialStream[Any]":
+        iterator = cast(Iterator[Any], self._iterator)
+        return SequentialStream(ops.pluck_gen(iterator, key))
+
+    def drop_none(self, key: Any = None) -> "SequentialStream[T]":
+        if key is not None:
+            iterator = cast(Iterator[Any], self._iterator)
+            new_iter = ops.drop_none_key_gen(iterator, key)
+            return SequentialStream(cast(Iterator[T], new_iter))
+        return SequentialStream(ops.drop_none_gen(self._iterator))
+
+    def describe(self) -> dict:
+        data = self.to_list()
+        if not data: return {}
+        
+        try:
+            numeric_data = cast(List[float], data)
+            
+            return {
+                "count": len(numeric_data),
+                "sum": sum(numeric_data),
+                "min": min(numeric_data),
+                "max": max(numeric_data),
+                "mean": statistics.mean(numeric_data)
+            }
+        except TypeError:
+            return {"count": len(data), "info": "Non-numeric data"}

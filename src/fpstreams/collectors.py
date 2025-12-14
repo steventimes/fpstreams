@@ -72,3 +72,19 @@ class Collectors:
                 result[key].append(item)
             return result
         return accumulator
+    
+    @staticmethod
+    def to_columns() -> Callable[[Iterable[dict]], dict]:
+        """
+        Transposes a list of dicts into a dict of lists.
+        [{'a':1, 'b':2}, {'a':3, 'b':4}] -> {'a': [1,3], 'b': [2,4]}
+        """
+        def accumulator(iterable: Iterable[dict]) -> dict:
+            result = {}
+            for item in iterable:
+                for k, v in item.items():
+                    if k not in result:
+                        result[k] = []
+                    result[k].append(v)
+            return result
+        return accumulator

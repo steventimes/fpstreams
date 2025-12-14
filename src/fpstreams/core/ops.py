@@ -88,3 +88,19 @@ def max_op(iterator: Iterator[T], key: Optional[Callable[[T], Any]] = None) -> O
 
 def sum_op(iterator: Iterator[T], start: Any = 0) -> Any:
     return sum(cast(Iterable[Any], iterator), start)
+
+def pluck_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
+    """Changed input from Iterator[dict] to Iterator[Any] for flexibility."""
+    for item in iterator:
+        yield item[key]
+
+def drop_none_gen(iterator: Iterator[T]) -> Iterator[T]:
+    for item in iterator:
+        if item is not None:
+            yield item
+
+def drop_none_key_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
+    """Changed input/output from Iterator[dict] to Iterator[Any]."""
+    for item in iterator:
+        if isinstance(item, dict) and item.get(key) is not None:
+            yield item

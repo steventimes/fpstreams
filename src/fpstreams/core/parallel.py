@@ -175,6 +175,62 @@ class ParallelStream(BaseStream[T]):
         if processes: self._processes = processes
         return self
 
+    def pluck(self, key: Any) -> "ParallelStream[Any]":
+        """
+        Extracts a value by key. (Parallelized as a Map operation)
+        """
+        # We wrap the key access in a function so it can be pickled
+        def _pluck_wrapper(item):
+            return item[key]
+        
+        self._pipeline.append(("map", _pluck_wrapper))
+        return self # type: ignore
+
+    def drop_none(self, key: Any = None) -> "ParallelStream[T]":
+        """
+        Drops None values. (Parallelized as a Filter operation)
+        """
+        if key is not None:
+            def _filter_key(item):
+                return item.get(key) is not None
+            self._pipeline.append(("filter", _filter_key))
+        else:
+            def _filter_none(item):
+                return item is not None
+            self._pipeline.append(("filter", _filter_none))
+        return self
+
+    # --- Terminals (Materialize -> Convert) ---
+
+    def to_df(self, columns: Optional[List[str]] = None) -> Any:
+        results = self.to_list()
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError("Pandas is required. `pip install pandas`")
+        return pd.DataFrame(results, columns=columns)
+
+    def to_np(self) -> Any:
+        results = self.to_list()
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("NumPy is required. `pip install numpy`")
+        return np.array(results)
+
+    def join(self, delimiter: str = "") -> str:
+        return delimiter.join(map(str, self.to_list()))
+
+    def to_csv(self, filepath: str, header: Optional[List[str]] = None) -> None:
+        # Fallback to sequential write
+        self._fallback().to_csv(filepath, header)
+
+    def to_json(self, filepath: str) -> None:
+        self._fallback().to_json(filepath)
+
+    def describe(self) -> dict:
+        return self._fallback().describe()
+    
     def _fallback(self):
         results = self.to_list()
         from .sequential import SequentialStream
