@@ -2,6 +2,7 @@
 
 [![Build Status](https://github.com/steventimes/fpstreams/actions/workflows/test.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://badge.fury.io/py/fpstreams.svg)](https://badge.fury.io/py/fpstreams)
 
 **A robust, type-safe functional programming library for Python.**
 
@@ -9,11 +10,12 @@
 
 ## Features
 
-* **Fluent Streams:** Lazy evaluation chains (`map`, `filter`, `reduce`, `zip`)
-* **Null Safety:** `Option` monad to eliminate `None` checks.
-* **Error Handling:** `Result` monad (Success/Failure) to replace ugly `try/except` blocks.
-* **Powerful Collectors:** Grouping, partitioning, and joining made simple.
-* **Functional Tools:** Utilities like `pipe` and `curry` for cleaner composition.
+* **Fluent Streams:** Lazy evaluation chains (`map`, `filter`, `reduce`, `zip`).
+* **Parallel Processing:** Automatic multi-core distribution with `.parallel()`.
+* **Clean Code Syntax:** Syntactic sugar like `.pick()` and `.filter_none()` to replace lambdas.
+* **Data Science Ready:** Convert streams directly to Pandas DataFrames, NumPy arrays, or CSV/JSON files.
+* **Null Safety:** `Option` to eliminate `None` checks.
+* **Error Handling:** `Result` (Success/Failure) to replace ugly `try/except` blocks.
 
 ## Installation
 
@@ -21,90 +23,86 @@
 pip install fpstreams
 ```
 
-Comparison between standard streams and `fpstreams.parallel()` on a 4-core machine:
+## Quick Start
 
-| Task | Sequential | Parallel | Speedup |
-| :--- | :--- | :--- | :--- |
-| **Heavy Calculation** (Factorials) | 21.10s | 8.25s | **2.56x** |
-| **I/O Simulation** (Requests) | 2.08s | 0.73s | **2.87x** |
+### 1. Basic
 
-*Note: Parallelism has overhead. Use `.parallel()` only for computationally intensive tasks or large datasets.*
-
-## Usage Example
-
-### Streams (using name from Java)
-
-```python
-from fpstreams import Stream
-
-data = [
-    {"name": "Alice", "role": "admin", "age": 30},
-    {"name": "Bob", "role": "dev", "age": 25},
-    {"name": "Charlie", "role": "admin", "age": 45}
-]
-
-# Get names of admins whose age is over 25, sorted alphabetically
-names = (
-    Stream(data)
-    .filter(lambda u: u["role"] == "admin")
-    .filter(lambda u: u["age"] > 25)
-    .map(lambda u: u["name"].upper())
-    .sorted()
-    .to_list()
-)
-# Output: ['ALICE', 'CHARLIE']
-```
-
-### Null Safety with ```Option```
-
-```python
-from fpstreams import Stream
-
-# Find the first user named "Steven" (who doesn't exist)
-email = (
-    Stream(data)
-    .filter(lambda u: u["name"] == "Steven")
-    .find_first()               # Returns Option[User]
-    .map(lambda u: u["email"])  # Skipped because Option is empty
-    .or_else("default@example.com")
-)
-```
-
-### Error handling with ```Result```
-
-```python
-from fpstreams import Result
-
-def risky_parsing(value):
-    return int(value) # Might crash if value is not a number
-
-# Safe execution
-result = (
-    Result.of(lambda: risky_parsing("invalid"))
-    .map(lambda x: x * 2)
-    .on_failure(lambda e: print(f"Parsing failed: {e}")) # Logs error
-    .get_or_else(0) # Returns 0 instead of crashing
-)
-```
-
-### Collectors
-
-grouping data using collectors
+Replace messy loops with clean, readable pipelines.
 
 ```python
 from fpstreams import Stream, Collectors
 
-fruits = ["apple", "avocado", "banana", "blueberry", "cherry"]
+data = ["apple", "banana", "cherry", "apricot", "blueberry"]
 
-# Group fruits by their first letter
-grouped = (
-    Stream(fruits)
+# Filter, transform, and group in one
+result = (
+    Stream(data)
+    .filter(lambda s: s.startswith("a") or s.startswith("b"))
+    .map(str.upper)
     .collect(Collectors.grouping_by(lambda s: s[0]))
 )
-# Output: {'a': ['apple', 'avocado'], 'b': ['banana', 'blueberry'], 'c': ['cherry']}
+# Output: {'A': ['APPLE', 'APRICOT'], 'B': ['BANANA', 'BLUEBERRY']}
 ```
 
-### Infinite Streams & Lazy Evaluation
+### 2. Clean Code Shortcuts
+
+Stop writing repetitive lambdas for dictionaries.
+
+```python
+users = [
+    {"id": 1, "name": "Alice", "role": "admin"},
+    {"id": 2, "name": "Bob", "role": None},
+    {"id": 3, "name": None, "role": "user"},
+]
+
+names = (
+    Stream(users)
+    .pick("name")      # Extract "name" key
+    .filter_none()     # Remove None values
+    .to_list()
+)
+# Output: ["Alice", "Bob"]
+```
+
+### 3. Parallel Processing
+
+`fpstreams` can automatically distribute heavy workloads across all CPU cores using the `.parallel()` method. It uses an optimized Map-Reduce architecture to minimize memory usage.
+
+```python
+import math
+from fpstreams import Stream
+
+def heavy_task(x):
+    return math.factorial(5000)
+
+# Automatically uses all available CPU cores
+results = (
+    Stream(range(1000))
+    .parallel()
+    .map(heavy_task)
+    .to_list()
+)
+```
+
+### 4. Data Science & I/O
+
+Seamlessly integrate with the scientific stack.
+
+```python
+# Quick statistics
+stats = Stream([1, 2, 3, 4, 5, 100]).describe()
+
+# Output: {'count': 6, 'sum': 115, 'mean': 19.16, 'min': 1, 'max': 100, ...}
+
+# Convert to Pandas
+df = Stream(users).to_df()
+
+# Stream directly to file
+Stream(users).to_csv("output.csv")
+Stream(users).to_json("output.json")
+```
+
+## Infinite Streams & Lazy Evaluation
 
 Process massive datasets efficiently. Operations are only executed when needed.
 
@@ -124,30 +122,26 @@ evens = (
 )
 ```
 
-## Parallel Processing
+## Benchmark
 
-fpstreams can automatically distribute heavy workloads across all CPU cores using the `.parallel()` method. It uses an optimized Map-Reduce architecture to minimize memory usage.
+Comparison between standard streams and `fpstreams.parallel()` on a 4-core machine:
 
-```python
-from fpstreams import Stream
+| Task | Sequential(s) | Parallel(s) | Speedup |
+| :--- | :--- | :--- | :--- |
+| **Heavy Calculation** (Factorials) | 24.7603 | 10.8182 | **2.29x** |
+| **I/O Simulation** (Sleep) | 2.0986 | 0.8405 | **2.50x** |
+| **Light Calculation** (Multiplication) | 0.0151 | 0.3796 | 0.04x |
 
-def heavy_task(x):
-    return x ** 5000
-
-# Automatically uses all available CPU cores
-results = (
-    Stream(range(10000))
-    .parallel()
-    .map(heavy_task)
-    .to_list()
-)
-```
+*Note: Parallel streams have overhead. Use them for CPU-intensive tasks or slow I/O, not simple arithmetic.*
 
 ## Project Structure
 
 * **`Stream`**: The core wrapper for sequential data processing.
 * **`ParallelStream`**: A multi-core wrapper for heavy parallel processing.
-* **`Option`**: A monad container for optional values (Null Safety).
-* **`Result`**: A monad container for operations that may fail (Error Handling).
-* **`Collectors`**: Helper functions for aggregation (e.g., `grouping_by`, `partitioning_by`).
-* **`functional`**: Utilities like `pipe` and `curry` for functional composition.
+* **`Option`**: Null-safe container.
+* **`Result`**: Error-handling container.
+* **`Collectors`**: Accumulation utilities (grouping, joining, summary stats).
+
+## Licence
+
+This project is licensed under the MIT License - see the LICENSE file for details.
