@@ -1,5 +1,5 @@
 import pytest
-from pyflow import Stream, Collectors
+from fpstreams import Stream, Collectors
 
 def test_stream_map_filter_collect():
     data = [1, 2, 3, 4, 5]

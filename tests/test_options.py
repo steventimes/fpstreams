@@ -1,5 +1,5 @@
 import pytest
-from pyflow import Option
+from fpstreams import Option
 
 def test_option_of_valid():
     opt = Option.of("hello")

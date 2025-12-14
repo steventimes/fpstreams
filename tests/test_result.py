@@ -1,5 +1,5 @@
 import pytest
-from pyflow import Result
+from fpstreams import Result
 
 def test_result_success():
     res = Result.success(10)

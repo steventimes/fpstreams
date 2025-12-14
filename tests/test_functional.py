@@ -1,5 +1,5 @@
 import pytest
-from pyflow.functional import pipe, curry
+from fpstreams.functional import pipe, curry
 
 def test_pipe_flow():
     # 5 -> +1 -> *2 -> str
