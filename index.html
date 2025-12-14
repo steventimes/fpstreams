@@ -350,6 +350,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#parallel-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel Processing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#project-structure" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -430,6 +441,34 @@
     
   
     Stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/parallel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ParallelStream
   
 
     
@@ -627,6 +666,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#parallel-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel Processing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#project-structure" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -670,6 +720,32 @@
 <h2 id="installation">Installation</h2>
 <pre><code class="language-bash">pip install fpstreams
 </code></pre>
+<p>Comparison between standard streams and <code>fpstreams.parallel()</code> on a 4-core machine:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Task</th>
+<th style="text-align: left;">Sequential</th>
+<th style="text-align: left;">Parallel</th>
+<th style="text-align: left;">Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Heavy Calculation</strong> (Factorials)</td>
+<td style="text-align: left;">21.10s</td>
+<td style="text-align: left;">8.25s</td>
+<td style="text-align: left;"><strong>2.56x</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>I/O Simulation</strong> (Requests)</td>
+<td style="text-align: left;">2.08s</td>
+<td style="text-align: left;">0.73s</td>
+<td style="text-align: left;"><strong>2.87x</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>Note: Parallelism has overhead. Use <code>.parallel()</code> only for computationally intensive tasks or large datasets.</em></p>
 <h2 id="usage-example">Usage Example</h2>
 <h3 id="streams-using-name-from-java">Streams (using name from Java)</h3>
 <pre><code class="language-python">from fpstreams import Stream
@@ -746,12 +822,30 @@ evens = (
     .to_list()
 )
 </code></pre>
+<h2 id="parallel-processing">Parallel Processing</h2>
+<p>fpstreams can automatically distribute heavy workloads across all CPU cores using the <code>.parallel()</code> method. It uses an optimized Map-Reduce architecture to minimize memory usage.</p>
+<pre><code class="language-python">from fpstreams import Stream
+
+def heavy_task(x):
+    return x ** 5000
+
+# Automatically uses all available CPU cores
+results = (
+    Stream(range(10000))
+    .parallel()
+    .map(heavy_task)
+    .to_list()
+)
+</code></pre>
 <h2 id="project-structure">Project Structure</h2>
-<p>1.<code>Stream</code>: The core wrapper for iterables.\
-2.<code>Option</code>: A container for optional values.\
-3.<code>Result</code>: A container for operations that may fail.\
-4.<code>Collectors</code>: Helper functions for aggregation.\
-5.<code>functional</code>: Utilities like <code>pipe</code> and <code>curry</code></p>
+<ul>
+<li><strong><code>Stream</code></strong>: The core wrapper for sequential data processing.</li>
+<li><strong><code>ParallelStream</code></strong>: A multi-core wrapper for heavy parallel processing.</li>
+<li><strong><code>Option</code></strong>: A monad container for optional values (Null Safety).</li>
+<li><strong><code>Result</code></strong>: A monad container for operations that may fail (Error Handling).</li>
+<li><strong><code>Collectors</code></strong>: Helper functions for aggregation (e.g., <code>grouping_by</code>, <code>partitioning_by</code>).</li>
+<li><strong><code>functional</code></strong>: Utilities like <code>pipe</code> and <code>curry</code> for functional composition.</li>
+</ul>
 
 
 
