@@ -1,0 +1,2 @@
+# Result API
+::: fpstreams.Result

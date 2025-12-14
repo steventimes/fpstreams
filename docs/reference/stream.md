@@ -1,0 +1,2 @@
+# Stream API
+::: fpstreams.Stream

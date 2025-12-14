@@ -1,0 +1,13 @@
+site_name: fpstreams
+theme:
+  name: material
+plugins:
+  - search
+  - mkdocstrings
+
+nav:
+  - Home: index.md
+  - API Reference:
+      - Stream: reference/stream.md
+      - Option: reference/option.md
+      - Result: reference/result.md
