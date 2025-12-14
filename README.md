@@ -21,6 +21,8 @@
 pip install fpstreams
 ```
 
+## Benchmark
+
 Comparison between standard streams and `fpstreams.parallel()` on a 4-core machine:
 
 | Task | Sequential | Parallel | Speedup |
