@@ -4,7 +4,7 @@
 
 **A robust, type-safe functional programming library for Python.**
 
-`pystream` brings the power of **Java Streams**, **Rust Results**, and **JavaScript Array methods** to Python. It provides a fluent interface for data processing, null safety, and error handling without the boilerplate, all while remaining fully typed for IDE autocompletion.
+`fpstreams` brings the power of **Java Streams**, **Rust Results**, and **JavaScript Array methods** to Python. It provides a fluent interface for data processing, null safety, and error handling without the boilerplate, all while remaining fully typed for IDE autocompletion.
 
 ## Features
 
@@ -17,7 +17,7 @@
 ## Installation
 
 ```bash
-pip install pystream
+pip install fpstreams
 ```
 
 ## Usage Example
@@ -25,7 +25,7 @@ pip install pystream
 ### Streams (using name from Java)
 
 ```python
-from pystream import Stream
+from fpstreams import Stream
 
 data = [
     {"name": "Alice", "role": "admin", "age": 30},
@@ -48,7 +48,7 @@ names = (
 ### Null Safety with ```Option```
 
 ```python
-from pystream import Stream
+from fpstreams import Stream
 
 # Find the first user named "Steven" (who doesn't exist)
 email = (
@@ -63,7 +63,7 @@ email = (
 ### Error handling with ```Result```
 
 ```python
-from pystream import Result
+from fpstreams import Result
 
 def risky_parsing(value):
     return int(value) # Might crash if value is not a number
@@ -82,7 +82,7 @@ result = (
 grouping data using collectors
 
 ```python
-from pystream import Stream, Collectors
+from fpstreams import Stream, Collectors
 
 fruits = ["apple", "avocado", "banana", "blueberry", "cherry"]
 
