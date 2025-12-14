@@ -1,0 +1,83 @@
+from abc import ABC, abstractmethod
+from typing import Generic, Callable, Iterable, Optional, Any, List, Set, Tuple, Union
+from .common import T, R
+
+class BaseStream(ABC, Generic[T]):
+    
+    @abstractmethod
+    def map(self, mapper: Callable[[T], R]) -> "BaseStream[R]": ...
+
+    @abstractmethod
+    def filter(self, predicate: Callable[[T], bool]) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def flat_map(self, mapper: Callable[[T], Iterable[R]]) -> "BaseStream[R]": ...
+
+    @abstractmethod
+    def peek(self, action: Callable[[T], None]) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def distinct(self) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def sorted(self, key: Optional[Callable[[T], Any]] = None, reverse: bool = False) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def limit(self, max_size: int) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def skip(self, n: int) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def take_while(self, predicate: Callable[[T], bool]) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def drop_while(self, predicate: Callable[[T], bool]) -> "BaseStream[T]": ...
+
+    @abstractmethod
+    def zip(self, other: Iterable[R]) -> "BaseStream[Tuple[T, R]]": ...
+
+    @abstractmethod
+    def zip_with_index(self) -> "BaseStream[Tuple[int, T]]": ...
+
+    @abstractmethod
+    def for_each(self, action: Callable[[T], None]) -> None: ...
+
+    @abstractmethod
+    def to_list(self) -> List[T]: ...
+
+    @abstractmethod
+    def to_set(self) -> Set[T]: ...
+
+    @abstractmethod
+    def reduce(self, accumulator: Callable[[T, T], T], identity: Union[T, None] = None) -> Union[T, None]: ...
+
+    @abstractmethod
+    def count(self) -> int: ...
+    
+    @abstractmethod
+    def find_first(self) -> Any: ... 
+
+    @abstractmethod
+    def any_match(self, predicate: Callable[[T], bool]) -> bool: ...
+
+    @abstractmethod
+    def all_match(self, predicate: Callable[[T], bool]) -> bool: ...
+
+    @abstractmethod
+    def none_match(self, predicate: Callable[[T], bool]) -> bool: ...
+
+    @abstractmethod
+    def collect(self, collector: Callable[[Iterable[T]], R]) -> R: ...
+
+    @abstractmethod
+    def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]": ...
+    
+    @abstractmethod
+    def min(self, key: Optional[Callable[[T], Any]] = None) -> Any: ... # Returns Option[T] actually
+
+    @abstractmethod
+    def max(self, key: Optional[Callable[[T], Any]] = None) -> Any: ... 
+
+    @abstractmethod
+    def sum(self) -> Any: ...

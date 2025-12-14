@@ -21,6 +21,15 @@
 pip install fpstreams
 ```
 
+Comparison between standard streams and `fpstreams.parallel()` on a 4-core machine:
+
+| Task | Sequential | Parallel | Speedup |
+| :--- | :--- | :--- | :--- |
+| **Heavy Calculation** (Factorials) | 21.10s | 8.25s | **2.56x** |
+| **I/O Simulation** (Requests) | 2.08s | 0.73s | **2.87x** |
+
+*Note: Parallelism has overhead. Use `.parallel()` only for computationally intensive tasks or large datasets.*
+
 ## Usage Example
 
 ### Streams (using name from Java)
@@ -115,10 +124,30 @@ evens = (
 )
 ```
 
+## Parallel Processing
+
+fpstreams can automatically distribute heavy workloads across all CPU cores using the `.parallel()` method. It uses an optimized Map-Reduce architecture to minimize memory usage.
+
+```python
+from fpstreams import Stream
+
+def heavy_task(x):
+    return x ** 5000
+
+# Automatically uses all available CPU cores
+results = (
+    Stream(range(10000))
+    .parallel()
+    .map(heavy_task)
+    .to_list()
+)
+```
+
 ## Project Structure
 
-1.```Stream```: The core wrapper for iterables.\
-2.```Option```: A container for optional values.\
-3.```Result```: A container for operations that may fail.\
-4.```Collectors```: Helper functions for aggregation.\
-5.```functional```: Utilities like ```pipe``` and ```curry```
+* **`Stream`**: The core wrapper for sequential data processing.
+* **`ParallelStream`**: A multi-core wrapper for heavy parallel processing.
+* **`Option`**: A monad container for optional values (Null Safety).
+* **`Result`**: A monad container for operations that may fail (Error Handling).
+* **`Collectors`**: Helper functions for aggregation (e.g., `grouping_by`, `partitioning_by`).
+* **`functional`**: Utilities like `pipe` and `curry` for functional composition.

@@ -1,6 +1,6 @@
-# Stream API
+# ParallelStream API
 
-::: fpstreams.Stream
+::: fpstreams.ParallelStream
     options:
       show_root_heading: true
       show_source: false
