@@ -389,6 +389,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.window" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        window
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -571,6 +593,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        batch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.window" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        window
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -647,6 +691,42 @@
 
         <p>Materializes the parallel results and returns an iterator.
 Allows: for item in Stream(data).parallel(): ...</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.ParallelStream.batch" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">batch</span><span class="p">(</span><span class="n">size</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Chunks the stream into lists of the given size inside the worker.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.ParallelStream.window" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">window</span><span class="p">(</span><span class="n">size</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Sliding window view. Note: In parallel, this only slides within the assigned chunk.</p>
 
 
     </div>

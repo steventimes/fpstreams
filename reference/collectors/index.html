@@ -407,10 +407,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
+  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_list
+        grouping_by
       
     </span>
   </a>
@@ -418,10 +418,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_set" class="md-nav__link">
+  <a href="#fpstreams.Collectors.summarizing" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_set
+        summarizing
       
     </span>
   </a>
@@ -440,10 +440,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.joining" class="md-nav__link">
+  <a href="#fpstreams.Collectors.summing" class="md-nav__link">
     <span class="md-ellipsis">
       
-        joining
+        summing
       
     </span>
   </a>
@@ -451,10 +451,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+  <a href="#fpstreams.Collectors.averaging" class="md-nav__link">
     <span class="md-ellipsis">
       
-        grouping_by
+        averaging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mapping
       
     </span>
   </a>
@@ -638,10 +649,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
+  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_list
+        grouping_by
       
     </span>
   </a>
@@ -649,10 +660,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_set" class="md-nav__link">
+  <a href="#fpstreams.Collectors.summarizing" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_set
+        summarizing
       
     </span>
   </a>
@@ -671,10 +682,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.joining" class="md-nav__link">
+  <a href="#fpstreams.Collectors.summing" class="md-nav__link">
     <span class="md-ellipsis">
       
-        joining
+        summing
       
     </span>
   </a>
@@ -682,10 +693,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+  <a href="#fpstreams.Collectors.averaging" class="md-nav__link">
     <span class="md-ellipsis">
       
-        grouping_by
+        averaging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mapping
       
     </span>
   </a>
@@ -766,6 +788,8 @@
 
 
 
+        <p>Common implementations of Collector operations.</p>
+
 
 
 
@@ -790,8 +814,8 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.to_list" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">to_list</span><span class="p">()</span></code>
+<h3 id="fpstreams.Collectors.grouping_by" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">grouping_by</span><span class="p">(</span><span class="n">classifier</span><span class="p">,</span> <span class="n">downstream</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
@@ -802,8 +826,61 @@
 
     <div class="doc doc-contents ">
 
-        <p>Collects elements into a List.</p>
+        <p>Groups elements by a classification function.</p>
 
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>classifier</code>
+            </td>
+            <td>
+                  <code><span title="typing.Callable">Callable</span>[[<span title="fpstreams.core.collectors.T">T</span>], <span title="fpstreams.core.collectors.K">K</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Function to determine the key.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>downstream</code>
+            </td>
+            <td>
+                  <code><span title="typing.Callable">Callable</span>[[<span title="typing.Iterable">Iterable</span>[<span title="fpstreams.core.collectors.T">T</span>]], <span title="fpstreams.core.collectors.R">R</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional collector to apply to the values of each group.
+        If None, defaults to to_list().</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>grouping_by(lambda x: len(x), downstream=Collectors.counting())</p>
+</details>
 
     </div>
 
@@ -812,8 +889,8 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.to_set" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">to_set</span><span class="p">()</span></code>
+<h3 id="fpstreams.Collectors.summarizing" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">summarizing</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
@@ -824,7 +901,7 @@
 
     <div class="doc doc-contents ">
 
-        <p>Collects elements into a Set.</p>
+        <p>Returns a SummaryStatistics object (count, sum, min, average, max).</p>
 
 
     </div>
@@ -846,7 +923,7 @@
 
     <div class="doc doc-contents ">
 
-        <p>Counts the number of elements.</p>
+        <p>Counts the elements.</p>
 
 
     </div>
@@ -856,8 +933,8 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.joining" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">joining</span><span class="p">(</span><span class="n">delimiter</span><span class="o">=</span><span class="s1">&#39;&#39;</span><span class="p">)</span></code>
+<h3 id="fpstreams.Collectors.summing" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">summing</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
@@ -868,7 +945,7 @@
 
     <div class="doc doc-contents ">
 
-        <p>Joins string elements.</p>
+        <p>Sums the elements after mapping them.</p>
 
 
     </div>
@@ -878,8 +955,8 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.grouping_by" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">grouping_by</span><span class="p">(</span><span class="n">key_mapper</span><span class="p">)</span></code>
+<h3 id="fpstreams.Collectors.averaging" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">averaging</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
@@ -890,10 +967,36 @@
 
     <div class="doc doc-contents ">
 
-        <p>Groups elements by a classification function.
-Example: Stream(["apple", "ant"]).collect(grouping_by(lambda s: s[0]))
-Result: {'a': ['apple', 'ant']}</p>
+        <p>Calculates the average.</p>
 
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.mapping" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">mapping</span><span class="p">(</span><span class="n">mapper</span><span class="p">,</span> <span class="n">downstream</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Adapts a collector to accept elements of a different type.
+Useful inside grouping_by.</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>grouping_by(user.department, mapping(user.salary, averaging()))</p>
+</details>
 
     </div>
 
