@@ -42,7 +42,6 @@ def test_filter_none_with_key():
         {"val": 2},
         {"other": 3} # Missing key treated as None
     ]
-    # Should keep only items where item['val'] is not None
     result = Stream(data).filter_none(key="val").to_list()
     assert result == [{"val": 1}, {"val": 2}]
 
@@ -99,6 +98,39 @@ def test_lazy_evaluation():
         while True:
             yield n
             n += 1
-    
     result = Stream(infinite()).limit(5).to_list()
     assert result == [0, 1, 2, 3, 4]
+
+
+def test_batch():
+    data = list(range(10))
+    result = Stream(data).batch(3).to_list()
+    # [0,1,2], [3,4,5], [6,7,8], [9]
+    assert len(result) == 4
+    assert result[0] == [0, 1, 2]
+    assert result[-1] == [9]
+
+def test_window():
+    data = [1, 2, 3, 4, 5]
+    # Window size 3, step 1
+    result = Stream(data).window(3, 1).to_list()
+    expected = [[1, 2, 3], [2, 3, 4], [3, 4, 5]]
+    assert result == expected
+
+def test_window_with_step():
+    data = [1, 2, 3, 4, 5]
+    # Window size 2, step 2 (non-overlapping chunks)
+    result = Stream(data).window(2, 2).to_list()
+    expected = [[1, 2], [3, 4]] # 5 dropped
+    assert result == expected
+
+def test_scan():
+    data = [1, 2, 3, 4]
+    result = Stream(data).scan(0, lambda a, b: a + b).to_list()
+    assert result == [0, 1, 3, 6, 10]
+
+def test_zip_longest():
+    s1 = [1, 2]
+    s2 = ["a", "b", "c"]
+    result = Stream(s1).zip_longest(s2, fillvalue=None).to_list()
+    assert result == [(1, "a"), (2, "b"), (None, "c")]

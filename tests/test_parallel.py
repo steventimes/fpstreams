@@ -1,17 +1,18 @@
 import pytest
 from fpstreams import Stream
 
+# --- Top-level helpers for pickling ---
 def heavy_calc(x):
     return x * x
 
-def heavy_filter(x):
+def filter_is_even(x):
     return x % 2 == 0
 
 def add_values(acc, x):
     return acc + x
 
-def filter_is_even(x):
-    return x % 2 == 0
+def increment(x):
+    return x + 1
 
 def test_parallel_map():
     data = list(range(100))
@@ -46,3 +47,38 @@ def test_parallel_pick_filter_none():
         .to_list()
     )
     assert sorted(result) == [1, 2]
+
+# --- v0.4.0 Parallel Structure Tests ---
+
+def test_parallel_batch():
+    data = list(range(20))
+    result = (
+        Stream(data)
+        .parallel(processes=2)
+        .batch(5)
+        .to_list()
+    )
+    assert len(result) == 4
+    for batch in result:
+        assert len(batch) == 5
+
+def test_parallel_window():
+    data = list(range(10))
+    result = (
+        Stream(data)
+        .parallel(processes=2)
+        .window(2)
+        .to_list()
+    )
+
+    for win in result:
+        assert len(win) == 2
+
+def test_parallel_large_dataset_no_crash():
+    count = (
+        Stream(range(1000))
+        .parallel()
+        .map(increment) 
+        .count()
+    )
+    assert count == 1000

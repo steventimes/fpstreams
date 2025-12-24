@@ -1,5 +1,6 @@
 import itertools
-from typing import Iterator, Callable, Iterable, Optional, Any, cast, Tuple, Union
+from typing import Iterator, Callable, Iterable, Any, cast, Tuple, List, Deque
+from collections import deque
 from .common import T, R, SupportsRichComparison
 
 def map_gen(iterator: Iterator[T], mapper: Callable[[T], R]) -> Iterator[R]:
@@ -24,7 +25,7 @@ def distinct_gen(iterator: Iterator[T]) -> Iterator[T]:
             seen.add(item)
             yield item
 
-def sorted_gen(iterator: Iterator[T], key: Optional[Callable[[T], Any]], reverse: bool) -> Iterator[T]:
+def sorted_gen(iterator: Iterator[T], key: Callable[[T], Any] | None, reverse: bool) -> Iterator[T]:
     if key is None:
         sortable_iter = cast(Iterator[SupportsRichComparison], iterator)
         sorted_list = sorted(sortable_iter, reverse=reverse)
@@ -60,13 +61,13 @@ def all_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
 def none_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
     return not any_match_op(iterator, predicate)
 
-def min_op(iterator: Iterator[T], key: Optional[Callable[[T], Any]] = None) -> Optional[T]:
+def min_op(iterator: Iterator[T], key: Callable[[T], Any] | None = None) -> T | None:
     try:
         return min(iterator, key=key) if key else min(iterator) # type: ignore
     except ValueError:
         return None
     
-def max_op(iterator: Iterator[T], key: Optional[Callable[[T], Any]] = None) -> Optional[T]:
+def max_op(iterator: Iterator[T], key: Callable[[T], Any] | None = None) -> T | None:
     try:
         return max(iterator, key=key) if key else max(iterator) # type: ignore
     except ValueError:
@@ -101,3 +102,59 @@ def filter_none_gen(iterator: Iterator[T], key: Any = None) -> Iterator[T]:
             except (TypeError, KeyError, IndexError):
                 # If key is missing, treat as None and drop it (strict)
                 continue
+            
+def batch_gen(iterable: Iterable[T], size: int) -> Iterator[List[T]]:
+    """Yields successive n-sized chunks from the iterable."""
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+def window_gen(iterable: Iterable[T], size: int, step: int) -> Iterator[List[T]]:
+    """
+    Sliding window generator.
+    Example: window([1,2,3,4], size=3, step=1) -> [1,2,3], [2,3,4]
+    """
+    iterator = iter(iterable)
+    window: Deque[T] = deque()
+    
+    # Fill first window
+    for _ in range(size):
+        try:
+            window.append(next(iterator))
+        except StopIteration:
+            break
+            
+    if len(window) == size:
+        yield list(window)
+        
+    # Slide
+    step_count = 0
+    for item in iterator:
+        window.append(item)
+        window.popleft()
+        
+        step_count += 1
+        if step_count >= step:
+            yield list(window)
+            step_count = 0
+
+def scan_gen(iterable: Iterable[T], func: Callable[[R, T], R], identity: R) -> Iterator[R]:
+    """
+    Like reduce, but yields intermediate results.
+    """
+    accumulator = identity
+    yield accumulator
+    for item in iterable:
+        accumulator = func(accumulator, item)
+        yield accumulator
+
+def zip_longest_gen(iterable: Iterable[T], other: Iterable[R], fillvalue: T = None) -> Iterator[tuple]:
+    """
+    Zips two iterables, filling missing values with fillvalue.
+    """
+    return itertools.zip_longest(iterable, other, fillvalue=fillvalue)

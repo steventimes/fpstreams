@@ -1,4 +1,4 @@
-from typing import Iterator, Iterable, Callable, Optional, Any, List, Set, Union, Tuple, cast, Dict
+from typing import Iterator, Iterable, Callable, Any, List, Set, Tuple, cast, Dict
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
@@ -31,6 +31,28 @@ class SequentialStream(BaseStream[T]):
         """
         return SequentialStream(elements)
     
+    @staticmethod
+    def generate(supplier: Callable[[], T]) -> "SequentialStream[T]":
+        """
+        Creates an infinite stream by calling supplier() repeatedly.
+        """
+        def gen():
+            while True:
+                yield supplier()
+        return SequentialStream(gen())
+
+    @staticmethod
+    def iterate(seed: T, unary_op: Callable[[T], T]) -> "SequentialStream[T]":
+        """
+        Creates an infinite stream: seed, f(seed), f(f(seed))...
+        """
+        def gen():
+            state = seed
+            while True:
+                yield state
+                state = unary_op(state)
+        return SequentialStream(gen())
+    
     # --- Transformations ---
 
     def map(self, mapper: Callable[[T], R]) -> "SequentialStream[R]":
@@ -55,7 +77,7 @@ class SequentialStream(BaseStream[T]):
     def distinct(self) -> "SequentialStream[T]":
         return SequentialStream(ops.distinct_gen(self._iterator))
 
-    def sorted(self, key: Optional[Callable[[T], Any]] = None, reverse: bool = False) -> "SequentialStream[T]":
+    def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "SequentialStream[T]":
         return SequentialStream(ops.sorted_gen(self._iterator, key, reverse))
 
     def limit(self, max_size: int) -> "SequentialStream[T]":
@@ -75,7 +97,31 @@ class SequentialStream(BaseStream[T]):
 
     def zip_with_index(self, start: int = 0) -> "SequentialStream[Tuple[int, T]]":
         return SequentialStream(ops.zip_with_index_gen(self._iterator, start))
+    
+    def batch(self, size: int) -> "SequentialStream[List[T]]":
+        """Chunks the stream into lists of size N."""
+        return SequentialStream(ops.batch_gen(self._iterator, size))
 
+    def window(self, size: int, step: int = 1) -> "SequentialStream[List[T]]":
+        """Creates a sliding window over the stream."""
+        return SequentialStream(ops.window_gen(self._iterator, size, step))
+
+    def scan(self, identity: T, accumulator: Callable[[T, T], T]) -> "SequentialStream[T]":
+        """
+        Performs a cumulative reduction (running total).
+        """
+        return SequentialStream(ops.scan_gen(self._iterator, accumulator, identity))
+
+    def zip_longest(self, other: Iterable[R], fillvalue: Any = None) -> "SequentialStream[Tuple[T, R]]":
+        """
+        Zips with another iterable, filling missing values instead of stopping.
+        """
+        return SequentialStream(ops.zip_longest_gen(self._iterator, other, fillvalue))
+
+    def parallel(self, processes: int | None = None) -> "BaseStream[T]":
+        from .parallel import ParallelStream
+        return ParallelStream(self.to_list(), processes=processes)
+    
     # --- Terminals ---
 
     def to_list(self) -> List[T]:
@@ -112,11 +158,11 @@ class SequentialStream(BaseStream[T]):
     def reduce(self, identity: R, accumulator: Callable[[R, T], R]) -> R:
         return functools.reduce(accumulator, self._iterator, identity)
     
-    def min(self, key: Optional[Callable[[T], Any]] = None) -> Option[T]:
+    def min(self, key: Callable[[T], Any] | None = None) -> Option[T]:
         result = ops.min_op(self._iterator, key)
         return Option.of_nullable(result)
 
-    def max(self, key: Optional[Callable[[T], Any]] = None) -> Option[T]:
+    def max(self, key: Callable[[T], Any] | None = None) -> Option[T]:
         result = ops.max_op(self._iterator, key)
         return Option.of_nullable(result)
 
@@ -126,7 +172,7 @@ class SequentialStream(BaseStream[T]):
     def join(self, delimiter: str = "") -> str:
         return delimiter.join(map(str, self._iterator))
 
-    def to_df(self, columns: Optional[List[str]] = None) -> Any:
+    def to_df(self, columns: List[str] | None = None) -> Any:
         try:
             import pandas as pd
         except ImportError:
@@ -140,7 +186,7 @@ class SequentialStream(BaseStream[T]):
             raise ImportError("NumPy is required for to_np(). Install via `pip install numpy`.")
         return np.array(self.to_list())
 
-    def to_csv(self, filepath: str, header: Optional[List[str]] = None) -> None:
+    def to_csv(self, filepath: str, header: List[str] | None = None) -> None:
         with open(filepath, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if header:
@@ -161,13 +207,13 @@ class SequentialStream(BaseStream[T]):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.to_list(), f, ensure_ascii=False, indent=4)
 
-    def describe(self) -> Dict[str, Union[int, float]]:
+    def describe(self) -> Dict[str, int | float]:
         data = self.to_list()
         if not data: 
             return {}
         
         count = len(data)
-        result: Dict[str, Union[int, float]] = {"count": count}
+        result: Dict[str, int | float] = {"count": count}
         
         first_val = next((x for x in data if x is not None), None)
         is_numeric = isinstance(first_val, numbers.Number)
@@ -175,7 +221,7 @@ class SequentialStream(BaseStream[T]):
         if is_numeric:
             numeric_data = [x for x in data if isinstance(x, numbers.Number)]
             if numeric_data:
-                summable_data = cast(List[Union[int, float]], numeric_data)
+                summable_data = cast(List[int | float], numeric_data)
                 result["sum"] = sum(summable_data)
                 result["min"] = min(summable_data)
                 result["max"] = max(summable_data)
@@ -184,7 +230,3 @@ class SequentialStream(BaseStream[T]):
                     result["std"] = statistics.stdev(summable_data)
         
         return result
-
-    def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]":
-        from .parallel import ParallelStream
-        return ParallelStream(self.to_list(), processes=processes)

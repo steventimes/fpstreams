@@ -11,7 +11,9 @@
 ## Features
 
 * **Fluent Streams:** Lazy evaluation chains (`map`, `filter`, `reduce`, `zip`).
-* **Parallel Processing:** Automatic multi-core distribution with `.parallel()`.
+* **Structure Operations:** Powerful chunking with `.batch()`, `.window()`, and `.zip_longest()`.
+* **Parallel Processing:** Memory-safe multi-core distribution with `.parallel()` and auto-batching.
+* **Advanced Statistics:** One-pass summary stats (`.summarizing()`) and SQL-like grouping (`.grouping_by(..., downstream=...)`).
 * **Clean Code Syntax:** Syntactic sugar like `.pick()` and `.filter_none()` to replace lambdas.
 * **Data Science Ready:** Convert streams directly to Pandas DataFrames, NumPy arrays, or CSV/JSON files.
 * **Null Safety:** `Option` to eliminate `None` checks.
@@ -25,7 +27,23 @@ pip install fpstreams
 
 ## Quick Start
 
-### 1. Basic
+### 1. Stream Factories
+
+Create streams directly from values, functions, or algorithmic sequences.
+
+```python
+from fpstreams import Stream
+
+Stream.of(1, 2, 3, 4, 5)
+
+# seed 1, Function: x * 2 -> 1, 2, 4, 8, 16...
+Stream.iterate(1, lambda x: x * 2).limit(10)
+
+# Infinite polling (e.g., API)
+Stream.generate(lambda: random.random()).limit(5)
+```
+
+### 2. Basic Processing
 
 Replace messy loops with clean, readable pipelines.
 
@@ -44,7 +62,23 @@ result = (
 # Output: {'A': ['APPLE', 'APRICOT'], 'B': ['BANANA', 'BLUEBERRY']}
 ```
 
-### 2. Clean Code Shortcuts
+### 3. Structure & Windowing
+
+Process data in chunks or sliding windows—essential for time-series analysis or bulk API processing.
+
+```python
+data = range(10)
+
+# Batching: Process 3 items at a time
+# Result: [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+Stream(data).batch(3).to_list()
+
+# Sliding Window: View of size 3, sliding by 1
+# Result: [[0, 1, 2], [1, 2, 3], [2, 3, 4]...]
+Stream(data).window(size=3, step=1).to_list()
+```
+
+### 4. Clean Code Shortcuts
 
 Stop writing repetitive lambdas for dictionaries.
 
@@ -64,7 +98,7 @@ names = (
 # Output: ["Alice", "Bob"]
 ```
 
-### 3. Parallel Processing
+### 5. Parallel Processing
 
 `fpstreams` can automatically distribute heavy workloads across all CPU cores using the `.parallel()` method. It uses an optimized Map-Reduce architecture to minimize memory usage.
 
@@ -72,14 +106,17 @@ names = (
 import math
 from fpstreams import Stream
 
-def heavy_task(x):
-    return math.factorial(5000)
+def heavy_task_batch(numbers):
+    # Process a whole list of numbers at once (Vectorization or bulk API)
+    return [math.factorial(n) for n in numbers]
 
-# Automatically uses all available CPU cores
+# Memory Efficient: "batch(100)" sends chunks to workers
+# instead of pickling 10,000 individual tasks.
 results = (
-    Stream(range(1000))
+    Stream(range(10000))
     .parallel()
-    .map(heavy_task)
+    .batch(100) 
+    .map(heavy_task_batch)
     .to_list()
 )
 ```
@@ -89,17 +126,22 @@ results = (
 Seamlessly integrate with the scientific stack.
 
 ```python
-# Quick statistics
-stats = Stream([1, 2, 3, 4, 5, 100]).describe()
+# 1. One-pass Statistics (Count, Sum, Min, Max, Avg)
+stats = Stream(users).collect(Collectors.summarizing(lambda u: u['age']))
+print(f"Average Age: {stats.average}, Max: {stats.max}")
 
-# Output: {'count': 6, 'sum': 115, 'mean': 19.16, 'min': 1, 'max': 100, ...}
+# 2. Advanced Grouping (SQL-style)
+# Group by Dept, then Avg Salary
+avg_salaries = Stream(employees).collect(
+    Collectors.grouping_by(
+        lambda e: e['dept'],
+        downstream=Collectors.averaging(lambda e: e['salary'])
+    )
+)
 
-# Convert to Pandas
-df = Stream(users).to_df()
-
-# Stream directly to file
+# 3. Export
+Stream(users).to_df()
 Stream(users).to_csv("output.csv")
-Stream(users).to_json("output.json")
 ```
 
 ## Infinite Streams & Lazy Evaluation
@@ -107,15 +149,9 @@ Stream(users).to_json("output.json")
 Process massive datasets efficiently. Operations are only executed when needed.
 
 ```python
-def infinite_counter():
-    n = 0
-    while True:
-        yield n
-        n += 1
-
-# Take only the first 10 even numbers
+# Infinite stream of even numbers using .iterate()
 evens = (
-    Stream(infinite_counter())
+    Stream.iterate(0, lambda n: n + 1)
     .filter(lambda x: x % 2 == 0)
     .limit(10)
     .to_list()
@@ -128,9 +164,9 @@ Comparison between standard streams and `fpstreams.parallel()` on a 4-core machi
 
 | Task | Sequential(s) | Parallel(s) | Speedup |
 | :--- | :--- | :--- | :--- |
-| **Heavy Calculation** (Factorials) | 24.7603 | 10.8182 | **2.29x** |
-| **I/O Simulation** (Sleep) | 2.0986 | 0.8405 | **2.50x** |
-| **Light Calculation** (Multiplication) | 0.0151 | 0.3796 | 0.04x |
+| **Heavy Calculation** (Factorials) | 24.8358 | 9.5575 | **2.60x** |
+| **I/O Simulation** (Sleep) | 2.1053 | 0.8101 | **2.60x** |
+| **Light Calculation** (Multiplication) | 0.0135 | 0.3109 | 0.04x |
 
 *Note: Parallel streams have overhead. Use them for CPU-intensive tasks or slow I/O, not simple arithmetic.*
 

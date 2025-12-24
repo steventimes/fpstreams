@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, Callable, Iterable, Optional, Any, List, Set, Tuple
+from typing import Generic, Callable, Iterable, Any, List, Set, Tuple
 from .common import T, R
 
 class BaseStream(ABC, Generic[T]):
@@ -73,7 +73,7 @@ class BaseStream(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def sorted(self, key: Optional[Callable[[T], Any]] = None, reverse: bool = False) -> "BaseStream[T]":
+    def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "BaseStream[T]":
         """
         Returns a stream consisting of the elements of this stream, sorted according to the provided key.
         """
@@ -142,7 +142,18 @@ class BaseStream(ABC, Generic[T]):
             Stream of tuples like (0, element0), (1, element1), ...
         """
         ...
+    # --- v0.4.0 Structure ---
 
+    @abstractmethod
+    def batch(self, size: int) -> "BaseStream[List[T]]":
+        """Chunks the stream into lists of size N."""
+        ...
+
+    @abstractmethod
+    def window(self, size: int, step: int = 1) -> "BaseStream[List[T]]":
+        """Sliding window view."""
+        ...
+        
     # --- Terminal Operations ---
 
     @abstractmethod
@@ -204,12 +215,12 @@ class BaseStream(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def min(self, key: Optional[Callable[[T], Any]] = None) -> Any:
+    def min(self, key: Callable[[T], Any] | None) -> Any:
         """Returns the minimum element of this stream according to the provided key."""
         ...
 
     @abstractmethod
-    def max(self, key: Optional[Callable[[T], Any]] = None) -> Any: 
+    def max(self, key: Callable[[T], Any] | None) -> Any: 
         """Returns the maximum element of this stream according to the provided key."""
         ...
 
@@ -223,7 +234,7 @@ class BaseStream(ABC, Generic[T]):
         """Joins the string representation of elements with the given delimiter."""
         ...
 
-    # --- Data Science & I/O (v0.3.0) ---
+    # --- Data Science & I/O ---
 
     @abstractmethod
     def describe(self) -> dict:
@@ -234,7 +245,7 @@ class BaseStream(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def to_df(self, columns: Optional[List[str]] = None) -> Any:
+    def to_df(self, columns: List[str] | None = None) -> Any:
         """
         Converts the stream into a Pandas DataFrame.
         Requires ``pandas`` to be installed.
@@ -242,7 +253,7 @@ class BaseStream(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    def to_csv(self, filepath: str, header: Optional[List[str]] = None) -> None:
+    def to_csv(self, filepath: str, header: List[str] | None = None) -> None:
         """
         Writes the stream elements to a CSV file.
         For SequentialStream, this is done row-by-row to save memory.
@@ -257,7 +268,7 @@ class BaseStream(ABC, Generic[T]):
         ...
     
     @abstractmethod
-    def parallel(self, processes: Optional[int] = None) -> "BaseStream[T]":
+    def parallel(self, processes: int | None = None) -> "BaseStream[T]":
         """
         Returns a parallel stream that executes operations on multiple cores.
         """

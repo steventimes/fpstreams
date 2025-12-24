@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Callable, Union, Optional, cast
+from typing import TypeVar, Generic, Callable, cast
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -10,7 +10,7 @@ class Result(Generic[T]):
     Replaces try/except blocks in functional pipelines.
     """
 
-    def __init__(self, value: Union[T, None], error: Union[Exception, None], is_success: bool):
+    def __init__(self, value: T | None, error: Exception | None, is_success: bool):
         self._value = value
         self._error = error
         self._is_success = is_success
@@ -37,7 +37,7 @@ class Result(Generic[T]):
             return cls.failure(e)
         
     @property
-    def error(self) -> Optional[Exception]:
+    def error(self) -> Exception | None:
         """Returns the exception if this is a Failure, otherwise None."""
         return self._error
 

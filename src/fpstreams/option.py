@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Callable, Union
+from typing import TypeVar, Generic, Callable
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -9,7 +9,7 @@ class Option(Generic[T]):
     Replaces None checks.
     """
 
-    def __init__(self, value: Union[T, None]):
+    def __init__(self, value: T | None):
         self._value = value
 
     @classmethod
@@ -20,7 +20,7 @@ class Option(Generic[T]):
         return cls(value)
 
     @classmethod
-    def of_nullable(cls, value: Union[T, None]) -> "Option[T]":
+    def of_nullable(cls, value: T | None) -> "Option[T]":
         """Returns an Option describing the given value, if non-null, otherwise returns an empty Option."""
         return cls(value)
 
