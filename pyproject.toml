@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fpstreams"
-version = "0.4.0"
+version = "0.5.0"
 description = "A functional programming library for Python mimicking Java Streams and JS Arrays."
 readme = "README.md"
 authors = [
@@ -17,7 +17,30 @@ classifiers = [
     "Operating System :: OS Independent",
     "Typing :: Typed",
 ]
-requires-python = ">=3.10" # Leveraging new union types (X | Y)
+requires-python = ">=3.10"
+
+# --- Optional Dependencies ---
+# Users can install these with: pip install fpstreams[test] or fpstreams[async]
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "aiofiles"
+]
+async = [
+    "aiofiles"
+]
+data = [
+    "numpy",
+    "pandas"
+]
+all = [
+    "pytest",
+    "pytest-asyncio",
+    "aiofiles",
+    "numpy",
+    "pandas"
+]
 
 [project.urls]
 "Homepage" = "https://github.com/steventimes/fpstreams"
@@ -25,3 +48,7 @@ requires-python = ">=3.10" # Leveraging new union types (X | Y)
 
 [tool.mypy]
 strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

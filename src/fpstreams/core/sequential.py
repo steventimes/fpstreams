@@ -1,4 +1,4 @@
-from typing import Iterator, Iterable, Callable, Any, List, Set, Tuple, cast, Dict
+from typing import Iterator, Iterable, Callable, Any, List, Set, Tuple, cast, Dict, TYPE_CHECKING
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
@@ -10,6 +10,8 @@ import itertools
 import functools
 import numbers
 
+if TYPE_CHECKING:
+    from .async_stream import AsyncStream
 class SequentialStream(BaseStream[T]):
     
     def __init__(self, iterable: Iterable[T]):
@@ -121,6 +123,14 @@ class SequentialStream(BaseStream[T]):
     def parallel(self, processes: int | None = None) -> "BaseStream[T]":
         from .parallel import ParallelStream
         return ParallelStream(self.to_list(), processes=processes)
+
+    def to_async(self) -> "AsyncStream[T]":
+        """
+        Converts this synchronous stream into an AsyncStream.
+        Useful for switching from processing in memory to sending data over network.
+        """
+        from .async_stream import AsyncStream 
+        return AsyncStream.from_iterable(self)
     
     # --- Terminals ---
 
