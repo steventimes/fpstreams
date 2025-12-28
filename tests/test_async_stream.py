@@ -5,6 +5,8 @@ from fpstreams import Stream
 from fpstreams.core.async_stream import AsyncStream
 from fpstreams.functional import retry
 
+pytestmark = pytest.mark.asyncio
+
 # --- Fixtures & Helpers ---
 
 async def async_double(x: int) -> int:
