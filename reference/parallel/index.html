@@ -12,7 +12,7 @@
         <link rel="prev" href="../stream/">
       
       
-        <link rel="next" href="../collectors/">
+        <link rel="next" href="../async_stream/">
       
       
         
@@ -411,6 +411,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.to_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_async
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -420,6 +431,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../async_stream/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AsyncStream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -615,6 +654,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#fpstreams.ParallelStream.to_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_async
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -727,6 +777,25 @@ Allows: for item in Stream(data).parallel(): ...</p>
     <div class="doc doc-contents ">
 
         <p>Sliding window view. Note: In parallel, this only slides within the assigned chunk.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.ParallelStream.to_async" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_async</span><span class="p">()</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Converts the parallel stream into an AsyncStream.
+Note: This materializes the parallel results first.</p>
 
 
     </div>

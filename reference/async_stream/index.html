@@ -9,10 +9,10 @@
       
       
       
-        <link rel="prev" href="../async_stream/">
+        <link rel="prev" href="../parallel/">
       
       
-        <link rel="next" href="../option/">
+        <link rel="next" href="../collectors/">
       
       
         
@@ -23,7 +23,7 @@
     
     
       
-        <title>Collectors - fpstreams</title>
+        <title>AsyncStream - fpstreams</title>
       
     
     
@@ -66,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#collectors-api" class="md-skip">
+        <a href="#stream-api" class="md-skip">
           Skip to content
         </a>
       
@@ -102,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Collectors
+              AsyncStream
             
           </span>
         </div>
@@ -332,34 +332,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../async_stream/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    AsyncStream
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -379,7 +351,7 @@
   <span class="md-ellipsis">
     
   
-    Collectors
+    AsyncStream
   
 
     
@@ -397,7 +369,7 @@
   <span class="md-ellipsis">
     
   
-    Collectors
+    AsyncStream
   
 
     
@@ -423,22 +395,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#fpstreams.Collectors" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Collectors
+        AsyncStream
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Collectors">
+    <nav class="md-nav" aria-label="AsyncStream">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.__aexit__" class="md-nav__link">
     <span class="md-ellipsis">
       
-        grouping_by
+        __aexit__
       
     </span>
   </a>
@@ -446,10 +418,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.summarizing" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.of" class="md-nav__link">
     <span class="md-ellipsis">
       
-        summarizing
+        of
       
     </span>
   </a>
@@ -457,10 +429,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.counting" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_iterable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        counting
+        from_iterable
       
     </span>
   </a>
@@ -468,10 +440,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.summing" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_aiterable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        summing
+        from_aiterable
       
     </span>
   </a>
@@ -479,10 +451,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.averaging" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_file" class="md-nav__link">
     <span class="md-ellipsis">
       
-        averaging
+        from_file
       
     </span>
   </a>
@@ -490,10 +462,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.mapping" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.interval" class="md-nav__link">
     <span class="md-ellipsis">
       
-        mapping
+        interval
       
     </span>
   </a>
@@ -501,10 +473,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_dict" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_paginated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_dict
+        from_paginated
       
     </span>
   </a>
@@ -512,10 +484,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.partitioning_by" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.map" class="md-nav__link">
     <span class="md-ellipsis">
       
-        partitioning_by
+        map
       
     </span>
   </a>
@@ -523,10 +495,109 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_columns" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.map_async" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_columns
+        map_async
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.debounce" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        debounce
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.concurrent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        concurrent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.unordered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        unordered
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.gather" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gather
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.to_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.for_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        for_each
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.to_file_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_file_async
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.collect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collect
       
     </span>
   </a>
@@ -542,6 +613,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../collectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Collectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -665,22 +764,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#fpstreams.Collectors" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Collectors
+        AsyncStream
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Collectors">
+    <nav class="md-nav" aria-label="AsyncStream">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.grouping_by" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.__aexit__" class="md-nav__link">
     <span class="md-ellipsis">
       
-        grouping_by
+        __aexit__
       
     </span>
   </a>
@@ -688,10 +787,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.summarizing" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.of" class="md-nav__link">
     <span class="md-ellipsis">
       
-        summarizing
+        of
       
     </span>
   </a>
@@ -699,10 +798,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.counting" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_iterable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        counting
+        from_iterable
       
     </span>
   </a>
@@ -710,10 +809,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.summing" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_aiterable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        summing
+        from_aiterable
       
     </span>
   </a>
@@ -721,10 +820,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.averaging" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_file" class="md-nav__link">
     <span class="md-ellipsis">
       
-        averaging
+        from_file
       
     </span>
   </a>
@@ -732,10 +831,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.mapping" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.interval" class="md-nav__link">
     <span class="md-ellipsis">
       
-        mapping
+        interval
       
     </span>
   </a>
@@ -743,10 +842,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_dict" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.from_paginated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_dict
+        from_paginated
       
     </span>
   </a>
@@ -754,10 +853,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.partitioning_by" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.map" class="md-nav__link">
     <span class="md-ellipsis">
       
-        partitioning_by
+        map
       
     </span>
   </a>
@@ -765,10 +864,109 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.Collectors.to_columns" class="md-nav__link">
+  <a href="#fpstreams.AsyncStream.map_async" class="md-nav__link">
     <span class="md-ellipsis">
       
-        to_columns
+        map_async
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.debounce" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        debounce
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.concurrent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        concurrent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.unordered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        unordered
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.gather" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gather
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.to_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.for_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        for_each
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.to_file_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_file_async
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncStream.collect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collect
       
     </span>
   </a>
@@ -797,26 +995,28 @@
 
 
 
-<h1 id="collectors-api">Collectors API</h1>
-<p>The <code>Collectors</code> class provides common reduction operations for <code>Stream.collect()</code>.</p>
+<h1 id="stream-api">Stream API</h1>
 
 
 <div class="doc doc-object doc-class">
 
 
 
-<h2 id="fpstreams.Collectors" class="doc doc-heading">
-            <code>fpstreams.Collectors</code>
+<h2 id="fpstreams.AsyncStream" class="doc doc-heading">
+            <code>fpstreams.AsyncStream</code>
 
 
 </h2>
 
 
     <div class="doc doc-contents first">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.Generic">Generic</span>[<span title="fpstreams.core.common.T">T</span>]</code></p>
 
 
 
-        <p>Common implementations of Collector operations.</p>
+        <p>AsyncStream Implementation.
+Wrapper around an AsyncIterator for processing I/O bound tasks.</p>
 
 
 
@@ -842,8 +1042,30 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.grouping_by" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">grouping_by</span><span class="p">(</span><span class="n">classifier</span><span class="p">,</span> <span class="n">downstream</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<h3 id="fpstreams.AsyncStream.__aexit__" class="doc doc-heading">
+            <code class="highlight language-python"><span class="fm">__aexit__</span><span class="p">(</span><span class="n">exc_type</span><span class="p">,</span> <span class="n">exc_val</span><span class="p">,</span> <span class="n">exc_tb</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Ensures underlying resources (like file handles) are closed.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.of" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">of</span><span class="p">(</span><span class="o">*</span><span class="n">elements</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
@@ -854,7 +1076,119 @@
 
     <div class="doc doc-contents ">
 
-        <p>Groups elements by a classification function.</p>
+        <p>Creates a stream from a sequence of values.
+Usage: AsyncStream.of(1, 2, 3)</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.from_iterable" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_iterable</span><span class="p">(</span><span class="n">iterable</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Creates a stream from a synchronous iterable (list, range, etc).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.from_aiterable" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_aiterable</span><span class="p">(</span><span class="n">aiterable</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Wraps an existing async iterable or generator.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.from_file" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_file</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s1">&#39;utf-8&#39;</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Reads a file line-by-line asynchronously.
+Requires <code>aiofiles</code> to be installed.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.interval" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">interval</span><span class="p">(</span><span class="n">seconds</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Emits an increasing integer counter every N seconds. Infinite stream.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.from_paginated" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_paginated</span><span class="p">(</span><span class="n">first_page_fetcher</span><span class="p">,</span> <span class="n">next_page_fetcher</span><span class="p">,</span> <span class="n">data_extractor</span><span class="p">,</span> <span class="n">has_next</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Stream from a paginated API.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -870,14 +1204,14 @@
       <tbody>
           <tr class="doc-section-item">
             <td>
-                <code>classifier</code>
+                <code>first_page_fetcher</code>
             </td>
             <td>
-                  <code><span title="typing.Callable">Callable</span>[[<span title="fpstreams.core.collectors.T">T</span>], <span title="fpstreams.core.collectors.K">K</span>]</code>
+                  <code><span title="typing.Callable">Callable</span>[[], <span title="typing.Awaitable">Awaitable</span>[<span title="typing.Any">Any</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Function to determine the key.</p>
+                <p>Async func to get the first response.</p>
               </div>
             </td>
             <td>
@@ -886,30 +1220,56 @@
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>downstream</code>
+                <code>next_page_fetcher</code>
             </td>
             <td>
-                  <code><span title="typing.Callable">Callable</span>[[<span title="typing.Iterable">Iterable</span>[<span title="fpstreams.core.collectors.T">T</span>]], <span title="fpstreams.core.collectors.R">R</span>] | None</code>
+                  <code><span title="typing.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Awaitable">Awaitable</span>[<span title="typing.Any">Any</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional collector to apply to the values of each group.
-        If None, defaults to to_list().</p>
+                <p>Async func taking previous response to get next.</p>
               </div>
             </td>
             <td>
-                  <code>None</code>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>data_extractor</code>
+            </td>
+            <td>
+                  <code><span title="typing.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Iterable">Iterable</span>[<span title="fpstreams.core.async_stream.U">U</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Func extracting a list of items from the response.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>has_next</code>
+            </td>
+            <td>
+                  <code><span title="typing.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="bool">bool</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Func checking if more pages exist.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
             </td>
           </tr>
       </tbody>
     </table>
 
 
-<details class="example" open>
-  <summary>Example</summary>
-  <p>grouping_by(lambda x: len(x), downstream=Collectors.counting())</p>
-</details>
-
     </div>
 
 </div>
@@ -917,19 +1277,15 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.summarizing" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">summarizing</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.map" class="doc doc-heading">
+            <code class="highlight language-python"><span class="nb">map</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Returns a SummaryStatistics object (count, sum, min, average, max).</p>
+        <p>Applies a synchronous function to each element.</p>
 
 
     </div>
@@ -939,19 +1295,16 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.counting" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">counting</span><span class="p">()</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.map_async" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">map_async</span><span class="p">(</span><span class="n">func</span><span class="p">)</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Counts the elements.</p>
+        <p>Maps elements to Coroutines/Awaitables. </p>
+<p>Returns a stream of PENDING tasks. Use .gather() to execute them.</p>
 
 
     </div>
@@ -961,19 +1314,16 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.summing" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">summing</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.debounce" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">debounce</span><span class="p">(</span><span class="n">wait_ms</span><span class="p">)</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Sums the elements after mapping them.</p>
+        <p>Drops items that arrive less than 'wait_ms' after the previous item.
+Useful for filtering high-frequency sensor data or event streams.</p>
 
 
     </div>
@@ -983,19 +1333,15 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.averaging" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">averaging</span><span class="p">(</span><span class="n">mapper</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.concurrent" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">concurrent</span><span class="p">(</span><span class="n">limit</span><span class="p">)</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Calculates the average.</p>
+        <p>Sets the max number of concurrent tasks for the next .gather() call.</p>
 
 
     </div>
@@ -1005,48 +1351,15 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.mapping" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">mapping</span><span class="p">(</span><span class="n">mapper</span><span class="p">,</span> <span class="n">downstream</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.unordered" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">unordered</span><span class="p">()</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Adapts a collector to accept elements of a different type.
-Useful inside grouping_by.</p>
-
-
-<details class="example" open>
-  <summary>Example</summary>
-  <p>grouping_by(user.department, mapping(user.salary, averaging()))</p>
-</details>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="fpstreams.Collectors.to_dict" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">to_dict</span><span class="p">(</span><span class="n">key_mapper</span><span class="p">,</span> <span class="n">value_mapper</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-</h3>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Collects elements into a Dictionary.
-Example: Stream(users).collect(to_dict(lambda u: u.id, lambda u: u.name))</p>
+        <p>Allows .gather() to yield results out-of-order (faster).</p>
 
 
     </div>
@@ -1056,20 +1369,16 @@ Example: Stream(users).collect(to_dict(lambda u: u.id, lambda u: u.name))</p>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.partitioning_by" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">partitioning_by</span><span class="p">(</span><span class="n">predicate</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
+<h3 id="fpstreams.AsyncStream.gather" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">gather</span><span class="p">()</span></code>
 
 </h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Partitions elements into two lists based on a predicate.
-Returns a dict: {True: [matches], False: [non-matches]}</p>
+        <p>Executes pending coroutines generated by .map_async().</p>
+<p>Applies concurrency limits and ordering rules.</p>
 
 
     </div>
@@ -1079,11 +1388,29 @@ Returns a dict: {True: [matches], False: [non-matches]}</p>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.Collectors.to_columns" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">to_columns</span><span class="p">()</span></code>
+<h3 id="fpstreams.AsyncStream.timeout" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">timeout</span><span class="p">(</span><span class="n">seconds</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Wraps pending coroutines in asyncio.wait_for with a timeout.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.to_list" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_list</span><span class="p">()</span></code>
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
   </span>
 
 </h3>
@@ -1091,8 +1418,74 @@ Returns a dict: {True: [matches], False: [non-matches]}</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transposes a list of dicts into a dict of lists.
-Handles missing keys by inserting None to ensure alignment.</p>
+        <p>Collects all elements into a list.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.for_each" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">for_each</span><span class="p">(</span><span class="n">func</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Executes func for each element.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.to_file_async" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_file_async</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s1">&#39;utf-8&#39;</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Writes elements to a file asynchronously.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncStream.collect" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">collect</span><span class="p">(</span><span class="n">collector</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Materializes the stream and applies a standard (sync) Collector.</p>
+<p>Example: await stream.collect(Collectors.to_list())</p>
 
 
     </div>

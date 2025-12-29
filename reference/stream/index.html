@@ -351,6 +351,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Stream.__init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        __init__
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Stream.__iter__" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -388,6 +399,28 @@
     <span class="md-ellipsis">
       
         iterate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Stream.limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Stream.skip" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skip
       
     </span>
   </a>
@@ -438,6 +471,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#fpstreams.Stream.to_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_async
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -467,6 +511,34 @@
     
   
     ParallelStream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../async_stream/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AsyncStream
   
 
     
@@ -638,6 +710,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Stream.__init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        __init__
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Stream.__iter__" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -682,6 +765,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Stream.limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Stream.skip" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skip
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Stream.batch" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -719,6 +824,17 @@
     <span class="md-ellipsis">
       
         zip_longest
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Stream.to_async" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_async
       
     </span>
   </a>
@@ -787,6 +903,70 @@
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Stream.__init__" class="doc doc-heading">
+            <code class="highlight language-python"><span class="fm">__init__</span><span class="p">(</span><span class="n">iterable</span><span class="p">,</span> <span class="n">size_hint</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>iterable</code>
+            </td>
+            <td>
+                  <code><span title="typing.Iterable">Iterable</span>[<span title="fpstreams.core.common.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The data source.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>size_hint</code>
+            </td>
+            <td>
+                  <code><span title="typing.Optional">Optional</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Known size of the stream. If None, we calculate it if possible.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
 
 <div class="doc doc-object doc-function">
 
@@ -876,6 +1056,42 @@ Usage: Stream.of(1, 2, 3, 4)</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="fpstreams.Stream.limit" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">limit</span><span class="p">(</span><span class="n">max_size</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Optimized limit. Uses slicing if source is a list/tuple/range.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Stream.skip" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">skip</span><span class="p">(</span><span class="n">n</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Optimized skip. Uses slicing if source is a list/tuple/range.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="fpstreams.Stream.batch" class="doc doc-heading">
             <code class="highlight language-python"><span class="n">batch</span><span class="p">(</span><span class="n">size</span><span class="p">)</span></code>
 
@@ -920,7 +1136,7 @@ Usage: Stream.of(1, 2, 3, 4)</p>
 
     <div class="doc doc-contents ">
 
-        <p>Performs a cumulative reduction (running total).</p>
+        <p>Performs a cumulative reduction.</p>
 
 
     </div>
@@ -939,6 +1155,25 @@ Usage: Stream.of(1, 2, 3, 4)</p>
     <div class="doc doc-contents ">
 
         <p>Zips with another iterable, filling missing values instead of stopping.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Stream.to_async" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">to_async</span><span class="p">()</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Converts this synchronous stream into an AsyncStream.
+Useful for switching from processing in memory to sending data over network.</p>
 
 
     </div>
