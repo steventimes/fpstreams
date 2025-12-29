@@ -158,3 +158,37 @@ def max_op(iterator: Iterator[T], key: Callable[[T], Any] | None) -> Any | None:
 
 def sum_op(iterator: Iterator[T]) -> Any:
     return sum(iterator) # type: ignore
+
+def window_time_gen(iterator: Iterator[T], time_extractor: Callable[[T], float], window_sec: float) -> Iterator[List[T]]:
+    """
+    Groups elements based on time windows.
+    Assumes the stream is roughly ordered by time.
+    """
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return
+
+    current_batch = [first]
+    window_start = time_extractor(first)
+
+    for item in iterator:
+        item_time = time_extractor(item)
+        if item_time < window_start + window_sec:
+            current_batch.append(item)
+        else:
+            yield current_batch
+            current_batch = [item]
+            window_start = item_time 
+    
+    if current_batch:
+        yield current_batch
+
+def unwrap_results_gen(iterator: Iterator[Any]) -> Iterator[Any]:
+    """
+    Flattens a stream of Result[T] objects. 
+    Yields T if Success, ignores Failure.
+    """
+    for item in iterator:
+        if hasattr(item, 'is_success') and item.is_success():
+            yield item.get_or_throw()

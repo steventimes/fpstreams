@@ -3,6 +3,8 @@ from typing import (
     Set, Tuple, cast, Dict, Sized, TYPE_CHECKING, Sequence
 )
 from ..option import Option
+from ..exceptions import StreamEmptyError
+from ..result import Result
 from .stream_interface import BaseStream
 from . import ops
 from .common import T, R
@@ -178,6 +180,27 @@ class SequentialStream(BaseStream[T]):
         from .async_stream import AsyncStream 
         return AsyncStream.from_iterable(self)
     
+    def window_by_time(self, time_extractor: Callable[[T], float], seconds: float) -> "SequentialStream[List[T]]":
+        return SequentialStream(ops.window_time_gen(self._iterator, time_extractor, seconds))
+
+    def flat_map_result(self) -> "SequentialStream[Any]":
+        return SequentialStream(ops.unwrap_results_gen(self._iterator))
+
+    def partition_results(self) -> Tuple[List[Any], List[Exception]]:
+        successes = []
+        failures = []
+        
+        for item in self._iterator:
+            if isinstance(item, Result):
+                if item.is_success():
+                    successes.append(item.get_or_throw())
+                else:
+                    failures.append(item.error)
+            else:
+                successes.append(item)
+
+        return successes, failures
+    
     # --- Terminals ---
 
     def to_list(self) -> List[T]:
@@ -216,8 +239,12 @@ class SequentialStream(BaseStream[T]):
         return collector(self._iterator)
 
     def reduce(self, identity: R, accumulator: Callable[[R, T], R]) -> R:
-        return functools.reduce(accumulator, self._iterator, identity)
-    
+        try:
+            return functools.reduce(accumulator, self._iterator, identity)
+        except TypeError: 
+            # reduce() of empty sequence with no initial value
+            raise StreamEmptyError("Cannot reduce an empty stream without an identity value.")
+        
     def min(self, key: Callable[[T], Any] | None = None) -> Option[T]:
         result = ops.min_op(self._iterator, key)
         return Option.of_nullable(result)

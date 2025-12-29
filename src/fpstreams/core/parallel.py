@@ -7,6 +7,7 @@ from typing import (
     Iterable, Callable, List, Any, Tuple, Set, cast, Dict, Iterator, TYPE_CHECKING
 )
 from ..option import Option
+from ..result import Result
 from .stream_interface import BaseStream
 from . import ops
 from .common import T, R
@@ -59,7 +60,6 @@ def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Any]], Callable | 
         elif op_type == "pick":
             iterator = ops.pick_gen(iterator, arg)
         elif op_type == "filter_none":
-            # arg is the key (or None)
             iterator = ops.filter_none_gen(iterator, arg)
         elif op_type == "peek":
             iterator = ops.peek_gen(iterator, arg)
@@ -142,6 +142,32 @@ class ParallelStream(BaseStream[T]):
         self._pipeline.append(("window", (size, step)))
         return cast("ParallelStream[List[T]]", self)
 
+    def window_by_time(self, time_extractor: Callable[[T], float], seconds: float) -> "BaseStream[List[T]]":
+        return self._fallback().window_by_time(time_extractor, seconds)
+
+    def flat_map_result(self) -> "ParallelStream[Any]":
+        def _unwrap(item: Any) -> Iterable[Any]:
+            if hasattr(item, 'is_success') and item.is_success():
+                return [item.get_or_throw()]
+            return []
+        
+        return self.flat_map(_unwrap)
+
+    def partition_results(self) -> Tuple[List[Any], List[Exception]]:
+        all_items = self.to_list()
+        successes = []
+        failures = []
+        
+        for item in all_items:
+             if isinstance(item, Result):
+                if item.is_success():
+                    successes.append(item.get_or_throw())
+                else:
+                    failures.append(item.error)
+             else:
+                 successes.append(item)
+        return successes, failures
+    
     # --- Sequential Fallbacks ---
 
     def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "BaseStream[T]":

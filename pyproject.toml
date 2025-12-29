@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fpstreams"
-version = "0.6.0"
+version = "1.0.0"
 description = "A functional programming library for Python mimicking Java Streams and JS Arrays."
 readme = "README.md"
 authors = [
@@ -42,9 +42,12 @@ all = [
     "pandas"
 ]
 
+keywords = ["functional", "streams", "java-streams", "monad", "pipeline", "data-science"]
+
 [project.urls]
 "Homepage" = "https://github.com/steventimes/fpstreams"
 "Bug Tracker" = "https://github.com/steventimes/fpstreams/issues"
+"Documentation" = "https://github.com/steventimes/fpstreams/README.md"
 
 [tool.mypy]
 strict = true

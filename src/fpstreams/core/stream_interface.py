@@ -305,3 +305,29 @@ class BaseStream(ABC, Generic[T]):
         Converts this synchronous stream into an AsyncStream.
         """
         ...
+
+    @abstractmethod
+    def window_by_time(self, time_extractor: Callable[[T], float], seconds: float) -> "BaseStream[List[T]]":
+        """
+        Groups items into time-based windows. 
+        Args:
+            time_extractor: Function to get a timestamp (float/int) from an item.
+            seconds: The duration of the window.
+        """
+        ...
+
+    @abstractmethod
+    def flat_map_result(self) -> "BaseStream[Any]":
+        """
+        Assuming the stream consists of Result[T] objects, this extracts the T values 
+        from Successes and discards Failures.
+        """
+        ...
+
+    @abstractmethod
+    def partition_results(self) -> Tuple[List[Any], List[Exception]]:
+        """
+        Materializes the stream. Segregates Result objects into successes and failures.
+        Returns: (list_of_values, list_of_exceptions)
+        """
+        ...
