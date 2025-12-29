@@ -1,4 +1,7 @@
-from typing import Iterator, Iterable, Callable, Any, List, Set, Tuple, cast, Dict, TYPE_CHECKING
+from typing import (
+    Iterator, Iterable, Callable, Optional, Any, List, 
+    Set, Tuple, cast, Dict, Sized, TYPE_CHECKING, Sequence
+)
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
@@ -14,8 +17,22 @@ if TYPE_CHECKING:
     from .async_stream import AsyncStream
 class SequentialStream(BaseStream[T]):
     
-    def __init__(self, iterable: Iterable[T]):
+    def __init__(self, iterable: Iterable[T], size_hint: Optional[int] = None):
+        """
+        Args:
+            iterable: The data source.
+            size_hint: Known size of the stream. If None, we calculate it if possible.
+        """
+        self._iterable = iterable 
         self._iterator: Iterator[T] = iter(iterable)
+        
+        # --- Fast Count Logic ---
+        if size_hint is not None:
+            self._size_hint = size_hint
+        elif isinstance(iterable, Sized):
+            self._size_hint = len(iterable)
+        else:
+            self._size_hint = None
         
     def __iter__(self) -> Iterator[T]:
         """Allows the stream to be used in standard for-loops."""
@@ -58,14 +75,14 @@ class SequentialStream(BaseStream[T]):
     # --- Transformations ---
 
     def map(self, mapper: Callable[[T], R]) -> "SequentialStream[R]":
-        return SequentialStream(ops.map_gen(self._iterator, mapper))
-
+        return SequentialStream(ops.map_gen(self._iterator, mapper), size_hint=self._size_hint)
+    
     def filter(self, predicate: Callable[[T], bool]) -> "SequentialStream[T]":
-        return SequentialStream(ops.filter_gen(self._iterator, predicate))
+        return SequentialStream(ops.filter_gen(self._iterator, predicate), size_hint=None)
 
     def flat_map(self, mapper: Callable[[T], Iterable[R]]) -> "SequentialStream[R]":
-        return SequentialStream(ops.flat_map_gen(self._iterator, mapper))
-
+        return SequentialStream(ops.flat_map_gen(self._iterator, mapper), size_hint=None)
+    
     def pick(self, key: Any) -> "SequentialStream[Any]":
         iterator = cast(Iterator[Any], self._iterator)
         return SequentialStream(ops.pick_gen(iterator, key))
@@ -74,19 +91,44 @@ class SequentialStream(BaseStream[T]):
         return SequentialStream(ops.filter_none_gen(self._iterator, key))
 
     def peek(self, action: Callable[[T], None]) -> "SequentialStream[T]":
-        return SequentialStream(ops.peek_gen(self._iterator, action))
+        return SequentialStream(ops.peek_gen(self._iterator, action), size_hint=self._size_hint)
 
     def distinct(self) -> "SequentialStream[T]":
         return SequentialStream(ops.distinct_gen(self._iterator))
 
     def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "SequentialStream[T]":
-        return SequentialStream(ops.sorted_gen(self._iterator, key, reverse))
+        return SequentialStream(
+            ops.sorted_gen(self._iterator, key, reverse), 
+            size_hint=self._size_hint
+        )
 
     def limit(self, max_size: int) -> "SequentialStream[T]":
-        return SequentialStream(ops.limit_gen(self._iterator, max_size))
+        """
+        Optimized limit. Uses slicing if source is a list/tuple/range.
+        """
+        if isinstance(self._iterable, (list, tuple, range)):
+            sliced_iterable = cast(Sequence[T], self._iterable[:max_size])
+            return SequentialStream(sliced_iterable, size_hint=len(sliced_iterable))
+
+        new_size = max_size
+        if self._size_hint is not None:
+            new_size = min(max_size, self._size_hint)
+            
+        return SequentialStream(ops.limit_gen(self._iterator, max_size), size_hint=new_size)
 
     def skip(self, n: int) -> "SequentialStream[T]":
-        return SequentialStream(ops.skip_gen(self._iterator, n))
+        """
+        Optimized skip. Uses slicing if source is a list/tuple/range.
+        """
+        if isinstance(self._iterable, (list, tuple, range)):
+            sliced_iterable = cast(Sequence[T], self._iterable[n:])
+            return SequentialStream(sliced_iterable, size_hint=len(sliced_iterable))
+
+        new_size = None
+        if self._size_hint is not None:
+            new_size = max(0, self._size_hint - n)
+
+        return SequentialStream(ops.skip_gen(self._iterator, n), size_hint=new_size)
 
     def take_while(self, predicate: Callable[[T], bool]) -> "SequentialStream[T]":
         return SequentialStream(ops.take_while_gen(self._iterator, predicate))
@@ -110,9 +152,13 @@ class SequentialStream(BaseStream[T]):
 
     def scan(self, identity: T, accumulator: Callable[[T, T], T]) -> "SequentialStream[T]":
         """
-        Performs a cumulative reduction (running total).
+        Performs a cumulative reduction. 
         """
-        return SequentialStream(ops.scan_gen(self._iterator, accumulator, identity))
+        new_size = self._size_hint + 1 if self._size_hint is not None else None
+        return SequentialStream(
+            ops.scan_gen(self._iterator, accumulator, identity), 
+            size_hint=new_size
+        )
 
     def zip_longest(self, other: Iterable[R], fillvalue: Any = None) -> "SequentialStream[Tuple[T, R]]":
         """
@@ -145,6 +191,10 @@ class SequentialStream(BaseStream[T]):
             action(item)
 
     def count(self) -> int:
+        if self._size_hint is not None:
+            return self._size_hint
+           
+        # Fallback to O(N) iteration
         return sum(1 for _ in self._iterator)
 
     def find_first(self) -> Option[T]:

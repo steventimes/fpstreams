@@ -3,6 +3,8 @@ from typing import Iterator, Callable, Iterable, Any, cast, Tuple, List, Deque
 from collections import deque
 from .common import T, R, SupportsRichComparison
 
+# --- Generators  ---
+
 def map_gen(iterator: Iterator[T], mapper: Callable[[T], R]) -> Iterator[R]:
     return map(mapper, iterator)
 
@@ -12,6 +14,36 @@ def filter_gen(iterator: Iterator[T], predicate: Callable[[T], bool]) -> Iterato
 def flat_map_gen(iterator: Iterator[T], mapper: Callable[[T], Iterable[R]]) -> Iterator[R]:
     mapped_iterators = map(mapper, iterator)
     return itertools.chain.from_iterable(mapped_iterators)
+
+def pick_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
+    for item in iterator:
+        try:
+            if isinstance(item, dict):
+                yield item.get(key)
+            elif isinstance(item, (list, tuple)) and isinstance(key, int):
+                yield item[key] if 0 <= key < len(item) else None
+            elif hasattr(item, str(key)):
+                yield getattr(item, str(key))
+            else:
+                yield None
+        except (IndexError, AttributeError, TypeError):
+            yield None
+
+def filter_none_gen(iterator: Iterator[T], key: Any = None) -> Iterator[T]:
+    if key is None:
+        for item in iterator:
+            if item is not None:
+                yield item
+    else:
+        for item in iterator:
+            val = None
+            if isinstance(item, dict):
+                val = item.get(key)
+            elif hasattr(item, str(key)):
+                val = getattr(item, str(key))
+            
+            if val is not None:
+                yield item
 
 def peek_gen(iterator: Iterator[T], action: Callable[[T], None]) -> Iterator[T]:
     for item in iterator:
@@ -47,66 +79,15 @@ def drop_while_gen(iterator: Iterator[T], predicate: Callable[[T], bool]) -> Ite
 def zip_gen(iterator: Iterator[T], other: Iterable[R]) -> Iterator[Tuple[T, R]]:
     return zip(iterator, other)
 
-def zip_with_index_gen(iterator: Iterator[T], start: int = 0) -> Iterator[Tuple[int, T]]:
+def zip_with_index_gen(iterator: Iterator[T], start: int) -> Iterator[Tuple[int, T]]:
     return enumerate(iterator, start)
 
-# --- Terminals ---
+def zip_longest_gen(iterator: Iterator[T], other: Iterable[R], fillvalue: Any) -> Iterator[Tuple[T, R]]:
+    return itertools.zip_longest(iterator, other, fillvalue=fillvalue)
 
-def any_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
-    return any(predicate(item) for item in iterator)
-
-def all_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
-    return all(predicate(item) for item in iterator)
-
-def none_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
-    return not any_match_op(iterator, predicate)
-
-def min_op(iterator: Iterator[T], key: Callable[[T], Any] | None = None) -> T | None:
-    try:
-        return min(iterator, key=key) if key else min(iterator) # type: ignore
-    except ValueError:
-        return None
-    
-def max_op(iterator: Iterator[T], key: Callable[[T], Any] | None = None) -> T | None:
-    try:
-        return max(iterator, key=key) if key else max(iterator) # type: ignore
-    except ValueError:
-        return None
-
-def sum_op(iterator: Iterator[T], start: Any = 0) -> Any:
-    return sum(cast(Iterable[Any], iterator), start)
-
-def pick_gen(iterator: Iterator[Any], key: Any) -> Iterator[Any]:
-    for item in iterator:
-        try:
-            yield item[key]
-        except (TypeError, KeyError, IndexError):
-            yield None
-
-def filter_none_gen(iterator: Iterator[T], key: Any = None) -> Iterator[T]:
-    """
-    Filters None values.
-    If key is provided, filters items where item[key] is None.
-    """
-    if key is None:
-        for item in iterator:
-            if item is not None:
-                yield item
-    else:
-        for item in iterator:
-            try:
-                # Cast to Any to allow subscripting on generic T
-                val = cast(Any, item)[key]
-                if val is not None:
-                    yield item
-            except (TypeError, KeyError, IndexError):
-                # If key is missing, treat as None and drop it (strict)
-                continue
-            
-def batch_gen(iterable: Iterable[T], size: int) -> Iterator[List[T]]:
-    """Yields successive n-sized chunks from the iterable."""
+def batch_gen(iterator: Iterator[T], size: int) -> Iterator[List[T]]:
     batch = []
-    for item in iterable:
+    for item in iterator:
         batch.append(item)
         if len(batch) >= size:
             yield batch
@@ -114,12 +95,11 @@ def batch_gen(iterable: Iterable[T], size: int) -> Iterator[List[T]]:
     if batch:
         yield batch
 
-def window_gen(iterable: Iterable[T], size: int, step: int) -> Iterator[List[T]]:
+def window_gen(iterator: Iterator[T], size: int, step: int) -> Iterator[List[T]]:
     """
     Sliding window generator.
     Example: window([1,2,3,4], size=3, step=1) -> [1,2,3], [2,3,4]
     """
-    iterator = iter(iterable)
     window: Deque[T] = deque()
     
     # Fill first window
@@ -133,28 +113,48 @@ def window_gen(iterable: Iterable[T], size: int, step: int) -> Iterator[List[T]]
         yield list(window)
         
     # Slide
-    step_count = 0
+    steps_taken = 0
     for item in iterator:
         window.append(item)
         window.popleft()
         
-        step_count += 1
-        if step_count >= step:
+        steps_taken += 1
+        if steps_taken >= step:
             yield list(window)
-            step_count = 0
+            steps_taken = 0
 
-def scan_gen(iterable: Iterable[T], func: Callable[[R, T], R], identity: R) -> Iterator[R]:
+def scan_gen(iterator: Iterator[T], func: Callable[[Any, T], Any], identity: Any) -> Iterator[Any]:
     """
     Like reduce, but yields intermediate results.
     """
     accumulator = identity
     yield accumulator
-    for item in iterable:
+    for item in iterator:
         accumulator = func(accumulator, item)
         yield accumulator
 
-def zip_longest_gen(iterable: Iterable[T], other: Iterable[R], fillvalue: T = None) -> Iterator[tuple]:
-    """
-    Zips two iterables, filling missing values with fillvalue.
-    """
-    return itertools.zip_longest(iterable, other, fillvalue=fillvalue)
+# --- Terminal Operations ---
+
+def any_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
+    return any(predicate(x) for x in iterator)
+
+def all_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
+    return all(predicate(x) for x in iterator)
+
+def none_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool:
+    return not any(predicate(x) for x in iterator)
+
+def min_op(iterator: Iterator[T], key: Callable[[T], Any] | None) -> Any | None:
+    try:
+        return min(iterator, key=key) if key else min(iterator) # type: ignore
+    except ValueError:
+        return None
+
+def max_op(iterator: Iterator[T], key: Callable[[T], Any] | None) -> Any | None:
+    try:
+        return max(iterator, key=key) if key else max(iterator) # type: ignore
+    except ValueError:
+        return None
+
+def sum_op(iterator: Iterator[T]) -> Any:
+    return sum(iterator) # type: ignore

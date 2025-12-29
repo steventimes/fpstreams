@@ -21,6 +21,7 @@ nav:
   - API Reference:
       - Stream: reference/stream.md
       - ParallelStream: reference/parallel.md
+      - AsyncStream: reference/async_stream.md
       - Collectors: reference/collectors.md
       - Option: reference/option.md
       - Result: reference/result.md

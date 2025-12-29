@@ -9,6 +9,8 @@ class Result(Generic[T]):
     or a failure (Failure). 
     Replaces try/except blocks in functional pipelines.
     """
+    __slots__ = ('_value', '_error', '_is_success')
+    
 
     def __init__(self, value: T | None, error: Exception | None, is_success: bool):
         self._value = value

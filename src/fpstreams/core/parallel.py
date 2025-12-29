@@ -4,13 +4,16 @@ import functools
 import numbers
 import os
 from typing import (
-    Iterable, Callable, List, Any, Tuple, Set, cast, Dict, Iterator
+    Iterable, Callable, List, Any, Tuple, Set, cast, Dict, Iterator, TYPE_CHECKING
 )
 from ..option import Option
 from .stream_interface import BaseStream
 from . import ops
 from .common import T, R
 from .sequential import SequentialStream
+
+if TYPE_CHECKING:
+    from .async_stream import AsyncStream
 
 def _sum_wrapper(it: Iterable[Any]) -> Any:
     return ops.sum_op(iter(it))
@@ -161,6 +164,12 @@ class ParallelStream(BaseStream[T]):
 
     def zip_with_index(self, start: int = 0) -> "BaseStream[Tuple[int, T]]":
         return self._fallback().zip_with_index(start)
+        
+    def zip_longest(self, other: Iterable[R], fillvalue: Any = None) -> "BaseStream[Tuple[T, R]]":
+        return self._fallback().zip_longest(other, fillvalue)
+
+    def scan(self, identity: T, accumulator: Callable[[T, T], T]) -> "BaseStream[T]":
+        return self._fallback().scan(identity, accumulator)
 
     # --- Terminals ---
 
@@ -171,15 +180,35 @@ class ParallelStream(BaseStream[T]):
         """
         has_len = hasattr(self._iterable, "__len__")
         
+        chunk_size = 1000
         if has_len:
             total_len = len(self._iterable) # type: ignore
             if total_len == 0:
                 return []
             chunk_size = max(1, total_len // self._processes)
-        else:
-            chunk_size = 1000 
 
-        chunk_generator = ops.batch_gen(self._iterable, chunk_size)
+        # --- Chunk Alignment Logic ---
+        # If 'batch' is used, we must align chunk_size to be a multiple of batch_size
+        # to prevent fragmented batches at chunk boundaries.
+        # This is only possible if no filtering happens before the batch.
+        
+        batch_op_idx = -1
+        unsafe_op_before_batch = False
+        batch_size = 0
+        
+        for i, (op, arg) in enumerate(self._pipeline):
+            if op == "batch":
+                batch_op_idx = i
+                batch_size = arg
+                break
+            if op in ("filter", "flat_map", "filter_none", "distinct"):
+                unsafe_op_before_batch = True
+        
+        if batch_op_idx != -1 and not unsafe_op_before_batch and batch_size > 0:
+            multiplier = max(1, chunk_size // batch_size)
+            chunk_size = multiplier * batch_size
+
+        chunk_generator = ops.batch_gen(iter(self._iterable), chunk_size)
         
         payloads = (
             (chunk, self._pipeline, reducer) 
@@ -309,3 +338,11 @@ class ParallelStream(BaseStream[T]):
         if processes:
             self._processes = processes
         return self
+
+    def to_async(self) -> "AsyncStream[T]":
+        """
+        Converts the parallel stream into an AsyncStream.
+        Note: This materializes the parallel results first.
+        """
+        from .async_stream import AsyncStream
+        return AsyncStream.from_iterable(self.to_list())

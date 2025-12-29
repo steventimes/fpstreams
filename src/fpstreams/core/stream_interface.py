@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Generic, Callable, Iterable, Any, List, Set, Tuple
+from typing import Generic, Callable, Iterable, Any, List, Set, Tuple, TYPE_CHECKING
 from .common import T, R
+
+if TYPE_CHECKING:
+    from .async_stream import AsyncStream
 
 class BaseStream(ABC, Generic[T]):
     """
@@ -142,6 +145,21 @@ class BaseStream(ABC, Generic[T]):
             Stream of tuples like (0, element0), (1, element1), ...
         """
         ...
+
+    @abstractmethod
+    def zip_longest(self, other: Iterable[R], fillvalue: Any = None) -> "BaseStream[Tuple[T, R]]":
+        """
+        Zips with another iterable, filling missing values instead of stopping.
+        """
+        ...
+
+    @abstractmethod
+    def scan(self, identity: T, accumulator: Callable[[T, T], T]) -> "BaseStream[T]":
+        """
+        Performs a cumulative reduction (like reduce, but yields intermediate results).
+        """
+        ...
+
     # --- v0.4.0 Structure ---
 
     @abstractmethod
@@ -251,6 +269,13 @@ class BaseStream(ABC, Generic[T]):
         Requires ``pandas`` to be installed.
         """
         ...
+    
+    @abstractmethod
+    def to_np(self) -> Any:
+        """
+        Converts the stream into a NumPy array.
+        """
+        ...
 
     @abstractmethod
     def to_csv(self, filepath: str, header: List[str] | None = None) -> None:
@@ -271,5 +296,12 @@ class BaseStream(ABC, Generic[T]):
     def parallel(self, processes: int | None = None) -> "BaseStream[T]":
         """
         Returns a parallel stream that executes operations on multiple cores.
+        """
+        ...
+
+    @abstractmethod
+    def to_async(self) -> "AsyncStream[T]":
+        """
+        Converts this synchronous stream into an AsyncStream.
         """
         ...
