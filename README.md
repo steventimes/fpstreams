@@ -25,6 +25,13 @@
 pip install fpstreams
 ```
 
+### Optional Rust Acceleration
+
+Some list-based operations (like `distinct` and `batch`) can use a Rust extension when
+available. Build the extension from the `rust/` directory with your preferred tooling
+(`maturin` or a custom build pipeline) and the Python runtime will automatically
+pick it up if `fpstreams_rust` is importable.
+
 ## Quick Start
 
 ### 1. Stream Factories

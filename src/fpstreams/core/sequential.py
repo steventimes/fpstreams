@@ -7,6 +7,7 @@ from ..exceptions import StreamEmptyError
 from ..result import Result
 from .stream_interface import BaseStream
 from . import ops
+from .. import rust_ops
 from .common import T, R
 import json
 import csv
@@ -96,6 +97,9 @@ class SequentialStream(BaseStream[T]):
         return SequentialStream(ops.peek_gen(self._iterator, action), size_hint=self._size_hint)
 
     def distinct(self) -> "SequentialStream[T]":
+        if isinstance(self._iterable, (list, tuple)) and rust_ops.rust_available():
+            distinct_values = rust_ops.distinct_list(self._iterable)
+            return SequentialStream(distinct_values, size_hint=len(distinct_values))
         return SequentialStream(ops.distinct_gen(self._iterator))
     
     def distinct_by(self, key: Callable[[T], Any]) -> "SequentialStream[T]":
@@ -149,6 +153,9 @@ class SequentialStream(BaseStream[T]):
     
     def batch(self, size: int) -> "SequentialStream[List[T]]":
         """Chunks the stream into lists of size N."""
+        if isinstance(self._iterable, (list, tuple)) and rust_ops.rust_available():
+            batched = rust_ops.batch_list(self._iterable, size)
+            return SequentialStream(batched, size_hint=len(batched))
         return SequentialStream(ops.batch_gen(self._iterator, size))
 
     def window(self, size: int, step: int = 1) -> "SequentialStream[List[T]]":
