@@ -20,5 +20,5 @@ htmlcov/
 *.swp
 
 .mypy_cache/
-fpstreams/**
+site/
 next.txt
