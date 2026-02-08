@@ -50,6 +50,18 @@ def test_distinct():
     result = Stream(data).distinct().to_list()
     assert result == [1, 2, 3]
 
+def test_distinct_by():
+    data = [
+        {"id": 1, "name": "Ada"},
+        {"id": 2, "name": "Grace"},
+        {"id": 1, "name": "Ada Clone"},
+    ]
+    result = Stream(data).distinct_by(lambda item: item["id"]).to_list()
+    assert result == [
+        {"id": 1, "name": "Ada"},
+        {"id": 2, "name": "Grace"},
+    ]
+    
 def test_sorted():
     data = [3, 1, 4, 2]
     result = Stream(data).sorted().to_list()

@@ -97,6 +97,9 @@ class SequentialStream(BaseStream[T]):
 
     def distinct(self) -> "SequentialStream[T]":
         return SequentialStream(ops.distinct_gen(self._iterator))
+    
+    def distinct_by(self, key: Callable[[T], Any]) -> "SequentialStream[T]":
+        return SequentialStream(ops.distinct_by_gen(self._iterator, key))
 
     def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "SequentialStream[T]":
         return SequentialStream(

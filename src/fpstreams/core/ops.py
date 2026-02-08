@@ -57,6 +57,14 @@ def distinct_gen(iterator: Iterator[T]) -> Iterator[T]:
             seen.add(item)
             yield item
 
+def distinct_by_gen(iterator: Iterator[T], key: Callable[[T], Any]) -> Iterator[T]:
+    seen = set()
+    for item in iterator:
+        marker = key(item)
+        if marker not in seen:
+            seen.add(marker)
+            yield item
+            
 def sorted_gen(iterator: Iterator[T], key: Callable[[T], Any] | None, reverse: bool) -> Iterator[T]:
     if key is None:
         sortable_iter = cast(Iterator[SupportsRichComparison], iterator)

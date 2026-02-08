@@ -76,6 +76,13 @@ class BaseStream(ABC, Generic[T]):
         ...
 
     @abstractmethod
+    def distinct_by(self, key: Callable[[T], Any]) -> "BaseStream[T]":
+        """
+        Returns a stream consisting of distinct elements, using the provided key extractor.
+        """
+        ...
+        
+    @abstractmethod
     def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "BaseStream[T]":
         """
         Returns a stream consisting of the elements of this stream, sorted according to the provided key.

@@ -14,6 +14,9 @@ def add_values(acc, x):
 def increment(x):
     return x + 1
 
+def get_id(item):
+    return item["id"]
+
 def test_parallel_map():
     data = list(range(100))
     expected = [x * x for x in data]
@@ -31,6 +34,23 @@ def test_parallel_filter():
         .to_list()
     )
     assert len(result) == 50
+
+def test_parallel_distinct_by():
+    data = [
+        {"id": 1, "name": "Ada"},
+        {"id": 2, "name": "Grace"},
+        {"id": 1, "name": "Ada Clone"},
+    ]
+    result = (
+        Stream(data)
+        .parallel(processes=2)
+        .distinct_by(get_id)
+        .to_list()
+    )
+    assert result == [
+        {"id": 1, "name": "Ada"},
+        {"id": 2, "name": "Grace"},
+    ]
 
 def test_parallel_reduce():
     data = list(range(1, 5)) # 1, 2, 3, 4

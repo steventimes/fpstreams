@@ -65,6 +65,8 @@ def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Any]], Callable | 
             iterator = ops.peek_gen(iterator, arg)
         elif op_type == "distinct":
             iterator = ops.distinct_gen(iterator)
+        elif op_type == "distinct_by":
+            iterator = ops.distinct_by_gen(iterator, arg)
         elif op_type == "limit":
             iterator = ops.limit_gen(iterator, arg)
         elif op_type == "skip":
@@ -126,7 +128,10 @@ class ParallelStream(BaseStream[T]):
     def distinct(self) -> "ParallelStream[T]":
         self._pipeline.append(("distinct", None))
         return self
-
+    
+    def distinct_by(self, key: Callable[[T], Any]) -> "ParallelStream[T]":
+        self._pipeline.append(("distinct_by", key))
+        return self
 
     def batch(self, size: int) -> "ParallelStream[List[T]]":
         """
@@ -227,7 +232,7 @@ class ParallelStream(BaseStream[T]):
                 batch_op_idx = i
                 batch_size = arg
                 break
-            if op in ("filter", "flat_map", "filter_none", "distinct"):
+            if op in ("filter", "flat_map", "filter_none", "distinct", "distinct_by"):
                 unsafe_op_before_batch = True
         
         if batch_op_idx != -1 and not unsafe_op_before_batch and batch_size > 0:
@@ -250,6 +255,10 @@ class ParallelStream(BaseStream[T]):
         flat_list = []
         for sublist in nested_results:
             flat_list.extend(sublist)
+            
+        for op, arg in self._pipeline:
+            if op == "distinct_by":
+                flat_list = list(ops.distinct_by_gen(iter(flat_list), arg))
         
         if any(op[0] == "distinct" for op in self._pipeline):
             return list(set(flat_list))
