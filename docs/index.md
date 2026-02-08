@@ -142,6 +142,10 @@ Comparison between standard streams and `fpstreams.parallel()` on a 4-core machi
 * **`Result`**: Error-handling container.
 * **`Collectors`**: Accumulation utilities (grouping, joining, summary stats).
 
+## Functional Coverage & Roadmap
+
+`fpstreams` already provides composable pipelines, collectors, and Option/Result containers, and there are clear next steps for additional combinators and richer statistics. There is also a candidate path to accelerate expensive calculations using a Rust extension module while keeping the Python API unchanged. See [Functional Coverage & Roadmap](roadmap.md) for the full assessment.
+
 ## Licence
 
 This project is licensed under the MIT License - see the LICENSE file for details.
