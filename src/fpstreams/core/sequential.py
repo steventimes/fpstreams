@@ -97,7 +97,7 @@ class SequentialStream(BaseStream[T]):
         return SequentialStream(ops.peek_gen(self._iterator, action), size_hint=self._size_hint)
 
     def distinct(self) -> "SequentialStream[T]":
-        if isinstance(self._iterable, (list, tuple)) and rust_ops.rust_available():
+        if isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
             distinct_values = rust_ops.distinct_list(self._iterable)
             return SequentialStream(distinct_values, size_hint=len(distinct_values))
         return SequentialStream(ops.distinct_gen(self._iterator))
@@ -106,6 +106,9 @@ class SequentialStream(BaseStream[T]):
         return SequentialStream(ops.distinct_by_gen(self._iterator, key))
 
     def sorted(self, key: Callable[[T], Any] | None = None, reverse: bool = False) -> "SequentialStream[T]":
+        if key is None and isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
+            sorted_values = rust_ops.sorted_list(self._iterable, reverse=reverse)
+            return SequentialStream(sorted_values, size_hint=len(sorted_values))
         return SequentialStream(
             ops.sorted_gen(self._iterator, key, reverse), 
             size_hint=self._size_hint
@@ -116,6 +119,9 @@ class SequentialStream(BaseStream[T]):
         Optimized limit. Uses slicing if source is a list/tuple/range.
         """
         if isinstance(self._iterable, (list, tuple, range)):
+            if rust_ops.rust_available():
+                limited = rust_ops.limit_list(self._iterable, max_size)
+                return SequentialStream(limited, size_hint=len(limited))
             sliced_iterable = cast(Sequence[T], self._iterable[:max_size])
             return SequentialStream(sliced_iterable, size_hint=len(sliced_iterable))
 
@@ -130,6 +136,9 @@ class SequentialStream(BaseStream[T]):
         Optimized skip. Uses slicing if source is a list/tuple/range.
         """
         if isinstance(self._iterable, (list, tuple, range)):
+            if rust_ops.rust_available():
+                skipped = rust_ops.skip_list(self._iterable, n)
+                return SequentialStream(skipped, size_hint=len(skipped))
             sliced_iterable = cast(Sequence[T], self._iterable[n:])
             return SequentialStream(sliced_iterable, size_hint=len(sliced_iterable))
 
@@ -153,13 +162,16 @@ class SequentialStream(BaseStream[T]):
     
     def batch(self, size: int) -> "SequentialStream[List[T]]":
         """Chunks the stream into lists of size N."""
-        if isinstance(self._iterable, (list, tuple)) and rust_ops.rust_available():
+        if isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
             batched = rust_ops.batch_list(self._iterable, size)
             return SequentialStream(batched, size_hint=len(batched))
         return SequentialStream(ops.batch_gen(self._iterator, size))
 
     def window(self, size: int, step: int = 1) -> "SequentialStream[List[T]]":
         """Creates a sliding window over the stream."""
+        if isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
+            windowed = rust_ops.window_list(self._iterable, size, step)
+            return SequentialStream(windowed, size_hint=len(windowed))
         return SequentialStream(ops.window_gen(self._iterator, size, step))
 
     def scan(self, identity: T, accumulator: Callable[[T, T], T]) -> "SequentialStream[T]":
@@ -256,14 +268,22 @@ class SequentialStream(BaseStream[T]):
             raise StreamEmptyError("Cannot reduce an empty stream without an identity value.")
         
     def min(self, key: Callable[[T], Any] | None = None) -> Option[T]:
+        if key is None and isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
+            result = rust_ops.min_list(self._iterable)
+            return Option.of_nullable(result)
         result = ops.min_op(self._iterator, key)
         return Option.of_nullable(result)
 
     def max(self, key: Callable[[T], Any] | None = None) -> Option[T]:
+        if key is None and isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
+            result = rust_ops.max_list(self._iterable)
+            return Option.of_nullable(result)
         result = ops.max_op(self._iterator, key)
         return Option.of_nullable(result)
 
     def sum(self) -> Any:
+        if isinstance(self._iterable, (list, tuple, range)) and rust_ops.rust_available():
+            return rust_ops.sum_list(self._iterable)
         return ops.sum_op(self._iterator)
     
     def join(self, delimiter: str = "") -> str:
