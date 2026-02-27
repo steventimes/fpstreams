@@ -1,4 +1,4 @@
-from typing import TypeVar, Callable, Dict, List, Any, Iterable, Set, Tuple
+from typing import TypeVar, Callable, Dict, List, Any, Iterable, Set
 from dataclasses import dataclass
 
 T = TypeVar("T")

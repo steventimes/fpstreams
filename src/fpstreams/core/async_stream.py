@@ -1,5 +1,4 @@
 import asyncio
-import functools
 from typing import (
     TypeVar, Generic, AsyncIterator, Callable, Awaitable, 
     Any, AsyncIterable, Iterable, List, cast
