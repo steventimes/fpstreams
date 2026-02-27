@@ -13,6 +13,21 @@ This document captures how `fpstreams` applies functional programming concepts t
 - **Collectors** that provide grouping, summarizing, partitioning, and mapping into aggregate results.
 - **Async and parallel variants** to keep functional pipelines consistent across sync/async/CPU-bound workloads.
 
+## Rust Coverage Today
+
+The optional `fpstreams_rust` module is already wired into `SequentialStream` for list-like inputs (`list`, `tuple`, `range`) on the following operations:
+
+- `distinct`
+- `sorted` (without a custom key)
+- `limit`
+- `skip`
+- `batch`
+- `window`
+- `min` (without a custom key)
+- `max` (without a custom key)
+- `sum`
+s
+
 ## Potential Functional Additions
 
 If you want deeper FP ergonomics, these additions would keep the API aligned with the existing stream/collector style:
@@ -44,8 +59,7 @@ Certain operations are CPU-heavy or memory-sensitive and are prime candidates fo
 
 - **Numeric collectors**: `summarizing`, `summing`, `averaging`, quantiles.
 - **High-volume transforms**: `map`/`filter`/`flat_map` on numeric streams.
-- **Windowing/scan**: especially on large sequences of numeric data.
-- **Group-by and distinct** for large datasets (hashing overhead in Python can be high).
+- **Collector-side grouping** for large datasets where aggregation dominates runtime.
 - **Parallel operations**: a Rust-backed `parallel()` pipeline using `rayon` for consistent throughput.
 
 ### Proposed approach
@@ -63,7 +77,7 @@ Certain operations are CPU-heavy or memory-sensitive and are prime candidates fo
    - Use `PyBuffer`/NumPy views for zero-copy operations where possible.
 
 4. **Incremental rollout**
-   - Start with collectors (`summarizing`, `summing`, `averaging`) and window/scan operations.
+   - Start with collectors (`summarizing`, `summing`, `averaging`).
    - Add parallel map/filter/reduce after functional parity is proven.
    - Gate by benchmarks to validate real-world wins.
 

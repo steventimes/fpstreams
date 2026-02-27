@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Sequence, TypeVar, List
+from typing import Callable, Sequence, TypeVar, List, cast
 
 T = TypeVar("T")
 
@@ -29,13 +29,20 @@ except Exception:
     _sum_list = None
 
 
+def _call_rust(fn: Callable[..., object] | None, *args: object) -> object | None:
+    if not _RUST_AVAILABLE or fn is None:
+        return None
+    return fn(*args)
+
+
 def rust_available() -> bool:
     return _RUST_AVAILABLE
 
 
 def distinct_list(values: Sequence[T]) -> List[T]:
-    if _RUST_AVAILABLE:
-        return _distinct_list(values)  # type: ignore
+    rust_result = _call_rust(_distinct_list, values)
+    if rust_result is not None:
+        return cast(List[T], rust_result)
 
     seen: set[T] = set()
     output: List[T] = []
@@ -47,8 +54,9 @@ def distinct_list(values: Sequence[T]) -> List[T]:
 
 
 def batch_list(values: Sequence[T], size: int) -> List[List[T]]:
-    if _RUST_AVAILABLE:
-        return _batch_list(values, size)  # type: ignore
+    rust_result = _call_rust(_batch_list, values, size)
+    if rust_result is not None:
+        return cast(List[List[T]], rust_result)
 
     batches: List[List[T]] = []
     current: List[T] = []
@@ -63,20 +71,23 @@ def batch_list(values: Sequence[T], size: int) -> List[List[T]]:
 
 
 def limit_list(values: Sequence[T], max_size: int) -> List[T]:
-    if _RUST_AVAILABLE:
-        return _limit_list(values, max_size)  # type: ignore
+    rust_result = _call_rust(_limit_list, values, max_size)
+    if rust_result is not None:
+        return cast(List[T], rust_result)
     return list(values[:max_size])
 
 
 def skip_list(values: Sequence[T], n: int) -> List[T]:
-    if _RUST_AVAILABLE:
-        return _skip_list(values, n)  # type: ignore
+    rust_result = _call_rust(_skip_list, values, n)
+    if rust_result is not None:
+        return cast(List[T], rust_result)
     return list(values[n:])
 
 
 def window_list(values: Sequence[T], size: int, step: int = 1) -> List[List[T]]:
-    if _RUST_AVAILABLE:
-        return _window_list(values, size, step)  # type: ignore
+    rust_result = _call_rust(_window_list, values, size, step)
+    if rust_result is not None:
+        return cast(List[List[T]], rust_result)
     if size <= 0:
         return []
     if step <= 0:
@@ -88,28 +99,32 @@ def window_list(values: Sequence[T], size: int, step: int = 1) -> List[List[T]]:
 
 
 def sorted_list(values: Sequence[T], reverse: bool = False) -> List[T]:
-    if _RUST_AVAILABLE:
-        return _sorted_list(values, reverse)  # type: ignore
+    rust_result = _call_rust(_sorted_list, values, reverse)
+    if rust_result is not None:
+        return cast(List[T], rust_result)
     return sorted(values, reverse=reverse)
 
 
 def min_list(values: Sequence[T]) -> T | None:
-    if _RUST_AVAILABLE:
-        return _min_list(values)  # type: ignore
+    rust_result = _call_rust(_min_list, values)
+    if rust_result is not None:
+        return cast(T, rust_result)
     if not values:
         return None
     return min(values)
 
 
 def max_list(values: Sequence[T]) -> T | None:
-    if _RUST_AVAILABLE:
-        return _max_list(values)  # type: ignore
+    rust_result = _call_rust(_max_list, values)
+    if rust_result is not None:
+        return cast(T, rust_result)
     if not values:
         return None
     return max(values)
 
 
 def sum_list(values: Sequence[T]) -> T:
-    if _RUST_AVAILABLE:
-        return _sum_list(values)  # type: ignore
+    rust_result = _call_rust(_sum_list, values)
+    if rust_result is not None:
+        return cast(T, rust_result)
     return sum(values)  # type: ignore

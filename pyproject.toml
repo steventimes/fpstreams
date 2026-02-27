@@ -25,7 +25,8 @@ requires-python = ">=3.10"
 test = [
     "pytest",
     "pytest-asyncio",
-    "aiofiles"
+    "aiofiles",
+    "hypothesis"
 ]
 async = [
     "aiofiles"
@@ -38,6 +39,7 @@ all = [
     "pytest",
     "pytest-asyncio",
     "aiofiles",
+    "hypothesis",
     "numpy",
     "pandas"
 ]

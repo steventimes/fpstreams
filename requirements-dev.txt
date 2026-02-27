@@ -3,3 +3,4 @@ mypy
 black
 build
 twine
+hypothesis

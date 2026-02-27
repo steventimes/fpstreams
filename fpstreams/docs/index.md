@@ -144,7 +144,7 @@ Comparison between standard streams and `fpstreams.parallel()` on a 4-core machi
 
 ## Functional Coverage & Roadmap
 
-`fpstreams` already provides composable pipelines, collectors, and Option/Result containers, and there are clear next steps for additional combinators and richer statistics. There is also a candidate path to accelerate expensive calculations using a Rust extension module while keeping the Python API unchanged. See [Functional Coverage & Roadmap](roadmap.md) for the full assessment.
+`fpstreams` already provides composable pipelines, collectors, and Option/Result containers. The optional Rust extension is also already integrated for a focused set of list-oriented operations (`distinct`, `sorted`, `limit`, `skip`, `batch`, `window`, `min`, `max`, `sum`) with Python fallback behavior. See [Functional Coverage & Roadmap](roadmap.md) for the full assessment.
 
 ## Licence
 

@@ -27,10 +27,23 @@ pip install fpstreams
 
 ### Optional Rust Acceleration
 
-Some list-based operations (like `distinct` and `batch`) can use a Rust extension when
-available. Build the extension from the `rust/` directory with your preferred tooling
+`fpstreams` already includes an optional `fpstreams_rust` extension that accelerates
+list-oriented stream operations when the input source is list-like (`list`, `tuple`, `range`) and
+no custom key function is required:
+
+- `distinct`
+- `sorted` (default ordering)
+- `limit`
+- `skip`
+- `batch`
+- `window`
+- `min`
+- `max`
+- `sum`
+
+Build the extension from the `rust/` directory with your preferred tooling
 (`maturin` or a custom build pipeline) and the Python runtime will automatically
-pick it up if `fpstreams_rust` is importable.
+use the Rust fast path if `fpstreams_rust` is importable, otherwise it falls back to pure Python.
 
 ## Quick Start
 
