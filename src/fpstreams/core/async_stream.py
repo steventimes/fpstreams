@@ -22,13 +22,14 @@ class AsyncStream(Generic[T]):
     def __aiter__(self) -> AsyncIterator[T]:
         return self._iterator
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncStream[T]":
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         """Ensures underlying resources (like file handles) are closed."""
-        if hasattr(self._iterator, "aclose"):
-            await self._iterator.aclose() # type: ignore
+        aclose = getattr(self._iterator, "aclose", None)
+        if callable(aclose):
+            await aclose()
 
     # --- factories ---
     
@@ -61,7 +62,7 @@ class AsyncStream(Generic[T]):
         Requires `aiofiles` to be installed.
         """
         try:
-            import aiofiles # type: ignore
+            import aiofiles  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError("AsyncStream.from_file requires 'aiofiles'. Install with `pip install aiofiles`.")
 
@@ -173,9 +174,9 @@ class AsyncStream(Generic[T]):
         async def gen() -> AsyncIterator[T]:
             async for coro in self._iterator:
                 if not asyncio.iscoroutine(coro) and not isinstance(coro, asyncio.Future):
-                    yield coro # type: ignore
+                    yield coro
                     continue
-                yield await asyncio.wait_for(coro, timeout=seconds) # type: ignore
+                yield cast(T, await asyncio.wait_for(coro, timeout=seconds))
         return AsyncStream(gen())
 
     # --- Terminal ---
@@ -194,7 +195,7 @@ class AsyncStream(Generic[T]):
     async def to_file_async(self, path: str, encoding: str = "utf-8") -> None:
         """Writes elements to a file asynchronously."""
         try:
-            import aiofiles # type: ignore
+            import aiofiles
         except ImportError:
             raise ImportError("to_file_async requires 'aiofiles'.")
             

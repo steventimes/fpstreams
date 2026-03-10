@@ -4,7 +4,7 @@ import functools
 import numbers
 import os
 from typing import (
-    Iterable, Callable, List, Any, Tuple, Set, cast, Dict, Iterator, TYPE_CHECKING
+    Iterable, Callable, List, Any, Tuple, Set, cast, Dict, Iterator, TYPE_CHECKING, Sized
 )
 from ..option import Option
 from ..result import Result
@@ -41,7 +41,7 @@ class _ReduceHelper:
     def __call__(self, iterator: Iterable[Any]) -> Any:
         return functools.reduce(self.accumulator, iterator, self.identity)
 
-def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Any]], Callable | None]) -> Any:
+def _worker_process(payload: Tuple[List[Any], List[Tuple[str, Any]], Callable[[Iterable[Any]], Any] | None]) -> Any:
     """
     Worker process that handles a chunk of data.
     Now supports 'batch' and 'window' operations locally.
@@ -160,15 +160,16 @@ class ParallelStream(BaseStream[T]):
 
     def partition_results(self) -> Tuple[List[Any], List[Exception]]:
         all_items = self.to_list()
-        successes = []
-        failures = []
+        successes: List[Any] = []
+        failures: List[Exception] = []
         
         for item in all_items:
              if isinstance(item, Result):
                 if item.is_success():
                     successes.append(item.get_or_throw())
                 else:
-                    failures.append(item.error)
+                    if item.error is not None:
+                        failures.append(item.error)
              else:
                  successes.append(item)
         return successes, failures
@@ -213,7 +214,7 @@ class ParallelStream(BaseStream[T]):
         
         chunk_size = 1000
         if has_len:
-            total_len = len(self._iterable) # type: ignore
+            total_len = len(cast(Sized, self._iterable))
             if total_len == 0:
                 return []
             chunk_size = max(1, total_len // self._processes)
@@ -326,7 +327,7 @@ class ParallelStream(BaseStream[T]):
     def to_df(self, columns: List[str] | None = None) -> Any:
         results = self.to_list()
         try:
-            import pandas as pd
+            import pandas as pd  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError("Pandas is required. `pip install pandas`")
         return pd.DataFrame(results, columns=columns)
@@ -334,7 +335,7 @@ class ParallelStream(BaseStream[T]):
     def to_np(self) -> Any:
         results = self.to_list()
         try:
-            import numpy as np
+            import numpy as np  # type: ignore[import-not-found]
         except ImportError:
             raise ImportError("NumPy is required. `pip install numpy`")
         return np.array(results)

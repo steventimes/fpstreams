@@ -29,6 +29,8 @@ class SequentialStream(BaseStream[T]):
         self._iterable = iterable 
         self._iterator: Iterator[T] = iter(iterable)
         
+        self._size_hint: int | None
+
         # --- Fast Count Logic ---
         if size_hint is not None:
             self._size_hint = size_hint
@@ -58,7 +60,7 @@ class SequentialStream(BaseStream[T]):
         """
         Creates an infinite stream by calling supplier() repeatedly.
         """
-        def gen():
+        def gen() -> Iterator[T]:
             while True:
                 yield supplier()
         return SequentialStream(gen())
@@ -68,7 +70,7 @@ class SequentialStream(BaseStream[T]):
         """
         Creates an infinite stream: seed, f(seed), f(f(seed))...
         """
-        def gen():
+        def gen() -> Iterator[T]:
             state = seed
             while True:
                 yield state
@@ -209,15 +211,16 @@ class SequentialStream(BaseStream[T]):
         return SequentialStream(ops.unwrap_results_gen(self._iterator))
 
     def partition_results(self) -> Tuple[List[Any], List[Exception]]:
-        successes = []
-        failures = []
+        successes: List[Any] = []
+        failures: List[Exception] = []
         
         for item in self._iterator:
             if isinstance(item, Result):
                 if item.is_success():
                     successes.append(item.get_or_throw())
                 else:
-                    failures.append(item.error)
+                    if item.error is not None:
+                        failures.append(item.error)
             else:
                 successes.append(item)
 
@@ -291,14 +294,14 @@ class SequentialStream(BaseStream[T]):
 
     def to_df(self, columns: List[str] | None = None) -> Any:
         try:
-            import pandas as pd
+            import pandas as pd  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError("Pandas is required for to_df(). Install via `pip install pandas`.")
         return pd.DataFrame(self.to_list(), columns=columns)
 
     def to_np(self) -> Any:
         try:
-            import numpy as np
+            import numpy as np  # type: ignore[import-not-found]
         except ImportError:
             raise ImportError("NumPy is required for to_np(). Install via `pip install numpy`.")
         return np.array(self.to_list())

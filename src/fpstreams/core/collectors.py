@@ -18,14 +18,14 @@ class SummaryStatistics:
     max: float = float('-inf')
     average: float = 0.0
 
-    def accept(self, value: float):
+    def accept(self, value: float) -> None:
         self.count += 1
         self.sum += value
         self.min = min(self.min, value)
         self.max = max(self.max, value)
         self.average = self.sum / self.count
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (f"SummaryStatistics(count={self.count}, sum={self.sum}, "
                 f"min={self.min}, average={self.average:.2f}, max={self.max})")
 
@@ -97,7 +97,7 @@ class Collectors:
         return collector
 
     @staticmethod
-    def counting() -> Callable[[Iterable[T]], int]: # type: ignore
+    def counting() -> Callable[[Iterable[T]], int]:
         """Counts the elements."""
         return lambda iterable: sum(1 for _ in iterable)
 
@@ -161,21 +161,21 @@ class Collectors:
         return accumulator
     
     @staticmethod
-    def to_columns() -> Callable[[Iterable[dict]], dict]:
+    def to_columns() -> Callable[[Iterable[dict[str, Any]]], dict[str, list[Any]]]:
         """
         Transposes a list of dicts into a dict of lists.
         Handles missing keys by inserting None to ensure alignment.
         """
-        def accumulator(iterable: Iterable[dict]) -> dict:
+        def accumulator(iterable: Iterable[dict[str, Any]]) -> dict[str, list[Any]]:
             data = list(iterable)
             if not data:
                 return {}
             
-            all_keys = set()
+            all_keys: set[str] = set()
             for item in data:
                 all_keys.update(item.keys())
 
-            result = {k: [] for k in all_keys}
+            result: dict[str, list[Any]] = {k: [] for k in all_keys}
 
             for item in data:
                 for k in all_keys:

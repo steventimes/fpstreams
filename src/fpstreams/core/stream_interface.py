@@ -262,7 +262,7 @@ class BaseStream(ABC, Generic[T]):
     # --- Data Science & I/O ---
 
     @abstractmethod
-    def describe(self) -> dict:
+    def describe(self) -> dict[str, int | float]:
         """
         Calculates descriptive statistics (count, mean, min, max, std).
         Safely handles non-numeric data by returning only counts.

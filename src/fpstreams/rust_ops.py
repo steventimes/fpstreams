@@ -5,7 +5,7 @@ from typing import Callable, Sequence, TypeVar, List, cast
 T = TypeVar("T")
 
 try:
-    from fpstreams_rust import batch_list as _batch_list
+    from fpstreams_rust import batch_list as _batch_list  # type: ignore[import-not-found]
     from fpstreams_rust import distinct_list as _distinct_list
     from fpstreams_rust import limit_list as _limit_list
     from fpstreams_rust import skip_list as _skip_list
@@ -16,7 +16,7 @@ try:
     from fpstreams_rust import sum_list as _sum_list
 
     _RUST_AVAILABLE = True
-except Exception:
+except ImportError:
     _RUST_AVAILABLE = False
     _batch_list = None
     _distinct_list = None
@@ -102,7 +102,7 @@ def sorted_list(values: Sequence[T], reverse: bool = False) -> List[T]:
     rust_result = _call_rust(_sorted_list, values, reverse)
     if rust_result is not None:
         return cast(List[T], rust_result)
-    return sorted(values, reverse=reverse)
+    return cast(List[T], sorted(values, reverse=reverse))
 
 
 def min_list(values: Sequence[T]) -> T | None:
@@ -111,7 +111,7 @@ def min_list(values: Sequence[T]) -> T | None:
         return cast(T, rust_result)
     if not values:
         return None
-    return min(values)
+    return min(values)  # type: ignore[type-var]
 
 
 def max_list(values: Sequence[T]) -> T | None:
@@ -120,11 +120,11 @@ def max_list(values: Sequence[T]) -> T | None:
         return cast(T, rust_result)
     if not values:
         return None
-    return max(values)
+    return max(values)  # type: ignore[type-var]
 
 
 def sum_list(values: Sequence[T]) -> T:
     rust_result = _call_rust(_sum_list, values)
     if rust_result is not None:
         return cast(T, rust_result)
-    return sum(values)  # type: ignore
+    return cast(T, sum(values))

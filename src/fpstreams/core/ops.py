@@ -154,18 +154,18 @@ def none_match_op(iterator: Iterator[T], predicate: Callable[[T], bool]) -> bool
 
 def min_op(iterator: Iterator[T], key: Callable[[T], Any] | None) -> Any | None:
     try:
-        return min(iterator, key=key) if key else min(iterator) # type: ignore
+        return min(iterator, key=key) if key else min(iterator)  # type: ignore[type-var]
     except ValueError:
         return None
 
 def max_op(iterator: Iterator[T], key: Callable[[T], Any] | None) -> Any | None:
     try:
-        return max(iterator, key=key) if key else max(iterator) # type: ignore
+        return max(iterator, key=key) if key else max(iterator)  # type: ignore[type-var]
     except ValueError:
         return None
 
 def sum_op(iterator: Iterator[T]) -> Any:
-    return sum(iterator) # type: ignore
+    return sum(iterator)
 
 def window_time_gen(iterator: Iterator[T], time_extractor: Callable[[T], float], window_sec: float) -> Iterator[List[T]]:
     """
