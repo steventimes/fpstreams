@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+import textwrap
+import typing
 
 import pytest
 
@@ -163,24 +167,56 @@ def test_domain_packages_export_the_stable_public_api() -> None:
     assert (Option, Result) == (fpstreams.Option, fpstreams.Result)
 
 
-def test_legacy_module_imports_remain_compatible() -> None:
-    public_flow = fpstreams.flow
-    public_rows = fpstreams.rows
-    try:
-        from fpstreams.aggregate import Aggregator
-        from fpstreams.async_flow import AsyncFlow
-        from fpstreams.collectors import Collector
-        from fpstreams.flow import Flow
-        from fpstreams.rows import Rows
+def test_public_gatherer_annotations_resolve_at_runtime() -> None:
+    hints = typing.get_type_hints(fpstreams.Gatherer)
 
-        assert (Flow, AsyncFlow, Rows, Collector, Aggregator) == (
-            fpstreams.Flow,
-            fpstreams.AsyncFlow,
-            fpstreams.Rows,
-            fpstreams.Collector,
-            fpstreams.Aggregator,
-        )
-    finally:
-        # Importing a same-named submodule replaces the package attribute by design.
-        fpstreams.flow = public_flow
-        fpstreams.rows = public_rows
+    assert {
+        "initializer",
+        "integrator",
+        "finisher",
+        "combiner",
+        "greedy",
+    } <= hints.keys()
+
+
+def test_importing_discoverable_submodules_preserves_root_factories() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib
+        import pkgutil
+
+        import fpstreams
+
+        for module in pkgutil.iter_modules(fpstreams.__path__, "fpstreams."):
+            importlib.import_module(module.name)
+
+        assert fpstreams.flow([1, 2]).to_list() == [1, 2]
+        assert fpstreams.rows([{"id": 1}]).to_list() == [{"id": 1}]
+        assert fpstreams.pairs([("id", 1)]).to_dict() == {"id": 1}
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_legacy_module_imports_remain_compatible() -> None:
+    from fpstreams.aggregate import Aggregator
+    from fpstreams.async_flow import AsyncFlow
+    from fpstreams.collectors import Collector
+    from fpstreams.option import Option
+    from fpstreams.result import Result
+
+    assert (AsyncFlow, Collector, Aggregator, Option, Result) == (
+        fpstreams.AsyncFlow,
+        fpstreams.Collector,
+        fpstreams.Aggregator,
+        fpstreams.Option,
+        fpstreams.Result,
+    )

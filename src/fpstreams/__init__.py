@@ -26,7 +26,7 @@ from .streams import (
 )
 from .tabular import Rows, rows
 
-__version__ = "2.0.0a1"
+__version__ = "2.0.0"
 Stream = Flow
 ParallelStream = Flow
 

@@ -8,8 +8,7 @@
 Typed, lazy data pipelines for Python, with synchronous streams, structured
 asynchronous concurrency, record-oriented transforms, and optional Rust execution.
 
-> fpstreams 2 replaces the v1 implementation. The current package version is
-> `2.0.0a1`; expect some names and signatures to change before 2.0 is stable.
+> fpstreams 2 is the stable, ground-up replacement for the v1 implementation.
 
 ## What is in v2
 
@@ -34,12 +33,6 @@ Install the latest stable release:
 
 ~~~bash
 pip install fpstreams
-~~~
-
-While v2 is a prerelease, opt in to prereleases:
-
-~~~bash
-pip install --pre fpstreams
 ~~~
 
 Install optional integrations only when needed:

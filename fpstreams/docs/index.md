@@ -10,13 +10,12 @@ async iterables. The v2 API has four focused entry points:
 | `rows(source)` | Records, expressions, joins, grouping, reshape, and data-system I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-The current release is `2.0.0a1`. It is still a prerelease, so some names and
-signatures may change.
+The current stable release is `2.0.0`.
 
 ## Installation
 
 ~~~bash
-pip install --pre fpstreams
+pip install fpstreams
 ~~~
 
 Python 3.11 or newer is required. Optional integrations are installed separately:
@@ -182,5 +181,5 @@ migration, but new code should use `flow`, `aflow`, `rows`, and `pairs`.
 The old `core` and standalone `ParallelStream` implementations were removed.
 The import alias and `Flow.parallel()` compatibility strategy remain. New code can
 use `parallel_map()` for thread or process mapping and `map_async()` for async work.
-Because v2 changes terminal and error semantics, run existing pipelines against the
-alpha before upgrading production code.
+Because v2 changes terminal and error semantics, test existing pipelines before
+upgrading production code.

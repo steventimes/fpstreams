@@ -11,12 +11,6 @@ S = TypeVar("S")
 R = TypeVar("R")
 RR = TypeVar("RR")
 
-LegacyIntegrator = Callable[[S, T], Iterable[R]]
-PushIntegrator = Callable[[S, T, "Downstream[R]"], bool]
-LegacyFinisher = Callable[[S], Iterable[R]]
-PushFinisher = Callable[[S, "Downstream[R]"], None]
-Combiner = Callable[[S, S], S]
-
 
 def _finish_empty(state: object) -> tuple[()]:
     return ()
@@ -66,6 +60,13 @@ class Downstream(Generic[R]):
             Whether the condition described above is true.
         """
         return self._rejecting
+
+
+LegacyIntegrator = Callable[[S, T], Iterable[R]]
+PushIntegrator = Callable[[S, T, Downstream[R]], bool]
+LegacyFinisher = Callable[[S], Iterable[R]]
+PushFinisher = Callable[[S, Downstream[R]], None]
+Combiner = Callable[[S, S], S]
 
 
 @dataclass(slots=True)

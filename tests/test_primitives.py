@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
-from fpstreams import Option, Result, Stream, curry, pipe, retry
+from fpstreams import Err, Option, Result, Stream, curry, pipe, retry
 
 
 def test_option_paths_present_and_empty() -> None:
@@ -21,6 +23,11 @@ def test_result_success_and_failure_paths() -> None:
     assert Result.success(5).map(lambda x: x + 1).get_or_else(0) == 6
     failure = Result.of(lambda: 1 / 0)
     assert failure.is_failure()
+
+
+def test_err_requires_an_exception_argument() -> None:
+    with pytest.raises(TypeError):
+        cast(Any, Err)()
 
 
 def test_pipe_and_curry_examples() -> None:

@@ -1,6 +1,6 @@
 [package]
 name = "fpstreams-native"
-version = "2.0.0-alpha.1"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Native fused execution kernels for fpstreams."

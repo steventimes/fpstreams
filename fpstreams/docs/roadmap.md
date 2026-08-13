@@ -1,8 +1,8 @@
 # v2 status and roadmap
 
-fpstreams 2 replaces the v1 implementation. The current version is `2.0.0a1`.
+fpstreams 2 replaces the v1 implementation. The current stable version is `2.0.0`.
 
-## Available in the alpha
+## Included in 2.0
 
 - Domain-oriented package layout with small compatibility facades.
 - Lazy `Flow`, `AsyncFlow`, `Rows`, and `Pairs` APIs.
@@ -17,13 +17,13 @@ fpstreams 2 replaces the v1 implementation. The current version is `2.0.0a1`.
 - One-shot source enforcement and deterministic resource cleanup.
 - Strict typing, Python/Rust parity tests, and wheel/sdist packaging.
 
-## Before 2.0 is stable
+## Stability commitments
 
 ### Freeze public behavior
 
-Freeze names, signatures, exceptions, source-consumption rules, and engine
-fallback behavior. Alpha feedback is most useful when it identifies surprising
-behavior or a hard migration. v2 will not add an alias for every v1 method.
+Public names, signatures, exceptions, source-consumption rules, and engine fallback
+behavior are stable within the v2 release line. Breaking changes belong in a future
+major release. v2 does not add an alias for every v1 method.
 
 ### Add native operations only with parity tests
 
@@ -43,13 +43,6 @@ Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
 packages remain optional dependencies.
 
-### Prepare the release
-
-Publish complete API reference pages, a v1-to-v2 migration guide, performance
-methodology, platform wheels, and a release checklist. Benchmarks should measure
-real workloads and include the point where native or parallel overhead becomes
-worthwhile.
-
 ## Possible work after 2.0
 
 - Additional streaming joins and merge operations for already-sorted inputs.
@@ -68,9 +61,9 @@ It is a pipeline layer that passes data to those systems when appropriate. Ordin
 transforms are not distributed automatically, and unbounded inputs are not silently
 materialized.
 
-## Stable-release criteria
+## Release validation
 
-The v2 stable release should require:
+The v2 release gate covers:
 
 - no known Python/native semantic divergence in supported plans;
 - clean tests, lint, strict typing, Rust formatting, clippy, and package builds;

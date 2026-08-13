@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
@@ -265,7 +265,7 @@ class Ok(Result[T]):
 class Err(Result[Any]):
     """A failed Result containing an exception."""
 
-    error: Exception
+    error: Exception = field()
 
     def map(self, mapper: Callable[[Any], R]) -> Result[R]:
         """Transform a successful value while preserving failure.

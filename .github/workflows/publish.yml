@@ -3,6 +3,12 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to build, with or without a leading v
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,7 +23,7 @@ jobs:
           python-version: "3.12"
       - name: Verify release tag matches package version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
         run: |
           python - <<'PY'
           import os
@@ -132,6 +138,7 @@ jobs:
           path: dist
 
   publish:
+    if: github.event_name == 'release'
     needs: [linux, musllinux, windows, macos, sdist]
     runs-on: ubuntu-latest
     environment:
