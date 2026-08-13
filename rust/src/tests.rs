@@ -215,7 +215,11 @@ fn float_pipeline_and_terminals_are_fused() {
     );
     let identity = vec![(0, vec![(0, 0.0)])];
     assert_eq!(
-        run_f64_terminal(vec![1e16, 1.0, -1e16], identity, 1).unwrap(),
+        run_f64_terminal(vec![1e16, 1.0, -1e16], identity.clone(), 1).unwrap(),
         Some(1.0)
+    );
+    assert_eq!(
+        run_f64_terminal(vec![1e16, 1.0, -1e16], identity, 8).unwrap(),
+        Some(0.0)
     );
 }

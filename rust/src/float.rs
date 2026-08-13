@@ -236,7 +236,7 @@ where
     I: IntoIterator<Item = f64>,
 {
     let mut result = match terminal {
-        1 | 6 => Some(0.0),
+        1 | 6 | 8 => Some(0.0),
         7 => Some(1.0),
         2..=5 => None,
         _ => {
@@ -246,16 +246,16 @@ where
     let mut compensation = 0.0;
     process_f64(values, program, |value| {
         let control = match terminal {
-            1 => {
+            1 | 8 => {
                 let current = result.unwrap_or_default();
                 let total = current + value;
-                if current.is_finite() && value.is_finite() && total.is_finite() {
+                if terminal == 1 && current.is_finite() && value.is_finite() && total.is_finite() {
                     compensation += if current.abs() >= value.abs() {
                         current - total + value
                     } else {
                         value - total + current
                     };
-                } else {
+                } else if terminal == 1 {
                     compensation = 0.0;
                 }
                 result = Some(total);

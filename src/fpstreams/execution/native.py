@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -53,6 +54,9 @@ def execute_terminal(program: NativeProgram, terminal: str) -> int | float | Non
     stages = list(program.stages)
     code = _TERMINALS[terminal]
     if program.kind == "f64":
+        # CPython 3.11 sums floats sequentially; 3.12+ uses compensated summation.
+        if terminal == "sum" and sys.version_info < (3, 12):
+            code = 8
         if terminal == "count":
             if isinstance(source, range):
                 return _native.count_f64_range(source.start, source.stop, source.step, stages)
