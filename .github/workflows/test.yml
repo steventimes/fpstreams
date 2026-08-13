@@ -1,28 +1,55 @@
-name: Run Tests
+name: Test
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install mypy pytest pytest-asyncio aiofiles
-        pip install -e ".[all]"
-    
-    - name: Run Tests
-      run: |
-        pytest
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install and build
+        run: |
+          uv sync --group build --group test
+          uv run maturin develop --release
+      - name: Test
+        run: uv run pytest -q
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install tools
+        run: uv sync --group build --group test --group lint --group type
+      - name: Python quality
+        run: |
+          uv run ruff check src tests benchmark.py
+          uv run ruff format --check src tests benchmark.py
+          uv run mypy src/fpstreams
+          uv lock --check
+      - name: Rust quality
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          cargo test --manifest-path rust/Cargo.toml
+          cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
