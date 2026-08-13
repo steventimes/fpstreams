@@ -880,10 +880,9 @@ async iterables. The v2 API has four focused entry points:</p>
 </tr>
 </tbody>
 </table>
-<p>The current release is <code>2.0.0a1</code>. It is still a prerelease, so some names and
-signatures may change.</p>
+<p>The current stable release is <code>2.0.0</code>.</p>
 <h2 id="installation">Installation</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>--pre<span class="w"> </span>fpstreams
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fpstreams
 </code></pre></div>
 <p>Python 3.11 or newer is required. Optional integrations are installed separately:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[async]&quot;</span>
@@ -1018,8 +1017,8 @@ migration, but new code should use <code>flow</code>, <code>aflow</code>, <code>
 <p>The old <code>core</code> and standalone <code>ParallelStream</code> implementations were removed.
 The import alias and <code>Flow.parallel()</code> compatibility strategy remain. New code can
 use <code>parallel_map()</code> for thread or process mapping and <code>map_async()</code> for async work.
-Because v2 changes terminal and error semantics, run existing pipelines against the
-alpha before upgrading production code.</p>
+Because v2 changes terminal and error semantics, test existing pipelines before
+upgrading production code.</p>
 
 
 
