@@ -1,73 +1,111 @@
-from typing import TypeVar, Callable, Any, Awaitable, Tuple, Type
-import functools
-import random
+"""Small functional helpers that are independent of pipeline execution."""
+
+from __future__ import annotations
+
 import asyncio
+import functools
+import inspect
+import random
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar
 
 T = TypeVar("T")
-R = TypeVar("R")
+P = ParamSpec("P")
+
 
 def pipe(value: T, *functions: Callable[[Any], Any]) -> Any:
-    """
-    Passes a value through a sequence of functions.
-    pipe(x, f, g, h) is equivalent to h(g(f(x)))
-    """
-    return functools.reduce(lambda val, func: func(val), functions, value)
+    """Pass value through functions from left to right.
 
-def curry(func: Callable[..., Any]) -> Callable[..., Any]:
+    The first callable receives `value`; each later callable receives the previous result.
+
+    Args:
+        value: The value consumed by this operation.
+        *functions: Callables applied from left to right.
+
+    Returns:
+        The result returned by the final callable, or `value` when no callables are supplied.
     """
-    Transforms a function that takes multiple arguments into a chain of functions.
-    @curry
-    def add(a, b): return a + b
-    
-    add(1)(2) # returns 3
+    current: Any = value
+    for function in functions:
+        current = function(current)
+    return current
+
+
+def curry(function: Callable[..., T]) -> Callable[..., Any]:
+    """Return a callable that accepts the original arguments in stages.
+
+    Required parameters are detected from `inspect.signature`, so defaults, builtins, and
+    callable objects are supported.
+
+    Args:
+        function: The callable applied by this operation.
+
+    Returns:
+        A callable implementing the described behavior.
     """
-    @functools.wraps(func)
-    def curried(*args: Any) -> Any:
-        if len(args) >= func.__code__.co_argcount:
-            return func(*args)
-        return lambda *more: curried(*(args + more))
+    signature = inspect.signature(function)
+    required = tuple(
+        name
+        for name, parameter in signature.parameters.items()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
+
+    @functools.wraps(function)
+    def curried(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind_partial(*args, **kwargs)
+        if all(name in bound.arguments for name in required):
+            return function(*args, **kwargs)
+        return lambda *more, **named: curried(*args, *more, **kwargs, **named)
+
     return curried
 
+
 def retry(
-    attempts: int = 3, 
-    backoff: float = 1.5, 
+    attempts: int = 3,
+    backoff: float = 2.0,
     jitter: bool = True,
-    exceptions: Tuple[Type[Exception], ...] = (Exception,)
-) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
+    exceptions: tuple[type[Exception], ...] = (Exception,),
+    *,
+    delay: float = 0.0,
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
+    """Retry an async function with configurable delay and backoff.
+
+    Only the configured exception types are retried; other exceptions propagate immediately.
+
+    Args:
+        attempts: The maximum number of calls, including the first attempt.
+        backoff: The multiplier applied to the delay after each failed attempt.
+        jitter: Random delay added to each retry interval.
+        exceptions: The exception type or tuple of types that should trigger a retry.
+        delay: The initial delay in seconds before retrying.
+
+    Returns:
+        A callable implementing the described behavior.
     """
-    Decorator to retry an async function upon failure.
-    
-    Usage:
-        @retry(attempts=3, backoff=2.0)
-        async def fetch(url): ...
-        
-        ### Or inline in a stream:
-        stream.map_async(retry(attempts=3)(fetch_func))
-    """
-    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> T:
-            current_delay = 1.0
-            last_exception = None
-            
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    if delay < 0 or backoff < 0:
+        raise ValueError("delay and backoff cannot be negative")
+
+    def decorate(function: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+        @functools.wraps(function)
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+            current_delay = delay
             for attempt in range(attempts):
                 try:
-                    return await func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    if attempt == attempts - 1:
-                        raise e
-                    
-                    # Calculate wait time
+                    return await function(*args, **kwargs)
+                except exceptions:
+                    if attempt + 1 == attempts:
+                        raise
                     wait = current_delay
-                    if jitter:
-                        wait += random.uniform(0, 0.1 * wait)
-                    
-                    await asyncio.sleep(wait)
+                    if jitter and wait:
+                        wait += random.uniform(0, wait * 0.1)
+                    if wait:
+                        await asyncio.sleep(wait)
                     current_delay *= backoff
+            raise RuntimeError("unreachable retry state")
 
-            if last_exception is not None:
-                raise last_exception
-            raise RuntimeError("retry failed without capturing an exception")
-        return wrapper
-    return decorator
+        return wrapped
+
+    return decorate
