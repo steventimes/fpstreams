@@ -6,10 +6,14 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
+        <meta name="description" content="Typed, lazy data pipelines for Python">
       
       
       
-        <link rel="prev" href="../result/">
+        <link rel="canonical" href="https://steventimes.github.io/fpstreams/reference/functional/">
+      
+      
+        <link rel="prev" href="../containers/">
       
       
       
@@ -17,15 +21,15 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>Functional Utils - fpstreams</title>
+        <title>Functional utilities - fpstreams</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
       
 
@@ -100,7 +104,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Functional Utils
+              Functional utilities
             
           </span>
         </div>
@@ -153,6 +157,18 @@
       
     
     
+      <div class="md-header__source">
+        <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+      </div>
+    
   </nav>
   
 </header>
@@ -187,6 +203,18 @@
     fpstreams
   </label>
   
+    <div class="md-nav__source">
+      <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+    </div>
+  
   <ul class="md-nav__list" data-md-scrollfix>
     
       
@@ -203,7 +231,7 @@
   <span class="md-ellipsis">
     
   
-    Home
+    Getting started
   
 
     
@@ -230,7 +258,7 @@
   <span class="md-ellipsis">
     
   
-    Roadmap
+    v2 status and roadmap
   
 
     
@@ -275,7 +303,7 @@
   <span class="md-ellipsis">
     
   
-    API Reference
+    API reference
   
 
     
@@ -291,7 +319,7 @@
             <span class="md-nav__icon md-icon"></span>
             
   
-    API Reference
+    API reference
   
 
           </label>
@@ -304,14 +332,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../stream/" class="md-nav__link">
+      <a href="../flow/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Stream
+    Flow
   
 
     
@@ -332,14 +360,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../parallel/" class="md-nav__link">
+      <a href="../async_flow/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    ParallelStream
+    AsyncFlow
   
 
     
@@ -360,14 +388,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../async_stream/" class="md-nav__link">
+      <a href="../rows/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    AsyncStream
+    Rows
   
 
     
@@ -388,14 +416,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../collectors/" class="md-nav__link">
+      <a href="../pairs/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Collectors
+    Pairs
   
 
     
@@ -416,14 +444,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../option/" class="md-nav__link">
+      <a href="../collecting/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Option
+    Collecting
   
 
     
@@ -444,14 +472,70 @@
   
   
     <li class="md-nav__item">
-      <a href="../result/" class="md-nav__link">
+      <a href="../gatherers/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Result
+    Gatherers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../containers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Option and Result
   
 
     
@@ -488,7 +572,7 @@
   <span class="md-ellipsis">
     
   
-    Functional Utils
+    Functional utilities
   
 
     
@@ -506,7 +590,7 @@
   <span class="md-ellipsis">
     
   
-    Functional Utils
+    Functional utilities
   
 
     
@@ -544,10 +628,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.functional.curry" class="md-nav__link">
+  <a href="#fpstreams.functional.pipe" class="md-nav__link">
     <span class="md-ellipsis">
       
-        curry
+        pipe
       
     </span>
   </a>
@@ -555,10 +639,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.functional.pipe" class="md-nav__link">
+  <a href="#fpstreams.functional.curry" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pipe
+        curry
       
     </span>
   </a>
@@ -573,23 +657,6 @@
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="retry">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fpstreams.functional.retry--or-inline-in-a-stream" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Or inline in a stream:
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
         
@@ -653,10 +720,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#fpstreams.functional.curry" class="md-nav__link">
+  <a href="#fpstreams.functional.pipe" class="md-nav__link">
     <span class="md-ellipsis">
       
-        curry
+        pipe
       
     </span>
   </a>
@@ -664,10 +731,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fpstreams.functional.pipe" class="md-nav__link">
+  <a href="#fpstreams.functional.curry" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pipe
+        curry
       
     </span>
   </a>
@@ -682,23 +749,6 @@
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="retry">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fpstreams.functional.retry--or-inline-in-a-stream" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Or inline in a stream:
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
         
@@ -723,9 +773,13 @@
                   
 
 
+  
+  
 
-<h1 id="functional-utilities">Functional Utilities</h1>
-<p>Helper functions for functional composition and currying.</p>
+
+<h1 id="functional-utilities">Functional utilities</h1>
+<p><code>pipe</code>, <code>curry</code>, and <code>retry</code> are small helpers for function composition,
+partial application, and retrying asynchronous work.</p>
 
 
 <div class="doc doc-object doc-module">
@@ -733,12 +787,14 @@
 
 
 <h2 id="fpstreams.functional" class="doc doc-heading">
-            <code>fpstreams.functional</code>
+            <span class="doc doc-object-name doc-module-name">fpstreams.functional</span>
 
 
 </h2>
 
     <div class="doc doc-contents first">
+
+        <p>Small functional helpers that are independent of pipeline execution.</p>
 
 
 
@@ -763,51 +819,90 @@
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.functional.curry" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">curry</span><span class="p">(</span><span class="n">func</span><span class="p">)</span></code>
+<h3 id="fpstreams.functional.pipe" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">pipe</span>
+
 
 </h3>
-
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">pipe</span><span class="p">(</span><span class="n">value</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="o">*</span><span class="n">functions</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+</code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Transforms a function that takes multiple arguments into a chain of functions.
-@curry
-def add(a, b): return a + b</p>
-<p>add(1)(2) # returns 3</p>
+        <p>Pass value through functions from left to right.</p>
+<p>The first callable receives <code>value</code>; each later callable receives the previous result.</p>
 
 
-            <details class="mkdocstrings-source">
-              <summary>Source code in <code>fpstreams\functional.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">16</span>
-<span class="normal">17</span>
-<span class="normal">18</span>
-<span class="normal">19</span>
-<span class="normal">20</span>
-<span class="normal">21</span>
-<span class="normal">22</span>
-<span class="normal">23</span>
-<span class="normal">24</span>
-<span class="normal">25</span>
-<span class="normal">26</span>
-<span class="normal">27</span>
-<span class="normal">28</span>
-<span class="normal">29</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curry</span><span class="p">(</span><span class="n">func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Transforms a function that takes multiple arguments into a chain of functions.</span>
-<span class="sd">    @curry</span>
-<span class="sd">    def add(a, b): return a + b</span>
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>value</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.functional.T">T</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The value consumed by this operation.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>*functions</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Callables applied from left to right.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
-<span class="sd">    add(1)(2) # returns 3</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">curried</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">):</span>
-        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">func</span><span class="o">.</span><span class="vm">__code__</span><span class="o">.</span><span class="n">co_argcount</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">)</span>
-        <span class="k">return</span> <span class="k">lambda</span> <span class="o">*</span><span class="n">more</span><span class="p">:</span> <span class="n">curried</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="n">args</span> <span class="o">+</span> <span class="n">more</span><span class="p">))</span>
-    <span class="k">return</span> <span class="n">curried</span>
-</code></pre></div></td></tr></table></div>
-            </details>
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="typing.Any">Any</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The result returned by the final callable, or <code>value</code> when no callables are supplied.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -815,33 +910,75 @@ def add(a, b): return a + b</p>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="fpstreams.functional.pipe" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">pipe</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="o">*</span><span class="n">functions</span><span class="p">)</span></code>
+<h3 id="fpstreams.functional.curry" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">curry</span>
+
 
 </h3>
-
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">curry</span><span class="p">(</span><span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">T</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+</code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Passes a value through a sequence of functions.
-pipe(x, f, g, h) is equivalent to h(g(f(x)))</p>
+        <p>Return a callable that accepts the original arguments in stages.</p>
+<p>Required parameters are detected from <code>inspect.signature</code>, so defaults, builtins, and
+callable objects are supported.</p>
 
 
-            <details class="mkdocstrings-source">
-              <summary>Source code in <code>fpstreams\functional.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 9</span>
-<span class="normal">10</span>
-<span class="normal">11</span>
-<span class="normal">12</span>
-<span class="normal">13</span>
-<span class="normal">14</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pipe</span><span class="p">(</span><span class="n">value</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="o">*</span><span class="n">functions</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span> <span class="c1"># type: ignore</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Passes a value through a sequence of functions.</span>
-<span class="sd">    pipe(x, f, g, h) is equivalent to h(g(f(x)))</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="n">functools</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="k">lambda</span> <span class="n">val</span><span class="p">,</span> <span class="n">func</span><span class="p">:</span> <span class="n">func</span><span class="p">(</span><span class="n">val</span><span class="p">),</span> <span class="n">functions</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-            </details>
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>function</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="fpstreams.functional.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The callable applied by this operation.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A callable implementing the described behavior.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -850,109 +987,146 @@ pipe(x, f, g, h) is equivalent to h(g(f(x)))</p>
 
 
 <h3 id="fpstreams.functional.retry" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">retry</span><span class="p">(</span><span class="n">attempts</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">backoff</span><span class="o">=</span><span class="mf">1.5</span><span class="p">,</span> <span class="n">jitter</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">=</span><span class="p">(</span><span class="ne">Exception</span><span class="p">,))</span></code>
+            <span class="doc doc-object-name doc-function-name">retry</span>
+
 
 </h3>
-
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">retry</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">attempts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">backoff</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">jitter</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">exceptions</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">type</span><span class="p">[</span><span class="ne">Exception</span><span class="p">],</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="ne">Exception</span><span class="p">,),</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">delay</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="p">[</span><span class="n">Callable</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]]],</span> <span class="n">Callable</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]]</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">]</span>
+</code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Decorator to retry an async function upon failure.</p>
+        <p>Retry an async function with configurable delay and backoff.</p>
+<p>Only the configured exception types are retried; other exceptions propagate immediately.</p>
 
 
-<details class="usage" open>
-  <summary>Usage</summary>
-  <p>@retry(attempts=3, backoff=2.0)
-async def fetch(url): ...</p>
-<h6 id="fpstreams.functional.retry--or-inline-in-a-stream">Or inline in a stream:</h6>
-<p>stream.map_async(retry(attempts=3)(fetch_func))</p>
-</details>
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>attempts</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The maximum number of calls, including the first attempt.</p>
+              </div>
+            </td>
+            <td>
+                  <code>3</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>backoff</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The multiplier applied to the delay after each failed attempt.</p>
+              </div>
+            </td>
+            <td>
+                  <code>2.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>jitter</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Random delay added to each retry interval.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>exceptions</code>
+            </td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="type">type</span>[<span title="Exception">Exception</span>], ...]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The exception type or tuple of types that should trigger a retry.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(<span title="Exception">Exception</span>,)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>delay</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The initial delay in seconds before retrying.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
-            <details class="mkdocstrings-source">
-              <summary>Source code in <code>fpstreams\functional.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">31</span>
-<span class="normal">32</span>
-<span class="normal">33</span>
-<span class="normal">34</span>
-<span class="normal">35</span>
-<span class="normal">36</span>
-<span class="normal">37</span>
-<span class="normal">38</span>
-<span class="normal">39</span>
-<span class="normal">40</span>
-<span class="normal">41</span>
-<span class="normal">42</span>
-<span class="normal">43</span>
-<span class="normal">44</span>
-<span class="normal">45</span>
-<span class="normal">46</span>
-<span class="normal">47</span>
-<span class="normal">48</span>
-<span class="normal">49</span>
-<span class="normal">50</span>
-<span class="normal">51</span>
-<span class="normal">52</span>
-<span class="normal">53</span>
-<span class="normal">54</span>
-<span class="normal">55</span>
-<span class="normal">56</span>
-<span class="normal">57</span>
-<span class="normal">58</span>
-<span class="normal">59</span>
-<span class="normal">60</span>
-<span class="normal">61</span>
-<span class="normal">62</span>
-<span class="normal">63</span>
-<span class="normal">64</span>
-<span class="normal">65</span>
-<span class="normal">66</span>
-<span class="normal">67</span>
-<span class="normal">68</span>
-<span class="normal">69</span>
-<span class="normal">70</span>
-<span class="normal">71</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">retry</span><span class="p">(</span>
-    <span class="n">attempts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span> 
-    <span class="n">backoff</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.5</span><span class="p">,</span> 
-    <span class="n">jitter</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
-    <span class="n">exceptions</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Type</span><span class="p">[</span><span class="ne">Exception</span><span class="p">],</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="ne">Exception</span><span class="p">,)</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]]],</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]]]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Decorator to retry an async function upon failure.</span>
 
-<span class="sd">    Usage:</span>
-<span class="sd">        @retry(attempts=3, backoff=2.0)</span>
-<span class="sd">        async def fetch(url): ...</span>
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Callable">Callable</span>[<span title="fpstreams.functional.P">P</span>, <span title="collections.abc.Awaitable">Awaitable</span>[<span title="fpstreams.functional.T">T</span>]]], <span title="collections.abc.Callable">Callable</span>[<span title="fpstreams.functional.P">P</span>, <span title="collections.abc.Awaitable">Awaitable</span>[<span title="fpstreams.functional.T">T</span>]]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A callable implementing the described behavior.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
-<span class="sd">        ### Or inline in a stream:</span>
-<span class="sd">        stream.map_async(retry(attempts=3)(fetch_func))</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">func</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">T</span><span class="p">]]:</span>
-        <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
-        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
-            <span class="n">current_delay</span> <span class="o">=</span> <span class="mf">1.0</span>
-            <span class="n">last_exception</span> <span class="o">=</span> <span class="kc">None</span>
 
-            <span class="k">for</span> <span class="n">attempt</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">attempts</span><span class="p">):</span>
-                <span class="k">try</span><span class="p">:</span>
-                    <span class="k">return</span> <span class="k">await</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-                <span class="k">except</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-                    <span class="n">last_exception</span> <span class="o">=</span> <span class="n">e</span>
-                    <span class="k">if</span> <span class="n">attempt</span> <span class="o">==</span> <span class="n">attempts</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
-                        <span class="k">raise</span> <span class="n">e</span>
-
-                    <span class="c1"># Calculate wait time</span>
-                    <span class="n">wait</span> <span class="o">=</span> <span class="n">current_delay</span>
-                    <span class="k">if</span> <span class="n">jitter</span><span class="p">:</span>
-                        <span class="n">wait</span> <span class="o">+=</span> <span class="n">random</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.1</span> <span class="o">*</span> <span class="n">wait</span><span class="p">)</span>
-
-                    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">wait</span><span class="p">)</span>
-                    <span class="n">current_delay</span> <span class="o">*=</span> <span class="n">backoff</span>
-
-            <span class="k">raise</span> <span class="n">last_exception</span>  <span class="c1"># type: ignore</span>
-        <span class="k">return</span> <span class="n">wrapper</span>
-    <span class="k">return</span> <span class="n">decorator</span>
-</code></pre></div></td></tr></table></div>
-            </details>
     </div>
 
 </div>
@@ -984,6 +1158,12 @@ async def fetch(url): ...</p>
 <script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
         </div>
         
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
       </main>
       
         <footer class="md-footer">
@@ -1013,10 +1193,10 @@ async def fetch(url): ...</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

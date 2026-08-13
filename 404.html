@@ -6,6 +6,8 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
+        <meta name="description" content="Typed, lazy data pipelines for Python">
+      
       
       
       
@@ -14,8 +16,8 @@
         
       
       
-      <link rel="icon" href="/assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <link rel="icon" href="/fpstreams/assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -23,7 +25,7 @@
       
     
     
-      <link rel="stylesheet" href="/assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="/fpstreams/assets/stylesheets/main.ec1eaa64.min.css">
       
       
 
@@ -42,9 +44,9 @@
       
     
     
-      <link rel="stylesheet" href="/assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="/fpstreams/assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("/fpstreams/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -73,7 +75,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/." title="fpstreams" class="md-header__button md-logo" aria-label="fpstreams" data-md-component="logo">
+    <a href="/fpstreams/." title="fpstreams" class="md-header__button md-logo" aria-label="fpstreams" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -146,6 +148,18 @@
       
     
     
+      <div class="md-header__source">
+        <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+      </div>
+    
   </nav>
   
 </header>
@@ -171,7 +185,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/." title="fpstreams" class="md-nav__button md-logo" aria-label="fpstreams" data-md-component="logo">
+    <a href="/fpstreams/." title="fpstreams" class="md-nav__button md-logo" aria-label="fpstreams" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -179,6 +193,18 @@
     </a>
     fpstreams
   </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+    </div>
   
   <ul class="md-nav__list" data-md-scrollfix>
     
@@ -189,14 +215,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/." class="md-nav__link">
+      <a href="/fpstreams/." class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Home
+    Getting started
   
 
     
@@ -216,14 +242,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/roadmap/" class="md-nav__link">
+      <a href="/fpstreams/roadmap/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Roadmap
+    v2 status and roadmap
   
 
     
@@ -266,7 +292,7 @@
   <span class="md-ellipsis">
     
   
-    API Reference
+    API reference
   
 
     
@@ -282,7 +308,7 @@
             <span class="md-nav__icon md-icon"></span>
             
   
-    API Reference
+    API reference
   
 
           </label>
@@ -295,14 +321,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/stream/" class="md-nav__link">
+      <a href="/fpstreams/reference/flow/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Stream
+    Flow
   
 
     
@@ -323,14 +349,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/parallel/" class="md-nav__link">
+      <a href="/fpstreams/reference/async_flow/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    ParallelStream
+    AsyncFlow
   
 
     
@@ -351,14 +377,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/async_stream/" class="md-nav__link">
+      <a href="/fpstreams/reference/rows/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    AsyncStream
+    Rows
   
 
     
@@ -379,14 +405,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/collectors/" class="md-nav__link">
+      <a href="/fpstreams/reference/pairs/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Collectors
+    Pairs
   
 
     
@@ -407,14 +433,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/option/" class="md-nav__link">
+      <a href="/fpstreams/reference/collecting/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Option
+    Collecting
   
 
     
@@ -435,14 +461,14 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/result/" class="md-nav__link">
+      <a href="/fpstreams/reference/gatherers/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Result
+    Gatherers
   
 
     
@@ -463,14 +489,70 @@
   
   
     <li class="md-nav__item">
-      <a href="/reference/functional/" class="md-nav__link">
+      <a href="/fpstreams/reference/expressions/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Functional Utils
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/fpstreams/reference/containers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Option and Result
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/fpstreams/reference/functional/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Functional utilities
   
 
     
@@ -529,6 +611,12 @@
 <script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
         </div>
         
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
       </main>
       
         <footer class="md-footer">
@@ -558,10 +646,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/", "features": ["navigation.sections", "content.code.copy"], "search": "/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "/fpstreams/", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "/fpstreams/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="/assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="/fpstreams/assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
