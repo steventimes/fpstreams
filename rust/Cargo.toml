@@ -1,11 +1,15 @@
 [package]
-name = "fpstreams_rust"
-version = "0.1.0"
-edition = "2021"
+name = "fpstreams-native"
+version = "2.0.0-alpha.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Native fused execution kernels for fpstreams."
+license = "MIT"
+repository = "https://github.com/steventimes/fpstreams"
 
 [lib]
-name = "fpstreams_rust"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.28.0", features = ["extension-module"] }
+pyo3 = { version = "0.28.0", features = ["abi3-py311", "extension-module"] }

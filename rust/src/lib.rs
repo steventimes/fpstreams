@@ -1,23 +1,47 @@
-use pyo3::prelude::*;
-use pyo3::types::PyModule;
+//! PyO3 module registration for fpstreams native kernels.
 
-mod list_ops;
+mod common;
+mod float;
+mod integer;
 
-use list_ops::{
-    batch_list, distinct_list, limit_list, max_list, min_list, skip_list, sorted_list, sum_list,
-    window_list,
+use crate::float::{
+    aggregate_f64, aggregate_f64_range, count_f64, count_f64_range, execute_f64, execute_f64_range,
+    statistics_f64, statistics_f64_range, terminal_f64, terminal_f64_range,
 };
+use crate::integer::{
+    aggregate_i64, aggregate_i64_range, execute_i64, execute_i64_range, statistics_i64,
+    statistics_i64_range, terminal_i64, terminal_i64_range,
+};
+use pyo3::prelude::*;
+
+#[pyfunction]
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
 
 #[pymodule]
-fn fpstreams_rust(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(distinct_list, m)?)?;
-    m.add_function(wrap_pyfunction!(batch_list, m)?)?;
-    m.add_function(wrap_pyfunction!(limit_list, m)?)?;
-    m.add_function(wrap_pyfunction!(skip_list, m)?)?;
-    m.add_function(wrap_pyfunction!(window_list, m)?)?;
-    m.add_function(wrap_pyfunction!(sorted_list, m)?)?;
-    m.add_function(wrap_pyfunction!(min_list, m)?)?;
-    m.add_function(wrap_pyfunction!(max_list, m)?)?;
-    m.add_function(wrap_pyfunction!(sum_list, m)?)?;
+fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(execute_i64, module)?)?;
+    module.add_function(wrap_pyfunction!(execute_i64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(terminal_i64, module)?)?;
+    module.add_function(wrap_pyfunction!(terminal_i64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(statistics_i64, module)?)?;
+    module.add_function(wrap_pyfunction!(statistics_i64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(aggregate_i64, module)?)?;
+    module.add_function(wrap_pyfunction!(aggregate_i64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(execute_f64, module)?)?;
+    module.add_function(wrap_pyfunction!(execute_f64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(terminal_f64, module)?)?;
+    module.add_function(wrap_pyfunction!(terminal_f64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(statistics_f64, module)?)?;
+    module.add_function(wrap_pyfunction!(statistics_f64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(aggregate_f64, module)?)?;
+    module.add_function(wrap_pyfunction!(aggregate_f64_range, module)?)?;
+    module.add_function(wrap_pyfunction!(count_f64, module)?)?;
+    module.add_function(wrap_pyfunction!(count_f64_range, module)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
