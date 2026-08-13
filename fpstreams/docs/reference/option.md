@@ -1,2 +1,0 @@
-# Option API
-::: fpstreams.Option

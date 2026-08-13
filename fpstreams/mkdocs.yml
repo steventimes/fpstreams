@@ -1,8 +1,14 @@
 site_name: fpstreams
+site_description: Typed, lazy data pipelines for Python
+site_url: https://steventimes.github.io/fpstreams/
+repo_url: https://github.com/steventimes/fpstreams
+repo_name: steventimes/fpstreams
+
 theme:
   name: material
   features:
     - navigation.sections
+    - navigation.top
     - content.code.copy
 
 plugins:
@@ -11,19 +17,36 @@ plugins:
       default_handler: python
       handlers:
         python:
-          paths: [.]
+          paths:
+            - ../src
           options:
+            docstring_style: google
+            inherited_members: true
+            filters:
+              - "!^_"
+            members_order: source
+            separate_signature: true
             show_root_heading: true
+            show_signature_annotations: true
             show_source: false
 
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+
 nav:
-  - Home: index.md
-  - Roadmap: roadmap.md
-  - API Reference:
-      - Stream: reference/stream.md
-      - ParallelStream: reference/parallel.md
-      - AsyncStream: reference/async_stream.md
-      - Collectors: reference/collectors.md
-      - Option: reference/option.md
-      - Result: reference/result.md
-      - Functional Utils: reference/functional.md
+  - Getting started: index.md
+  - v2 status and roadmap: roadmap.md
+  - API reference:
+      - Flow: reference/flow.md
+      - AsyncFlow: reference/async_flow.md
+      - Rows: reference/rows.md
+      - Pairs: reference/pairs.md
+      - Collecting: reference/collecting.md
+      - Gatherers: reference/gatherers.md
+      - Expressions: reference/expressions.md
+      - Option and Result: reference/containers.md
+      - Functional utilities: reference/functional.md

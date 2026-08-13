@@ -1,151 +1,186 @@
-# fpstreams
+# fpstreams v2
 
-[![Build Status](https://github.com/steventimes/fpstreams/actions/workflows/test.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PyPI version](https://badge.fury.io/py/fpstreams.svg)](https://badge.fury.io/py/fpstreams)
+fpstreams builds typed, lazy data pipelines over ordinary Python iterables and
+async iterables. The v2 API has four focused entry points:
 
-**A robust, type-safe functional programming library for Python.**
+| Entry point | Use it for |
+| --- | --- |
+| `flow(source)` | General synchronous transformations and reductions |
+| `aflow(source)` | Asynchronous I/O, merging, time-based operators, bounded concurrency |
+| `rows(source)` | Records, expressions, joins, grouping, reshape, and data-system I/O |
+| `pairs(source)` | Key/value transformations and per-key aggregation |
 
-`fpstreams` brings the power of **Java Streams**, **Rust Results**, and **JavaScript Array methods** to Python. It provides a fluent interface for data processing, null safety, and error handling without the boilerplate, all while remaining fully typed for IDE autocompletion.
-
-## Features
-
-* **Fluent Streams:** Lazy evaluation chains (`map`, `filter`, `reduce`, `zip`).
-* **Parallel Processing:** Automatic multi-core distribution with `.parallel()`.
-* **Clean Code Syntax:** Syntactic sugar like `.pick()` and `.filter_none()` to replace lambdas.
-* **Data Science Ready:** Convert streams directly to Pandas DataFrames, NumPy arrays, or CSV/JSON files.
-* **Null Safety:** `Option` to eliminate `None` checks.
-* **Error Handling:** `Result` (Success/Failure) to replace ugly `try/except` blocks.
+The current release is `2.0.0a1`. It is still a prerelease, so some names and
+signatures may change.
 
 ## Installation
 
-```bash
-pip install fpstreams
-```
+~~~bash
+pip install --pre fpstreams
+~~~
 
-## Quick Start
+Python 3.11 or newer is required. Optional integrations are installed separately:
 
-### 1. Basic
+~~~bash
+pip install "fpstreams[async]"
+pip install "fpstreams[arrow]"
+pip install "fpstreams[data]"
+pip install "fpstreams[polars]"
+~~~
 
-Replace messy loops with clean, readable pipelines.
+## Your first flow
 
-```python
-from fpstreams import Stream, Collectors
+~~~python
+from fpstreams import flow, item
 
-data = ["apple", "banana", "cherry", "apricot", "blueberry"]
-
-# Filter, transform, and group in one
 result = (
-    Stream(data)
-    .filter(lambda s: s.startswith("a") or s.startswith("b"))
-    .map(str.upper)
-    .collect(Collectors.grouping_by(lambda s: s[0]))
+    flow(range(1, 10))
+    .filter(item % 2 == 0)  # Keep even values.
+    .map(item * item)  # Square each remaining value.
+    .take(3)  # Stop after three results.
+    .to_list()
 )
-# Output: {'A': ['APPLE', 'APRICOT'], 'B': ['BANANA', 'BLUEBERRY']}
-```
 
-### 2. Clean Code Shortcuts
+assert result == [4, 16, 36]
+~~~
 
-Stop writing repetitive lambdas for dictionaries.
+A pipeline has three parts:
 
-```python
-users = [
-    {"id": 1, "name": "Alice", "role": "admin"},
-    {"id": 2, "name": "Bob", "role": None},
-    {"id": 3, "name": None, "role": "user"},
+1. A **source**, such as a list, generator, deferred factory, database cursor, or
+   async iterator.
+2. Zero or more lazy **transformations**, such as `map`, `filter`, `window`, or
+   `group_by`.
+3. A **terminal operation**, such as `to_list`, `count`, `first`, `collect`, or
+   `aggregate`, which executes the plan.
+
+Lists and other reiterable sources can execute repeatedly. Iterators are one-shot.
+Use `flow.defer(factory)` when every execution must open a fresh source.
+
+## Aggregate once
+
+Named aggregations share a single traversal:
+
+~~~python
+from fpstreams import agg, flow
+
+summary = flow([1, 2, 3, 4]).aggregate(
+    count=agg.count(),
+    total=agg.sum(),
+    mean=agg.mean(),
+)
+
+assert summary == {"count": 4, "total": 10, "mean": 2.5}
+~~~
+
+Use a `Collector` when the result is a general container or reduction. Use an
+`Aggregator` for composable statistics, especially named and grouped aggregation.
+
+## Work with records
+
+String selectors address record fields. `col()` builds row expressions without
+repetitive lambdas.
+
+~~~python
+from fpstreams import agg, col, rows
+
+orders = [
+    {"region": "eu", "status": "paid", "amount": 24},
+    {"region": "us", "status": "paid", "amount": 20},
+    {"region": "eu", "status": "cancelled", "amount": 99},
+    {"region": "eu", "status": "paid", "amount": 24},
 ]
 
-names = (
-    Stream(users)
-    .pick("name")      # Extract "name" key
-    .filter_none()     # Remove None values
+result = (
+    rows(orders)
+    .where(col("status") == "paid")
+    .group_by("region")
+    .aggregate(
+        orders=agg.count(),
+        revenue=agg.sum("amount"),
+    )
+    .sort_by("region")
     .to_list()
 )
-# Output: ["Alice", "Bob"]
-```
 
-### 3. Parallel Processing
+assert result == [
+    {"region": "eu", "orders": 2, "revenue": 48},
+    {"region": "us", "orders": 1, "revenue": 20},
+]
+~~~
 
-`fpstreams` can automatically distribute heavy workloads across all CPU cores using the `.parallel()` method. It uses an optimized Map-Reduce architecture to minimize memory usage.
+`Rows` can read and write CSV, JSONL, SQLite, DB-API sources, Arrow, Parquet,
+pandas, and Polars. Optional third-party packages are imported only when those
+adapters are used.
 
-```python
-import math
-from fpstreams import Stream
+## Run asynchronous work safely
 
-def heavy_task(x):
-    return math.factorial(5000)
+~~~python
+import asyncio
 
-# Automatically uses all available CPU cores
-results = (
-    Stream(range(1000))
-    .parallel()
-    .map(heavy_task)
-    .to_list()
-)
-```
+from fpstreams import aflow
 
-### 4. Data Science & I/O
 
-Seamlessly integrate with the scientific stack.
+async def request(value: int) -> int:
+    await asyncio.sleep(0.01)
+    return value * 10
 
-```python
-# Quick statistics
-stats = Stream([1, 2, 3, 4, 5, 100]).describe()
 
-# Output: {'count': 6, 'sum': 115, 'mean': 19.16, 'min': 1, 'max': 100, ...}
+async def main() -> None:
+    values = await (
+        aflow([1, 2, 3, 4])
+        .map_async(request, concurrency=2, ordered=True)  # At most two requests run.
+        .timeout(1.0)  # Fail instead of waiting forever.
+        .to_list()
+    )
+    assert values == [10, 20, 30, 40]
 
-# Convert to Pandas
-df = Stream(users).to_df()
 
-# Stream directly to file
-Stream(users).to_csv("output.csv")
-Stream(users).to_json("output.json")
-```
+asyncio.run(main())
+~~~
 
-## Infinite Streams & Lazy Evaluation
+Concurrency is bounded. On completion, short-circuit, timeout, or failure,
+fpstreams cancels outstanding tasks and closes the owned async iterator.
 
-Process massive datasets efficiently. Operations are only executed when needed.
+## Understand execution
 
-```python
-def infinite_counter():
-    n = 0
-    while True:
-        yield n
-        n += 1
+The default engine is `auto`. It selects a fused Python loop, a native Rust
+kernel, or a hybrid plan based on source metadata, operations, and value types.
 
-# Take only the first 10 even numbers
-evens = (
-    Stream(infinite_counter())
-    .filter(lambda x: x % 2 == 0)
-    .limit(10)
-    .to_list()
-)
-```
+~~~python
+from fpstreams import flow, item
 
-## Benchmark
+pipeline = flow([1, 2, 3]).map(item + 1).filter(item > 2)
+explanation = pipeline.explain().to_dict()
 
-Comparison between standard streams and `fpstreams.parallel()` on a 4-core machine:
+assert explanation["operations"] == [
+    {"name": "map"},
+    {"name": "filter"},
+]
+~~~
 
-| Task | Sequential(s) | Parallel(s) | Speedup |
-| :--- | :--- | :--- | :--- |
-| **Heavy Calculation** (Factorials) | 24.7603 | 10.8182 | **2.29x** |
-| **I/O Simulation** (Sleep) | 2.0986 | 0.8405 | **2.50x** |
-| **Light Calculation** (Multiplication) | 0.0151 | 0.3796 | 0.04x |
+Call `with_engine("python")` or `with_engine("native")` to test a specific
+engine. A forced native plan fails clearly when it is unsupported; `auto` can
+fall back or split the pipeline into stages.
 
-*Note: Parallel streams have overhead. Use them for CPU-intensive tasks or slow I/O, not simple arithmetic.*
+## Keep memory bounded
 
-## Project Structure
+Most transformations stream values without materializing the source. Some
+operations inherently need retained state. v2 exposes bounded alternatives:
 
-* **`Stream`**: The core wrapper for sequential data processing.
-* **`ParallelStream`**: A multi-core wrapper for heavy parallel processing.
-* **`Option`**: Null-safe container.
-* **`Result`**: Error-handling container.
-* **`Collectors`**: Accumulation utilities (grouping, joining, summary stats).
+- `external_sort(buffer_size=..., tempdir=...)` writes sorted runs to temporary files.
+- `Rows.join(..., partitions=..., tempdir=...)` partitions large joins.
+- `Rows.group_by(...).spill(partitions=..., tempdir=...)` partitions grouped aggregation.
+- Buffer-sensitive operations raise `BufferLimitError` instead of growing without limit.
 
-## Functional Coverage & Roadmap
+Temporary resources are cleaned up on normal completion, errors, and early exit.
 
-`fpstreams` already provides composable pipelines, collectors, and Option/Result containers. The optional Rust extension is also already integrated for a focused set of list-oriented operations (`distinct`, `sorted`, `limit`, `skip`, `batch`, `window`, `min`, `max`, `sum`) with Python fallback behavior. See [Functional Coverage & Roadmap](roadmap.md) for the full assessment.
+## Moving from v1
 
-## Licence
+`Stream`, `AsyncStream`, and `ParallelStream` remain import aliases to ease
+migration, but new code should use `flow`, `aflow`, `rows`, and `pairs`.
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+The old `core` and standalone `ParallelStream` implementations were removed.
+The import alias and `Flow.parallel()` compatibility strategy remain. New code can
+use `parallel_map()` for thread or process mapping and `map_async()` for async work.
+Because v2 changes terminal and error semantics, run existing pipelines against the
+alpha before upgrading production code.

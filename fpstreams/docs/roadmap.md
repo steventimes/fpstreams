@@ -1,88 +1,79 @@
-# Functional Coverage & Roadmap
+# v2 status and roadmap
 
-This document captures how `fpstreams` applies functional programming concepts today, what gaps are worth filling next, and how Rust could accelerate expensive workloads while preserving the Python-first API.
+fpstreams 2 replaces the v1 implementation. The current version is `2.0.0a1`.
 
-## Current Functional Programming Coverage
+## Available in the alpha
 
-`fpstreams` already embodies several FP staples:
+- Domain-oriented package layout with small compatibility facades.
+- Lazy `Flow`, `AsyncFlow`, `Rows`, and `Pairs` APIs.
+- Placeholder and row expression systems.
+- Collectors, named aggregators, and grouped aggregation.
+- Fused synchronous and asynchronous Python execution.
+- Native Rust numeric plans plus automatic hybrid planning.
+- Bounded concurrent async mapping, merge operations, timeouts, debounce, and
+  time-windowed buffering.
+- CSV, JSONL, SQLite, DB-API, Arrow, Parquet, pandas, and Polars adapters.
+- External sorting and partitioned spill paths for joins and grouping.
+- One-shot source enforcement and deterministic resource cleanup.
+- Strict typing, Python/Rust parity tests, and wheel/sdist packaging.
 
-- **Composable pipelines** via `Stream`/`ParallelStream` transformations such as `map`, `filter`, `flat_map`, `zip`, `scan`, `batch`, and `window`.
-- **Lazy evaluation** in stream pipelines, with terminal operations like `collect`, `reduce`, `to_list`, and `count`.
-- **Functional helpers** like `pipe`, `curry`, and `retry` for composition, currying, and robust async retries.
-- **Container types** (`Option`, `Result`) that encode nullability and error handling in a functional style.
-- **Collectors** that provide grouping, summarizing, partitioning, and mapping into aggregate results.
-- **Async and parallel variants** to keep functional pipelines consistent across sync/async/CPU-bound workloads.
+## Before 2.0 is stable
 
-## Rust Coverage Today
+### Freeze public behavior
 
-The optional `fpstreams_rust` module is already wired into `SequentialStream` for list-like inputs (`list`, `tuple`, `range`) on the following operations:
+Freeze names, signatures, exceptions, source-consumption rules, and engine
+fallback behavior. Alpha feedback is most useful when it identifies surprising
+behavior or a hard migration. v2 will not add an alias for every v1 method.
 
-- `distinct`
-- `sorted` (without a custom key)
-- `limit`
-- `skip`
-- `batch`
-- `window`
-- `min` (without a custom key)
-- `max` (without a custom key)
-- `sum`
-s
+### Add native operations only with parity tests
 
-## Potential Functional Additions
+Add native operations only when they preserve Python ordering, equality,
+overflow, error, and cleanup semantics. Every new kernel needs Python/native
+parity tests and an explicit unsupported path.
 
-If you want deeper FP ergonomics, these additions would keep the API aligned with the existing stream/collector style:
+### Make spill behavior easier to inspect
 
-1. **Stream combinators**
-   - `partition(predicate)` → returns `(matches, non_matches)` without forcing collectors.
-   - `chunk_by(key_fn)` → starts a new chunk when the key changes (useful for run-length-like grouping).
-   - `distinct_by(key_fn)` → distinct with projection, complementing `distinct()`.
-   - `take_until(predicate)` / `drop_until(predicate)` → common FP flow-control operations.
-   - `merge_sorted(other, key=None)` → stream-friendly merges for pre-sorted inputs.
+Improve spill diagnostics, partition selection, and observability for external
+sorts, joins, and grouped aggregation. Materializing operations should remain
+obvious in API documentation and plan explanations.
 
-2. **Collector extensions**
-   - `median`, `percentile`, and `histogram` collectors for richer stats.
-   - `top_n` / `bottom_n` collectors to avoid full sorts for large datasets.
+### Keep adapters current
 
-3. **Option/Result ergonomics**
-   - `zip`, `sequence`, and `traverse` helpers to combine `Option`/`Result` values across collections.
+Keep Arrow as the preferred columnar interchange path and validate adapter
+behavior across supported pandas, PyArrow, and Polars releases. Third-party data
+packages remain optional dependencies.
 
-4. **Type-focused affordances**
-   - `map_typed` / `filter_typed` variants or overloads that narrow types for better IDE guidance.
+### Prepare the release
 
-These are additive and can remain optional, preserving the current API surface while giving power users more functional vocabulary.
+Publish complete API reference pages, a v1-to-v2 migration guide, performance
+methodology, platform wheels, and a release checklist. Benchmarks should measure
+real workloads and include the point where native or parallel overhead becomes
+worthwhile.
 
-## Rust Acceleration Plan
+## Possible work after 2.0
 
-Certain operations are CPU-heavy or memory-sensitive and are prime candidates for a Rust extension module. The key is to keep Python ergonomics while enabling a fast-path for large data or numeric workloads.
+- Additional streaming joins and merge operations for already-sorted inputs.
+- More approximate or bounded statistical aggregators.
+- Richer plan diagnostics and structured execution metrics.
+- Additional `Option`/`Result` traversal helpers.
+- Narrow extension hooks for custom sources, aggregators, and native kernels.
 
-### Candidate hotspots
+These ideas stay out of 2.0 unless they can be added without weakening API
+consistency, memory bounds, or Python/Rust parity.
 
-- **Numeric collectors**: `summarizing`, `summing`, `averaging`, quantiles.
-- **High-volume transforms**: `map`/`filter`/`flat_map` on numeric streams.
-- **Collector-side grouping** for large datasets where aggregation dominates runtime.
-- **Parallel operations**: a Rust-backed `parallel()` pipeline using `rayon` for consistent throughput.
+## What fpstreams will not do
 
-### Proposed approach
+fpstreams will not replace NumPy, pandas, Polars, or a distributed query engine.
+It is a pipeline layer that passes data to those systems when appropriate. Ordinary
+transforms are not distributed automatically, and unbounded inputs are not silently
+materialized.
 
-1. **Optional extension module**
-   - Build a `fpstreams_rust` extension via `pyo3` + `maturin`.
-   - Ship as an extra (e.g., `pip install fpstreams[fast]`) that preserves the pure-Python fallback.
+## Stable-release criteria
 
-2. **Stable Python API**
-   - Keep the public classes and method signatures unchanged.
-   - Route to Rust fast-paths when the stream contains Rust-friendly types (e.g., numeric lists, NumPy arrays, or buffer protocol inputs).
+The v2 stable release should require:
 
-3. **Interoperability strategy**
-   - Support Python iterables for compatibility, but add an optimized path for lists/tuples/arrays.
-   - Use `PyBuffer`/NumPy views for zero-copy operations where possible.
-
-4. **Incremental rollout**
-   - Start with collectors (`summarizing`, `summing`, `averaging`).
-   - Add parallel map/filter/reduce after functional parity is proven.
-   - Gate by benchmarks to validate real-world wins.
-
-5. **Testing & CI**
-   - Add Python/Rust parity tests.
-   - Build wheels for major platforms in CI to keep installation friction low.
-
-This plan keeps `fpstreams` easy to install while unlocking a high-performance option for complex workloads.
+- no known Python/native semantic divergence in supported plans;
+- clean tests, lint, strict typing, Rust formatting, clippy, and package builds;
+- documented behavior for one-shot sources, cancellation, spilling, and fallbacks;
+- successful installation and import from built wheels;
+- a migration path for supported v1 entry-point aliases.
