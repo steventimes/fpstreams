@@ -10,6 +10,7 @@ from typing import Any, Generic, Literal, TypeAlias, TypeVar
 
 from ..collecting.collector import _collect_columns
 from ..expressions.selectors import Selector
+from ..io_safety import spreadsheet_safe_cell
 from ..streams.flow import Flow, flow
 from .arrow import (
     arrow_batch_factory,
@@ -145,6 +146,7 @@ class RowsIOMixin(Generic[T]):
         encoding: str = "utf-8",
         include_header: bool = True,
         extrasaction: Literal["raise", "ignore"] = "raise",
+        spreadsheet_safe: bool = False,
     ) -> None:
         """Write rows to a CSV file without retaining the full input.
 
@@ -154,9 +156,7 @@ class RowsIOMixin(Generic[T]):
             encoding: The text encoding used to open the file.
             include_header: Whether to write a CSV header row.
             extrasaction: How CSV writing handles fields absent from fieldnames.
-
-        Returns:
-            The number of rows written.
+            spreadsheet_safe: Whether to neutralize cells that spreadsheet programs may execute.
         """
         if extrasaction not in {"raise", "ignore"}:
             raise ValueError("extrasaction must be 'raise' or 'ignore'")
@@ -185,9 +185,18 @@ class RowsIOMixin(Generic[T]):
                 )
                 if include_header:
                     writer.writeheader()
-                writer.writerow(first)
+                writer.writerow(
+                    {name: spreadsheet_safe_cell(value) for name, value in first.items()}
+                    if spreadsheet_safe
+                    else first
+                )
                 for row in iterator:
-                    writer.writerow(_as_record(row))
+                    record = _as_record(row)
+                    writer.writerow(
+                        {name: spreadsheet_safe_cell(value) for name, value in record.items()}
+                        if spreadsheet_safe
+                        else record
+                    )
         finally:
             close = getattr(iterator, "close", None)
             if callable(close):
@@ -207,8 +216,6 @@ class RowsIOMixin(Generic[T]):
             encoding: The text encoding used to open the file.
             ensure_ascii: Whether JSON output escapes non-ASCII characters.
 
-        Returns:
-            The number of rows written.
         """
         with open(path, "w", encoding=encoding) as handle:
             for row in self:

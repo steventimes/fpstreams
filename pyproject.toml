@@ -25,7 +25,8 @@ keywords = ["functional", "streams", "pipeline", "data-processing", "rust"]
 # Users can install these with: pip install fpstreams[test] or fpstreams[async]
 [project.optional-dependencies]
 test = [
-    "pytest>=8",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=7,<8",
     "pytest-asyncio>=0.24",
     "aiofiles>=24",
     "pandas>=2",
@@ -48,7 +49,8 @@ polars = [
     "pyarrow>=16"
 ]
 all = [
-    "pytest>=8,<9",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=7,<8",
     "pytest-asyncio>=0.24",
     "aiofiles>=24",
     "numpy>=1.26",
@@ -71,6 +73,17 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
 
+[tool.coverage.run]
+branch = true
+source = ["src/fpstreams"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+
+[tool.coverage.json]
+output = "coverage.json"
+
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"
 python-source = "src"
@@ -84,7 +97,8 @@ test = [
     "pandas>=2",
     "pyarrow>=16",
     "polars>=1.34",
-    "pytest>=8,<9",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=7,<8",
     "pytest-asyncio>=0.24",
 ]
 lint = ["ruff>=0.12"]

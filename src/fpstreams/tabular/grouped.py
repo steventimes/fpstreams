@@ -17,6 +17,7 @@ from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector, compile_selector
 from ..streams.flow import flow
 from .spill import spilled_group_aggregate, validate_partitions
+from .spill_limits import SpillLimits
 
 if TYPE_CHECKING:
     from .rows import Rows
@@ -28,7 +29,7 @@ JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 class GroupedRows(Generic[T]):
     """A deferred grouping that chooses in-memory or partitioned aggregation."""
 
-    __slots__ = ("_keys", "_partitions", "_rows", "_tempdir")
+    __slots__ = ("_keys", "_limits", "_partitions", "_rows", "_tempdir")
 
     def __init__(
         self,
@@ -37,23 +38,27 @@ class GroupedRows(Generic[T]):
         *,
         partitions: int | None = None,
         tempdir: str | os.PathLike[str] | None = None,
+        limits: SpillLimits | None = None,
     ) -> None:
         self._rows = source
         self._keys = keys
         self._partitions = partitions
         self._tempdir = tempdir
+        self._limits = limits
 
     def spill(
         self,
         partitions: int = 32,
         *,
         tempdir: str | os.PathLike[str] | None = None,
+        limits: SpillLimits | None = None,
     ) -> GroupedRows[T]:
         """Configure partitioned temporary storage for grouped aggregation.
 
         Args:
             partitions: The number of spill partitions used for bounded-memory processing.
             tempdir: The directory used for temporary spill files.
+            limits: Finite partition, state, match, and output budgets.
 
         Returns:
             A new lazy `Rows` pipeline representing this operation.
@@ -63,6 +68,7 @@ class GroupedRows(Generic[T]):
             self._keys,
             partitions=validate_partitions(partitions),
             tempdir=tempdir,
+            limits=limits or SpillLimits(),
         )
 
     def aggregate(self, **aggregations: Aggregator) -> Rows[dict[str, Any]]:
@@ -94,6 +100,7 @@ class GroupedRows(Generic[T]):
                     aggregation_items=aggregation_items,
                     partitions=self._partitions,
                     tempdir=self._tempdir,
+                    limits=self._limits or SpillLimits(),
                 )
                 return
             groups: dict[Any, dict[str, Any]] = {}

@@ -15,6 +15,7 @@ from ..execution import (
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.explain import PlanExplanation
 from ..planning.gather import Gatherer
+from ..planning.native import TerminalName, validate_terminal
 from ..planning.source import Source
 from ..planning.sync import (
     AppendOp,
@@ -907,7 +908,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             raise ValueError("engine must be 'auto', 'python', or 'native'")
         return Flow(self._plan.with_engine(engine))
 
-    def explain(self) -> PlanExplanation:
+    def explain(self, terminal: TerminalName = "iterate") -> PlanExplanation:
         """Describe engine selection, stages, and fused operations without executing.
 
         This inspection method does not consume or execute the source.
@@ -915,7 +916,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         Returns:
             A structured explanation of the selected engine and planned stages.
         """
-        return PlanExplanation(self._plan)
+        return PlanExplanation(self._plan, validate_terminal(terminal))
 
     def pairs(self) -> Any:
         """View a flow of two-tuples as a key/value Pairs pipeline.

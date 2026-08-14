@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import heapq
 import operator
 import os
-import pickle
 import tempfile
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 
 from ..collecting.aggregation import (
     AggregationItems,
@@ -18,9 +16,35 @@ from ..collecting.aggregation import (
     initialize_aggregations,
     step_aggregations,
 )
+from .spill_io import (
+    LazyWriter as _LazyWriter,
+)
+from .spill_io import (
+    PartitionFile,
+    repartition,
+)
+from .spill_io import (
+    PartitionWriters as _PartitionWriters,
+)
+from .spill_io import (
+    merge_ordered as _merge_ordered,
+)
+from .spill_io import (
+    partition as _partition,
+)
+from .spill_io import (
+    read as _read,
+)
+from .spill_limits import SpillBudget, SpillLimits, raise_spill_limit
 
-_MAX_OPEN_WRITERS = 32
 _MAX_PARTITIONS = 256
+JoinRow = tuple[int, Any, dict[str, Any] | None]
+JoinTargets = tuple[tuple[str, str], ...]
+JoinTargetBuilder = Callable[..., JoinTargets]
+MergeRecords = Callable[
+    [dict[str, Any], dict[str, Any], JoinTargets, set[str]],
+    dict[str, Any],
+]
 
 
 def validate_partitions(partitions: int) -> int:
@@ -33,100 +57,117 @@ def validate_partitions(partitions: int) -> int:
     return count
 
 
-def _dump(handle: BinaryIO, value: Any, *, operation: str) -> None:
-    try:
-        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception as error:
-        raise TypeError(f"{operation} spill data must be picklable") from error
+def _partition_issue(
+    file: PartitionFile,
+    limits: SpillLimits,
+) -> tuple[str, int, str, int] | None:
+    if file.rows > limits.max_partition_rows:
+        return ("rows", file.rows, "max_partition_rows", limits.max_partition_rows)
+    if file.bytes > limits.max_partition_bytes:
+        return ("bytes", file.bytes, "max_partition_bytes", limits.max_partition_bytes)
+    return None
 
 
-def _partition(key: Any, count: int, *, operation: str) -> int:
-    try:
-        return hash(key) % count
-    except TypeError:
-        raise TypeError(f"{operation} keys must be hashable") from None
+def _repartition_salt(depth: int) -> int:
+    return 0x9E3779B1 * depth
 
 
-class _PartitionWriters:
-    __slots__ = ("_handles", "_operation", "paths")
-
-    def __init__(self, directory: Path, prefix: str, count: int, *, operation: str) -> None:
-        self.paths = tuple(directory / f"{prefix}-{position}.bin" for position in range(count))
-        self._operation = operation
-        self._handles: OrderedDict[int, BinaryIO] = OrderedDict()
-
-    def dump(self, position: int, value: Any) -> None:
-        handle = self._handles.pop(position, None)
-        if handle is None:
-            if len(self._handles) >= _MAX_OPEN_WRITERS:
-                _old_position, old_handle = self._handles.popitem(last=False)
-                old_handle.close()
-            handle = self.paths[position].open("ab")
-        self._handles[position] = handle
-        _dump(handle, value, operation=self._operation)
-
-    def close(self) -> None:
-        while self._handles:
-            _position, handle = self._handles.popitem(last=False)
-            handle.close()
-
-
-class _LazyWriter:
-    __slots__ = ("_handle", "_operation", "_path")
-
-    def __init__(self, path: Path, *, operation: str) -> None:
-        self._path = path
-        self._operation = operation
-        self._handle: BinaryIO | None = None
-
-    def dump(self, value: Any) -> None:
-        if self._handle is None:
-            self._handle = self._path.open("wb")
-        _dump(self._handle, value, operation=self._operation)
-
-    def close(self) -> None:
-        if self._handle is not None:
-            self._handle.close()
-            self._handle = None
-
-
-def _read(path: Path) -> Iterator[Any]:
-    if not path.exists():
+def _bounded_group_partitions(
+    source: PartitionFile,
+    *,
+    directory: Path,
+    partitions: int,
+    limits: SpillLimits,
+    depth: int = 0,
+) -> Iterator[PartitionFile]:
+    issue = _partition_issue(source, limits)
+    if issue is None:
+        if source.rows:
+            yield source
         return
-    with path.open("rb") as handle:
-        while True:
-            try:
-                yield pickle.load(handle)
-            except EOFError:
-                return
+    if depth >= limits.max_repartition_depth:
+        measurement, actual, field, allowed = issue
+        raise_spill_limit(
+            "group_by",
+            f"partition {measurement}",
+            actual,
+            field,
+            allowed,
+            depth=depth,
+        )
+    children = repartition(
+        source,
+        directory,
+        f"group-depth-{depth + 1}-{source.path.stem}",
+        partitions,
+        operation="group_by",
+        salt=_repartition_salt(depth + 1),
+    )
+    for child in children:
+        yield from _bounded_group_partitions(
+            child,
+            directory=directory,
+            partitions=partitions,
+            limits=limits,
+            depth=depth + 1,
+        )
 
 
-def _merge_ordered(paths: Iterable[Path]) -> Iterator[Any]:
-    readers: list[Iterator[Any]] = []
-    heap: list[tuple[Any, int, Any, Iterator[Any]]] = []
-    try:
-        for serial, path in enumerate(paths):
-            reader = _read(path)
-            readers.append(reader)
-            try:
-                order, value = next(reader)
-            except StopIteration:
-                continue
-            heapq.heappush(heap, (order, serial, value, reader))
-
-        while heap:
-            _order, serial, value, reader = heapq.heappop(heap)
-            yield value
-            try:
-                order, next_value = next(reader)
-            except StopIteration:
-                continue
-            heapq.heappush(heap, (order, serial, next_value, reader))
-    finally:
-        for reader in readers:
-            close = getattr(reader, "close", None)
-            if callable(close):
-                close()
+def _bounded_join_partitions(
+    left: PartitionFile,
+    right: PartitionFile,
+    *,
+    directory: Path,
+    partitions: int,
+    limits: SpillLimits,
+    depth: int = 0,
+) -> Iterator[tuple[PartitionFile, PartitionFile]]:
+    left_issue = _partition_issue(left, limits)
+    right_issue = _partition_issue(right, limits)
+    if left_issue is None and right_issue is None:
+        if left.rows or right.rows:
+            yield left, right
+        return
+    if depth >= limits.max_repartition_depth:
+        side, issue = ("left", left_issue) if left_issue is not None else ("right", right_issue)
+        if issue is None:
+            raise RuntimeError("oversized join partition is missing limit details")
+        measurement, actual, field, allowed = issue
+        raise_spill_limit(
+            "join",
+            f"{side} partition {measurement}",
+            actual,
+            field,
+            allowed,
+            depth=depth,
+        )
+    next_depth = depth + 1
+    salt = _repartition_salt(next_depth)
+    left_children = repartition(
+        left,
+        directory,
+        f"left-depth-{next_depth}-{left.path.stem}",
+        partitions,
+        operation="join",
+        salt=salt,
+    )
+    right_children = repartition(
+        right,
+        directory,
+        f"right-depth-{next_depth}-{right.path.stem}",
+        partitions,
+        operation="join",
+        salt=salt,
+    )
+    for left_child, right_child in zip(left_children, right_children, strict=True):
+        yield from _bounded_join_partitions(
+            left_child,
+            right_child,
+            directory=directory,
+            partitions=partitions,
+            limits=limits,
+            depth=next_depth,
+        )
 
 
 def spilled_group_aggregate(
@@ -137,6 +178,7 @@ def spilled_group_aggregate(
     aggregation_items: AggregationItems,
     partitions: int,
     tempdir: str | os.PathLike[str] | None,
+    limits: SpillLimits,
 ) -> Iterator[dict[str, Any]]:
     multiple_keys = len(keys) > 1
     with tempfile.TemporaryDirectory(prefix="fpstreams-group-", dir=tempdir) as directory_name:
@@ -154,29 +196,47 @@ def spilled_group_aggregate(
             if callable(close):
                 close()
 
-        outputs = tuple(directory / f"result-{position}.bin" for position in range(partitions))
-        for position, input_path in enumerate(inputs.paths):
-            groups: dict[Any, tuple[int, dict[str, Any]]] = {}
-            for first_position, key, row in _read(input_path):
+        output_paths: list[Path] = []
+        budget = SpillBudget("group_by", limits)
+        for initial in inputs.files():
+            for input_file in _bounded_group_partitions(
+                initial,
+                directory=directory,
+                partitions=partitions,
+                limits=limits,
+            ):
+                groups: dict[Any, tuple[int, dict[str, Any]]] = {}
+                for first_position, key, row in _read(input_file.path):
+                    try:
+                        first, states = groups[key]
+                    except KeyError:
+                        if len(groups) >= limits.max_partition_rows:
+                            raise_spill_limit(
+                                "group_by",
+                                "live group states",
+                                len(groups) + 1,
+                                "max_partition_rows",
+                                limits.max_partition_rows,
+                            )
+                        first = first_position
+                        states = initialize_aggregations(aggregation_items)
+                        groups[key] = first, states
+                    step_aggregations(states, aggregation_items, row)
+
+                output_path = directory / f"result-{len(output_paths)}.bin"
+                output_paths.append(output_path)
+                output = _LazyWriter(output_path, operation="group_by")
                 try:
-                    first, states = groups[key]
-                except KeyError:
-                    first = first_position
-                    states = initialize_aggregations(aggregation_items)
-                    groups[key] = first, states
-                step_aggregations(states, aggregation_items, row)
+                    for key, (first, states) in groups.items():
+                        budget.add_output()
+                        key_values = key if multiple_keys else (key,)
+                        result = dict(zip(key_names, key_values, strict=True))
+                        result.update(finish_aggregations(states, aggregation_items))
+                        output.dump((first, result))
+                finally:
+                    output.close()
 
-            output = _LazyWriter(outputs[position], operation="group_by")
-            try:
-                for key, (first, states) in groups.items():
-                    key_values = key if multiple_keys else (key,)
-                    result = dict(zip(key_names, key_values, strict=True))
-                    result.update(finish_aggregations(states, aggregation_items))
-                    output.dump((first, result))
-            finally:
-                output.close()
-
-        yield from _merge_ordered(outputs)
+        yield from _merge_ordered(output_paths)
 
 
 def _partition_join_side(
@@ -231,6 +291,232 @@ def _validated_join_rows(
         yield item
 
 
+@dataclass(frozen=True, slots=True)
+class _JoinLeafConfig:
+    how: str
+    shared_names: set[str]
+    suffix: str
+    validate: str
+    left_columns: tuple[str, ...]
+    right_columns: tuple[str, ...]
+    global_targets: JoinTargets
+    join_targets: JoinTargetBuilder
+    merge_records: MergeRecords
+
+
+def _join_leaf_pairs(
+    left_files: tuple[PartitionFile, ...],
+    right_files: tuple[PartitionFile, ...],
+    *,
+    directory: Path,
+    partitions: int,
+    limits: SpillLimits,
+) -> Iterator[tuple[PartitionFile, PartitionFile]]:
+    for left_file, right_file in zip(left_files, right_files, strict=True):
+        yield from _bounded_join_partitions(
+            left_file,
+            right_file,
+            directory=directory,
+            partitions=partitions,
+            limits=limits,
+        )
+
+
+def _require_join_record(record: dict[str, Any] | None) -> dict[str, Any]:
+    if record is None:
+        raise RuntimeError("regular spilled join row is missing its record")
+    return record
+
+
+def _write_semi_or_anti_leaf(
+    left_rows: Iterable[JoinRow],
+    right_rows: Iterable[JoinRow],
+    *,
+    how: str,
+    output: _LazyWriter,
+    budget: SpillBudget,
+) -> None:
+    right_keys = {key for _position, key, _record in right_rows}
+    for left_position, key, left_record in left_rows:
+        if (key in right_keys) == (how == "semi"):
+            budget.add_output()
+            output.dump(((left_position, 0), _require_join_record(left_record)))
+
+
+def _index_right_rows(right_rows: list[JoinRow]) -> dict[Any, list[int]]:
+    index: dict[Any, list[int]] = {}
+    for local_position, (_right_position, key, _right) in enumerate(right_rows):
+        index.setdefault(key, []).append(local_position)
+    return index
+
+
+def _left_targets(config: _JoinLeafConfig, left: dict[str, Any]) -> JoinTargets:
+    if config.how in {"right", "full"}:
+        return config.global_targets
+    return config.join_targets(
+        left,
+        config.right_columns,
+        shared_names=config.shared_names,
+        suffix=config.suffix,
+    )
+
+
+def _write_left_matches(
+    left_position: int,
+    left: dict[str, Any],
+    matches: list[int] | tuple[()],
+    right_rows: list[JoinRow],
+    matched_right: bytearray,
+    *,
+    config: _JoinLeafConfig,
+    output: _LazyWriter,
+    budget: SpillBudget,
+) -> bool:
+    if not matches:
+        return False
+    budget.check_matches(len(matches))
+    targets = _left_targets(config, left)
+    for ordinal, local_position in enumerate(matches):
+        budget.add_output()
+        matched_right[local_position] = 1
+        right = _require_join_record(right_rows[local_position][2])
+        result = config.merge_records(left, right, targets, config.shared_names)
+        output.dump(((left_position, ordinal), result))
+    return True
+
+
+def _write_unmatched_left(
+    left_position: int,
+    left: dict[str, Any],
+    *,
+    config: _JoinLeafConfig,
+    output: _LazyWriter,
+    budget: SpillBudget,
+) -> None:
+    budget.add_output()
+    targets = (
+        config.global_targets
+        if config.how == "full"
+        else config.join_targets(
+            left,
+            config.right_columns,
+            shared_names=config.shared_names,
+            suffix=config.suffix,
+        )
+    )
+    merged = left.copy()
+    for name, target in targets:
+        if name not in config.shared_names:
+            merged[target] = None
+    output.dump(((left_position, 0), merged))
+
+
+def _write_regular_left_rows(
+    left_rows: Iterable[JoinRow],
+    right_rows: list[JoinRow],
+    *,
+    config: _JoinLeafConfig,
+    output: _LazyWriter,
+    budget: SpillBudget,
+) -> bytearray:
+    index = _index_right_rows(right_rows)
+    matched_right = bytearray(len(right_rows))
+    for left_position, key, left_record in left_rows:
+        left = _require_join_record(left_record)
+        matched = _write_left_matches(
+            left_position,
+            left,
+            index.get(key, ()),
+            right_rows,
+            matched_right,
+            config=config,
+            output=output,
+            budget=budget,
+        )
+        if not matched and config.how in {"left", "full"}:
+            _write_unmatched_left(
+                left_position,
+                left,
+                config=config,
+                output=output,
+                budget=budget,
+            )
+    return matched_right
+
+
+def _write_unmatched_right_rows(
+    right_rows: list[JoinRow],
+    matched_right: bytearray,
+    *,
+    config: _JoinLeafConfig,
+    output: _LazyWriter,
+    budget: SpillBudget,
+) -> None:
+    for local_position, (right_position, _key, right_record) in enumerate(right_rows):
+        if matched_right[local_position]:
+            continue
+        budget.add_output()
+        right = _require_join_record(right_record)
+        merged = {name: None for name in config.left_columns}
+        for name, target in config.global_targets:
+            if name in right:
+                merged[target] = right[name]
+        output.dump((right_position, merged))
+
+
+def _process_join_leaf(
+    left_input: PartitionFile,
+    right_input: PartitionFile,
+    *,
+    left_output_path: Path,
+    right_output_path: Path,
+    config: _JoinLeafConfig,
+    budget: SpillBudget,
+) -> None:
+    right_rows = list(
+        _validated_join_rows(
+            _read(right_input.path),
+            validate=config.validate,
+            side="right",
+        )
+    )
+    left_rows = _validated_join_rows(
+        _read(left_input.path),
+        validate=config.validate,
+        side="left",
+    )
+    left_output = _LazyWriter(left_output_path, operation="join")
+    right_output = _LazyWriter(right_output_path, operation="join")
+    try:
+        if config.how in {"semi", "anti"}:
+            _write_semi_or_anti_leaf(
+                left_rows,
+                right_rows,
+                how=config.how,
+                output=left_output,
+                budget=budget,
+            )
+            return
+        matched_right = _write_regular_left_rows(
+            left_rows,
+            right_rows,
+            config=config,
+            output=left_output,
+            budget=budget,
+        )
+        if config.how in {"right", "full"}:
+            _write_unmatched_right_rows(
+                right_rows,
+                matched_right,
+                config=config,
+                output=right_output,
+                budget=budget,
+            )
+    finally:
+        left_output.close()
+        right_output.close()
+
+
 def spilled_join(
     left_source: Iterable[Any],
     right_source: Iterable[Any],
@@ -243,13 +529,11 @@ def spilled_join(
     validate: str,
     partitions: int,
     tempdir: str | os.PathLike[str] | None,
+    limits: SpillLimits,
     as_record: Callable[[Any], dict[str, Any]],
     remember_columns: Callable[[Mapping[str, Any], list[str], set[str]], None],
-    join_targets: Callable[..., tuple[tuple[str, str], ...]],
-    merge_records: Callable[
-        [dict[str, Any], dict[str, Any], tuple[tuple[str, str], ...], set[str]],
-        dict[str, Any],
-    ],
+    join_targets: JoinTargetBuilder,
+    merge_records: MergeRecords,
 ) -> Iterator[dict[str, Any]]:
     """Join hash partitions and merge their position-tagged output in stable order."""
     with tempfile.TemporaryDirectory(prefix="fpstreams-join-", dir=tempdir) as directory_name:
@@ -274,8 +558,9 @@ def spilled_join(
             remember_columns=remember_columns,
         )
 
-        left_outputs = tuple(directory / f"left-result-{i}.bin" for i in range(partitions))
-        right_outputs = tuple(directory / f"right-result-{i}.bin" for i in range(partitions))
+        left_outputs: list[Path] = []
+        right_outputs: list[Path] = []
+        budget = SpillBudget("join", limits)
         global_targets = (
             join_targets(
                 left_columns,
@@ -287,83 +572,37 @@ def spilled_join(
             else ()
         )
 
-        # Process partitions independently, then merge position-tagged outputs for stable order.
-        for partition_position in range(partitions):
-            right_rows = list(
-                _validated_join_rows(
-                    _read(right_inputs.paths[partition_position]),
-                    validate=validate,
-                    side="right",
-                )
+        config = _JoinLeafConfig(
+            how,
+            shared_names,
+            suffix,
+            validate,
+            left_columns,
+            right_columns,
+            global_targets,
+            join_targets,
+            merge_records,
+        )
+        leaf_pairs = _join_leaf_pairs(
+            left_inputs.files(),
+            right_inputs.files(),
+            directory=directory,
+            partitions=partitions,
+            limits=limits,
+        )
+        for serial, (left_input, right_input) in enumerate(leaf_pairs):
+            left_output_path = directory / f"left-result-{serial}.bin"
+            right_output_path = directory / f"right-result-{serial}.bin"
+            left_outputs.append(left_output_path)
+            right_outputs.append(right_output_path)
+            _process_join_leaf(
+                left_input,
+                right_input,
+                left_output_path=left_output_path,
+                right_output_path=right_output_path,
+                config=config,
+                budget=budget,
             )
-            left_output = _LazyWriter(left_outputs[partition_position], operation="join")
-            right_output = _LazyWriter(right_outputs[partition_position], operation="join")
-            left_rows = _validated_join_rows(
-                _read(left_inputs.paths[partition_position]),
-                validate=validate,
-                side="left",
-            )
-            try:
-                if how in {"semi", "anti"}:
-                    right_keys = {key for _position, key, _record in right_rows}
-                    for left_position, key, left in left_rows:
-                        matched = key in right_keys
-                        if matched == (how == "semi"):
-                            left_output.dump(((left_position, 0), left))
-                    continue
-
-                index: dict[Any, list[int]] = {}
-                for local_position, (_right_position, key, _right) in enumerate(right_rows):
-                    index.setdefault(key, []).append(local_position)
-                matched_right = bytearray(len(right_rows))
-
-                for left_position, key, left in left_rows:
-                    matches = index.get(key, ())
-                    if matches:
-                        targets = (
-                            global_targets
-                            if how in {"right", "full"}
-                            else join_targets(
-                                left,
-                                right_columns,
-                                shared_names=shared_names,
-                                suffix=suffix,
-                            )
-                        )
-                        for ordinal, local_position in enumerate(matches):
-                            matched_right[local_position] = 1
-                            right = right_rows[local_position][2]
-                            result = merge_records(left, right, targets, shared_names)
-                            left_output.dump(((left_position, ordinal), result))
-                    elif how in {"left", "full"}:
-                        targets = (
-                            global_targets
-                            if how == "full"
-                            else join_targets(
-                                left,
-                                right_columns,
-                                shared_names=shared_names,
-                                suffix=suffix,
-                            )
-                        )
-                        merged = left.copy()
-                        for name, target in targets:
-                            if name not in shared_names:
-                                merged[target] = None
-                        left_output.dump(((left_position, 0), merged))
-
-                if how in {"right", "full"}:
-                    for local_position, (right_position, _key, right) in enumerate(right_rows):
-                        if matched_right[local_position]:
-                            continue
-                        merged = {name: None for name in left_columns}
-                        for name, target in global_targets:
-                            if name in right:
-                                merged[target] = right[name]
-                        right_output.dump((right_position, merged))
-            finally:
-                left_output.close()
-                right_output.close()
 
         yield from _merge_ordered(left_outputs)
         if how in {"right", "full"}:

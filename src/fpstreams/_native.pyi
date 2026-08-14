@@ -28,6 +28,7 @@ _FloatInstruction: TypeAlias = tuple[int, float]
 _FloatStage: TypeAlias = tuple[int, tuple[_FloatInstruction, ...]]
 
 def version() -> str: ...
+def build_profile() -> str: ...
 def execute_i64(
     values: list[int] | tuple[int, ...],
     program: list[_Stage],

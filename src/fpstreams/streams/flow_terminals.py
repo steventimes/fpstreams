@@ -33,6 +33,7 @@ from ..collecting.statistics import (
 )
 from ..errors import BufferLimitError, EmptyFlowError
 from ..execution import (
+    exact_count,
     execute,
     try_native_aggregate,
     try_native_statistics,
@@ -40,6 +41,7 @@ from ..execution import (
 )
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.selectors import Selector, compile_selector
+from ..io_safety import spreadsheet_safe_cell
 from ..planning.sync import Plan
 from ..primitives.result import Err, Ok
 
@@ -138,6 +140,7 @@ class FlowTerminalsMixin(Generic[T]):
         *,
         header: Iterable[str] | None = None,
         encoding: str = "utf-8",
+        spreadsheet_safe: bool = False,
     ) -> None:
         """Execute the pipeline and stream its items to a CSV file.
 
@@ -145,9 +148,7 @@ class FlowTerminalsMixin(Generic[T]):
             path: The filesystem path to read from or write to.
             header: The CSV header policy or explicit field names.
             encoding: The text encoding used to open the file.
-
-        Returns:
-            The number of rows written.
+            spreadsheet_safe: Whether to neutralize cells that spreadsheet programs may execute.
         """
         columns = tuple(header) if header is not None else None
         with (
@@ -158,16 +159,22 @@ class FlowTerminalsMixin(Generic[T]):
             if columns is not None:
                 writer.writerow(columns)
             for item in iterator:
+                values: Iterable[Any]
                 if isinstance(item, Mapping):
-                    writer.writerow(
+                    values = (
                         [item.get(column) for column in columns]
                         if columns is not None
                         else item.values()
                     )
                 elif isinstance(item, (list, tuple)):
-                    writer.writerow(item)
+                    values = item
                 else:
-                    writer.writerow((item,))
+                    values = (item,)
+                writer.writerow(
+                    [spreadsheet_safe_cell(value) for value in values]
+                    if spreadsheet_safe
+                    else values
+                )
 
     def to_json(
         self,
@@ -185,8 +192,6 @@ class FlowTerminalsMixin(Generic[T]):
             ensure_ascii: Whether JSON output escapes non-ASCII characters.
             default: The value returned when no matching item is available.
 
-        Returns:
-            The number of items written.
         """
         encoder = (
             json.JSONEncoder(ensure_ascii=ensure_ascii)
@@ -518,6 +523,9 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The number of matching input items.
         """
+        known_size = exact_count(self._plan)
+        if known_size is not None:
+            return known_size
         native, result = try_native_terminal(self._plan, "count")
         if native:
             return cast(int, result)

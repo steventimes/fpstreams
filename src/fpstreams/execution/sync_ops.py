@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -52,39 +52,6 @@ from ..planning.sync import (
     ZipOp,
 )
 from .sorting import external_sort
-
-SUPPORTED_OPERATION_TYPES: tuple[type[object], ...] = (
-    MapOp,
-    ParallelMapOp,
-    TapOp,
-    FilterOp,
-    FlatMapOp,
-    TakeOp,
-    DropOp,
-    TakeWhileOp,
-    TakeWhileInclusiveOp,
-    DropWhileOp,
-    UniqueOp,
-    ChunkOp,
-    WindowOp,
-    GroupRunsOp,
-    PairwiseOp,
-    EnumerateOp,
-    ZipOp,
-    ZipLongestOp,
-    IntersperseOp,
-    ConcatOp,
-    CrossOp,
-    ScanOp,
-    ScanRightOp,
-    SortOp,
-    GatherOp,
-    PrependOp,
-    AppendOp,
-    MapFirstOp,
-    MapLastOp,
-    CollapseOp,
-)
 
 
 def _map(iterator: Iterator[Any], operation: MapOp) -> Iterator[Any]:
@@ -401,67 +368,74 @@ def _collapse(iterator: Iterator[Any], operation: CollapseOp) -> Iterator[Any]:
     yield aggregate
 
 
+def _take(iterator: Iterator[Any], operation: TakeOp) -> Iterator[Any]:
+    return islice(iterator, operation.count)
+
+
+def _drop(iterator: Iterator[Any], operation: DropOp) -> Iterator[Any]:
+    return islice(iterator, operation.count, None)
+
+
+def _take_while(iterator: Iterator[Any], operation: TakeWhileOp) -> Iterator[Any]:
+    return takewhile(operation.predicate, iterator)
+
+
+def _drop_while(iterator: Iterator[Any], operation: DropWhileOp) -> Iterator[Any]:
+    return dropwhile(operation.predicate, iterator)
+
+
+def _pairwise(iterator: Iterator[Any], _operation: PairwiseOp) -> Iterator[Any]:
+    return pairwise(iterator)
+
+
+def _enumerate(iterator: Iterator[Any], operation: EnumerateOp) -> Iterator[Any]:
+    return enumerate(iterator, operation.start)
+
+
+def _sort(iterator: Iterator[Any], operation: SortOp) -> Iterator[Any]:
+    if operation.buffer_size is None:
+        return iter(sorted(iterator, key=operation.key, reverse=operation.reverse))
+    return external_sort(iterator, operation)
+
+
+OperationHandler = Callable[..., Iterator[Any]]
+OPERATION_HANDLERS: dict[type[object], OperationHandler] = {
+    MapOp: _map,
+    ParallelMapOp: _map_parallel,
+    TapOp: _tap,
+    FilterOp: _filter,
+    FlatMapOp: _flat_map,
+    TakeOp: _take,
+    DropOp: _drop,
+    TakeWhileOp: _take_while,
+    TakeWhileInclusiveOp: _take_while_inclusive,
+    DropWhileOp: _drop_while,
+    UniqueOp: _unique,
+    ChunkOp: _chunk,
+    WindowOp: _window,
+    GroupRunsOp: _group_runs,
+    PairwiseOp: _pairwise,
+    EnumerateOp: _enumerate,
+    ZipOp: _zip,
+    ZipLongestOp: _zip_longest,
+    IntersperseOp: _intersperse,
+    ConcatOp: _concat,
+    CrossOp: _cross,
+    ScanOp: _scan,
+    ScanRightOp: _scan_right,
+    SortOp: _sort,
+    GatherOp: _gather,
+    PrependOp: _prepend,
+    AppendOp: _append,
+    MapFirstOp: _map_first,
+    MapLastOp: _map_last,
+    CollapseOp: _collapse,
+}
+SUPPORTED_OPERATION_TYPES: tuple[type[object], ...] = tuple(OPERATION_HANDLERS)
+
+
 def apply_operation(iterator: Iterator[Any], operation: Operation) -> Iterator[Any]:
-    if isinstance(operation, MapOp):
-        return _map(iterator, operation)
-    if isinstance(operation, ParallelMapOp):
-        return _map_parallel(iterator, operation)
-    if isinstance(operation, TapOp):
-        return _tap(iterator, operation)
-    if isinstance(operation, FilterOp):
-        return _filter(iterator, operation)
-    if isinstance(operation, FlatMapOp):
-        return _flat_map(iterator, operation)
-    if isinstance(operation, TakeOp):
-        return islice(iterator, operation.count)
-    if isinstance(operation, DropOp):
-        return islice(iterator, operation.count, None)
-    if isinstance(operation, TakeWhileOp):
-        return takewhile(operation.predicate, iterator)
-    if isinstance(operation, TakeWhileInclusiveOp):
-        return _take_while_inclusive(iterator, operation)
-    if isinstance(operation, DropWhileOp):
-        return dropwhile(operation.predicate, iterator)
-    if isinstance(operation, UniqueOp):
-        return _unique(iterator, operation)
-    if isinstance(operation, ChunkOp):
-        return _chunk(iterator, operation)
-    if isinstance(operation, WindowOp):
-        return _window(iterator, operation)
-    if isinstance(operation, GroupRunsOp):
-        return _group_runs(iterator, operation)
-    if isinstance(operation, PairwiseOp):
-        return pairwise(iterator)
-    if isinstance(operation, EnumerateOp):
-        return enumerate(iterator, operation.start)
-    if isinstance(operation, ZipOp):
-        return _zip(iterator, operation)
-    if isinstance(operation, ZipLongestOp):
-        return _zip_longest(iterator, operation)
-    if isinstance(operation, IntersperseOp):
-        return _intersperse(iterator, operation)
-    if isinstance(operation, ConcatOp):
-        return _concat(iterator, operation)
-    if isinstance(operation, CrossOp):
-        return _cross(iterator, operation)
-    if isinstance(operation, ScanOp):
-        return _scan(iterator, operation)
-    if isinstance(operation, ScanRightOp):
-        return _scan_right(iterator, operation)
-    if isinstance(operation, SortOp):
-        if operation.buffer_size is None:
-            return iter(sorted(iterator, key=operation.key, reverse=operation.reverse))
-        return external_sort(iterator, operation)
-    if isinstance(operation, GatherOp):
-        return _gather(iterator, operation)
-    if isinstance(operation, PrependOp):
-        return _prepend(iterator, operation)
-    if isinstance(operation, AppendOp):
-        return _append(iterator, operation)
-    if isinstance(operation, MapFirstOp):
-        return _map_first(iterator, operation)
-    if isinstance(operation, MapLastOp):
-        return _map_last(iterator, operation)
-    if isinstance(operation, CollapseOp):
-        return _collapse(iterator, operation)
-    raise TypeError(f"unsupported synchronous operation: {type(operation).__name__}")
+    handler = OPERATION_HANDLERS.get(type(operation))
+    if handler is None:
+        raise TypeError(f"unsupported synchronous operation: {type(operation).__name__}")
+    return handler(iterator, operation)

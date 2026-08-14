@@ -24,7 +24,7 @@ from .streams import (
     flow,
     pairs,
 )
-from .tabular import Rows, rows
+from .tabular import Rows, SpillLimits, rows
 
 __version__ = "2.0.0"
 Stream = Flow
@@ -56,6 +56,7 @@ __all__ = [
     "RowExpr",
     "Rows",
     "SelectionError",
+    "SpillLimits",
     "Stream",
     "SummaryStatistics",
     "__version__",

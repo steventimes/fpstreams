@@ -7,7 +7,12 @@ from typing import Any
 
 from ..collecting.statistics import StatisticsSnapshot
 from ..errors import NativeUnsupportedError
-from ..planning.native import select_materializing_engine, select_terminal_engine
+from ..planning.native import (
+    TerminalName,
+    select_materializing_engine,
+    select_terminal_engine,
+)
+from ..planning.native import exact_count as exact_count
 from ..planning.source import Source
 from ..planning.sync import Plan
 from .sync import execute as execute_python
@@ -59,8 +64,8 @@ def execute(plan: Plan, *, auto_native: bool = True) -> Iterator[Any]:
     yield from execute_python(plan)
 
 
-def try_native_terminal(plan: Plan, terminal: str) -> tuple[bool, int | float | None]:
-    decision = select_terminal_engine(plan)
+def try_native_terminal(plan: Plan, terminal: TerminalName) -> tuple[bool, int | float | None]:
+    decision = select_terminal_engine(plan, terminal)
     if decision.engine != "native":
         return False, None
     if decision.program is None:
@@ -85,7 +90,7 @@ def try_native_terminal(plan: Plan, terminal: str) -> tuple[bool, int | float | 
 def try_native_statistics(
     plan: Plan,
 ) -> tuple[bool, StatisticsSnapshot | None]:
-    decision = select_terminal_engine(plan)
+    decision = select_terminal_engine(plan, "statistics")
     if decision.engine != "native":
         return False, None
     if decision.program is None:
@@ -110,7 +115,7 @@ def try_native_statistics(
 def try_native_aggregate(
     plan: Plan,
 ) -> tuple[bool, NativeAggregateSnapshot | None]:
-    decision = select_terminal_engine(plan)
+    decision = select_terminal_engine(plan, "aggregate")
     if decision.engine != "native":
         return False, None
     if decision.program is None:

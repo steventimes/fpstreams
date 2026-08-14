@@ -76,6 +76,26 @@ def test_flow_streams_generic_exports_and_online_statistics(tmp_path) -> None:
     }
 
 
+def test_flow_csv_can_neutralize_spreadsheet_formula_cells(tmp_path) -> None:
+    safe_path = tmp_path / "safe.csv"
+    raw_path = tmp_path / "raw.csv"
+    values = [("=1+1", "  @command", "plain", -4)]
+
+    flow(values).to_csv(
+        safe_path,
+        header=("formula", "spaced", "text", "number"),
+        spreadsheet_safe=True,
+    )
+    flow(values).to_csv(raw_path, header=("formula", "spaced", "text", "number"))
+
+    assert safe_path.read_text(encoding="utf-8") == (
+        "formula,spaced,text,number\n'=1+1,'  @command,plain,-4\n"
+    )
+    assert raw_path.read_text(encoding="utf-8") == (
+        "formula,spaced,text,number\n=1+1,  @command,plain,-4\n"
+    )
+
+
 def test_collectors_remain_directly_callable() -> None:
     joining = fpstreams.Collectors.joining(",")
 

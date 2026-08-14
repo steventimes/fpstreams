@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
+from ..expressions.scalar import Expr, FExpr
 from ..planning.sync import FilterOp, GatherOp, MapOp, Plan, TapOp
 from .sync_ops import apply_operation, close_iterators
 
@@ -14,19 +15,29 @@ def _fused(
     operations: tuple[MapOp | FilterOp | TapOp, ...],
 ) -> Iterator[Any]:
     # Keep adjacent stateless stages in one Python loop without materializing intermediates.
+    compiled = tuple((operation, _operation_function(operation)) for operation in operations)
     for item in iterator:
         current = item
         accepted = True
-        for operation in operations:
+        for operation, function in compiled:
             if isinstance(operation, MapOp):
-                current = operation.function(current)
+                current = function(current)
             elif isinstance(operation, TapOp):
-                operation.function(current)
-            elif bool(operation.predicate(current)) is operation.negate:
+                function(current)
+            elif bool(function(current)) is operation.negate:
                 accepted = False
                 break
         if accepted:
             yield current
+
+
+def _operation_function(
+    operation: MapOp | FilterOp | TapOp,
+) -> Callable[[Any], Any]:
+    function = operation.predicate if isinstance(operation, FilterOp) else operation.function
+    if isinstance(function, (Expr, FExpr)):
+        return cast(Callable[[Any], Any], function._python_evaluator())
+    return function
 
 
 def _remember_iterator(stack: list[Iterator[Any]], iterator: Iterator[Any]) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import weakref
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import pytest
 
@@ -14,6 +15,14 @@ from fpstreams import flow
 
 def _square(value: int) -> int:
     return value * value
+
+
+@dataclass(frozen=True)
+class _CollidingKey:
+    value: int
+
+    def __hash__(self) -> int:
+        return 1
 
 
 def test_rows_turns_record_etl_into_one_readable_pipeline() -> None:
@@ -585,6 +594,44 @@ def test_rows_stream_csv_and_json_lines_round_trips(tmp_path) -> None:
     assert fpstreams.rows.from_jsonl(jsonl_path).to_list() == records
 
 
+def test_rows_csv_can_neutralize_spreadsheet_formula_cells(tmp_path) -> None:
+    path = tmp_path / "safe-rows.csv"
+
+    fpstreams.rows([{"formula": "+1", "spaced": "  -2", "command": "@run", "number": -3}]).to_csv(
+        path, spreadsheet_safe=True
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        "formula,spaced,command,number\n'+1,'  -2,'@run,-3\n"
+    )
+
+
+def test_jsonl_record_limit_counts_bytes_before_decoding(tmp_path) -> None:
+    path = tmp_path / "bounded.jsonl"
+    payload = '{"word":"雪"}\n'.encode()
+    path.write_bytes(payload)
+
+    assert fpstreams.rows.from_jsonl(path, max_record_bytes=len(payload)).to_list() == [
+        {"word": "雪"}
+    ]
+    assert fpstreams.rows.from_jsonl(path, max_record_bytes=None).to_list() == [{"word": "雪"}]
+    with pytest.raises(fpstreams.BufferLimitError, match="max_record_bytes"):
+        fpstreams.rows.from_jsonl(path, max_record_bytes=len(payload) - 1).to_list()
+
+
+def test_jsonl_record_limit_is_validated_before_opening_the_file(tmp_path) -> None:
+    missing = tmp_path / "missing.jsonl"
+
+    with pytest.raises(ValueError, match="max_record_bytes"):
+        fpstreams.rows.from_jsonl(missing, max_record_bytes=0)
+    with pytest.raises(TypeError, match="max_record_bytes"):
+        fpstreams.rows.from_jsonl(missing, max_record_bytes=2.5)  # type: ignore[arg-type]
+
+    deferred = fpstreams.rows.from_jsonl(missing)
+    with pytest.raises(FileNotFoundError):
+        deferred.to_list()
+
+
 def test_rows_io_rejects_duplicate_fields_instead_of_losing_data(tmp_path) -> None:
     csv_path = tmp_path / "duplicate.csv"
     jsonl_path = tmp_path / "duplicate.jsonl"
@@ -928,3 +975,172 @@ def test_spill_partition_configuration_is_validated() -> None:
         grouped.spill(2.5)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="tempdir requires"):
         fpstreams.rows([{"id": 1}]).join([{"id": 1}], on="id", tempdir="unused")
+
+
+def test_spill_limits_are_validated_before_sources_are_consumed() -> None:
+    with pytest.raises(ValueError, match="max_partition_rows"):
+        fpstreams.SpillLimits(max_partition_rows=0)
+    with pytest.raises(TypeError, match="max_output_rows"):
+        fpstreams.SpillLimits(max_output_rows=2.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="limits requires partitions"):
+        fpstreams.rows([{"id": 1}]).join(
+            [{"id": 1}],
+            on="id",
+            limits=fpstreams.SpillLimits(),
+        )
+
+
+def test_spilled_join_rejects_an_oversized_skewed_partition_and_cleans_up(tmp_path) -> None:
+    limits = fpstreams.SpillLimits(
+        max_partition_rows=2,
+        max_partition_bytes=64 * 1024,
+        max_matches_per_key=10,
+        max_output_rows=10,
+        max_repartition_depth=1,
+    )
+
+    with pytest.raises(fpstreams.BufferLimitError, match="max_partition_rows"):
+        fpstreams.rows([{"id": 1}]).join(
+            [{"id": 1, "right": value} for value in range(3)],
+            on="id",
+            partitions=2,
+            tempdir=tmp_path,
+            limits=limits,
+        ).to_list()
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spilled_group_rejects_distinct_colliding_keys_without_unbounded_load(tmp_path) -> None:
+    limits = fpstreams.SpillLimits(
+        max_partition_rows=2,
+        max_partition_bytes=64 * 1024,
+        max_matches_per_key=10,
+        max_output_rows=10,
+        max_repartition_depth=1,
+    )
+    records = [{"key": _CollidingKey(value)} for value in range(3)]
+
+    with pytest.raises(fpstreams.BufferLimitError, match="max_partition_rows"):
+        (
+            fpstreams.rows(records)
+            .group_by("key")
+            .spill(2, tempdir=tmp_path, limits=limits)
+            .aggregate(count=fpstreams.agg.count())
+            .to_list()
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spill_write_failure_closes_source_and_removes_temporary_files(
+    tmp_path, monkeypatch
+) -> None:
+    from fpstreams.tabular import spill_io
+
+    closed = False
+
+    def records() -> Iterator[dict[str, int]]:
+        nonlocal closed
+        try:
+            yield {"key": 1}
+        finally:
+            closed = True
+
+    def fail_write(*_args, **_kwargs) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(spill_io, "dump", fail_write)
+    with pytest.raises(OSError, match="disk full"):
+        (
+            fpstreams.rows(records())
+            .group_by("key")
+            .spill(2, tempdir=tmp_path)
+            .aggregate(count=fpstreams.agg.count())
+            .to_list()
+        )
+
+    assert closed
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spilled_group_rejects_an_oversized_serialized_partition(tmp_path) -> None:
+    limits = fpstreams.SpillLimits(
+        max_partition_rows=10,
+        max_partition_bytes=512,
+        max_matches_per_key=10,
+        max_output_rows=10,
+        max_repartition_depth=0,
+    )
+
+    with pytest.raises(fpstreams.BufferLimitError, match="max_partition_bytes"):
+        (
+            fpstreams.rows([{"key": 1, "payload": "x" * 5_000}])
+            .group_by("key")
+            .spill(2, tempdir=tmp_path, limits=limits)
+            .aggregate(count=fpstreams.agg.count())
+            .to_list()
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spilled_join_guards_matches_and_total_output(tmp_path) -> None:
+    matches_limited = fpstreams.SpillLimits(
+        max_partition_rows=10,
+        max_partition_bytes=64 * 1024,
+        max_matches_per_key=2,
+        max_output_rows=10,
+        max_repartition_depth=0,
+    )
+    with pytest.raises(fpstreams.BufferLimitError, match="max_matches_per_key"):
+        fpstreams.rows([{"id": 1, "left": "a"}]).join(
+            [{"id": 1, "right": value} for value in range(3)],
+            on="id",
+            partitions=2,
+            tempdir=tmp_path,
+            limits=matches_limited,
+        ).to_list()
+    assert list(tmp_path.iterdir()) == []
+
+    output_limited = fpstreams.SpillLimits(
+        max_partition_rows=10,
+        max_partition_bytes=64 * 1024,
+        max_matches_per_key=10,
+        max_output_rows=3,
+        max_repartition_depth=0,
+    )
+    left = [{"id": 1, "left": value} for value in range(2)]
+    right = [{"id": 1, "right": value} for value in range(2)]
+    with pytest.raises(fpstreams.BufferLimitError, match="max_output_rows"):
+        fpstreams.rows(left).join(
+            right,
+            on="id",
+            partitions=2,
+            tempdir=tmp_path,
+            limits=output_limited,
+        ).to_list()
+    assert list(tmp_path.iterdir()) == []
+
+    exact_limit = fpstreams.SpillLimits(
+        max_partition_rows=10,
+        max_partition_bytes=64 * 1024,
+        max_matches_per_key=10,
+        max_output_rows=4,
+        max_repartition_depth=0,
+    )
+    assert (
+        len(
+            fpstreams.rows(left)
+            .join(
+                right,
+                on="id",
+                partitions=2,
+                tempdir=tmp_path,
+                limits=exact_limit,
+            )
+            .to_list()
+        )
+        == 4
+    )
+    assert list(tmp_path.iterdir()) == []

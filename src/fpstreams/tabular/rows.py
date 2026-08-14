@@ -13,9 +13,10 @@ from ..collecting.aggregation import (
     prepare_aggregations,
     run_aggregations,
 )
-from ..errors import DuplicateKeyError, SelectionError
+from ..errors import BufferLimitError, DuplicateKeyError, SelectionError
 from ..expressions.row import RowExpr, lit
 from ..expressions.selectors import Selector, compile_selector
+from ..io_safety import validate_max_record_bytes
 from ..streams.flow import Flow, flow
 from .arrow import (
     arrow_row_source,
@@ -27,6 +28,7 @@ from .io import RowsIOMixin
 from .join import JoinSelector, JoinValidation, _build_join
 from .polars import polars_row_factory
 from .records import _as_record, _require_unique_names
+from .spill_limits import SpillLimits
 from .sql import (
     ConnectionFactory,
     DBParameters,
@@ -75,21 +77,42 @@ class Rows(RowsIOMixin[T], Generic[T]):
 
     @staticmethod
     def from_jsonl(
-        path: str | os.PathLike[str], *, encoding: str = "utf-8"
+        path: str | os.PathLike[str],
+        *,
+        encoding: str = "utf-8",
+        max_record_bytes: int | None = 8 * 1024 * 1024,
     ) -> Rows[dict[str, Any]]:
         """Read one JSON object per line lazily.
 
         Args:
             path: The filesystem path to read from or write to.
             encoding: The text encoding used to open the file.
+            max_record_bytes: Maximum encoded bytes per physical record, or None to disable.
 
         Returns:
             A new lazy `Rows` pipeline representing this operation.
         """
 
+        record_limit = validate_max_record_bytes(max_record_bytes)
+
         def records() -> Iterator[dict[str, Any]]:
-            with open(path, encoding=encoding) as handle:
-                for line_number, line in enumerate(handle, 1):
+            with open(path, "rb") as handle:
+                line_number = 0
+                while True:
+                    encoded = (
+                        handle.readline()
+                        if record_limit is None
+                        else handle.readline(record_limit + 1)
+                    )
+                    if not encoded:
+                        return
+                    line_number += 1
+                    if record_limit is not None and len(encoded) > record_limit:
+                        raise BufferLimitError(
+                            f"JSON Lines record {line_number} bytes {len(encoded)} exceed "
+                            f"max_record_bytes={record_limit}"
+                        )
+                    line = encoded.decode(encoding)
                     if not line.strip():
                         continue
 
@@ -894,6 +917,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         validate: JoinValidation = "m:m",
         partitions: int | None = None,
         tempdir: str | os.PathLike[str] | None = None,
+        limits: SpillLimits | None = None,
     ) -> Rows[dict[str, Any]]:
         """Join this record pipeline with another source.
 
@@ -913,6 +937,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
             partitions: Number of hash partitions for bounded-memory execution. Must be between
                 2 and 256.
             tempdir: Parent directory for temporary partition files. Requires partitions.
+            limits: Finite partition, match, and output budgets for spilled execution.
 
         Returns:
             A new lazy Rows pipeline containing the joined records.
@@ -921,6 +946,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
             ValueError: If selectors, modes, partition options, or key cardinality are invalid.
             TypeError: If a key is unhashable or spilled data cannot be serialized.
             DuplicateKeyError: If suffixing would create an ambiguous output field.
+            BufferLimitError: If spilled execution exceeds a configured resource budget.
         """
         return Rows(
             flow.defer(
@@ -935,6 +961,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
                     validate=validate,
                     partitions=partitions,
                     tempdir=tempdir,
+                    limits=limits,
                 )
             )
         )

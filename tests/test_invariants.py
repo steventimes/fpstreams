@@ -9,7 +9,7 @@ from typing import cast, get_args
 
 import pytest
 
-from fpstreams import Stream
+from fpstreams import Stream, aflow, flow, item
 from fpstreams.planning.sync import FilterOp, MapOp, Operation, TapOp
 
 
@@ -38,6 +38,44 @@ def test_fuzz_random_numeric_pipelines_are_crash_free_and_match_oracle() -> None
 
         assert result == expected
         assert all((x + 1) % 3 == 0 for x in result)
+
+
+def test_property_fused_map_filter_matches_python_oracle_and_native() -> None:
+    rng = random.Random(20260814)
+    for _ in range(100):
+        values = [rng.randint(-10_000, 10_000) for _ in range(rng.randint(0, 200))]
+        pipeline = flow(values).map(item * 3 - 1).filter(item % 7 != 0)
+        expected = [value * 3 - 1 for value in values if (value * 3 - 1) % 7 != 0]
+
+        assert pipeline.with_engine("python").to_list() == expected
+        assert pipeline.with_engine("native").to_list() == expected
+
+
+@pytest.mark.asyncio
+async def test_property_common_sync_and_async_transforms_have_parity() -> None:
+    rng = random.Random(20260815)
+    for _ in range(50):
+        values = [rng.randint(-100, 100) for _ in range(rng.randint(0, 100))]
+        drop = rng.randint(0, 10)
+        take = rng.randint(0, 30)
+        expected = (
+            flow(values)
+            .map(lambda value: value * 2)
+            .filter(lambda value: value % 3 != 0)
+            .drop(drop)
+            .take(take)
+            .to_list()
+        )
+        actual = await (
+            aflow(values)
+            .map(lambda value: value * 2)
+            .filter(lambda value: value % 3 != 0)
+            .drop(drop)
+            .take(take)
+            .to_list()
+        )
+
+        assert actual == expected
 
 
 def test_fuzz_string_joining_never_crashes() -> None:
@@ -119,8 +157,10 @@ def test_sync_operation_dispatch_covers_every_planned_operation() -> None:
     spec = importlib.util.find_spec("fpstreams.execution.sync_ops")
     assert spec is not None, "the focused synchronous dispatch module must exist"
 
-    from fpstreams.execution.sync_ops import SUPPORTED_OPERATION_TYPES
+    from fpstreams.execution.sync_ops import OPERATION_HANDLERS, SUPPORTED_OPERATION_TYPES
 
+    assert len(SUPPORTED_OPERATION_TYPES) == len(set(SUPPORTED_OPERATION_TYPES))
+    assert tuple(OPERATION_HANDLERS) == SUPPORTED_OPERATION_TYPES
     assert set(SUPPORTED_OPERATION_TYPES) == set(get_args(Operation))
 
 
@@ -178,9 +218,14 @@ def test_async_operation_dispatch_covers_every_planned_operation() -> None:
     spec = importlib.util.find_spec("fpstreams.execution.async_ops")
     assert spec is not None, "the focused asynchronous dispatch module must exist"
 
-    from fpstreams.execution.async_ops import SUPPORTED_ASYNC_OPERATION_TYPES
+    from fpstreams.execution.async_ops import (
+        ASYNC_OPERATION_HANDLERS,
+        SUPPORTED_ASYNC_OPERATION_TYPES,
+    )
     from fpstreams.planning.async_ import _AsyncOperation
 
+    assert len(SUPPORTED_ASYNC_OPERATION_TYPES) == len(set(SUPPORTED_ASYNC_OPERATION_TYPES))
+    assert tuple(ASYNC_OPERATION_HANDLERS) == SUPPORTED_ASYNC_OPERATION_TYPES
     assert set(SUPPORTED_ASYNC_OPERATION_TYPES) == set(get_args(_AsyncOperation))
 
 

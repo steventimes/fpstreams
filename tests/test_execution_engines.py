@@ -160,6 +160,125 @@ def test_native_expressions_compose_boolean_conditions_and_abs() -> None:
     assert pipeline.with_engine("native").to_list() == pipeline.with_engine("python").to_list()
 
 
+def test_deep_scalar_expressions_compile_without_python_recursion() -> None:
+    integer_expression = fpstreams.item
+    float_expression = fpstreams.fitem
+    for _ in range(2_000):
+        integer_expression = integer_expression + 1
+        float_expression = float_expression + 0.5
+
+    assert integer_expression(3) == 2_003
+    assert float_expression(3.0) == pytest.approx(1_003.0)
+    assert len(integer_expression.native_instructions()) == 4_001
+    assert len(float_expression.native_instructions()) == 4_001
+
+
+def test_structurally_equal_scalar_expressions_share_compiled_evaluators() -> None:
+    from fpstreams.expressions.scalar import (
+        _compile_float_evaluator,
+        _compile_int_evaluator,
+    )
+
+    _compile_int_evaluator.cache_clear()
+    _compile_float_evaluator.cache_clear()
+
+    assert ((fpstreams.item + 2) * 3)(4) == 18
+    assert ((fpstreams.item + 2) * 3)(5) == 21
+    assert ((fpstreams.fitem + 2.0) * 3.0)(4.0) == pytest.approx(18.0)
+    assert ((fpstreams.fitem + 2.0) * 3.0)(5.0) == pytest.approx(21.0)
+
+    assert _compile_int_evaluator.cache_info().misses == 1
+    assert _compile_int_evaluator.cache_info().hits == 1
+    assert _compile_float_evaluator.cache_info().misses == 1
+    assert _compile_float_evaluator.cache_info().hits == 1
+
+
+def test_python_executor_unwraps_compiled_expression_once(monkeypatch) -> None:
+    from fpstreams.expressions.scalar import Expr
+
+    expression = fpstreams.item * 3 + 1
+    predicate = fpstreams.item % 2 == 0
+
+    def reject_per_item_dispatch(_expression: Expr, _item: int) -> int:
+        raise AssertionError("Expr.__call__ should not run inside the fused loop")
+
+    monkeypatch.setattr(Expr, "__call__", reject_per_item_dispatch)
+    result = (
+        fpstreams.flow(range(10)).map(expression).filter(predicate).with_engine("python").to_list()
+    )
+
+    assert result == [4, 10, 16, 22, 28]
+
+
+def test_hybrid_native_prefix_analysis_does_not_recompile_each_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams.planning import native
+
+    pipeline = fpstreams.flow(range(100))
+    for _ in range(30):
+        pipeline = pipeline.map(fpstreams.item + 1)
+    for _ in range(30):
+        pipeline = pipeline.map(str)
+
+    compile_calls = 0
+    original_compile = native._compile
+
+    def tracked_compile(plan):
+        nonlocal compile_calls
+        compile_calls += 1
+        return original_compile(plan)
+
+    monkeypatch.setattr(native, "_compile", tracked_compile)
+    program, prefix_length = native._longest_native_prefix(pipeline._plan)
+
+    assert program is not None
+    assert prefix_length == 30
+    assert compile_calls <= 1
+
+
+def test_extension_capability_cache_is_reused_but_tracks_module_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams import _native as _installed_native
+    from fpstreams.planning import native
+
+    assert _installed_native is not None
+
+    required = {
+        "execute_i64",
+        "execute_i64_range",
+        "terminal_i64",
+        "terminal_i64_range",
+        "statistics_i64",
+        "statistics_i64_range",
+        "aggregate_i64",
+        "aggregate_i64_range",
+    }
+
+    class Extension:
+        def __init__(self) -> None:
+            self.lookups = 0
+
+        def __getattr__(self, name: str):
+            if name in required:
+                self.lookups += 1
+                return lambda: None
+            raise AttributeError(name)
+
+    first = Extension()
+    monkeypatch.setattr(fpstreams, "_native", first)
+    assert native._extension_available("i64")
+    first_pass_lookups = first.lookups
+    assert native._extension_available("i64")
+    assert first.lookups == first_pass_lookups
+
+    replacement = Extension()
+    monkeypatch.setattr(fpstreams, "_native", replacement)
+    assert native._extension_available("i64")
+    assert replacement.lookups == first_pass_lookups
+
+
 def test_native_distinct_is_stable_fused_and_available_to_terminals() -> None:
     pipeline = (
         flow([8, 3, 8, 5, 3, 2, 5, 9, 2, 9, 1, 8])
@@ -426,6 +545,75 @@ def test_direct_range_uses_native_terminals_without_a_synthetic_map() -> None:
     ) == {"count": 5, "total": 15, "first": 1, "last": 5, "variance": 2.0}
 
 
+@pytest.mark.parametrize("source", [list(range(32)), tuple(range(32))])
+@pytest.mark.parametrize("terminal", ["list", "count", "sum", "statistics"])
+def test_identity_container_auto_terminals_avoid_native_copy(
+    source: list[int] | tuple[int, ...], terminal: str
+) -> None:
+    explanation = fpstreams.flow(source).explain(terminal).to_dict()
+
+    assert explanation["terminal"] == terminal
+    assert explanation["selected_engine"] == "python"
+    assert explanation["data_movement"] == {
+        "scans_source": False,
+        "copies_source": False,
+        "materializes": terminal == "list",
+    }
+
+
+def test_terminal_explain_matches_forced_native_and_range_execution() -> None:
+    forced = fpstreams.flow([1, 2, 3]).with_engine("native").explain("sum").to_dict()
+    ranged = fpstreams.flow(range(1, 33)).explain("sum").to_dict()
+
+    assert forced["selected_engine"] == "native"
+    assert forced["data_movement"] == {
+        "scans_source": True,
+        "copies_source": True,
+        "materializes": False,
+    }
+    assert ranged["selected_engine"] == "native"
+    assert ranged["data_movement"] == {
+        "scans_source": False,
+        "copies_source": False,
+        "materializes": False,
+    }
+    assert ranged["complexity"] == "O(n)"
+
+
+def test_exact_size_count_does_not_open_an_identity_source() -> None:
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.planning.sync import Plan
+
+    def fail_if_opened() -> Iterator[int]:
+        raise AssertionError("exact-size source was opened")
+        yield
+
+    source = Source(
+        fail_if_opened,
+        SourceCapabilities(reiterable=True, exact_size=7),
+    )
+
+    assert fpstreams.Flow(Plan(source)).count() == 7
+
+
+def test_cardinality_changing_plan_does_not_use_source_exact_size() -> None:
+    opened = 0
+
+    def values() -> Iterator[int]:
+        nonlocal opened
+        opened += 1
+        yield from range(7)
+
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.planning.sync import Plan
+
+    source = Source(values, SourceCapabilities(reiterable=True, exact_size=7))
+    pipeline = fpstreams.Flow(Plan(source)).filter(lambda value: value % 2 == 0)
+
+    assert pipeline.count() == 4
+    assert opened == 1
+
+
 def test_direct_homogeneous_numeric_sequences_infer_the_native_kind() -> None:
     assert fpstreams.flow([1, 2, 3]).with_engine("native").aggregate(
         total=fpstreams.agg.sum(), mean=fpstreams.agg.mean()
@@ -433,6 +621,28 @@ def test_direct_homogeneous_numeric_sequences_infer_the_native_kind() -> None:
     assert fpstreams.flow((1.5, 2.5, 3.5)).with_engine("native").aggregate(
         total=fpstreams.agg.sum(), mean=fpstreams.agg.mean()
     ) == {"total": pytest.approx(7.5), "mean": pytest.approx(2.5)}
+
+
+def test_native_adapter_covers_float_range_and_integer_list_terminals(monkeypatch) -> None:
+    from fpstreams.execution import native
+    from fpstreams.planning.native import NativeProgram
+
+    float_range = NativeProgram(
+        range(1, 4),
+        ((0, (fpstreams.fitem + 0.5).native_instructions()),),
+        "f64",
+    )
+    integer_list = NativeProgram([1, 2, 3], (), "i64")
+
+    assert native.execute_terminal(float_range, "count") == 3
+    assert native.execute_terminal(float_range, "sum") == pytest.approx(7.5)
+    assert native.execute_statistics(float_range)[0] == 3
+    assert native.execute_aggregate(float_range)[0] == 3
+    assert native.execute_statistics(integer_list)[0] == 3
+
+    monkeypatch.setattr(native.sys, "version_info", (3, 11))
+    float_list = NativeProgram([1.0, 2.0, 3.0], (), "f64")
+    assert native.execute_terminal(float_list, "sum") == pytest.approx(6.0)
 
 
 def test_identity_terminals_fallback_safely_and_preserve_empty_semantics() -> None:

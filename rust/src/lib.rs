@@ -19,9 +19,19 @@ fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+#[pyfunction]
+fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(build_profile, module)?)?;
     module.add_function(wrap_pyfunction!(execute_i64, module)?)?;
     module.add_function(wrap_pyfunction!(execute_i64_range, module)?)?;
     module.add_function(wrap_pyfunction!(terminal_i64, module)?)?;

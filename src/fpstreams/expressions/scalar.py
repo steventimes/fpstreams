@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Literal
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Any, Generic, Literal, TypeVar, cast
 
 ExpressionKind = Literal["int", "bool"]
 
@@ -46,6 +47,272 @@ _BINARY: dict[str, Callable[[int | bool, int | bool], int | bool]] = {
     "and": lambda left, right: bool(left) and bool(right),
     "or": lambda left, right: bool(left) or bool(right),
 }
+_OPCODE_NAMES = {opcode: name for name, opcode in _OPCODES.items()}
+_UNARY_OPCODES = {_OPCODES["neg"], _OPCODES["not"], _OPCODES["abs"]}
+_COMPOSED_EVALUATOR_LIMIT = 128
+
+InputT = TypeVar("InputT")
+OutputT = TypeVar("OutputT")
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluatorNode(Generic[InputT, OutputT]):
+    kind: Literal["item", "const", "call"]
+    value: OutputT | Callable[[InputT], OutputT] | None = None
+
+
+def _binary_node(
+    operation: Callable[[OutputT, OutputT], OutputT],
+    left: _EvaluatorNode[InputT, OutputT],
+    right: _EvaluatorNode[InputT, OutputT],
+    *,
+    item_converter: Callable[[InputT], OutputT] | None,
+) -> _EvaluatorNode[InputT, OutputT]:
+    if left.kind == "const" and right.kind == "const":
+        return _EvaluatorNode(
+            "const",
+            operation(cast(OutputT, left.value), cast(OutputT, right.value)),
+        )
+    if left.kind == "item" and right.kind == "item":
+        if item_converter is None:
+            return _EvaluatorNode(
+                "call",
+                lambda item: operation(cast(OutputT, item), cast(OutputT, item)),
+            )
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(item_converter(item), item_converter(item)),
+        )
+    if left.kind == "item" and right.kind == "const":
+        right_constant = cast(OutputT, right.value)
+        if item_converter is None:
+            return _EvaluatorNode(
+                "call",
+                lambda item: operation(cast(OutputT, item), right_constant),
+            )
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(item_converter(item), right_constant),
+        )
+    if left.kind == "const" and right.kind == "item":
+        left_constant = cast(OutputT, left.value)
+        if item_converter is None:
+            return _EvaluatorNode(
+                "call",
+                lambda item: operation(left_constant, cast(OutputT, item)),
+            )
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(left_constant, item_converter(item)),
+        )
+    if left.kind == "call" and right.kind == "const":
+        left_evaluator = cast(Callable[[InputT], OutputT], left.value)
+        right_constant = cast(OutputT, right.value)
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(left_evaluator(item), right_constant),
+        )
+    if left.kind == "const" and right.kind == "call":
+        left_constant = cast(OutputT, left.value)
+        right_evaluator = cast(Callable[[InputT], OutputT], right.value)
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(left_constant, right_evaluator(item)),
+        )
+    if left.kind == "item" and right.kind == "call":
+        right_evaluator = cast(Callable[[InputT], OutputT], right.value)
+        if item_converter is None:
+            return _EvaluatorNode(
+                "call",
+                lambda item: operation(cast(OutputT, item), right_evaluator(item)),
+            )
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(item_converter(item), right_evaluator(item)),
+        )
+    if left.kind == "call" and right.kind == "item":
+        left_evaluator = cast(Callable[[InputT], OutputT], left.value)
+        if item_converter is None:
+            return _EvaluatorNode(
+                "call",
+                lambda item: operation(left_evaluator(item), cast(OutputT, item)),
+            )
+        return _EvaluatorNode(
+            "call",
+            lambda item: operation(left_evaluator(item), item_converter(item)),
+        )
+    left_evaluator = cast(Callable[[InputT], OutputT], left.value)
+    right_evaluator = cast(Callable[[InputT], OutputT], right.value)
+    return _EvaluatorNode(
+        "call",
+        lambda item: operation(left_evaluator(item), right_evaluator(item)),
+    )
+
+
+def _unary_node(
+    operation: Callable[[OutputT], OutputT],
+    operand: _EvaluatorNode[InputT, OutputT],
+    *,
+    item_converter: Callable[[InputT], OutputT] | None,
+) -> _EvaluatorNode[InputT, OutputT]:
+    if operand.kind == "const":
+        return _EvaluatorNode("const", operation(cast(OutputT, operand.value)))
+    if operand.kind == "item":
+        if item_converter is None:
+            return _EvaluatorNode("call", lambda item: operation(cast(OutputT, item)))
+        return _EvaluatorNode("call", lambda item: operation(item_converter(item)))
+    evaluator = cast(Callable[[InputT], OutputT], operand.value)
+    return _EvaluatorNode("call", lambda item: operation(evaluator(item)))
+
+
+def _node_evaluator(
+    node: _EvaluatorNode[InputT, OutputT],
+    *,
+    item_converter: Callable[[InputT], OutputT] | None,
+) -> Callable[[InputT], OutputT]:
+    if node.kind == "call":
+        return cast(Callable[[InputT], OutputT], node.value)
+    if node.kind == "item":
+        if item_converter is not None:
+            return item_converter
+        return lambda item: cast(OutputT, item)
+    constant = cast(OutputT, node.value)
+    return lambda _item: constant
+
+
+def _compose_evaluator(
+    instructions: tuple[tuple[int, OutputT], ...],
+    *,
+    binary_operations: Mapping[str, Callable[[OutputT, OutputT], OutputT]],
+    unary_operations: Mapping[int, Callable[[OutputT], OutputT]],
+    item_converter: Callable[[InputT], OutputT] | None,
+    description: str,
+) -> Callable[[InputT], OutputT]:
+    values: list[_EvaluatorNode[InputT, OutputT]] = []
+    for opcode, operand in instructions:
+        if opcode == _OPCODES["item"]:
+            values.append(_EvaluatorNode("item"))
+            continue
+        if opcode == _OPCODES["const"]:
+            values.append(_EvaluatorNode("const", operand))
+            continue
+        if opcode in _UNARY_OPCODES:
+            if not values:
+                raise RuntimeError(f"malformed {description}: missing operand")
+            values.append(
+                _unary_node(
+                    unary_operations[opcode],
+                    values.pop(),
+                    item_converter=item_converter,
+                )
+            )
+            continue
+        if len(values) < 2:
+            raise RuntimeError(f"malformed {description}: missing right operand")
+        right = values.pop()
+        left = values.pop()
+        values.append(
+            _binary_node(
+                binary_operations[_OPCODE_NAMES[opcode]],
+                left,
+                right,
+                item_converter=item_converter,
+            )
+        )
+    if len(values) != 1:
+        raise RuntimeError(f"malformed {description}: unexpected operands")
+    return _node_evaluator(values[0], item_converter=item_converter)
+
+
+def _postorder_instructions(
+    expression: Any,
+    *,
+    default_operand: int | float,
+) -> tuple[tuple[int, int | float], ...]:
+    instructions: list[tuple[int, int | float]] = []
+    pending = [(expression, False)]
+    while pending:
+        current, visited = pending.pop()
+        if not visited:
+            pending.append((current, True))
+            if current.right is not None:
+                pending.append((current.right, False))
+            if current.left is not None:
+                pending.append((current.left, False))
+            continue
+        operand = current.value if current.operation == "const" else default_operand
+        instructions.append((_OPCODES[current.operation], operand or default_operand))
+    return tuple(instructions)
+
+
+def _flat_int_evaluator(
+    instructions: tuple[tuple[int, int], ...],
+) -> Callable[[int], int | bool]:
+    def evaluate(item: int) -> int | bool:
+        values: list[int | bool] = []
+        for opcode, operand in instructions:
+            if opcode == _OPCODES["item"]:
+                values.append(item)
+                continue
+            if opcode == _OPCODES["const"]:
+                values.append(operand)
+                continue
+            if opcode in _UNARY_OPCODES:
+                if not values:
+                    raise RuntimeError("malformed expression: missing operand")
+                value = values.pop()
+                if opcode == _OPCODES["neg"]:
+                    values.append(-value)
+                elif opcode == _OPCODES["abs"]:
+                    values.append(abs(value))
+                else:
+                    values.append(not bool(value))
+                continue
+            if len(values) < 2:
+                raise RuntimeError("malformed expression: missing right operand")
+            right = values.pop()
+            left = values.pop()
+            operation = _OPCODE_NAMES[opcode]
+            values.append(_BINARY[operation](left, right))
+        if len(values) != 1:
+            raise RuntimeError("malformed expression: unexpected operands")
+        return values[0]
+
+    return evaluate
+
+
+def _int_neg(value: int | bool) -> int | bool:
+    return -value
+
+
+def _int_abs(value: int | bool) -> int | bool:
+    return abs(value)
+
+
+def _int_not(value: int | bool) -> int | bool:
+    return not bool(value)
+
+
+_INT_UNARY: dict[int, Callable[[int | bool], int | bool]] = {
+    _OPCODES["neg"]: _int_neg,
+    _OPCODES["abs"]: _int_abs,
+    _OPCODES["not"]: _int_not,
+}
+
+
+@lru_cache(maxsize=1_024)
+def _compile_int_evaluator(
+    instructions: tuple[tuple[int, int], ...],
+) -> Callable[[int], int | bool]:
+    if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
+        return _flat_int_evaluator(instructions)
+    return _compose_evaluator(
+        instructions,
+        binary_operations=_BINARY,
+        unary_operations=_INT_UNARY,
+        item_converter=None,
+        description="expression",
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -57,6 +324,12 @@ class Expr:
     right: Expr | None = None
     value: int | None = None
     kind: ExpressionKind = "int"
+    _instructions: tuple[tuple[int, int], ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _evaluator: Callable[[int], int | bool] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @staticmethod
     def constant(value: int) -> Expr:
@@ -164,22 +437,15 @@ class Expr:
         Raises:
             RuntimeError: If the expression tree is malformed.
         """
-        if self.operation == "item":
-            return item
-        if self.operation == "const":
-            return self.value  # type: ignore[return-value]
-        if self.left is None:
-            raise RuntimeError("malformed expression: missing operand")
-        left = self.left(item)
-        if self.operation == "neg":
-            return -left
-        if self.operation == "abs":
-            return abs(left)
-        if self.operation == "not":
-            return not bool(left)
-        if self.right is None:
-            raise RuntimeError("malformed expression: missing right operand")
-        return _BINARY[self.operation](left, self.right(item))
+        return self._python_evaluator()(item)
+
+    def _python_evaluator(self) -> Callable[[int], int | bool]:
+        """Return the cached callable used by Python execution loops."""
+        evaluator = self._evaluator
+        if evaluator is None:
+            evaluator = _compile_int_evaluator(self.native_instructions())
+            object.__setattr__(self, "_evaluator", evaluator)
+        return evaluator
 
     def native_instructions(self) -> tuple[tuple[int, int], ...]:
         """Compile this expression into native executor instructions.
@@ -187,18 +453,14 @@ class Expr:
         Returns:
             A tuple containing the resulting values.
         """
-        instructions: list[tuple[int, int]] = []
-
-        def emit(expression: Expr) -> None:
-            if expression.left is not None:
-                emit(expression.left)
-            if expression.right is not None:
-                emit(expression.right)
-            operand = expression.value if expression.operation == "const" else 0
-            instructions.append((_OPCODES[expression.operation], operand or 0))
-
-        emit(self)
-        return tuple(instructions)
+        instructions = self._instructions
+        if instructions is None:
+            instructions = cast(
+                tuple[tuple[int, int], ...],
+                _postorder_instructions(self, default_operand=0),
+            )
+            object.__setattr__(self, "_instructions", instructions)
+        return instructions
 
 
 item = Expr("item")
@@ -221,6 +483,76 @@ _FLOAT_BINARY: dict[str, Callable[[float | bool, float | bool], float | bool]] =
 }
 
 
+def _flat_float_evaluator(
+    instructions: tuple[tuple[int, float], ...],
+) -> Callable[[float], float | bool]:
+    def evaluate(item: float) -> float | bool:
+        values: list[float | bool] = []
+        for opcode, operand in instructions:
+            if opcode == _OPCODES["item"]:
+                values.append(float(item))
+                continue
+            if opcode == _OPCODES["const"]:
+                values.append(operand)
+                continue
+            if opcode in _UNARY_OPCODES:
+                if not values:
+                    raise RuntimeError("malformed float expression: missing operand")
+                value = values.pop()
+                if opcode == _OPCODES["neg"]:
+                    values.append(-value)
+                elif opcode == _OPCODES["abs"]:
+                    values.append(abs(value))
+                else:
+                    values.append(not bool(value))
+                continue
+            if len(values) < 2:
+                raise RuntimeError("malformed float expression: missing right operand")
+            right = values.pop()
+            left = values.pop()
+            operation = _OPCODE_NAMES[opcode]
+            values.append(_FLOAT_BINARY[operation](left, right))
+        if len(values) != 1:
+            raise RuntimeError("malformed float expression: unexpected operands")
+        return values[0]
+
+    return evaluate
+
+
+def _float_neg(value: float | bool) -> float | bool:
+    return -value
+
+
+def _float_abs(value: float | bool) -> float | bool:
+    return abs(value)
+
+
+def _float_not(value: float | bool) -> float | bool:
+    return not bool(value)
+
+
+_FLOAT_UNARY: dict[int, Callable[[float | bool], float | bool]] = {
+    _OPCODES["neg"]: _float_neg,
+    _OPCODES["abs"]: _float_abs,
+    _OPCODES["not"]: _float_not,
+}
+
+
+@lru_cache(maxsize=1_024)
+def _compile_float_evaluator(
+    instructions: tuple[tuple[int, float], ...],
+) -> Callable[[float], float | bool]:
+    if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
+        return _flat_float_evaluator(instructions)
+    return _compose_evaluator(
+        instructions,
+        binary_operations=_FLOAT_BINARY,
+        unary_operations=_FLOAT_UNARY,
+        item_converter=float,
+        description="float expression",
+    )
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class FExpr:
     """A callable floating-point expression compiled by the f64 executor."""
@@ -230,6 +562,12 @@ class FExpr:
     right: FExpr | None = None
     value: float | None = None
     kind: FloatExpressionKind = "float"
+    _instructions: tuple[tuple[int, float], ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _evaluator: Callable[[float], float | bool] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @staticmethod
     def constant(value: int | float) -> FExpr:
@@ -337,22 +675,15 @@ class FExpr:
         Raises:
             RuntimeError: If the expression tree is malformed.
         """
-        if self.operation == "item":
-            return float(item)
-        if self.operation == "const":
-            return self.value  # type: ignore[return-value]
-        if self.left is None:
-            raise RuntimeError("malformed float expression: missing operand")
-        left = self.left(item)
-        if self.operation == "neg":
-            return -left
-        if self.operation == "abs":
-            return abs(left)
-        if self.operation == "not":
-            return not bool(left)
-        if self.right is None:
-            raise RuntimeError("malformed float expression: missing right operand")
-        return _FLOAT_BINARY[self.operation](left, self.right(item))
+        return self._python_evaluator()(item)
+
+    def _python_evaluator(self) -> Callable[[float], float | bool]:
+        """Return the cached callable used by Python execution loops."""
+        evaluator = self._evaluator
+        if evaluator is None:
+            evaluator = _compile_float_evaluator(self.native_instructions())
+            object.__setattr__(self, "_evaluator", evaluator)
+        return evaluator
 
     def native_instructions(self) -> tuple[tuple[int, float], ...]:
         """Compile this expression into native executor instructions.
@@ -360,18 +691,14 @@ class FExpr:
         Returns:
             A tuple containing the resulting values.
         """
-        instructions: list[tuple[int, float]] = []
-
-        def emit(expression: FExpr) -> None:
-            if expression.left is not None:
-                emit(expression.left)
-            if expression.right is not None:
-                emit(expression.right)
-            operand = expression.value if expression.operation == "const" else 0.0
-            instructions.append((_OPCODES[expression.operation], operand or 0.0))
-
-        emit(self)
-        return tuple(instructions)
+        instructions = self._instructions
+        if instructions is None:
+            instructions = cast(
+                tuple[tuple[int, float], ...],
+                _postorder_instructions(self, default_operand=0.0),
+            )
+            object.__setattr__(self, "_instructions", instructions)
+        return instructions
 
 
 fitem = FExpr("item")

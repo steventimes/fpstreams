@@ -9,6 +9,7 @@ from typing import Any, Literal, TypeAlias
 from ..expressions.selectors import Selector, compile_selector
 from .records import _as_record, _remember_columns
 from .spill import spilled_join, validate_partitions
+from .spill_limits import SpillLimits
 
 JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 JoinValidation: TypeAlias = Literal["m:m", "1:1", "1:m", "m:1"]
@@ -406,6 +407,7 @@ def _build_join(
     validate: str,
     partitions: int | None,
     tempdir: str | os.PathLike[str] | None,
+    limits: SpillLimits | None,
 ) -> Callable[[], Iterator[dict[str, Any]]]:
     """Validate a join plan and return its deferred iterator factory."""
     if how not in _JOIN_MODES:
@@ -420,6 +422,9 @@ def _build_join(
     partition_count = None if partitions is None else validate_partitions(partitions)
     if tempdir is not None and partition_count is None:
         raise ValueError("tempdir requires partitions")
+    if limits is not None and partition_count is None:
+        raise ValueError("limits requires partitions")
+    spill_limits = limits or SpillLimits()
 
     left_key = _compile_join_selector(normalized_left)
     right_key = _compile_join_selector(normalized_right)
@@ -439,6 +444,7 @@ def _build_join(
                 validate=validate,
                 partitions=partition_count,
                 tempdir=tempdir,
+                limits=spill_limits,
                 as_record=_as_record,
                 remember_columns=_remember_columns,
                 join_targets=_join_targets,

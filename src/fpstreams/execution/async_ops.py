@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from ..planning.async_ import (
@@ -61,128 +61,59 @@ from .async_concurrency import (
     timeout,
 )
 
-SUPPORTED_ASYNC_OPERATION_TYPES: tuple[type[object], ...] = (
-    _MapAsync,
-    _Filter,
-    _Tap,
-    _Throttle,
-    _FlatMap,
-    _Merge,
-    _MergeMap,
-    _SwitchMap,
-    _CombineLatest,
-    _Timeout,
-    _Debounce,
-    _Delay,
-    _BufferTimeout,
-    _Delay,
-    _Throttle,
-    _Take,
-    _Drop,
-    _TakeWhile,
-    _TakeWhileInclusive,
-    _DropWhile,
-    _Chunk,
-    _BatchBySize,
-    _Window,
-    _Pairwise,
-    _GroupRuns,
-    _Fold,
-    _Unique,
-    _Enumerate,
-    _Zip,
-    _ZipLongest,
-    _Intersperse,
-    _Concat,
-    _Cross,
-    _Scan,
-    _ScanRight,
-    _SwitchMap,
-    _Prepend,
-    _Append,
-    _MapFirst,
-    _MapLast,
-    _Collapse,
-)
+
+def _pairwise(source: AsyncIterator[Any], _operation: _Pairwise) -> AsyncIterator[Any]:
+    return _iterators._pairwise(source)
+
+
+AsyncOperationHandler = Callable[..., AsyncIterator[Any]]
+ASYNC_OPERATION_HANDLERS: dict[type[object], AsyncOperationHandler] = {
+    _MapAsync: map_concurrent,
+    _Filter: _iterators._filter,
+    _Tap: _iterators._tap,
+    _FlatMap: _iterators._flat_map,
+    _Merge: merge,
+    _MergeMap: merge_map,
+    _SwitchMap: switch_map,
+    _CombineLatest: combine_latest,
+    _Timeout: timeout,
+    _Debounce: debounce,
+    _BufferTimeout: buffer_timeout,
+    _Delay: delay,
+    _Throttle: throttle,
+    _Take: _iterators._take,
+    _Drop: _iterators._drop,
+    _TakeWhile: _iterators._take_while,
+    _TakeWhileInclusive: _iterators._take_while_inclusive,
+    _DropWhile: _iterators._drop_while,
+    _Chunk: _iterators._chunk,
+    _BatchBySize: _iterators._batch_by_size,
+    _Window: _iterators._window,
+    _Pairwise: _pairwise,
+    _GroupRuns: _iterators._group_runs,
+    _Fold: _iterators._fold,
+    _Unique: _iterators._unique,
+    _Enumerate: _iterators._enumerate,
+    _Zip: _iterators._zip,
+    _ZipLongest: _iterators._zip_longest,
+    _Intersperse: _iterators._intersperse,
+    _Concat: _iterators._concat,
+    _Cross: _iterators._cross,
+    _Scan: _iterators._scan,
+    _ScanRight: _iterators._scan_right,
+    _Prepend: _iterators._prepend,
+    _Append: _iterators._append,
+    _MapFirst: _iterators._map_first,
+    _MapLast: _iterators._map_last,
+    _Collapse: _iterators._collapse,
+}
+SUPPORTED_ASYNC_OPERATION_TYPES: tuple[type[object], ...] = tuple(ASYNC_OPERATION_HANDLERS)
 
 
 def apply_async_operation(
     source: AsyncIterator[Any], operation: _AsyncOperation
 ) -> AsyncIterator[Any]:
-    if isinstance(operation, _MapAsync):
-        return map_concurrent(source, operation)
-    if isinstance(operation, _Filter):
-        return _iterators._filter(source, operation)
-    if isinstance(operation, _Tap):
-        return _iterators._tap(source, operation)
-    if isinstance(operation, _FlatMap):
-        return _iterators._flat_map(source, operation)
-    if isinstance(operation, _Merge):
-        return merge(source, operation)
-    if isinstance(operation, _MergeMap):
-        return merge_map(source, operation)
-    if isinstance(operation, _SwitchMap):
-        return switch_map(source, operation)
-    if isinstance(operation, _CombineLatest):
-        return combine_latest(source, operation)
-    if isinstance(operation, _Timeout):
-        return timeout(source, operation)
-    if isinstance(operation, _Debounce):
-        return debounce(source, operation)
-    if isinstance(operation, _BufferTimeout):
-        return buffer_timeout(source, operation)
-    if isinstance(operation, _Delay):
-        return delay(source, operation)
-    if isinstance(operation, _Throttle):
-        return throttle(source, operation)
-    if isinstance(operation, _Take):
-        return _iterators._take(source, operation)
-    if isinstance(operation, _Drop):
-        return _iterators._drop(source, operation)
-    if isinstance(operation, _TakeWhile):
-        return _iterators._take_while(source, operation)
-    if isinstance(operation, _TakeWhileInclusive):
-        return _iterators._take_while_inclusive(source, operation)
-    if isinstance(operation, _DropWhile):
-        return _iterators._drop_while(source, operation)
-    if isinstance(operation, _Chunk):
-        return _iterators._chunk(source, operation)
-    if isinstance(operation, _BatchBySize):
-        return _iterators._batch_by_size(source, operation)
-    if isinstance(operation, _Window):
-        return _iterators._window(source, operation)
-    if isinstance(operation, _Pairwise):
-        return _iterators._pairwise(source)
-    if isinstance(operation, _GroupRuns):
-        return _iterators._group_runs(source, operation)
-    if isinstance(operation, _Fold):
-        return _iterators._fold(source, operation)
-    if isinstance(operation, _Unique):
-        return _iterators._unique(source, operation)
-    if isinstance(operation, _Enumerate):
-        return _iterators._enumerate(source, operation)
-    if isinstance(operation, _Zip):
-        return _iterators._zip(source, operation)
-    if isinstance(operation, _ZipLongest):
-        return _iterators._zip_longest(source, operation)
-    if isinstance(operation, _Intersperse):
-        return _iterators._intersperse(source, operation)
-    if isinstance(operation, _Concat):
-        return _iterators._concat(source, operation)
-    if isinstance(operation, _Cross):
-        return _iterators._cross(source, operation)
-    if isinstance(operation, _Scan):
-        return _iterators._scan(source, operation)
-    if isinstance(operation, _ScanRight):
-        return _iterators._scan_right(source, operation)
-    if isinstance(operation, _Prepend):
-        return _iterators._prepend(source, operation)
-    if isinstance(operation, _Append):
-        return _iterators._append(source, operation)
-    if isinstance(operation, _MapFirst):
-        return _iterators._map_first(source, operation)
-    if isinstance(operation, _MapLast):
-        return _iterators._map_last(source, operation)
-    if isinstance(operation, _Collapse):
-        return _iterators._collapse(source, operation)
-    raise TypeError(f"unsupported asynchronous operation: {type(operation).__name__}")
+    handler = ASYNC_OPERATION_HANDLERS.get(type(operation))
+    if handler is None:
+        raise TypeError(f"unsupported asynchronous operation: {type(operation).__name__}")
+    return handler(source, operation)

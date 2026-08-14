@@ -17,6 +17,17 @@ fpstreams 2 replaces the v1 implementation. The current stable version is `2.0.0
 - One-shot source enforcement and deterministic resource cleanup.
 - Strict typing, Python/Rust parity tests, and wheel/sdist packaging.
 
+## 2.0 stabilization completed
+
+- Terminal-aware execution explanations and exact-size count routing.
+- Cached flat scalar-expression evaluators and linear native-prefix planning.
+- Single registries for synchronous and asynchronous operation dispatch.
+- Skew-aware spill repartitioning with finite partition, match, state, and output limits.
+- Spreadsheet-safe CSV as an opt-in mode and bounded JSONL records by default.
+- Patched development dependencies, SHA-pinned Actions, automated dependency updates,
+  verified release artifacts, and SHA-256 manifests.
+- Machine-readable release benchmarks and branch-coverage gates for high-risk modules.
+
 ## Stability commitments
 
 ### Freeze public behavior
@@ -31,11 +42,11 @@ Add native operations only when they preserve Python ordering, equality,
 overflow, error, and cleanup semantics. Every new kernel needs Python/native
 parity tests and an explicit unsupported path.
 
-### Make spill behavior easier to inspect
+### Keep spill behavior inspectable
 
-Improve spill diagnostics, partition selection, and observability for external
-sorts, joins, and grouped aggregation. Materializing operations should remain
-obvious in API documentation and plan explanations.
+Keep spill diagnostics, partition selection, and resource limits visible for
+external sorts, joins, and grouped aggregation. Materializing operations should
+remain obvious in API documentation and plan explanations.
 
 ### Keep adapters current
 
@@ -54,6 +65,11 @@ packages remain optional dependencies.
 These ideas stay out of 2.0 unless they can be added without weakening API
 consistency, memory bounds, or Python/Rust parity.
 
+Research directions such as bounded/unbounded capability typing, mergeable
+aggregator algebra, incremental Rows, Arrow/Substrait pushdown, async cancel-scope
+redesign, and free-threaded Python support remain future work. The 2026-08-14
+stabilization audit did not implement or claim completion of those items.
+
 ## What fpstreams will not do
 
 fpstreams will not replace NumPy, pandas, Polars, or a distributed query engine.
@@ -68,5 +84,7 @@ The v2 release gate covers:
 - no known Python/native semantic divergence in supported plans;
 - clean tests, lint, strict typing, Rust formatting, clippy, and package builds;
 - documented behavior for one-shot sources, cancellation, spilling, and fallbacks;
-- successful installation and import from built wheels;
+- clean installation and native/Python smoke tests for every wheel and the sdist;
+- repository and focus-module branch-coverage thresholds;
+- SHA-pinned CI actions, minimal publish credentials, and artifact hash manifests;
 - a migration path for supported v1 entry-point aliases.

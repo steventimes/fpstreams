@@ -143,23 +143,26 @@ fpstreams cancels outstanding tasks and closes the owned async iterator.
 ## Understand execution
 
 The default engine is `auto`. It selects a fused Python loop, a native Rust
-kernel, or a hybrid plan based on source metadata, operations, and value types.
+kernel, or a hybrid plan based on the source, operations, and requested terminal.
 
 ~~~python
 from fpstreams import flow, item
 
-pipeline = flow([1, 2, 3]).map(item + 1).filter(item > 2)
-explanation = pipeline.explain().to_dict()
+pipeline = flow([1, 2, 3])
+explanation = pipeline.explain(terminal="count").to_dict()
 
-assert explanation["operations"] == [
-    {"name": "map"},
-    {"name": "filter"},
-]
+assert explanation["selected_engine"] == "python"
+assert explanation["complexity"] == "O(1)"
+assert explanation["data_movement"]["copies_source"] is False
 ~~~
 
 Call `with_engine("python")` or `with_engine("native")` to test a specific
 engine. A forced native plan fails clearly when it is unsupported; `auto` can
 fall back or split the pipeline into stages.
+
+Identity lists and tuples stay in Python for materialization, sum, and count so
+they are not scanned and copied into Rust. An unchanged reiterable source with a
+known exact size can answer `count()` without opening the source.
 
 ## Keep memory bounded
 
@@ -167,11 +170,19 @@ Most transformations stream values without materializing the source. Some
 operations inherently need retained state. v2 exposes bounded alternatives:
 
 - `external_sort(buffer_size=..., tempdir=...)` writes sorted runs to temporary files.
-- `Rows.join(..., partitions=..., tempdir=...)` partitions large joins.
-- `Rows.group_by(...).spill(partitions=..., tempdir=...)` partitions grouped aggregation.
+- `Rows.join(..., partitions=..., tempdir=..., limits=...)` partitions large joins.
+- `Rows.group_by(...).spill(partitions=..., tempdir=..., limits=...)` partitions grouping.
 - Buffer-sensitive operations raise `BufferLimitError` instead of growing without limit.
 
-Temporary resources are cleaned up on normal completion, errors, and early exit.
+`SpillLimits` has finite defaults for partition rows and bytes, per-key matches,
+total output, and repartition depth. Highly skewed or expanding inputs can fail
+at those limits; “bounded” means bounded by configuration, not guaranteed
+completion. Temporary resources are cleaned up on normal completion, errors,
+limit failures, and early exit.
+
+CSV is written raw by default. Enable `spreadsheet_safe=True` for untrusted text
+that will be opened in spreadsheet software. JSONL input has an 8 MiB per-record
+default; `max_record_bytes=None` disables it for trusted input.
 
 ## Moving from v1
 

@@ -60,18 +60,27 @@ class _RowsFactory:
         return Rows.from_csv(path, encoding=encoding, **format_parameters)
 
     def from_jsonl(
-        self, path: str | os.PathLike[str], *, encoding: str = "utf-8"
+        self,
+        path: str | os.PathLike[str],
+        *,
+        encoding: str = "utf-8",
+        max_record_bytes: int | None = 8 * 1024 * 1024,
     ) -> Rows[dict[str, Any]]:
         """Read a JSON Lines file lazily and emit decoded objects.
 
         Args:
             path: The filesystem path to read from or write to.
             encoding: The text encoding used to open the file.
+            max_record_bytes: Maximum encoded bytes per physical record, or None to disable.
 
         Returns:
             A new lazy `Rows` pipeline representing this operation.
         """
-        return Rows.from_jsonl(path, encoding=encoding)
+        return Rows.from_jsonl(
+            path,
+            encoding=encoding,
+            max_record_bytes=max_record_bytes,
+        )
 
     def from_arrow(self, source: Any, *, batch_size: int = 65_536) -> Rows[dict[str, Any]]:
         """Create rows from an Arrow-compatible source.

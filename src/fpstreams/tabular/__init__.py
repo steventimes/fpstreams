@@ -3,5 +3,6 @@
 from .factory import rows
 from .grouped import GroupedRows
 from .rows import Rows
+from .spill_limits import SpillLimits
 
-__all__ = ["GroupedRows", "Rows", "rows"]
+__all__ = ["GroupedRows", "Rows", "SpillLimits", "rows"]

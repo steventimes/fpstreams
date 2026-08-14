@@ -23,7 +23,7 @@ asynchronous concurrency, record-oriented transforms, and optional Rust executio
 - `Option` and `Result`: typed value and error containers.
 - Automatic execution planning: fused Python loops, native Rust kernels for
   supported numeric plans, and hybrid execution when only part of a plan is native.
-- Bounded-memory operations such as external sort and partitioned joins/grouping.
+- Configured memory and output limits for external sort and partitioned joins/grouping.
 
 Python 3.11 or newer is required.
 
@@ -181,16 +181,21 @@ assert totals == {
 ## Execution engines
 
 The default `auto` engine chooses between Python, native Rust, and hybrid execution.
-Use `explain()` before execution to inspect that decision:
+Pass the terminal you intend to call to `explain()` so its answer matches execution:
 
 ~~~python
 from fpstreams import flow, item
 
-pipeline = flow([1, 2, 3]).map(item + 1).filter(item > 2)
-plan = pipeline.explain().to_dict()
+pipeline = flow([1, 2, 3])
+plan = pipeline.explain(terminal="count").to_dict()
 
 assert plan["selected_engine"] == "python"
-assert plan["stages"][0]["fused"] is True
+assert plan["complexity"] == "O(1)"
+assert plan["data_movement"] == {
+    "scans_source": False,
+    "copies_source": False,
+    "materializes": False,
+}
 ~~~
 
 You can request an engine explicitly when testing parity or diagnosing a plan:
@@ -203,9 +208,37 @@ native_result = pipeline.with_engine("native").to_list()
 A forced native plan raises `NativeUnsupportedError` if its types or operations
 cannot run natively. `auto` falls back safely.
 
-For data larger than memory, use `external_sort(..., buffer_size=...)`,
-`Rows.join(..., partitions=...)`, or `Rows.group_by(...).spill(...)` instead of
-materializing the entire input.
+For an unchanged list or tuple, automatic `list`, `sum`, and `count` terminals
+stay in Python instead of scanning and copying the container into Rust. Numeric
+range reductions can still use Rust. `count()` uses a known exact size in O(1)
+when no operation changes cardinality and the source is safely reiterable.
+
+## Resource and file-safety controls
+
+For data larger than memory, use `external_sort(..., buffer_size=...)`, a
+partitioned join, or spilled grouping. Spill processing is bounded by its
+configuration; it is not a promise that every skewed or many-to-many input will
+finish. The defaults are 100,000 rows and 64 MiB per partition, 100,000 matches
+per key, 1,000,000 output rows, and three repartition levels.
+
+~~~python
+from fpstreams import SpillLimits, rows
+
+limits = SpillLimits(max_output_rows=250_000, max_matches_per_key=10_000)
+result = rows(left).join(right, on="id", partitions=32, limits=limits)
+grouped = rows(records).group_by("account_id").spill(partitions=32, limits=limits)
+~~~
+
+Exceeding a configured partition, match, state, record, or output limit raises
+`BufferLimitError` and cleans up temporary files.
+
+CSV output is raw by default for machine interchange. For values supplied by
+untrusted users and later opened in spreadsheet software, pass
+`spreadsheet_safe=True`; strings beginning (after whitespace) with `=`, `+`,
+`-`, or `@` are prefixed with a single quote. JSONL reads accept at most 8 MiB
+per physical record by default and reject larger lines before decoding. Pass
+`max_record_bytes=None` only for trusted local input when an unlimited record is
+intentional.
 
 ## Source and resource semantics
 
@@ -233,9 +266,11 @@ remains as a compatibility strategy for following maps. New code can call
 uv sync --extra arrow --extra data --extra polars \
   --group build --group test --group lint --group type --group docs
 
-uv run pytest
+uv run pytest --cov=src/fpstreams --cov-branch --cov-report=term-missing --cov-report=json
+uv run python tools/check_coverage.py coverage.json
 uv run ruff check .
-uv run mypy
+uv run ruff format --check .
+uv run mypy src/fpstreams
 cargo test --manifest-path rust/Cargo.toml
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 ~~~
