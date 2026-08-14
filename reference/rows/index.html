@@ -461,6 +461,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bounded-jsonl-and-spreadsheet-safe-csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded JSONL and spreadsheet-safe CSV
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safer-joins" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1255,6 +1266,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bounded-jsonl-and-spreadsheet-safe-csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded JSONL and spreadsheet-safe CSV
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safer-joins" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1900,6 +1922,16 @@ operations, and data-system adapters to a lazy flow.</p>
 </table>
 <p>Adapters open files and connections only when the pipeline executes. Their method
 docstrings list supported options and return types.</p>
+<h2 id="bounded-jsonl-and-spreadsheet-safe-csv">Bounded JSONL and spreadsheet-safe CSV</h2>
+<p><code>rows.from_jsonl()</code> limits each physical line to 8 MiB by default. An oversized
+record raises <code>BufferLimitError</code> before text decoding or JSON parsing. Adjust the
+limit with <code>max_record_bytes</code>; use <code>None</code> only when unlimited records from a
+trusted local file are intentional.</p>
+<p>CSV writers preserve raw cells by default. Use
+<code>to_csv(..., spreadsheet_safe=True)</code> for untrusted text that will be opened in a
+spreadsheet. A string whose first non-whitespace character is <code>=</code>, <code>+</code>, <code>-</code>, or
+<code>@</code> receives a leading single quote. Non-string values are unchanged. CSV and
+JSON/JSONL writers return <code>None</code>.</p>
 <h2 id="safer-joins">Safer joins</h2>
 <p>A duplicate lookup key can multiply records without warning. Declare the
 relationship you expect when duplicates would indicate bad data:</p>
@@ -1923,6 +1955,44 @@ relationship you expect when duplicates would indicate bad data:</p>
 customer keys. Use <code>1:m</code> for a unique left side, <code>1:1</code> when both sides must
 be unique, or <code>m:m</code> to permit duplicates on both sides. Partitioned joins use
 the same checks, and errors name the duplicate side and key.</p>
+<p>Partitioning is governed by <code>SpillLimits</code>. Its defaults are:</p>
+<table>
+<thead>
+<tr>
+<th>Limit</th>
+<th style="text-align: right;">Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rows in one loaded partition</td>
+<td style="text-align: right;">100,000</td>
+</tr>
+<tr>
+<td>Serialized bytes in one loaded partition</td>
+<td style="text-align: right;">64 MiB</td>
+</tr>
+<tr>
+<td>Matches for one join key</td>
+<td style="text-align: right;">100,000</td>
+</tr>
+<tr>
+<td>Total output rows</td>
+<td style="text-align: right;">1,000,000</td>
+</tr>
+<tr>
+<td>Recursive repartition levels</td>
+<td style="text-align: right;">3</td>
+</tr>
+</tbody>
+</table>
+<p>Oversized partitions are repartitioned with a new deterministic salt. If skew
+still exceeds the configured depth—or match, group-state, or output expansion
+exceeds another limit—the operation raises <code>BufferLimitError</code> before loading an
+unbounded bucket. Temporary files are removed. Pass a custom <code>SpillLimits</code> to
+<code>join(..., partitions=..., limits=...)</code> or <code>group_by(...).spill(limits=...)</code>.</p>
+<p>This is bounded processing up to configured limits, not guaranteed completion
+for every skewed or many-to-many input.</p>
 <h2 id="methods">Methods</h2>
 
 
@@ -2484,7 +2554,8 @@ the same checks, and errors name the duplicate side and key.</p>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">include_header</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">extrasaction</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;raise&quot;</span><span class="p">,</span> <span class="s2">&quot;ignore&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;raise&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">spreadsheet_safe</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -2583,27 +2654,20 @@ the same checks, and errors name the duplicate side and key.</p>
                   <code>&#39;raise&#39;</code>
             </td>
           </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code>None</code>
+                <code>spreadsheet_safe</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of rows written.</p>
+                <p>Whether to neutralize cells that spreadsheet programs may execute.</p>
               </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
       </tbody>
@@ -2692,29 +2756,6 @@ the same checks, and errors name the duplicate side and key.</p>
             </td>
             <td>
                   <code>False</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code>None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The number of rows written.</p>
-              </div>
             </td>
           </tr>
       </tbody>
@@ -3398,8 +3439,11 @@ file-format reader.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_jsonl</span><span class="p">(</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">max_record_bytes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="mi">8</span> <span class="o">*</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3448,6 +3492,22 @@ file-format reader.</p>
             </td>
             <td>
                   <code>&#39;utf-8&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_record_bytes</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum encoded bytes per physical record, or None to disable.</p>
+              </div>
+            </td>
+            <td>
+                  <code>8 * 1024 * 1024</code>
             </td>
           </tr>
       </tbody>
@@ -6357,7 +6417,8 @@ rows bounded.</p>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">validate</span><span class="p">:</span> <span class="n">JoinValidation</span> <span class="o">=</span> <span class="s2">&quot;m:m&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">partitions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">tempdir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">limits</span><span class="p">:</span> <span class="n">SpillLimits</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6525,6 +6586,22 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limits</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.tabular.spill_limits.SpillLimits">SpillLimits</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Finite partition, match, and output budgets for spilled execution.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -6588,6 +6665,16 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             <td>
               <div class="doc-md-description">
                 <p>If suffixing would create an ambiguous output field.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If spilled execution exceeds a configured resource budget.</p>
               </div>
             </td>
           </tr>
@@ -6662,7 +6749,8 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">partitions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">32</span><span class="p">,</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">tempdir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">GroupedRows</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">limits</span><span class="p">:</span> <span class="n">SpillLimits</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">GroupedRows</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6707,6 +6795,22 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             <td>
               <div class="doc-md-description">
                 <p>The directory used for temporary spill files.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limits</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.tabular.spill_limits.SpillLimits">SpillLimits</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Finite partition, state, match, and output budgets.</p>
               </div>
             </td>
             <td>

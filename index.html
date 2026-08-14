@@ -987,30 +987,39 @@ adapters are used.</p>
 fpstreams cancels outstanding tasks and closes the owned async iterator.</p>
 <h2 id="understand-execution">Understand execution</h2>
 <p>The default engine is <code>auto</code>. It selects a fused Python loop, a native Rust
-kernel, or a hybrid plan based on source metadata, operations, and value types.</p>
+kernel, or a hybrid plan based on the source, operations, and requested terminal.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">item</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">item</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">item</span> <span class="o">&gt;</span> <span class="mi">2</span><span class="p">)</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">explanation</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">explanation</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">terminal</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
 <a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;operations&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;map&quot;</span><span class="p">},</span>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;filter&quot;</span><span class="p">},</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="p">]</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;selected_engine&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;python&quot;</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;complexity&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;O(1)&quot;</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;data_movement&quot;</span><span class="p">][</span><span class="s2">&quot;copies_source&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">False</span>
 </code></pre></div>
 <p>Call <code>with_engine("python")</code> or <code>with_engine("native")</code> to test a specific
 engine. A forced native plan fails clearly when it is unsupported; <code>auto</code> can
 fall back or split the pipeline into stages.</p>
+<p>Identity lists and tuples stay in Python for materialization, sum, and count so
+they are not scanned and copied into Rust. An unchanged reiterable source with a
+known exact size can answer <code>count()</code> without opening the source.</p>
 <h2 id="keep-memory-bounded">Keep memory bounded</h2>
 <p>Most transformations stream values without materializing the source. Some
 operations inherently need retained state. v2 exposes bounded alternatives:</p>
 <ul>
 <li><code>external_sort(buffer_size=..., tempdir=...)</code> writes sorted runs to temporary files.</li>
-<li><code>Rows.join(..., partitions=..., tempdir=...)</code> partitions large joins.</li>
-<li><code>Rows.group_by(...).spill(partitions=..., tempdir=...)</code> partitions grouped aggregation.</li>
+<li><code>Rows.join(..., partitions=..., tempdir=..., limits=...)</code> partitions large joins.</li>
+<li><code>Rows.group_by(...).spill(partitions=..., tempdir=..., limits=...)</code> partitions grouping.</li>
 <li>Buffer-sensitive operations raise <code>BufferLimitError</code> instead of growing without limit.</li>
 </ul>
-<p>Temporary resources are cleaned up on normal completion, errors, and early exit.</p>
+<p><code>SpillLimits</code> has finite defaults for partition rows and bytes, per-key matches,
+total output, and repartition depth. Highly skewed or expanding inputs can fail
+at those limits; “bounded” means bounded by configuration, not guaranteed
+completion. Temporary resources are cleaned up on normal completion, errors,
+limit failures, and early exit.</p>
+<p>CSV is written raw by default. Enable <code>spreadsheet_safe=True</code> for untrusted text
+that will be opened in spreadsheet software. JSONL input has an 8 MiB per-record
+default; <code>max_record_bytes=None</code> disables it for trusted input.</p>
 <h2 id="moving-from-v1">Moving from v1</h2>
 <p><code>Stream</code>, <code>AsyncStream</code>, and <code>ParallelStream</code> remain import aliases to ease
 migration, but new code should use <code>flow</code>, <code>aflow</code>, <code>rows</code>, and <code>pairs</code>.</p>

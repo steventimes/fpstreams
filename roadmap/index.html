@@ -324,6 +324,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#20-stabilization-completed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.0 stabilization completed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#stability-commitments" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -358,10 +369,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#make-spill-behavior-easier-to-inspect" class="md-nav__link">
+  <a href="#keep-spill-behavior-inspectable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Make spill behavior easier to inspect
+        Keep spill behavior inspectable
       
     </span>
   </a>
@@ -774,6 +785,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#20-stabilization-completed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.0 stabilization completed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#stability-commitments" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -808,10 +830,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#make-spill-behavior-easier-to-inspect" class="md-nav__link">
+  <a href="#keep-spill-behavior-inspectable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Make spill behavior easier to inspect
+        Keep spill behavior inspectable
       
     </span>
   </a>
@@ -904,6 +926,17 @@
 <li>One-shot source enforcement and deterministic resource cleanup.</li>
 <li>Strict typing, Python/Rust parity tests, and wheel/sdist packaging.</li>
 </ul>
+<h2 id="20-stabilization-completed">2.0 stabilization completed</h2>
+<ul>
+<li>Terminal-aware execution explanations and exact-size count routing.</li>
+<li>Cached flat scalar-expression evaluators and linear native-prefix planning.</li>
+<li>Single registries for synchronous and asynchronous operation dispatch.</li>
+<li>Skew-aware spill repartitioning with finite partition, match, state, and output limits.</li>
+<li>Spreadsheet-safe CSV as an opt-in mode and bounded JSONL records by default.</li>
+<li>Patched development dependencies, SHA-pinned Actions, automated dependency updates,
+  verified release artifacts, and SHA-256 manifests.</li>
+<li>Machine-readable release benchmarks and branch-coverage gates for high-risk modules.</li>
+</ul>
 <h2 id="stability-commitments">Stability commitments</h2>
 <h3 id="freeze-public-behavior">Freeze public behavior</h3>
 <p>Public names, signatures, exceptions, source-consumption rules, and engine fallback
@@ -913,10 +946,10 @@ major release. v2 does not add an alias for every v1 method.</p>
 <p>Add native operations only when they preserve Python ordering, equality,
 overflow, error, and cleanup semantics. Every new kernel needs Python/native
 parity tests and an explicit unsupported path.</p>
-<h3 id="make-spill-behavior-easier-to-inspect">Make spill behavior easier to inspect</h3>
-<p>Improve spill diagnostics, partition selection, and observability for external
-sorts, joins, and grouped aggregation. Materializing operations should remain
-obvious in API documentation and plan explanations.</p>
+<h3 id="keep-spill-behavior-inspectable">Keep spill behavior inspectable</h3>
+<p>Keep spill diagnostics, partition selection, and resource limits visible for
+external sorts, joins, and grouped aggregation. Materializing operations should
+remain obvious in API documentation and plan explanations.</p>
 <h3 id="keep-adapters-current">Keep adapters current</h3>
 <p>Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
@@ -931,6 +964,10 @@ packages remain optional dependencies.</p>
 </ul>
 <p>These ideas stay out of 2.0 unless they can be added without weakening API
 consistency, memory bounds, or Python/Rust parity.</p>
+<p>Research directions such as bounded/unbounded capability typing, mergeable
+aggregator algebra, incremental Rows, Arrow/Substrait pushdown, async cancel-scope
+redesign, and free-threaded Python support remain future work. The 2026-08-14
+stabilization audit did not implement or claim completion of those items.</p>
 <h2 id="what-fpstreams-will-not-do">What fpstreams will not do</h2>
 <p>fpstreams will not replace NumPy, pandas, Polars, or a distributed query engine.
 It is a pipeline layer that passes data to those systems when appropriate. Ordinary
@@ -942,7 +979,9 @@ materialized.</p>
 <li>no known Python/native semantic divergence in supported plans;</li>
 <li>clean tests, lint, strict typing, Rust formatting, clippy, and package builds;</li>
 <li>documented behavior for one-shot sources, cancellation, spilling, and fallbacks;</li>
-<li>successful installation and import from built wheels;</li>
+<li>clean installation and native/Python smoke tests for every wheel and the sdist;</li>
+<li>repository and focus-module branch-coverage thresholds;</li>
+<li>SHA-pinned CI actions, minimal publish credentials, and artifact hash manifests;</li>
 <li>a migration path for supported v1 entry-point aliases.</li>
 </ul>
 
