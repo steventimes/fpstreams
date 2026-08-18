@@ -13,6 +13,7 @@ from ..expressions.selectors import Selector
 from ..io_safety import spreadsheet_safe_cell
 from ..streams.flow import Flow, flow
 from .arrow import (
+    _arrow_modules,
     arrow_batch_factory,
     table_from_rows,
     write_parquet_rows,
@@ -31,30 +32,31 @@ JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 
 
 class RowsIOMixin(Generic[T]):
-    """Typed output operations implemented by concrete Rows pipelines."""
+    """Collection and streaming sink operations mixed into Rows; calls consume the pipeline."""
 
     _flow: Flow[T]
 
     def __iter__(self) -> Iterator[T]:
+        """Yield records from the concrete Rows implementation."""
         raise NotImplementedError
 
     def to_columns(self) -> dict[str, list[Any]]:
-        """Collect records into a dictionary of column lists.
+        """Transpose rows into encounter-ordered, None-padded column lists.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            A field-to-list mapping with one aligned entry for every consumed row.
         """
         return _collect_columns(_as_record(row) for row in self)
 
     def to_pandas(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
-        """Collect rows into a pandas DataFrame through Arrow.
+        """Materialize all rows as a pandas DataFrame through bounded Arrow conversion.
 
         Args:
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
+            batch_size: Maximum source rows converted in each intermediate Arrow batch.
+            schema: Optional Arrow schema fixing field order, types, and allowed columns.
 
         Returns:
-            A pandas `DataFrame` containing the rows.
+            A pandas DataFrame containing all rows; the Rows pipeline is fully consumed.
         """
         try:
             import pandas as pd  # type: ignore[import-untyped]
@@ -68,14 +70,14 @@ class RowsIOMixin(Generic[T]):
     to_df = to_pandas
 
     def arrow_batches(self, *, batch_size: int = 65_536, schema: Any = None) -> Flow[Any]:
-        """Stream PyArrow RecordBatch objects.
+        """Return a lazy Flow of bounded PyArrow RecordBatch objects.
 
         Args:
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
+            batch_size: Maximum source rows retained for one emitted RecordBatch.
+            schema: Optional fixed schema; later fields outside it are rejected.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A Flow that closes its upstream iterator when exhausted, failed, or short-circuited.
         """
         return flow.defer(
             arrow_batch_factory(
@@ -89,15 +91,27 @@ class RowsIOMixin(Generic[T]):
     to_arrow_batches = arrow_batches
 
     def to_arrow(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
-        """Collect rows into a PyArrow Table.
+        """Materialize all rows as one PyArrow Table.
 
         Args:
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
+            batch_size: Maximum rows converted in each intermediate RecordBatch.
+            schema: Optional schema used for conversion and for an empty result.
 
         Returns:
-            A PyArrow `Table` containing the rows.
+            A Table containing every row; direct Arrow sources may reuse native batches.
         """
+        native = self._flow._plan.source.native_data
+        if schema is None and not self._flow._plan.operations:
+            try:
+                from ..planning.arrow_source import ArrowBatchSource
+
+                if isinstance(native, ArrowBatchSource):
+                    pa, _dataset, _parquet = _arrow_modules()
+                    return pa.Table.from_batches(
+                        list(self._flow._plan.source.open_native(ArrowBatchSource).open_batches())
+                    )
+            except (ImportError, TypeError):
+                pass
         return table_from_rows(
             self,
             batch_size=batch_size,
@@ -106,14 +120,14 @@ class RowsIOMixin(Generic[T]):
         )
 
     def polars_batches(self, *, batch_size: int = 65_536, schema: Any = None) -> Flow[Any]:
-        """Stream Polars DataFrames converted from Arrow batches.
+        """Return a lazy Flow of Polars DataFrames converted from bounded Arrow batches.
 
         Args:
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
+            batch_size: Maximum source rows represented by each emitted DataFrame.
+            schema: Optional Arrow schema fixing conversion fields and types.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A Flow that preserves batch order and inherits upstream cleanup behavior.
         """
         pl = polars_module()
         return self.arrow_batches(batch_size=batch_size, schema=schema).map(
@@ -123,14 +137,14 @@ class RowsIOMixin(Generic[T]):
     to_polars_batches = polars_batches
 
     def to_polars(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
-        """Collect rows into a Polars DataFrame.
+        """Materialize all rows as one Polars DataFrame through Arrow.
 
         Args:
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
+            batch_size: Maximum rows converted in each intermediate Arrow batch.
+            schema: Optional Arrow schema fixing conversion fields and types.
 
         Returns:
-            A Polars `DataFrame` containing the rows.
+            A non-rechunked Polars DataFrame containing the fully consumed pipeline.
         """
         pl = polars_module()
         return pl.from_arrow(
@@ -148,15 +162,15 @@ class RowsIOMixin(Generic[T]):
         extrasaction: Literal["raise", "ignore"] = "raise",
         spreadsheet_safe: bool = False,
     ) -> None:
-        """Write rows to a CSV file without retaining the full input.
+        """Consume rows into a CSV file incrementally and return None.
 
         Args:
-            path: The filesystem path to read from or write to.
-            fieldnames: The CSV field order. Required when it cannot be inferred.
-            encoding: The text encoding used to open the file.
-            include_header: Whether to write a CSV header row.
-            extrasaction: How CSV writing handles fields absent from fieldnames.
-            spreadsheet_safe: Whether to neutralize cells that spreadsheet programs may execute.
+            path: Destination file opened for text overwrite.
+            fieldnames: Output order; inferred from the first row when omitted.
+            encoding: Text encoding used to write the destination.
+            include_header: Write fieldnames before data rows when true.
+            extrasaction: Raise or ignore fields absent from fieldnames.
+            spreadsheet_safe: Prefix cells that spreadsheet software may execute.
         """
         if extrasaction not in {"raise", "ignore"}:
             raise ValueError("extrasaction must be 'raise' or 'ignore'")
@@ -209,13 +223,12 @@ class RowsIOMixin(Generic[T]):
         encoding: str = "utf-8",
         ensure_ascii: bool = False,
     ) -> None:
-        """Write one JSON record per line.
+        """Consume rows into an overwritten file as one JSON object per line.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
-            ensure_ascii: Whether JSON output escapes non-ASCII characters.
-
+            path: Destination JSON Lines file.
+            encoding: Text encoding used to write the destination.
+            ensure_ascii: Escape non-ASCII code points when true.
         """
         with open(path, "w", encoding=encoding) as handle:
             for row in self:
@@ -234,22 +247,23 @@ class RowsIOMixin(Generic[T]):
         write_statistics: Any = True,
         writer_options: Mapping[str, Any] | None = None,
     ) -> int:
-        """Write rows to Parquet in bounded Arrow batches.
+        """Stream rows to a local temporary Parquet file and publish it atomically.
 
-        Rows are converted and written in bounded batches rather than materialized as one table.
+        The destination changes only after all bounded row groups are written;
+        failures remove the temporary file.
 
         Args:
-            path: The filesystem path to read from or write to.
-            if_exists: How to handle an existing destination table.
-            batch_size: The maximum number of rows processed in each batch.
-            schema: The explicit schema used to interpret or write records.
-            compression: The compression codec requested by the output format.
-            use_dictionary: Whether Parquet writing should use dictionary encoding.
-            write_statistics: Whether Parquet metadata should include column statistics.
-            writer_options: Additional options passed to the underlying writer.
+            path: Local destination path; URI-style paths are rejected.
+            if_exists: Error before consuming rows, or atomically replace the target.
+            batch_size: Maximum rows converted and written per row group.
+            schema: Optional Arrow schema, required to write an empty pipeline.
+            compression: Compression setting passed to PyArrow ParquetWriter.
+            use_dictionary: Dictionary-encoding setting passed to ParquetWriter.
+            write_statistics: Column-statistics setting passed to ParquetWriter.
+            writer_options: Extra ParquetWriter options except reserved arguments.
 
         Returns:
-            The number of rows written.
+            The number of source rows published.
         """
         return write_parquet_rows(
             self,
@@ -272,18 +286,19 @@ class RowsIOMixin(Generic[T]):
         parameters: Callable[[T], Any] | None = None,
         batch_size: int = 1_000,
     ) -> int:
-        """Execute a DB-API statement for rows in batches.
+        """Submit mapped rows with DB-API executemany batches in one transaction.
 
-        Rows are submitted in bounded batches inside one transaction.
+        Commit after all rows succeed or roll back on error; always close the
+        iterator, cursor, and connection.
 
         Args:
-            connect: A zero-argument callable that opens a new database connection.
-            statement: The SQL statement executed for each batch of rows.
-            parameters: Parameters passed to the database query or statement.
-            batch_size: The maximum number of rows processed in each batch.
+            connect: Zero-argument factory for the transaction's connection.
+            statement: Statement passed to cursor.executemany().
+            parameters: Optional callable mapping each row to bound parameters.
+            batch_size: Maximum parameter sets in each executemany() call.
 
         Returns:
-            The number of rows submitted to the database.
+            The number of source rows submitted, independent of cursor.rowcount.
         """
         return write_db_rows(
             self,
@@ -306,23 +321,24 @@ class RowsIOMixin(Generic[T]):
         timeout: float = 5.0,
         uri: bool = False,
     ) -> int:
-        """Insert rows into a SQLite table in batches.
+        """Insert rows into a SQLite table in bounded batches and one transaction.
 
-        Rows are submitted in bounded batches inside one SQLite transaction.
+        Replace-mode DDL and inserts roll back together; all owned resources
+        close on every exit path.
 
         Args:
-            database: The SQLite database path or connection target.
-            table: The destination table name.
-            if_exists: How to handle an existing destination table.
-            conflict: The duplicate-key or name conflict policy.
-            columns: The columns or column mapping used by the operation.
-            schema: The explicit schema used to interpret or write records.
-            batch_size: The maximum number of rows processed in each batch.
-            timeout: The optional maximum duration in seconds before the operation fails.
-            uri: Whether the SQLite database string should be interpreted as a URI.
+            database: SQLite path or URI passed to sqlite3.connect().
+            table: Destination table identifier, validated and quoted as data.
+            if_exists: Append, fail if present, or transactionally replace the table.
+            conflict: Use ordinary INSERT, INSERT OR IGNORE, or INSERT OR REPLACE.
+            columns: Optional ordered projection; extra source fields are omitted.
+            schema: Optional mapping from field names to supported SQLite type names.
+            batch_size: Maximum bindings in each executemany() call.
+            timeout: Seconds sqlite3 waits for a locked database.
+            uri: Interpret database as a SQLite URI when true.
 
         Returns:
-            The number of rows written to SQLite.
+            Source records submitted, including records ignored by SQLite conflicts.
         """
         return write_sqlite_rows(
             self,

@@ -1,4 +1,4 @@
-"""Smoke-test an installed fpstreams release from a clean environment."""
+"""Compare an installed fpstreams pipeline under the native and Python engines."""
 
 from __future__ import annotations
 

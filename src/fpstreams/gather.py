@@ -1,4 +1,4 @@
-"""Compatibility facade for gatherer protocols."""
+"""Re-export the planning-layer `Gatherer` and `Downstream` protocols."""
 
 from .planning.gather import Downstream, Gatherer
 

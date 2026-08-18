@@ -1,4 +1,4 @@
-"""Exhaustive dispatch for individual asynchronous flow operations."""
+"""Map each asynchronous plan node to its lazy iterator implementation."""
 
 from __future__ import annotations
 
@@ -63,6 +63,7 @@ from .async_concurrency import (
 
 
 def _pairwise(source: AsyncIterator[Any], _operation: _Pairwise) -> AsyncIterator[Any]:
+    """Adapt the argument-free pairwise iterator to the operation-handler signature."""
     return _iterators._pairwise(source)
 
 
@@ -113,6 +114,11 @@ SUPPORTED_ASYNC_OPERATION_TYPES: tuple[type[object], ...] = tuple(ASYNC_OPERATIO
 def apply_async_operation(
     source: AsyncIterator[Any], operation: _AsyncOperation
 ) -> AsyncIterator[Any]:
+    """Construct the iterator layer registered for the operation's exact type.
+
+    Unsupported subclasses are rejected rather than inheriting another node's
+    handler implicitly.
+    """
     handler = ASYNC_OPERATION_HANDLERS.get(type(operation))
     if handler is None:
         raise TypeError(f"unsupported asynchronous operation: {type(operation).__name__}")

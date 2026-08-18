@@ -1,4 +1,4 @@
-"""Write a deterministic SHA-256 manifest for release artifacts."""
+"""Hash each artifact except the output and write a filename-sorted SHA-256 manifest."""
 
 from __future__ import annotations
 

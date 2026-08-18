@@ -1,4 +1,4 @@
-"""Success and failure values for explicit error handling."""
+"""Represent successful values and captured exceptions without implicit raising."""
 
 from __future__ import annotations
 
@@ -11,41 +11,44 @@ R = TypeVar("R")
 
 
 class Result(Generic[T]):
-    """A value that is either :class:`Ok` or :class:`Err`."""
+    """Common interface for a successful :class:`Ok` or failed :class:`Err` value."""
 
     @classmethod
     def success(cls, value: T) -> Result[T]:
-        """Create a successful Result containing value.
+        """Create an :class:`Ok` containing `value`.
 
         Args:
-            value: The value consumed by this operation.
+            value: Successful value to store.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            A new successful result.
         """
         return Ok(value)
 
     @classmethod
     def failure(cls, error: Exception) -> Result[T]:
-        """Create a failed Result containing error.
+        """Create an :class:`Err` containing `error`.
 
         Args:
             error: The exception stored in a failed result.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            A new failed result typed for the caller's expected success value.
         """
         return cast(Result[T], Err(error))
 
     @classmethod
     def of(cls, function: Callable[[], T]) -> Result[T]:
-        """Call function and capture its return value or exception.
+        """Call a zero-argument function and capture ordinary exceptions as failure.
+
+        A normal return becomes :class:`Ok`; an :class:`Exception` becomes :class:`Err`.
+        Exceptions outside the `Exception` hierarchy, such as `KeyboardInterrupt`, propagate.
 
         Args:
-            function: The callable applied by this operation.
+            function: Zero-argument computation to evaluate immediately.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `Ok(function())`, or `Err(error)` when the call raises `error`.
         """
         try:
             return Ok(function())
@@ -54,118 +57,126 @@ class Result(Generic[T]):
 
     @property
     def error(self) -> Exception | None:
-        """Return the failure exception, or None for success.
+        """Expose the stored failure exception, or `None` for success.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The :class:`Err` exception or `None` for :class:`Ok`.
         """
         raise NotImplementedError
 
     def is_success(self) -> bool:
-        """Return whether this Result contains a successful value.
+        """Report whether this instance is an :class:`Ok`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` for `Ok` and `False` for `Err`.
         """
         return isinstance(self, Ok)
 
     def is_failure(self) -> bool:
-        """Return whether this Result contains an exception.
+        """Report whether this instance is an :class:`Err`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` for `Err` and `False` for `Ok`.
         """
         return isinstance(self, Err)
 
     def map(self, mapper: Callable[[T], R]) -> Result[R]:
-        """Transform a successful value while preserving failure.
+        """Map an `Ok` value while preserving an existing `Err`.
 
-        The callable runs only for success. Existing failures pass through unchanged, and raised
-        exceptions become failures.
+        The mapper runs only for success. Its return value becomes a new `Ok`, and any ordinary
+        exception it raises becomes `Err`. A failed result returns itself unchanged.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable applied to a successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            The mapped success, captured mapper failure, or original failed result.
         """
         raise NotImplementedError
 
     def and_then(self, mapper: Callable[[T], Result[R]]) -> Result[R]:
-        """Chain an operation that returns another Result.
+        """Chain an `Ok` through a result-returning callable and bypass an `Err`.
+
+        Exceptions raised while mapping a success are captured as `Err`. The mapper's return
+        value is passed through without runtime type validation.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Result-returning callable applied only to a successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            The mapper's result, a captured mapper exception, or the original failure.
         """
         raise NotImplementedError
 
     def flat_map(self, mapper: Callable[[T], Result[R]]) -> Result[R]:
-        """Chain an operation that returns another Result.
+        """Alias :meth:`and_then` for chaining result-returning computations.
 
-        The callable runs only for success and must return another `Result`; failures pass
-        through unchanged.
+        The callable runs only for success; existing failures pass through unchanged.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Result-returning callable applied only to a successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            Exactly `self.and_then(mapper)`.
         """
         return self.and_then(mapper)
 
     def map_err(self, mapper: Callable[[Exception], Exception]) -> Result[T]:
-        """Transform the exception while preserving success.
+        """Map an `Err` exception while preserving an existing `Ok`.
+
+        Mapper exceptions are not captured; they propagate to the caller.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable that converts the stored exception.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            A new `Err` for a failure, or the original successful result.
         """
         raise NotImplementedError
 
     def map_error(self, mapper: Callable[[Exception], Exception]) -> Result[T]:
-        """Transform the exception while preserving success.
+        """Alias :meth:`map_err` for transforming a stored exception.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable that converts the stored exception.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            Exactly `self.map_err(mapper)`.
         """
         return self.map_err(mapper)
 
     def on_success(self, action: Callable[[T], None]) -> Result[T]:
-        """Run action for a successful value and return this Result.
+        """Run a side effect for `Ok` and return this same result instance.
+
+        The action is skipped for `Err`; exceptions raised by the action propagate.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Callable invoked with the successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `self`, unchanged.
         """
         if isinstance(self, Ok):
             action(self.value)
         return self
 
     def on_failure(self, action: Callable[[Exception], None]) -> Result[T]:
-        """Run action for a failure exception and return this Result.
+        """Run a side effect for `Err` and return this same result instance.
+
+        The action is skipped for `Ok`; exceptions raised by the action propagate.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Callable invoked with the stored exception.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `self`, unchanged.
         """
         if isinstance(self, Err):
             action(self.error)
         return self
 
     def unwrap(self) -> T:
-        """Return the successful value or raise the failure exception.
+        """Extract an `Ok` value or raise the exception stored by `Err`.
 
         Returns:
             The successful value.
@@ -176,7 +187,7 @@ class Result(Generic[T]):
         raise NotImplementedError
 
     def get_or_throw(self) -> T:
-        """Return the successful value or raise the failure exception.
+        """Alias :meth:`unwrap` for extracting success or raising failure.
 
         Returns:
             The successful value.
@@ -184,10 +195,10 @@ class Result(Generic[T]):
         return self.unwrap()
 
     def get_or_else(self, default: T) -> T:
-        """Return the successful value, otherwise default.
+        """Return the `Ok` value or an eagerly supplied default for `Err`.
 
         Args:
-            default: The value returned when no matching item is available.
+            default: Value returned only for a failed result.
 
         Returns:
             The successful value, or `default` for a failure.
@@ -197,13 +208,13 @@ class Result(Generic[T]):
 
 @dataclass(frozen=True, slots=True)
 class Ok(Result[T]):
-    """A successful Result containing a value."""
+    """An immutable successful result containing `value`."""
 
     value: T
 
     @property
     def error(self) -> None:
-        """Return None because this Result is successful.
+        """Return `None` because this result has no failure exception.
 
         Returns:
             Always `None`.
@@ -211,16 +222,16 @@ class Ok(Result[T]):
         return None
 
     def map(self, mapper: Callable[[T], R]) -> Result[R]:
-        """Transform a successful value while preserving failure.
+        """Map `value` into a new `Ok`, capturing mapper exceptions as `Err`.
 
         The callable transforms the successful value; an exception raised by it is captured as
         `Err`.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable applied to `value`.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `Ok(mapper(value))`, or `Err(error)` if the mapper raises `error`.
         """
         try:
             return Ok(mapper(self.value))
@@ -228,13 +239,13 @@ class Ok(Result[T]):
             return Err(error)
 
     def and_then(self, mapper: Callable[[T], Result[R]]) -> Result[R]:
-        """Chain an operation that returns another Result.
+        """Return `mapper(value)`, capturing an ordinary mapper exception as `Err`.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Result-returning callable applied to `value`.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            The mapper's result or an `Err` containing its raised exception.
         """
         try:
             return mapper(self.value)
@@ -242,18 +253,18 @@ class Ok(Result[T]):
             return Err(error)
 
     def map_err(self, mapper: Callable[[Exception], Exception]) -> Result[T]:
-        """Transform the exception while preserving success.
+        """Skip the error mapper and preserve this successful result.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Unused because this result has no error.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `self`.
         """
         return self
 
     def unwrap(self) -> T:
-        """Return the successful value or raise the failure exception.
+        """Return the contained successful value.
 
         Returns:
             The successful value.
@@ -263,47 +274,49 @@ class Ok(Result[T]):
 
 @dataclass(frozen=True, slots=True)
 class Err(Result[Any]):
-    """A failed Result containing an exception."""
+    """An immutable failed result containing an exception."""
 
     error: Exception = field()
 
     def map(self, mapper: Callable[[Any], R]) -> Result[R]:
-        """Transform a successful value while preserving failure.
+        """Skip the success mapper and preserve this failed result.
 
         A failed result bypasses the callable and preserves its original exception.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Unused because this result has no successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `self`.
         """
         return self
 
     def and_then(self, mapper: Callable[[Any], Result[R]]) -> Result[R]:
-        """Chain an operation that returns another Result.
+        """Skip result chaining and preserve this failed result.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Unused because this result has no successful value.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            `self`.
         """
         return self
 
     def map_err(self, mapper: Callable[[Exception], Exception]) -> Result[Any]:
-        """Transform the exception while preserving success.
+        """Replace the stored exception with `mapper(error)` in a new `Err`.
+
+        Exceptions from `mapper` propagate instead of being captured.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable applied to the stored exception.
 
         Returns:
-            A `Result` containing the transformed success or preserved failure.
+            A new failed result containing the mapped exception.
         """
         return Err(mapper(self.error))
 
     def unwrap(self) -> Any:
-        """Return the successful value or raise the failure exception.
+        """Raise the stored exception instead of returning a value.
 
         Returns:
             This method does not return normally; it raises the stored exception.

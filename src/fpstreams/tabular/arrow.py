@@ -13,11 +13,14 @@ from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 from ..errors import DuplicateKeyError
+from ..planning.arrow_source import ArrowBatchSource, batch_to_rows
+from ..planning.source import Source, SourceCapabilities
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
 
 
 def _arrow_modules() -> tuple[Any, Any, Any]:
+    """Import the optional PyArrow modules or raise the installation-specific error."""
     try:
         pa = cast(Any, import_module("pyarrow"))
         dataset = cast(Any, import_module("pyarrow.dataset"))
@@ -32,6 +35,7 @@ def _arrow_modules() -> tuple[Any, Any, Any]:
 
 
 def _positive_size(value: int, *, name: str = "batch_size") -> int:
+    """Coerce an integer-like size and require it to be greater than zero."""
     try:
         size = operator.index(value)
     except TypeError:
@@ -42,6 +46,7 @@ def _positive_size(value: int, *, name: str = "batch_size") -> int:
 
 
 def _close(resource: Any) -> None:
+    """Best-effort close an Arrow resource without masking the active error."""
     close = getattr(resource, "close", None)
     if callable(close):
         with suppress(Exception):
@@ -49,6 +54,7 @@ def _close(resource: Any) -> None:
 
 
 def _column_names(names: Iterable[str], *, operation: str) -> tuple[str, ...]:
+    """Materialize and validate unique, non-empty string column names."""
     result = tuple(names)
     seen: set[str] = set()
     for name in result:
@@ -63,10 +69,12 @@ def _column_names(names: Iterable[str], *, operation: str) -> tuple[str, ...]:
 
 
 def _schema_names(schema: Any) -> tuple[str, ...]:
+    """Return validated field names from an Arrow schema."""
     return _column_names(schema.names, operation="Arrow schema")
 
 
 def _batch_from_records(pa: Any, records: list[Mapping[str, Any]], schema: Any) -> Any:
+    """Convert records to one RecordBatch while preserving or enforcing its schema."""
     if schema is None:
         names: list[str] = []
         seen: set[str] = set()
@@ -100,12 +108,14 @@ def arrow_batch_factory(
     schema: Any = None,
     as_record: RecordConverter,
 ) -> Callable[[], Iterator[Any]]:
+    """Build a reusable opener that converts source rows into bounded Arrow batches."""
     pa, _dataset, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
     if schema is not None:
         _schema_names(schema)
 
     def batches() -> Iterator[Any]:
+        """Read at most `batch_size` rows at a time and close the source on exit."""
         current_schema = schema
         iterator = iter(source)
         try:
@@ -125,10 +135,12 @@ def arrow_row_source(
     *,
     batch_size: int = 65_536,
 ) -> tuple[Callable[[], Iterator[dict[str, Any]]], bool]:
+    """Adapt an Arrow table, batch, or reader to a row opener and replayability flag."""
     pa, _dataset, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
 
     def batch_rows(batch: Any) -> Iterator[dict[str, Any]]:
+        """Slice a RecordBatch into bounded pieces and yield Python record dictionaries."""
         for offset in range(0, batch.num_rows, size):
             yield from batch.slice(offset, size).to_pylist()
 
@@ -136,6 +148,7 @@ def arrow_row_source(
         _schema_names(source.schema)
 
         def table_rows() -> Iterator[dict[str, Any]]:
+            """Yield dictionaries from reusable bounded batches of the Arrow table."""
             for batch in source.to_batches(max_chunksize=size):
                 yield from batch_rows(batch)
 
@@ -145,6 +158,7 @@ def arrow_row_source(
         _schema_names(source.schema)
 
         def record_batch_rows() -> Iterator[dict[str, Any]]:
+            """Yield dictionaries from the reusable RecordBatch in bounded slices."""
             yield from batch_rows(source)
 
         return record_batch_rows, True
@@ -157,6 +171,7 @@ def arrow_row_source(
             raise
 
         def reader_rows() -> Iterator[dict[str, Any]]:
+            """Consume the one-shot RecordBatchReader and always close it afterward."""
             try:
                 for batch in source:
                     yield from batch_rows(batch)
@@ -166,6 +181,42 @@ def arrow_row_source(
         return reader_rows, False
 
     raise TypeError("from_arrow() expects a pyarrow Table, RecordBatch, or RecordBatchReader")
+
+
+def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, Any]]:
+    """Build a row Source retaining its Arrow batch opener for planning."""
+    pa, _dataset, _parquet = _arrow_modules()
+    size = _positive_size(batch_size)
+    if isinstance(source, pa.Table):
+        descriptor = ArrowBatchSource(
+            lambda: iter(source.to_batches(max_chunksize=size)), "table", size, source.schema
+        )
+        exact = source.num_rows
+    elif isinstance(source, pa.RecordBatch):
+        _schema_names(source.schema)
+        descriptor = ArrowBatchSource(lambda: iter((source,)), "record_batch", size, source.schema)
+        exact = source.num_rows
+    elif isinstance(source, pa.RecordBatchReader):
+        _schema_names(source.schema)
+        descriptor = ArrowBatchSource(lambda: iter(source), "reader", size, source.schema, False)
+        exact = None
+    else:
+        raise TypeError("from_arrow() expects a pyarrow Table, RecordBatch, or RecordBatchReader")
+
+    def rows() -> Iterator[dict[str, Any]]:
+        """Open planned Arrow batches, convert them to rows, and close one-shot readers."""
+        batches = descriptor.open_batches()
+        try:
+            for batch in batches:
+                yield from batch_to_rows(batch)
+        finally:
+            _close(batches)
+            if descriptor.kind == "reader":
+                _close(source)
+
+    return Source(
+        rows, SourceCapabilities(descriptor.reiterable, exact, True), native_data=descriptor
+    )
 
 
 def parquet_row_factory(
@@ -178,11 +229,13 @@ def parquet_row_factory(
     filesystem: Any = None,
     partitioning: Any = None,
 ) -> Callable[[], Iterator[dict[str, Any]]]:
+    """Build a reusable Parquet scanner opener with projection and filter pushdown."""
     _pa, dataset_module, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
     projected = None if columns is None else list(_column_names(columns, operation="Parquet scan"))
 
     def records() -> Iterator[dict[str, Any]]:
+        """Create a fresh dataset scanner and yield projected batches as dictionaries."""
         if isinstance(source, dataset_module.Dataset):
             dataset = source
         else:
@@ -212,6 +265,7 @@ def table_from_rows(
     schema: Any = None,
     as_record: RecordConverter,
 ) -> Any:
+    """Materialize row batches as one Arrow Table, retaining an explicit empty schema."""
     pa, _dataset, _parquet = _arrow_modules()
     factory = arrow_batch_factory(
         source,
@@ -240,6 +294,7 @@ def write_parquet_rows(
     writer_options: Mapping[str, Any] | None = None,
     as_record: RecordConverter,
 ) -> int:
+    """Stream rows to a temporary Parquet file and atomically publish it on success."""
     _pa, _dataset, parquet = _arrow_modules()
     modes = {"error", "replace"}
     if if_exists not in modes:

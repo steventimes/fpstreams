@@ -1,29 +1,29 @@
-"""Exception hierarchy shared by every fpstreams domain."""
+"""Exceptions for flow consumption, selection, collection, and execution failures."""
 
 
 class FlowError(Exception):
-    """Base class for fpstreams pipeline failures."""
+    """Base class for errors raised by fpstreams operations."""
 
 
 class FlowConsumedError(FlowError):
-    """Raised when a one-shot source is evaluated more than once."""
+    """Raised when code tries to evaluate an already-consumed one-shot flow."""
 
 
 class EmptyFlowError(FlowError):
-    """Raised when a terminal requires an element from an empty flow."""
+    """Raised when an empty flow cannot satisfy an element-requiring terminal."""
 
 
 class SelectionError(FlowError, LookupError):
-    """Raised when a selector cannot resolve a value."""
+    """Raised when a field, index, path, or expression selector cannot resolve a value."""
 
 
 class DuplicateKeyError(FlowError, ValueError):
-    """Raised when collecting pairs would overwrite an existing key."""
+    """Raised when dictionary collection encounters a key with no overwrite policy."""
 
 
 class NativeUnsupportedError(FlowError):
-    """Raised when forced native execution cannot execute a plan."""
+    """Raised when a plan forced to the native engine contains an unsupported operation."""
 
 
 class BufferLimitError(FlowError):
-    """Raised when a bounded buffering operation exceeds its configured limit."""
+    """Raised when a bounded record or buffer exceeds its configured byte or item limit."""

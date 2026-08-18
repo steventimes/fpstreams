@@ -1,4 +1,4 @@
-"""Composable state machines for streaming collection."""
+"""Run composable reduction state machines together with optional early stopping."""
 
 from __future__ import annotations
 
@@ -21,16 +21,24 @@ _MISSING = object()
 
 
 def _identity(value: Any) -> Any:
+    """Return collector state unchanged when no explicit finisher is required."""
     return value
 
 
 def _never_done(_state: Any) -> bool:
+    """Mark a collector as unable to finish before its input is exhausted."""
     return False
 
 
 @dataclass(frozen=True, slots=True)
 class Collector(Generic[T, S, R]):
-    """An immutable, composable description of a streaming reduction."""
+    """Describe an immutable streaming reduction from input items to a result.
+
+    `initializer` creates independent state, `step` consumes one item, and `finish` converts
+    final state to the public result. An optional `combine` merges partial states. `done`
+    enables source short-circuiting, and `native` carries planner metadata without affecting
+    Python execution.
+    """
 
     initializer: Callable[[], S]
     step: Callable[[S, T], S]
@@ -40,6 +48,7 @@ class Collector(Generic[T, S, R]):
     native: Any | None = None
 
     def __post_init__(self) -> None:
+        """Require callable lifecycle hooks and an optional callable state combiner."""
         for name in ("initializer", "step", "finish", "done"):
             if not callable(getattr(self, name)):
                 raise TypeError(f"Collector {name} must be callable")
@@ -47,13 +56,16 @@ class Collector(Generic[T, S, R]):
             raise TypeError("Collector combine must be callable or None")
 
     def __call__(self, values: Iterable[T]) -> R:
-        """Execute this collector over an iterable.
+        """Initialize, step, and finish this collector over one iterable traversal.
+
+        Input stops as soon as `done(state)` is true. If the iterator exposes `close`, it is
+        closed after completion or error.
 
         Args:
-            values: The input values consumed by the collector.
+            values: Iterable traversed until exhaustion or this collector's completion.
 
         Returns:
-            The collector's finished result.
+            `finish(state)` after all consumed values have updated the state.
         """
         return cast(R, run_collectors(values, (("result", self),))["result"])
 
@@ -64,6 +76,11 @@ CollectorItems = tuple[tuple[str, Collector[Any, Any, Any]], ...]
 def prepare_collectors(
     collectors: Mapping[str, Collector[Any, Any, Any]],
 ) -> CollectorItems:
+    """Validate named collectors and freeze their mapping order as `(name, collector)` pairs.
+
+    The mapping must be nonempty, every name must be truthy, and every value must be a
+    :class:`Collector`.
+    """
     if not collectors:
         raise ValueError("collect requires a Collector or at least one named Collector")
     items = tuple(collectors.items())
@@ -76,14 +93,21 @@ def prepare_collectors(
 
 
 def initialize_collectors(items: CollectorItems) -> dict[str, Any]:
+    """Call each collector initializer and index the independent states by name."""
     return {name: collector.initializer() for name, collector in items}
 
 
 def collectors_done(states: Mapping[str, Any], items: CollectorItems) -> bool:
+    """Return whether every named collector reports its current state complete."""
     return all(collector.done(states[name]) for name, collector in items)
 
 
 def step_collectors(states: dict[str, Any], items: CollectorItems, value: Any) -> None:
+    """Offer one input value to each collector that has not completed.
+
+    State entries are replaced with each `step` return value. The `_never_done` sentinel is
+    recognized directly so the default predicate is not called on the hot path.
+    """
     for name, collector in items:
         state = states[name]
         if collector.done is _never_done or not collector.done(state):
@@ -91,14 +115,21 @@ def step_collectors(states: dict[str, Any], items: CollectorItems, value: Any) -
 
 
 def finish_collectors(states: Mapping[str, Any], items: CollectorItems) -> dict[str, Any]:
+    """Finish every named state and return results in collector order."""
     return {name: collector.finish(states[name]) for name, collector in items}
 
 
 def run_collectors(values: Iterable[Any], items: CollectorItems) -> dict[str, Any]:
+    """Run named collectors in one pass, stopping when all results are complete.
+
+    Each source value is offered to every unfinished collector. The source iterator is always
+    closed when it provides a callable `close`, including after early completion or an error.
+    Lifecycle exceptions propagate and prevent unfinished results from being returned.
+    """
     states = initialize_collectors(items)
     iterator = iter(values)
     try:
-        # Skip completion checks in the common case; they are observable hot-path overhead.
+        # No collector can stop early here, so avoid an `all(done(...))` check per input item.
         if all(collector.done is _never_done for _name, collector in items):
             for value in iterator:
                 step_collectors(states, items, value)
@@ -117,37 +148,49 @@ def run_collectors(values: Iterable[Any], items: CollectorItems) -> dict[str, An
 
 
 def _append(values: list[Any], value: Any) -> list[Any]:
+    """Append one value to list state and return that same mutable list."""
     values.append(value)
     return values
 
 
 def _add(values: set[Any], value: Any) -> set[Any]:
+    """Add one hashable value to set state and return that same mutable set."""
     values.add(value)
     return values
 
 
 def _extend(left: list[Any], right: list[Any]) -> list[Any]:
+    """Append a right partial list to a left partial list and return the mutated left list."""
     left.extend(right)
     return left
 
 
 def _update(left: set[Any], right: set[Any]) -> set[Any]:
+    """Union a right partial set into a left partial set and return the mutated left set."""
     left.update(right)
     return left
 
 
 def _deque_add(values: deque[Any], value: Any) -> deque[Any]:
+    """Append to bounded deque state, automatically discarding its oldest value when full."""
     values.append(value)
     return values
 
 
 def _selector(selector: Selector | None) -> Callable[[Any], Any]:
+    """Compile a selector, or return identity selection when no selector was supplied."""
     return _identity if selector is None else compile_selector(selector)
 
 
 def _as_collector(
     downstream: Collector[Any, Any, Any] | Callable[[Iterable[Any]], Any],
 ) -> Collector[Any, Any, Any]:
+    """Return a collector unchanged or adapt a callable into a list-finishing collector.
+
+    Callable adapters buffer all downstream items in order, invoke the callable once during
+    finishing, and expose list concatenation for combining partial state. Other values raise
+    `TypeError`.
+    """
     if isinstance(downstream, Collector):
         return downstream
     if not callable(downstream):
@@ -157,7 +200,7 @@ def _as_collector(
 
 @dataclass(slots=True)
 class SummaryStatistics:
-    """Mutable one-pass count, sum, minimum, maximum, and average."""
+    """Mutable count, numeric sum, minimum, maximum, and derived average state."""
 
     count: int = 0
     sum: float = 0.0
@@ -166,18 +209,18 @@ class SummaryStatistics:
 
     @property
     def average(self) -> float:
-        """Return the arithmetic mean, or 0.0 when no values were accepted.
+        """Divide the running sum by count, returning `0.0` for empty state.
 
         Returns:
-            The computed floating-point value.
+            `sum / count` when at least one value was accepted, otherwise `0.0`.
         """
         return self.sum / self.count if self.count else 0.0
 
     def accept(self, value: float) -> None:
-        """Add one numeric value to the running statistics.
+        """Increment count and update sum, minimum, and maximum in place.
 
         Args:
-            value: The value consumed by this operation.
+            value: Numeric value supporting addition and ordering with prior values.
         """
         self.count += 1
         self.sum += value
@@ -187,17 +230,27 @@ class SummaryStatistics:
 
 @dataclass(slots=True)
 class _ColumnsState:
+    """Track column lists and the row count needed to backfill newly seen fields."""
+
     columns: dict[str, list[Any]]
     count: int = 0
 
 
 @dataclass(slots=True)
 class _TeeState:
+    """Hold the independent mutable states of two collectors sharing one source."""
+
     left: Any
     right: Any
 
 
 def _collect_columns(values: Iterable[Mapping[str, Any]]) -> dict[str, list[Any]]:
+    """Transpose mapping rows into encounter-ordered, `None`-padded columns.
+
+    A field first seen after earlier rows receives one leading `None` per prior row. Every
+    established column receives `row.get(name)` for each later row, so missing fields are also
+    represented by `None`.
+    """
     state = _ColumnsState({})
     for row in values:
         for name in row:
@@ -210,50 +263,59 @@ def _collect_columns(values: Iterable[Mapping[str, Any]]) -> dict[str, list[Any]
 
 
 class Collectors(Generic[T]):
-    """Factories for composable streaming collectors."""
+    """Build reusable collectors for containers, grouping, adaptation, and summaries."""
 
     @staticmethod
     def to_list() -> Collector[T, list[T], list[T]]:
-        """Collect all items into a list.
+        """Build an order-preserving, mergeable collector for all input items.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A reducer whose finished list is also its accumulated state.
         """
-        return Collector(list, _append, combine=_extend)
+        from .reducer import LIST_LAWS, Reducer
+
+        return Reducer(list, _append, merge=_extend, laws=LIST_LAWS)
 
     @staticmethod
     def to_set() -> Collector[T, set[T], set[T]]:
-        """Collect distinct hashable items into a set.
+        """Build a collector that retains each distinct hashable input item.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector with set-union support for partial states.
         """
         return Collector(set, _add, combine=_update)
 
     @staticmethod
     def to_tuple() -> Collector[T, list[T], tuple[T, ...]]:
-        """Collect all items into a tuple.
+        """Build an order-preserving collector that finishes list state as a tuple.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A mergeable reducer returning an immutable tuple.
         """
-        return Collector(list, _append, tuple, _extend)
+        from .reducer import LIST_LAWS, Reducer
+
+        return Reducer(list, _append, tuple, merge=_extend, laws=LIST_LAWS)
 
     @staticmethod
     def joining(delimiter: str = "") -> Collector[Any, list[str], str]:
-        """Convert items to strings and join them with delimiter.
+        """Build an order-preserving collector that joins each item's `str` value.
+
+        Conversion occurs as items are stepped. Empty input finishes as an empty string.
 
         Args:
             delimiter: The string inserted between collected values.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A mergeable reducer that joins its accumulated strings with `delimiter`.
         """
-        return Collector(
+        from .reducer import LIST_LAWS, Reducer
+
+        return Reducer(
             list,
             lambda values, value: _append(values, str(value)),
             lambda values: delimiter.join(values),
-            _extend,
+            merge=_extend,
+            laws=LIST_LAWS,
         )
 
     @staticmethod
@@ -261,19 +323,25 @@ class Collectors(Generic[T]):
         classifier: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
     ) -> Collector[T, dict[Any, Any], dict[Any, R | list[T]]]:
-        """Group items by classifier and reduce each group.
+        """Build a collector that maintains one downstream state per selected key.
+
+        Only encountered keys appear in the result, in first-encounter order. Each item is
+        stepped into its group even if the downstream collector has an early-completion
+        predicate. A callable downstream is invoked at finish time with a materialized list
+        for each group; omitting it collects group members into lists.
 
         Args:
-            classifier: A callable that selects the group for each input item.
-            downstream: The collector or gatherer that receives transformed items.
+            classifier: Selector producing a hashable group key for each item.
+            downstream: Per-group collector or callable, defaulting to list collection.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector that finishes every encountered group's state into a dictionary.
         """
         classify = compile_selector(classifier)
         reduction = _as_collector(Collectors.to_list() if downstream is None else downstream)
 
         def step(groups: dict[Any, Any], value: T) -> dict[Any, Any]:
+            """Initialize the selected group on first use and step its state with `value`."""
             key = classify(value)
             try:
                 state = groups[key]
@@ -283,6 +351,7 @@ class Collectors(Generic[T]):
             return groups
 
         def finish(groups: dict[Any, Any]) -> dict[Any, Any]:
+            """Finish each encountered group state without creating absent groups."""
             return {key: reduction.finish(state) for key, state in groups.items()}
 
         return Collector(dict, step, finish)
@@ -292,27 +361,35 @@ class Collectors(Generic[T]):
         predicate: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
     ) -> Collector[T, dict[bool, Any], dict[bool, R | list[T]]]:
-        """Split items by predicate and reduce both partitions.
+        """Build a collector with independently reduced false and true partitions.
+
+        Both Boolean keys are always present, even when one or both partitions receive no
+        items. Each source item is stepped into one partition without consulting the
+        downstream collector's early-completion predicate. Omitting `downstream` collects
+        partition members into lists.
 
         Args:
-            predicate: A callable that decides whether an item matches.
-            downstream: The collector or gatherer that receives transformed items.
+            predicate: Selector whose truth value chooses the partition.
+            downstream: Collector or callable applied independently to both partitions.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector returning `{False: false_result, True: true_result}`.
         """
         test = compile_selector(predicate)
         reduction = _as_collector(Collectors.to_list() if downstream is None else downstream)
 
         def initialize() -> dict[bool, Any]:
+            """Create separate downstream identity states for both Boolean keys."""
             return {False: reduction.initializer(), True: reduction.initializer()}
 
         def step(groups: dict[bool, Any], value: T) -> dict[bool, Any]:
+            """Evaluate the predicate and step only the corresponding partition state."""
             key = bool(test(value))
             groups[key] = reduction.step(groups[key], value)
             return groups
 
         def finish(groups: dict[bool, Any]) -> dict[bool, Any]:
+            """Finish false and true states in that deterministic key order."""
             return {key: reduction.finish(groups[key]) for key in (False, True)}
 
         return Collector(initialize, step, finish)
@@ -322,14 +399,17 @@ class Collectors(Generic[T]):
         mapper: Selector,
         downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R],
     ) -> Collector[T, Any, R]:
-        """Transform each item before passing it to downstream.
+        """Build a collector that selects a new value before each downstream step.
+
+        The adapter preserves downstream initialization, finishing, combining, and early
+        completion, but does not carry downstream native metadata or reducer-law type.
 
         Args:
-            mapper: The callable used to transform each selected value.
-            downstream: The collector or gatherer that receives transformed items.
+            mapper: Selector applied once to each consumed source item.
+            downstream: Collector or callable receiving mapped values.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector that maps each source item before returning the downstream result.
         """
         transform = compile_selector(mapper)
         reduction = _as_collector(downstream)
@@ -346,19 +426,23 @@ class Collectors(Generic[T]):
         predicate: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
     ) -> Collector[T, Any, R]:
-        """Pass only matching items to downstream.
+        """Build a collector that steps downstream only for predicate matches.
+
+        Rejected items leave downstream state unchanged. Initialization, finishing, combining,
+        and early completion are preserved; native metadata and reducer-law type are not.
 
         Args:
-            predicate: A callable that decides whether an item matches.
-            downstream: The collector or gatherer that receives transformed items.
+            predicate: Selector evaluated for truth against each item.
+            downstream: Collector or callable receiving matching items.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector that filters source items before returning the downstream result.
         """
         test = compile_selector(predicate)
         reduction = _as_collector(downstream)
 
         def step(state: Any, value: T) -> Any:
+            """Step downstream for a match, otherwise return its state unchanged."""
             return reduction.step(state, value) if test(value) else state
 
         return Collector(
@@ -374,19 +458,25 @@ class Collectors(Generic[T]):
         mapper: Selector,
         downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R],
     ) -> Collector[T, Any, R]:
-        """Expand each item and pass every nested item to downstream.
+        """Build a collector that steps downstream over each item's expanded iterable.
+
+        Expansion stops as soon as the downstream state reports completion. A nested iterator
+        exposing `close` is closed after exhaustion, early completion, or error. Downstream
+        combining and early completion are preserved, while native metadata and reducer-law
+        type are not.
 
         Args:
-            mapper: The callable used to transform each selected value.
-            downstream: The collector or gatherer that receives transformed items.
+            mapper: Selector returning an iterable for each source item.
+            downstream: Collector or callable receiving nested items.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector that flattens source items before returning the downstream result.
         """
         expand = compile_selector(mapper)
         reduction = _as_collector(downstream)
 
         def step(state: Any, value: T) -> Any:
+            """Step nested values until their iterator ends or downstream is complete."""
             iterator = iter(expand(value))
             try:
                 while not reduction.done(state):
@@ -414,14 +504,20 @@ class Collectors(Generic[T]):
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
         finisher: Callable[[R], U],
     ) -> Collector[T, Any, U]:
-        """Apply finisher to the result produced by downstream.
+        """Build a collector that applies one more transformation after downstream finish.
+
+        The downstream state machine, combiner, and early-completion behavior are preserved.
+        `finisher` is called exactly once with the downstream public result.
 
         Args:
-            downstream: The collector or gatherer that receives transformed items.
-            finisher: A callable that converts accumulated state into the final result.
+            downstream: Collector or callable that produces the intermediate result.
+            finisher: Callable converting that intermediate result to the final value.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            An adapted collector returning `finisher(downstream_result)`.
+
+        Raises:
+            TypeError: If `finisher` is not callable.
         """
         if not callable(finisher):
             raise TypeError("finisher must be callable")
@@ -440,15 +536,22 @@ class Collectors(Generic[T]):
         right: Collector[T, Any, U] | Callable[[Iterable[T]], U],
         merger: Callable[[R, U], V],
     ) -> Collector[T, _TeeState, V]:
-        """Run two collectors in one traversal and merge their results.
+        """Build a collector that shares one source between two downstream collectors.
+
+        Each input is offered only to downstream states that are not already complete. Source
+        consumption stops when both are complete, then `merger` receives their finished
+        results in left-to-right order. Callable downstreams buffer their respective items.
 
         Args:
-            left: The first collector, result, or value to combine.
-            right: The second collector, result, or value to combine.
+            left: First collector or iterable-consuming callable.
+            right: Second collector or iterable-consuming callable.
             merger: A callable that merges two downstream results.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A short-circuiting collector returning the merger result.
+
+        Raises:
+            TypeError: If either downstream or `merger` is not callable as required.
         """
         if not callable(merger):
             raise TypeError("merger must be callable")
@@ -456,9 +559,11 @@ class Collectors(Generic[T]):
         right_reduction = _as_collector(right)
 
         def initialize() -> _TeeState:
+            """Initialize independent left and right downstream states."""
             return _TeeState(left_reduction.initializer(), right_reduction.initializer())
 
         def step(state: _TeeState, value: T) -> _TeeState:
+            """Offer `value` to each downstream state that is not complete."""
             if not left_reduction.done(state.left):
                 state.left = left_reduction.step(state.left, value)
             if not right_reduction.done(state.right):
@@ -466,34 +571,43 @@ class Collectors(Generic[T]):
             return state
 
         def finish(state: _TeeState) -> V:
+            """Finish both states and merge their public results."""
             return merger(
                 left_reduction.finish(state.left),
                 right_reduction.finish(state.right),
             )
 
         def done(state: _TeeState) -> bool:
+            """Report completion only after both downstream collectors are complete."""
             return left_reduction.done(state.left) and right_reduction.done(state.right)
 
         return Collector(initialize, step, finish, done=done)
 
     @staticmethod
     def counting() -> Collector[T, int, int]:
-        """Count all input items.
+        """Build a constant-state reducer that increments once per input item.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A commutative reducer returning zero for empty input.
         """
-        return Collector(lambda: 0, lambda count, _value: count + 1, combine=lambda a, b: a + b)
+        from .reducer import COUNT_LAWS, Reducer
+
+        return Reducer(
+            lambda: 0,
+            lambda count, _value: count + 1,
+            merge=lambda a, b: a + b,
+            laws=COUNT_LAWS,
+        )
 
     @staticmethod
     def summing(selector: Selector | None = None) -> Collector[T, Any, Any]:
-        """Sum input items or selected values.
+        """Build a collector that adds selected values from a zero identity.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Value selector; `None` adds each whole input item.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector returning zero for empty input and supporting partial-state addition.
         """
         select = _selector(selector)
         return Collector(
@@ -506,13 +620,16 @@ class Collectors(Generic[T]):
     def averaging(
         selector: Selector | None = None,
     ) -> Collector[T, tuple[Any, int], float]:
-        """Return the arithmetic mean of items or selected values.
+        """Build a collector that tracks selected-value sum and count for a mean.
+
+        Empty input returns `0.0`. Nonempty input divides the accumulated sum by count during
+        finishing, and partial `(sum, count)` states can be combined component-wise.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Value selector; `None` averages each whole input item.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector returning the arithmetic mean or `0.0` for no values.
         """
         select = _selector(selector)
         return Collector(
@@ -526,21 +643,27 @@ class Collectors(Generic[T]):
     def summarizing(
         selector: Selector | None = None,
     ) -> Collector[T, SummaryStatistics, SummaryStatistics]:
-        """Return count, sum, minimum, maximum, and average in one traversal.
+        """Build a collector returning mutable count, sum, extrema, and average state.
+
+        Selected values update :class:`SummaryStatistics` directly. Empty input normalizes
+        minimum and maximum from infinities to `0.0`; the sum, count, and derived average are
+        already zero. The returned statistics object is the final mutable state.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Value selector; `None` summarizes each whole input item.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A one-pass collector returning a :class:`SummaryStatistics` instance.
         """
         select = _selector(selector)
 
         def step(statistics: SummaryStatistics, value: T) -> SummaryStatistics:
+            """Select one value, update statistics in place, and preserve that state object."""
             statistics.accept(select(value))
             return statistics
 
         def finish(statistics: SummaryStatistics) -> SummaryStatistics:
+            """Normalize empty extrema to zero and return the mutable statistics state."""
             if not statistics.count:
                 statistics.min = statistics.max = 0.0
             return statistics
@@ -549,10 +672,13 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def first() -> Collector[T, Any, T | None]:
-        """Return the first item, or None when input is empty.
+        """Build a collector that stops after and returns the first input item.
+
+        Empty input returns `None`. A first item whose value is itself `None` is still treated
+        as a completed result.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector that consumes at most one item.
         """
         return Collector(
             lambda: _MISSING,
@@ -563,10 +689,12 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def last() -> Collector[T, Any, T | None]:
-        """Return the last item, or None when input is empty.
+        """Build a collector that consumes all input and returns its last item.
+
+        Empty input returns `None`.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector retaining only the most recently consumed item.
         """
         return Collector(
             lambda: _MISSING,
@@ -576,13 +704,18 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def head(count: int) -> Collector[T, list[T], list[T]]:
-        """Collect at most the first count items.
+        """Build a collector that stops after retaining the first `count` items.
+
+        A zero count completes before pulling from the source.
 
         Args:
-            count: The requested number of items.
+            count: Non-negative maximum number of items to retain.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            An early-stopping collector returning an encounter-ordered list.
+
+        Raises:
+            ValueError: If `count` is negative.
         """
         if count < 0:
             raise ValueError("head count must be non-negative")
@@ -590,13 +723,19 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def tail(count: int) -> Collector[T, deque[T], list[T]]:
-        """Collect at most the last count items.
+        """Build a bounded-state collector for the final `count` input items.
+
+        The source is fully consumed. Once the deque is full, each new item discards the
+        oldest; a zero count retains nothing.
 
         Args:
-            count: The requested number of items.
+            count: Non-negative maximum number of trailing items to retain.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector finishing its bounded deque as an encounter-ordered list.
+
+        Raises:
+            ValueError: If `count` is negative.
         """
         if count < 0:
             raise ValueError("tail count must be non-negative")
@@ -608,16 +747,20 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def only() -> Collector[T, list[T], T | None]:
-        """Return the sole item, None for empty input, or raise for multiple items.
+        """Build a collector that enforces zero-or-one input cardinality.
+
+        Empty input returns `None`, one item is returned directly, and a second item completes
+        collection early so finishing can raise without pulling a third.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector retaining no more than two items.
 
         Raises:
-            OnlyElementError: If the input contains more than one item.
+            ValueError: If the input contains more than one item.
         """
 
         def finish(values: list[T]) -> T | None:
+            """Return zero-or-one state and reject the two-item overflow marker."""
             if not values:
                 return None
             if len(values) == 1:
@@ -633,15 +776,23 @@ class Collectors(Generic[T]):
         *,
         on_duplicate: Literal["error", "first", "last"] = "error",
     ) -> Collector[T, dict[K, V], dict[K, V]]:
-        """Collect selected keys and values into a dictionary.
+        """Build a dictionary collector with an explicit duplicate-key policy.
+
+        On duplicates, `"error"` raises before selecting the duplicate value, `"first"`
+        preserves the existing entry without selecting another value, and `"last"` replaces
+        it. Selector errors and unhashable keys propagate.
 
         Args:
-            key: The callable or selector used to derive a key.
-            value: The value consumed by this operation.
-            on_duplicate: The policy used when the same key appears more than once.
+            key: Selector deriving each dictionary key.
+            value: Selector deriving each dictionary value.
+            on_duplicate: One of `"error"`, `"first"`, or `"last"`.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector preserving key insertion order in its result dictionary.
+
+        Raises:
+            ValueError: If `on_duplicate` is not a supported policy.
+            DuplicateKeyError: If a repeated key is encountered under `"error"`.
         """
         if on_duplicate not in {"error", "first", "last"}:
             raise ValueError("on_duplicate must be 'error', 'first', or 'last'")
@@ -649,6 +800,7 @@ class Collectors(Generic[T]):
         select_value = compile_selector(value)
 
         def step(result: dict[K, V], item: T) -> dict[K, V]:
+            """Select one key and apply the configured duplicate policy before its value."""
             item_key = select_key(item)
             if item_key in result:
                 if on_duplicate == "error":
@@ -662,16 +814,22 @@ class Collectors(Generic[T]):
 
     @staticmethod
     def to_columns() -> Collector[Mapping[str, Any], _ColumnsState, dict[str, list[Any]]]:
-        """Collect mapping rows into column-oriented lists.
+        """Build a collector that transposes variably shaped mapping rows into columns.
+
+        Columns retain field encounter order. Fields introduced by later rows are backfilled
+        with `None`, and fields absent from later rows append `None`, so every column has one
+        entry per input row.
 
         Returns:
-            A reusable `Collector` implementing the described reduction.
+            A collector returning a dictionary of equally sized column lists.
         """
 
         def initialize() -> _ColumnsState:
+            """Create empty columns with a zero processed-row count."""
             return _ColumnsState({})
 
         def step(state: _ColumnsState, row: Mapping[str, Any]) -> _ColumnsState:
+            """Backfill new fields, append this row's values, and increment row count."""
             for name in row:
                 if name not in state.columns:
                     state.columns[name] = [None] * state.count

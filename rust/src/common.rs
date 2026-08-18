@@ -1,4 +1,4 @@
-//! Shared errors and one-pass statistics for native execution kernels.
+//! Shared native-kernel errors and compensated statistics for one-pass aggregate terminals.
 
 use pyo3::exceptions::{PyOverflowError, PyValueError, PyZeroDivisionError};
 use pyo3::prelude::*;

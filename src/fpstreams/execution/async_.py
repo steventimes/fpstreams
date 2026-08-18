@@ -1,4 +1,4 @@
-"""Pure-Python orchestration for asynchronous operation plans."""
+"""Build and clean up the lazy iterator chain for an asynchronous plan."""
 
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ from .async_ops import apply_async_operation, close_async_iterators
 
 
 def _is_fusable(operation: _AsyncOperation) -> bool:
+    """Return whether an operation can share the serial fused loop.
+
+    Filters and taps are always serial. A map is eligible only when it requests one
+    worker and no per-call timeout, because fusion must not erase its concurrency or
+    cancellation semantics.
+    """
     return isinstance(operation, (_Filter, _Tap)) or (
         isinstance(operation, _MapAsync)
         and operation.concurrency == 1
@@ -22,6 +28,12 @@ def _is_fusable(operation: _AsyncOperation) -> bool:
 async def _fused(
     source: AsyncIterator[Any], operations: tuple[_AsyncOperation, ...]
 ) -> AsyncIterator[Any]:
+    """Apply adjacent serial maps, filters, and taps in one async iteration loop.
+
+    Callbacks may return immediate or awaitable values. A rejected filter stops the
+    remaining operations for that item, and closing this generator closes its
+    upstream iterator while preserving any active exception.
+    """
     try:
         async for item in source:
             current = item
@@ -42,6 +54,12 @@ async def _fused(
 
 
 async def _execute(plan: _AsyncPlan[Any]) -> AsyncIterator[Any]:
+    """Open a plan, fuse eligible runs, and yield from the final iterator layer.
+
+    Non-fusible operations retain their dedicated iterator or task implementation.
+    On completion, error, cancellation, or consumer close, cleanup starts at the
+    outer layer and also closes the root source if it is distinct.
+    """
     root = plan.source.open()
     iterator = root
     try:

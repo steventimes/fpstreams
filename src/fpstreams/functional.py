@@ -1,4 +1,4 @@
-"""Small functional helpers that are independent of pipeline execution."""
+"""Function composition, staged argument binding, and asynchronous retries."""
 
 from __future__ import annotations
 
@@ -14,16 +14,17 @@ P = ParamSpec("P")
 
 
 def pipe(value: T, *functions: Callable[[Any], Any]) -> Any:
-    """Pass value through functions from left to right.
+    """Pass a value through a left-to-right sequence of callables.
 
-    The first callable receives `value`; each later callable receives the previous result.
+    Each callable receives the preceding callable's return value. With no callables, the
+    original value is returned unchanged.
 
     Args:
-        value: The value consumed by this operation.
-        *functions: Callables applied from left to right.
+        value: The first callable's input.
+        *functions: Unary callables to invoke in order.
 
     Returns:
-        The result returned by the final callable, or `value` when no callables are supplied.
+        The final callable's return value, or `value` when `functions` is empty.
     """
     current: Any = value
     for function in functions:
@@ -32,16 +33,18 @@ def pipe(value: T, *functions: Callable[[Any], Any]) -> Any:
 
 
 def curry(function: Callable[..., T]) -> Callable[..., Any]:
-    """Return a callable that accepts the original arguments in stages.
+    """Wrap a callable so its arguments can be supplied across multiple calls.
 
-    Required parameters are detected from `inspect.signature`, so defaults, builtins, and
-    callable objects are supported.
+    The wrapped callable executes as soon as every non-variadic parameter without a default
+    has been bound. Arguments may still be supplied all at once, and invalid or duplicate
+    arguments raise the same binding errors produced by :func:`inspect.signature`.
 
     Args:
-        function: The callable applied by this operation.
+        function: A callable whose signature can be inspected.
 
     Returns:
-        A callable implementing the described behavior.
+        A metadata-preserving callable that either executes `function` or returns another
+        argument-accepting stage.
     """
     signature = inspect.signature(function)
     required = tuple(
@@ -53,6 +56,7 @@ def curry(function: Callable[..., T]) -> Callable[..., Any]:
 
     @functools.wraps(function)
     def curried(*args: Any, **kwargs: Any) -> Any:
+        """Bind one argument stage and execute once all required parameters are present."""
         bound = signature.bind_partial(*args, **kwargs)
         if all(name in bound.arguments for name in required):
             return function(*args, **kwargs)
@@ -69,19 +73,24 @@ def retry(
     *,
     delay: float = 0.0,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
-    """Retry an async function with configurable delay and backoff.
+    """Decorate an async callable with bounded retries and exponential delay.
 
-    Only the configured exception types are retried; other exceptions propagate immediately.
+    `attempts` includes the initial call. Only `exceptions` are retried; all other exceptions
+    propagate immediately. Before each retry, the current delay is optionally increased by a
+    random value of up to ten percent, then multiplied by `backoff` for the next retry.
 
     Args:
-        attempts: The maximum number of calls, including the first attempt.
-        backoff: The multiplier applied to the delay after each failed attempt.
-        jitter: Random delay added to each retry interval.
-        exceptions: The exception type or tuple of types that should trigger a retry.
-        delay: The initial delay in seconds before retrying.
+        attempts: Maximum calls, including the initial call; must be at least one.
+        backoff: Non-negative multiplier applied after each retry delay.
+        jitter: Whether to add up to ten percent random jitter to nonzero delays.
+        exceptions: Exception classes that trigger another attempt.
+        delay: Non-negative seconds to wait before the first retry.
 
     Returns:
-        A callable implementing the described behavior.
+        A decorator whose wrapper retries the asynchronous callable under this policy.
+
+    Raises:
+        ValueError: If `attempts` is less than one or a delay parameter is negative.
     """
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
@@ -89,8 +98,11 @@ def retry(
         raise ValueError("delay and backoff cannot be negative")
 
     def decorate(function: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+        """Wrap an async callable with the configured retry policy."""
+
         @functools.wraps(function)
         async def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+            """Return the first successful result or re-raise the final retryable error."""
             current_delay = delay
             for attempt in range(attempts):
                 try:

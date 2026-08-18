@@ -1,4 +1,4 @@
-"""Thin adapters around the fused Rust extension."""
+"""Dispatch compiled numeric programs to type- and source-specific Rust kernels."""
 
 from __future__ import annotations
 
@@ -34,6 +34,11 @@ _TERMINALS = {
 
 
 def execute(program: NativeProgram) -> Iterator[Any]:
+    """Run all fused stages in Rust and iterate the materialized numeric output.
+
+    Float and integer programs use separate kernels, with range sources routed to
+    specialized start/stop/step entry points.
+    """
     source = program.source
     stages = list(program.stages)
     values: list[int] | list[float]
@@ -50,11 +55,17 @@ def execute(program: NativeProgram) -> Iterator[Any]:
 
 
 def execute_terminal(program: NativeProgram, terminal: str) -> int | float | None:
+    """Reduce a fused program with the Rust terminal identified by terminal.
+
+    Float counts use dedicated count kernels; every other terminal is encoded for
+    the generic integer or float reducer, including range-specialized variants.
+    """
     source = program.source
     stages = list(program.stages)
     code = _TERMINALS[terminal]
     if program.kind == "f64":
-        # CPython 3.11 sums floats sequentially; 3.12+ uses compensated summation.
+        # Opcode 8 matches Python 3.11 sequential float sums; newer Python uses
+        # compensated summation.
         if terminal == "sum" and sys.version_info < (3, 12):
             code = 8
         if terminal == "count":
@@ -70,6 +81,11 @@ def execute_terminal(program: NativeProgram, terminal: str) -> int | float | Non
 
 
 def execute_statistics(program: NativeProgram) -> StatisticsSnapshot:
+    """Compute count, mean, and squared deviations in one Rust traversal.
+
+    The program's numeric kind and whether its source is a range select the concrete
+    extension entry point.
+    """
     source = program.source
     stages = list(program.stages)
     if program.kind == "f64":
@@ -82,6 +98,11 @@ def execute_statistics(program: NativeProgram) -> StatisticsSnapshot:
 
 
 def execute_aggregate(program: NativeProgram) -> NativeAggregateSnapshot:
+    """Compute all built-in numeric aggregate fields in one fused Rust traversal.
+
+    The returned tuple is count, sum, minimum, maximum, first, last, mean, and
+    squared deviations.
+    """
     source = program.source
     stages = list(program.stages)
     if program.kind == "f64":

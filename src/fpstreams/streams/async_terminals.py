@@ -38,6 +38,11 @@ C = TypeVar("C")
 async def _run_async_collectors(
     values: AsyncIterable[Any], items: CollectorItems
 ) -> dict[str, Any]:
+    """Update all collectors in one async traversal and close the source iterator.
+
+    Consumption stops as soon as every collector reports completion; each finalizer
+    then converts its retained state into the named result.
+    """
     states = initialize_collectors(items)
     iterator = values.__aiter__()
     try:
@@ -56,21 +61,24 @@ class AsyncFlowTerminalsMixin(Generic[T]):
     """Terminal and reduction methods mixed into the public AsyncFlow class."""
 
     def __aiter__(self) -> AsyncIterator[T]:
+        """Yield items from the concrete AsyncFlow implementation."""
         raise NotImplementedError
 
     def filter(
         self, predicate: Callable[[T], bool | Awaitable[bool]]
     ) -> AsyncFlowTerminalsMixin[T]:
+        """Build a lazy async pipeline that keeps items satisfying `predicate`."""
         raise NotImplementedError
 
     def drop(self, count: int) -> AsyncFlowTerminalsMixin[T]:
+        """Build a lazy async pipeline that skips the first `count` items."""
         raise NotImplementedError
 
     async def to_list(self) -> list[T]:
         """Consume the async flow and collect its items in a list.
 
         Returns:
-            A list containing the consumed results in encounter order.
+            All emitted items in encounter order.
         """
         return [item async for item in self]
 
@@ -78,7 +86,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Execute the async pipeline and collect its items in a tuple.
 
         Returns:
-            A tuple containing the resulting values.
+            All emitted items in encounter order as a tuple.
         """
         return tuple([item async for item in self])
 
@@ -86,7 +94,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Execute the async pipeline and collect distinct hashable items.
 
         Returns:
-            A set containing the distinct resulting values.
+            The distinct emitted items; every item must be hashable.
         """
         return {item async for item in self}
 
@@ -97,7 +105,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         relational join.
 
         Args:
-            separator: The string inserted between adjacent string representations.
+            separator: String placed between consecutive `str(item)` values.
 
         Returns:
             One string containing every item separated by `separator`.
@@ -118,10 +126,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Collect matching and non-matching items in separate lists.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved once per item; truthy items enter the first
+                returned list.
 
         Returns:
-            A tuple containing the resulting values.
+            `(matches, misses)`, preserving encounter order within both lists.
         """
         matches: list[T] = []
         misses: list[T] = []
@@ -137,7 +146,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Separate Result values into successes and failures.
 
         Returns:
-            A tuple containing the resulting values.
+            `(success_values, exceptions)`, with `Ok` and `Err` payloads unwrapped in their
+            respective encounter orders.
+
+        Raises:
+            TypeError: If any emitted item is neither `Ok` nor `Err`.
         """
         successes: list[Any] = []
         failures: list[Exception] = []
@@ -158,7 +171,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the first item and close the async source immediately.
 
         Args:
-            default: The value returned when no matching item is available.
+            default: Returned only when the async flow is empty.
 
         Returns:
             The first item, or `default` when the flow is empty.
@@ -180,10 +193,13 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the last item, or default when the flow is empty.
 
         Args:
-            default: The value returned when no matching item is available.
+            default: Returned only when the async flow is empty.
 
         Returns:
             The last item, or `default` when the flow is empty.
+
+        Raises:
+            EmptyFlowError: If the async flow is empty and no default is supplied.
         """
         result: Any = _MISSING
         async for item in self:
@@ -202,11 +218,14 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the first matching item, a default, or raise EmptyFlowError.
 
         Args:
-            predicate: A callable that decides whether an item matches.
-            default: The value returned when no matching item is available.
+            predicate: Sync or async callable resolved in order until its first truthy result.
+            default: Returned when no resolved predicate result is truthy.
 
         Returns:
             The first matching item, or `default` when no item matches.
+
+        Raises:
+            EmptyFlowError: If no item matches and no default is supplied.
         """
         matches = self.filter(predicate)
         if default is not _MISSING:
@@ -220,10 +239,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the index of the first matching item, or None.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved in order until its first truthy result.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The zero-based position of the first truthy resolved predicate result, or `None`.
         """
         if not callable(predicate):
             raise TypeError("predicate must be callable")
@@ -242,10 +261,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the index of the first equal value, or None.
 
         Args:
-            value: The value consumed by this operation.
+            value: Target compared to each source item with equality.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The zero-based position of the first item equal to `value`, or `None`.
         """
         return await self.find_index(lambda item: item == value)
 
@@ -253,11 +272,14 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the item at a positive or negative index.
 
         Args:
-            index: The zero-based item or field position to select.
-            default: The value returned when no matching item is available.
+            index: Zero-based position; negative values count backward from the end.
+            default: Returned when `index` is outside the async flow.
 
         Returns:
             The selected item, or `default` when the index is out of range.
+
+        Raises:
+            EmptyFlowError: If the index is out of range and no default is supplied.
         """
         position = operator.index(index)
         if position >= 0:
@@ -294,7 +316,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Count all items produced by the async flow.
 
         Returns:
-            The number of matching input items.
+            The total number of emitted items.
         """
         count = 0
         async for _item in self:
@@ -313,8 +335,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         return a dictionary.
 
         Args:
-            collector: The collector used to reduce input items.
-            **collectors: Named collectors evaluated during the same traversal.
+            collector: A streaming `Collector`, or a sync or async callable that receives a list
+                containing the entire consumed flow.
+            **collectors: Named streaming collectors updated in one async traversal.
 
         Returns:
             The collector result, or a dictionary of results for named collectors.
@@ -334,10 +357,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         All named aggregators are updated during the same asynchronous traversal.
 
         Args:
-            **aggregations: Named aggregators evaluated during the same traversal.
+            **aggregations: Result names mapped to aggregators updated in one async traversal.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Finished aggregation values keyed by the supplied argument names.
         """
         items = prepare_aggregations(aggregations)
         return await _run_async_collectors(self, items)
@@ -345,6 +368,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
     summarize = aggregate
 
     async def _statistics_snapshot(self) -> StatisticsSnapshot:
+        """Consume numeric items into a stable one-pass statistics snapshot."""
         statistics = OnlineStatistics()
         iterator = self.__aiter__()
         try:
@@ -358,7 +382,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the arithmetic mean, or None for an empty flow.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The compensated floating-point mean, or `None` when no items are emitted.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
         """
         return mean_from(await self._statistics_snapshot())
 
@@ -368,10 +395,14 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the variance, or None when too few values are available.
 
         Args:
-            ddof: Delta degrees of freedom used in the variance divisor.
+            ddof: Non-negative adjustment in the divisor `count - ddof`.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The floating-point variance, or `None` when `count <= ddof`.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
+            ValueError: If `ddof` is negative.
         """
         validate_ddof(ddof)
         return variance_from(await self._statistics_snapshot(), ddof)
@@ -380,10 +411,14 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return the standard deviation, or None when too few values are available.
 
         Args:
-            ddof: Delta degrees of freedom used in the variance divisor.
+            ddof: Non-negative adjustment in the variance divisor `count - ddof`.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The square root of the variance, or `None` when `count <= ddof`.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
+            ValueError: If `ddof` is negative.
         """
         validate_ddof(ddof)
         return std_from(await self._statistics_snapshot(), ddof)
@@ -396,12 +431,15 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Combine items from left to right with an optional initial value.
 
         Args:
-            function: The callable applied by this operation.
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
+            function: Sync or async callback invoked as `function(accumulator, item)` from left to
+                right.
+            initial: Starting accumulator; when omitted, the first item becomes the accumulator.
 
         Returns:
             The final left-to-right accumulator.
+
+        Raises:
+            EmptyFlowError: If the async flow is empty and `initial` is omitted.
         """
         accumulator = initial
         async for item in self:
@@ -423,13 +461,17 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Combine buffered items from right to left.
 
         Args:
-            function: The callable applied by this operation.
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            max_items: The maximum number of source items allowed in the right-side buffer.
+            function: Sync or async callback invoked as `function(item, accumulator)` from right
+                to left.
+            initial: Starting accumulator; when omitted, the last item becomes the accumulator.
+            max_items: Optional maximum number of source items that may be buffered.
 
         Returns:
             The final right-to-left accumulator.
+
+        Raises:
+            BufferLimitError: If the source contains more than `max_items` items.
+            EmptyFlowError: If the async flow is empty and `initial` is omitted.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -468,12 +510,13 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Reduce items independently for each selected key.
 
         Args:
-            key: The callable or selector used to derive a key.
-            function: The callable applied by this operation.
-            initializer: A zero-argument callable that creates fresh mutable state.
+            key: Callable, field name, index, path, or expression selecting each group key; callable
+                results may be awaitable.
+            function: Sync or async callback invoked as `function(group_state, item)`.
+            initializer: Sync or async callable invoked when each distinct group is first seen.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Final resolved accumulator for each hashable key, in first-key encounter order.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -496,10 +539,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Count occurrences of values or selected keys.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional callable, field name, index, path, or expression selecting the value to
+                count; the item itself is counted when omitted.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Occurrence counts keyed by each hashable resolved selected value.
         """
         selector: Selector = (lambda item: item) if key is None else key
         return await self.reduce_by(
@@ -514,10 +558,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return whether at least one item satisfies the predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async predicate resolved in order until one result is truthy;
+                defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` when any item satisfies `predicate`; `False` for an empty flow.
         """
         iterator = self.__aiter__()
         try:
@@ -532,10 +577,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return whether every item satisfies the predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async predicate resolved in order until one result is falsey;
+                defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` when every item satisfies `predicate`, including for an empty flow.
         """
         iterator = self.__aiter__()
         try:
@@ -550,10 +596,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Return whether no item satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async predicate resolved in order until one result is truthy;
+                defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` only when no item satisfies `predicate`, including for an empty flow.
         """
         return not await self.any(predicate)
 
@@ -561,7 +608,8 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Run an action for every item and return after completion.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Sync or async callable resolved once for every emitted item; return values are
+                ignored.
         """
         async for item in self:
             await _resolve(action(item))

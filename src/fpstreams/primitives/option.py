@@ -1,4 +1,4 @@
-"""An immutable optional-value container."""
+"""An immutable optional-value type in which `None` represents absence."""
 
 from __future__ import annotations
 
@@ -12,19 +12,26 @@ R = TypeVar("R")
 
 @dataclass(frozen=True, slots=True)
 class Option(Generic[T]):
-    """A compatibility container for a value that may be absent."""
+    """Store either one non-`None` value or an empty state.
+
+    Instances are immutable and cannot distinguish a present `None` from absence. Use
+    :meth:`of`, :meth:`of_nullable`, or :meth:`empty` to make that choice explicit.
+    """
 
     _value: T | None
 
     @classmethod
     def of(cls, value: T) -> Option[T]:
-        """Wrap a non-None value; use empty() or of_nullable() for absence.
+        """Create a present option from a non-`None` value.
 
         Args:
-            value: The value consumed by this operation.
+            value: Value to store.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            A present option containing `value`.
+
+        Raises:
+            ValueError: If `value` is `None`.
         """
         if value is None:
             raise ValueError("Option.of(None) is invalid; use Option.empty()")
@@ -32,98 +39,101 @@ class Option(Generic[T]):
 
     @classmethod
     def of_nullable(cls, value: T | None) -> Option[T]:
-        """Wrap value in an Option; None produces an empty Option.
+        """Create a present option from `value`, or an empty option from `None`.
 
         Args:
-            value: The value consumed by this operation.
+            value: Nullable value to convert.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            `Option.empty()` for `None`; otherwise an option containing `value`.
         """
         return cls(value)
 
     @classmethod
     def empty(cls) -> Option[T]:
-        """Return an Option with no value.
+        """Create an option whose stored state is absent.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            An empty option.
         """
         return cls(None)
 
     def is_present(self) -> bool:
-        """Return whether this Option contains a value.
+        """Report whether this option stores a non-`None` value.
 
         Returns:
-            Whether the condition described above is true.
+            `True` for a present value and `False` for an empty option.
         """
         return self._value is not None
 
     def is_empty(self) -> bool:
-        """Return whether this Option contains no value.
+        """Report whether this option stores `None` as its empty marker.
 
         Returns:
-            Whether the condition described above is true.
+            `True` for an empty option and `False` for a present value.
         """
         return self._value is None
 
     def if_present(self, action: Callable[[T], None]) -> None:
-        """Run action when a value is present.
+        """Invoke `action` once with the stored value, if one is present.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Side-effecting callable skipped for an empty option.
         """
         if self._value is not None:
             action(self._value)
 
     def filter(self, predicate: Callable[[T], bool]) -> Option[T]:
-        """Keep the value only when predicate returns true.
+        """Keep a present value only when `predicate` accepts it.
 
-        An empty option stays empty. A present value is retained only when the predicate is
-        true.
+        Empty options and accepted values return the current immutable instance. A rejected
+        value produces a new empty option. Exceptions from `predicate` propagate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Callable evaluated only for a present value.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            This option when empty or accepted; otherwise an empty option.
         """
         if self._value is None or predicate(self._value):
             return self
         return Option.empty()
 
     def map(self, mapper: Callable[[T], R | None]) -> Option[R]:
-        """Transform a present value; None becomes an empty Option.
+        """Map a present value and convert a mapped `None` to absence.
 
-        The callable runs only for a present value. A mapped `None` becomes an empty `Option`.
+        The mapper is skipped for an empty option. Unlike :class:`Result`, this method does
+        not capture mapper exceptions.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Callable applied to the stored value.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            An option containing the mapped value, or an empty option when either input or
+            output is `None`.
         """
         if self._value is None:
             return Option.empty()
         return Option.of_nullable(mapper(self._value))
 
     def flat_map(self, mapper: Callable[[T], Option[R]]) -> Option[R]:
-        """Transform a present value with an Option-returning function.
+        """Return the option produced by mapping a present value.
 
-        The callable runs only for a present value and must return another `Option`.
+        The mapper is skipped for an empty option. Its return value and any exception are
+        passed through without additional wrapping or validation.
 
         Args:
-            mapper: The callable used to transform each selected value.
+            mapper: Option-returning callable applied to the stored value.
 
         Returns:
-            An `Option` containing the resulting value, or an empty option.
+            The mapper's result, or an empty option when this option is empty.
         """
         if self._value is None:
             return Option.empty()
         return mapper(self._value)
 
     def unwrap(self) -> T:
-        """Return the value or raise ValueError when empty.
+        """Extract the stored value, rejecting an empty option.
 
         Returns:
             The contained value.
@@ -136,10 +146,10 @@ class Option(Generic[T]):
         return self._value
 
     def or_else(self, other: T) -> T:
-        """Return the value when present, otherwise other.
+        """Return the stored value, or the eagerly supplied fallback when empty.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
+            other: Value to return only when this option is empty.
 
         Returns:
             The contained value, or `other` when this option is empty.
@@ -147,10 +157,10 @@ class Option(Generic[T]):
         return self._value if self._value is not None else other
 
     def or_else_get(self, supplier: Callable[[], T]) -> T:
-        """Return the value when present, otherwise call supplier.
+        """Return the stored value, or lazily call `supplier` when empty.
 
         Args:
-            supplier: A zero-argument callable that supplies a value or iterable.
+            supplier: Zero-argument fallback callable, skipped for a present value.
 
         Returns:
             The contained value, or the value supplied when this option is empty.
@@ -158,7 +168,7 @@ class Option(Generic[T]):
         return self._value if self._value is not None else supplier()
 
     def or_else_throw(self, exception: Callable[[], Exception]) -> T:
-        """Return the value when present, otherwise raise a supplied exception.
+        """Return the stored value, or construct and raise an exception when empty.
 
         Args:
             exception: A zero-argument callable that creates the exception to raise.
@@ -174,7 +184,9 @@ class Option(Generic[T]):
         return self._value
 
     def __bool__(self) -> bool:
+        """Treat a present option as true and an empty option as false."""
         return self.is_present()
 
     def __repr__(self) -> str:
+        """Render present values as `Option(value)` and absence as `Option.empty`."""
         return f"Option({self._value!r})" if self else "Option.empty"

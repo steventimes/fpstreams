@@ -1,4 +1,4 @@
-//! Native kernel parity and short-circuit tests.
+//! Parity tests for fused native stages, streaming terminals, short-circuiting, and aggregation.
 
 use crate::float::{run_f64, run_f64_count, run_f64_statistics, run_f64_terminal};
 use crate::integer::{

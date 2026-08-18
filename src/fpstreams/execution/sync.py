@@ -1,4 +1,4 @@
-"""Pure-Python orchestration for synchronous operation plans."""
+"""Build, fuse, and close the lazy Python iterator chain for a sync plan."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ def _fused(
     iterator: Iterator[Any],
     operations: tuple[MapOp | FilterOp | TapOp, ...],
 ) -> Iterator[Any]:
-    # Keep adjacent stateless stages in one Python loop without materializing intermediates.
+    """Apply an adjacent map/filter/tap run in one lazy Python loop.
+
+    Operation callables are compiled once before iteration. Each item then visits
+    the operations in plan order; a rejected filter skips the remainder of its run
+    for that item, while maps and taps preserve encounter order.
+    """
     compiled = tuple((operation, _operation_function(operation)) for operation in operations)
     for item in iterator:
         current = item
@@ -34,6 +39,7 @@ def _fused(
 def _operation_function(
     operation: MapOp | FilterOp | TapOp,
 ) -> Callable[[Any], Any]:
+    """Return an operation callback, compiling Expr and FExpr evaluators once."""
     function = operation.predicate if isinstance(operation, FilterOp) else operation.function
     if isinstance(function, (Expr, FExpr)):
         return cast(Callable[[Any], Any], function._python_evaluator())
@@ -41,6 +47,7 @@ def _operation_function(
 
 
 def _remember_iterator(stack: list[Iterator[Any]], iterator: Iterator[Any]) -> None:
+    """Register each closeable iterator identity once for outer-to-inner cleanup."""
     if callable(getattr(iterator, "close", None)) and all(
         iterator is not existing for existing in stack
     ):
@@ -48,6 +55,13 @@ def _remember_iterator(stack: list[Iterator[Any]], iterator: Iterator[Any]) -> N
 
 
 def execute(plan: Plan) -> Iterator[Any]:
+    """Interpret a plan lazily and close its iterator layers from outermost to source.
+
+    Maximal map/filter/tap runs share one generator, and adjacent gatherers compose
+    into one stateful traversal. Other nodes create their normal iterator layers.
+    Completion, failure, or early consumer close triggers cleanup of every
+    registered closeable layer without replacing an active pipeline exception.
+    """
     source_iterator = plan.source.open()
     iterator: Iterator[Any] = source_iterator
     managed_iterators = [source_iterator]
@@ -55,7 +69,7 @@ def execute(plan: Plan) -> Iterator[Any]:
     index = 0
     while index < len(operations):
         operation = operations[index]
-        # Coalesce compatible neighbors before constructing the next lazy iterator layer.
+        # Build one generator for the maximal adjacent map/filter/tap run.
         if isinstance(operation, (MapOp, FilterOp, TapOp)):
             end = index + 1
             while end < len(operations) and isinstance(operations[end], (MapOp, FilterOp, TapOp)):

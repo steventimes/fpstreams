@@ -1,4 +1,4 @@
-"""Repeatable fpstreams performance baselines with machine-readable output."""
+"""Run fpstreams timing scenarios and emit human- and machine-readable regression data."""
 
 from __future__ import annotations
 

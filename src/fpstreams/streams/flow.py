@@ -16,6 +16,13 @@ from ..expressions.selectors import Selector, compile_selector
 from ..planning.explain import PlanExplanation
 from ..planning.gather import Gatherer
 from ..planning.native import TerminalName, validate_terminal
+from ..planning.semantics import (
+    Cardinality,
+    OrderingGuarantee,
+    Replayability,
+    StreamFacts,
+    TerminationEvidence,
+)
 from ..planning.source import Source
 from ..planning.sync import (
     AppendOp,
@@ -65,26 +72,32 @@ _MISSING = object()
 
 
 def _default_item_size(value: Any) -> int:
+    """Measure an item with `len()` for size-constrained batching."""
     return len(value)
 
 
 @dataclass(slots=True)
 class _BatchState(Generic[T]):
+    """Hold the current size-constrained batch and its accumulated size."""
+
     items: list[T]
     size: int = 0
 
 
 @dataclass(slots=True)
 class _FoldState(Generic[R]):
+    """Hold the mutable accumulator used by `Flow.fold`."""
+
     value: R
 
 
 class Flow(FlowTerminalsMixin[T], Generic[T]):
-    """A lazy description of work over an iterable source."""
+    """A synchronous pipeline that opens its source only when iterated or consumed."""
 
     __slots__ = ("_plan",)
 
     def __init__(self, source: Iterable[T] | Source[T] | Plan) -> None:
+        """Wrap an iterable or owned source, or reuse an existing immutable execution plan."""
         if isinstance(source, Plan):
             self._plan = source
         else:
@@ -96,10 +109,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Create a flow from positional items.
 
         Args:
-            *items: Items emitted by the new pipeline.
+            *items: Positional values to emit in argument order.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A reusable flow that emits `items` in argument order.
         """
         return Flow(items)
 
@@ -108,10 +121,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Create a flow over an iterable source.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
+            source: A synchronous iterable opened when the flow is consumed. Iterator instances
+                remain one-shot; other iterables can be evaluated repeatedly.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A flow that emits each item from `source` in its iteration order.
         """
         return Flow(source)
 
@@ -120,7 +134,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Create a flow that emits no items.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A reusable flow that always completes without emitting an item.
         """
         return Flow(())
 
@@ -129,10 +143,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Create an empty flow for None, otherwise emit the value once.
 
         Args:
-            value: The value consumed by this operation.
+            value: The optional item to emit; `None` produces an empty flow.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A flow containing `value` once, or no items when `value` is `None`.
         """
         return Flow(()) if value is None else Flow((value,))
 
@@ -142,41 +156,65 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
 
         Args:
             seed: The first value emitted or used to initialize the sequence.
-            function: The callable applied by this operation.
+            function: Called with the previously emitted value to produce the next value.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A reusable, infinite flow beginning with `seed`.
         """
 
         def values() -> Iterator[R]:
+            """Yield the seed followed by successive applications of `function`."""
             current = seed
             while True:
                 yield current
                 current = function(current)
 
-        return Flow(Source.defer(values))
+        return Flow(
+            Source.defer(
+                values,
+                facts=StreamFacts(
+                    TerminationEvidence.PROVEN_INFINITE,
+                    Cardinality.unknown(),
+                    Replayability.REOPENABLE,
+                    OrderingGuarantee.ORDERED,
+                ),
+            )
+        )
 
     @staticmethod
     def generate(supplier: Callable[[], R]) -> Flow[R]:
         """Create an infinite flow by calling supplier for each item.
 
         Args:
-            supplier: A zero-argument callable that supplies a value or iterable.
+            supplier: Called once for each requested item to produce that item.
 
         Returns:
-            A new lazy `Flow` over the supplied source or values.
+            A reusable, infinite flow of values returned by `supplier`.
         """
 
         def values() -> Iterator[R]:
+            """Call `supplier` for every requested item and yield its return value."""
             while True:
                 yield supplier()
 
-        return Flow(Source.defer(values))
+        return Flow(
+            Source.defer(
+                values,
+                facts=StreamFacts(
+                    TerminationEvidence.PROVEN_INFINITE,
+                    Cardinality.unknown(),
+                    Replayability.REOPENABLE,
+                    OrderingGuarantee.ORDERED,
+                ),
+            )
+        )
 
     def __iter__(self) -> Iterator[T]:
+        """Interpret the stored plan lazily with streaming-safe engine selection."""
         return execute(self._plan, auto_native=False)
 
     def _append(self, operation: Operation) -> Flow[Any]:
+        """Return a new Flow whose immutable plan includes `operation`."""
         return Flow(self._plan.append(operation))
 
     def map(self, function: Callable[[T], R]) -> Flow[R]:
@@ -186,10 +224,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         the flow.
 
         Args:
-            function: The callable applied by this operation.
+            function: Receives each source item and returns its replacement value.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of mapped values; current plan-level parallel settings, if any, apply to this
+            map.
         """
         # Store the transform in the immutable plan; no item is mapped yet.
         if self._plan.parallel is not None:
@@ -218,14 +257,14 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         creating unbounded work.
 
         Args:
-            function: The callable applied by this operation.
-            workers: The number of worker threads or processes. None chooses a runtime default.
-            backend: The parallel backend: thread or process.
-            ordered: Whether results must preserve source encounter order.
-            buffer: The maximum number of submitted tasks awaiting consumption.
+            function: Receives one source item in a worker and returns its mapped value.
+            workers: Worker count, or `None` to use the executor's default.
+            backend: Run callbacks in a `thread` or spawn-based `process` pool.
+            ordered: Emit in source order when true, otherwise in completion order.
+            buffer: Maximum submitted futures retained before the pipeline waits for a result.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that submits bounded mapping work when consumed.
 
         Raises:
             ValueError: If workers or buffer is less than one, or backend is unsupported.
@@ -254,13 +293,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Apply parallel settings to map operations added after this call.
 
         Args:
-            workers: The number of worker threads or processes. None chooses a runtime default.
-            backend: The parallel backend: thread or process.
-            ordered: Whether results must preserve source encounter order.
-            buffer: The maximum number of submitted tasks awaiting consumption.
+            workers: Worker count, or `None` to use the executor's default.
+            backend: Run callbacks in a `thread` or spawn-based `process` pool.
+            ordered: Preserve source order for subsequent maps when true.
+            buffer: Maximum in-flight results retained by each subsequent map.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow sharing this pipeline with parallel defaults for maps appended afterward.
         """
         # Parallel settings are immutable plan metadata; existing operations are unchanged.
         if workers is not None and workers < 1:
@@ -277,7 +316,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Return a flow whose following maps run sequentially.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow sharing this pipeline with parallel defaults cleared for later maps.
         """
         return Flow(self._plan.with_parallel(None))
 
@@ -285,10 +324,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Run a side effect for each item while passing the item through.
 
         Args:
-            function: The callable applied by this operation.
+            function: Called for its side effect before each original item is emitted.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that emits every original item unchanged after calling `function`.
         """
         return self._append(TapOp(function))
 
@@ -301,10 +340,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         requested.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called for each item; truthy results retain that item.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing only source items whose predicate result is truthy.
         """
         # Filtering stays lazy by recording a predicate node in the plan.
         return self._append(FilterOp(predicate))
@@ -315,10 +354,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Drop items for which predicate returns a truthy value.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called for each item; truthy results drop that item.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing only source items whose predicate result is falsey.
         """
         return self._append(FilterOp(predicate, negate=True))
 
@@ -326,10 +365,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Drop None values, optionally selected from each item.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Optional callable, field name, index, path, or expression whose selected
+                value is checked for `None`; without one, each item is checked directly.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that omits items whose selected value is `None` while retaining other falsey
+            values.
         """
         if selector is None:
             return self.filter(lambda item: item is not None)
@@ -345,10 +386,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         encounter order.
 
         Args:
-            function: The callable applied by this operation.
+            function: Maps each source item to the iterable whose contents are emitted.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that lazily emits every mapped iterable in source order.
         """
         # Flattening happens during iteration, so inner iterables are not collected first.
         return self._append(FlatMapOp(function))
@@ -357,13 +398,14 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Map items and discard results equal to None.
 
         Args:
-            function: The callable applied by this operation.
+            function: Maps each source item to one output value or `None`.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of non-`None` mapped results; falsey values such as `0` are retained.
         """
 
         def transform(item: T) -> tuple[R, ...]:
+            """Return no values for a None result, otherwise return one mapped value."""
             result = function(item)
             return () if result is None else (result,)
 
@@ -373,10 +415,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Select one field, index, attribute, or nested path from each item.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Callable, field name, index, path, or expression evaluated for each output.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing the value selected from each source item.
         """
         return self.map(compile_selector(selector))
 
@@ -386,7 +428,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Keep the first occurrence of each value in encounter order.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing the first occurrence of each distinct value.
         """
         return self._append(UniqueOp())
 
@@ -394,7 +436,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Keep the first occurrence of each value in encounter order.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            The same lazy de-duplication pipeline produced by `unique()`.
         """
         return self.unique()
 
@@ -402,10 +444,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Keep the first item for each selected key.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Callable, field name, index, path, or expression producing each uniqueness
+                key.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing the first source item for each distinct selected key.
         """
         return self._append(UniqueOp(compile_selector(selector)))
 
@@ -422,13 +465,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Sort items by a selector, optionally using bounded external storage.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            selector: Callable, field name, index, path, or expression producing comparison keys.
+            reverse: Emit items in descending selected-key order when true.
+            buffer_size: Items per sorted in-memory run; `None` performs one in-memory sort.
+            tempdir: Directory for temporary run files when `buffer_size` is set.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that emits every source item ordered by its selected value.
         """
         return self.sorted(
             key=compile_selector(selector),
@@ -448,13 +491,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Sort the flow, optionally using bounded external runs.
 
         Args:
-            key: The callable or selector used to derive a key.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            key: Optional callable used to derive each item's comparison key.
+            reverse: Emit items in descending comparison order when true.
+            buffer_size: Items per sorted in-memory run; `None` performs one in-memory sort.
+            tempdir: Directory for temporary run files when `buffer_size` is set.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that globally orders the source by `key` or by the items themselves.
         """
         if buffer_size is not None:
             buffer_size = operator.index(buffer_size)
@@ -484,13 +527,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         items bounded.
 
         Args:
-            key: The callable or selector used to derive a key.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            key: Optional callable used to derive each item's comparison key.
+            reverse: Emit items in descending comparison order when true.
+            buffer_size: Maximum items sorted in memory for each temporary run.
+            tempdir: Directory in which temporary sorted runs are created.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A globally sorted flow produced by lazily merging bounded temporary runs.
         """
         return self.sorted(
             key=key,
@@ -513,13 +556,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         items bounded.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            selector: Callable, field name, index, path, or expression producing comparison keys.
+            reverse: Emit items in descending selected-key order when true.
+            buffer_size: Maximum items sorted in memory for each temporary run.
+            tempdir: Directory in which temporary sorted runs are created.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow ordered by the selected value using bounded temporary runs.
         """
         return self.sort_by(
             selector,
@@ -532,10 +575,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Group consecutive items into fixed-size tuples.
 
         Args:
-            size: The requested window, chunk, or batch size.
+            size: Maximum number of consecutive items in each tuple.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of non-overlapping tuples, including a final shorter tuple when needed.
 
         Raises:
             ValueError: If size is less than one.
@@ -557,13 +600,15 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Build batches constrained by item count and total measured size.
 
         Args:
-            max_size: The maximum measured size allowed in one batch.
-            max_count: The maximum number of items emitted in one batch.
-            get_size: A callable that returns the measured size of one item.
-            strict: Whether invalid or empty input should raise instead of returning a fallback.
+            max_size: Maximum sum of item sizes in a normal batch.
+            max_count: Optional maximum item count per batch.
+            get_size: Returns a non-negative integer size for each item; defaults to `len`.
+            strict: Raise when one item exceeds `max_size`; when false, emit it in an oversized
+                singleton batch.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of non-empty tuples packed without exceeding either configured limit, except
+            for non-strict oversized singleton items.
         """
         if max_size <= 0:
             raise ValueError("max_size must be positive")
@@ -573,6 +618,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             raise TypeError("get_size must be callable")
 
         def integrate(state: _BatchState[T], item: T) -> tuple[tuple[T, ...], ...]:
+            """Add an item to the current batch, emitting the previous batch at a limit."""
             raw_size = get_size(item)
             try:
                 item_size = operator.index(raw_size)
@@ -596,6 +642,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             return () if output is None else (output,)
 
         def finish(state: _BatchState[T]) -> tuple[tuple[T, ...], ...]:
+            """Emit the final non-empty size-constrained batch."""
             return (tuple(state.items),) if state.items else ()
 
         return self.gather(Gatherer(lambda: _BatchState([]), integrate, finish))
@@ -606,11 +653,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit sliding tuples of size with the requested step.
 
         Args:
-            size: The requested window, chunk, or batch size.
-            step: The distance between consecutive windows or numeric increments.
+            size: Number of items in each full window.
+            step: Number of source items consumed between successive windows.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of full sliding windows; a non-empty source shorter than `size` produces one
+            partial window, but no trailing partial window is emitted otherwise.
 
         Raises:
             ValueError: If size or step is less than one.
@@ -625,10 +673,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Group consecutive items that share the same key.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional selector for run identity; adjacent items themselves are compared when
+                omitted.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of non-empty tuples, one for each contiguous run of equal keys.
         """
         select = (lambda item: item) if key is None else compile_selector(key)
         return self._append(GroupRunsOp(select))
@@ -639,7 +688,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit each adjacent pair of items.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of overlapping `(previous, current)` pairs; fewer than two items emit nothing.
         """
         return self._append(PairwiseOp())
 
@@ -647,10 +696,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Apply a two-argument function to each adjacent pair.
 
         Args:
-            function: The callable applied by this operation.
+            function: Called as `function(previous, current)` for each adjacent pair.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing one mapped result per adjacent source pair.
         """
         return self.pairwise().map(lambda pair: function(pair[0], pair[1]))
 
@@ -658,10 +707,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Pair each item with a consecutive index starting at start.
 
         Args:
-            start: The first index, numeric value, or additive identity to use.
+            start: Integer index paired with the first source item.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of `(index, item)` pairs with consecutive integer indices.
         """
         return self._append(EnumerateOp(start))
 
@@ -671,11 +720,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Pair items with another iterable until one side ends.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            strict: Whether invalid or empty input should raise instead of returning a fallback.
+            other: Synchronous iterable providing the right-hand item in each pair.
+            strict: Raise `ValueError` during consumption when the two inputs have different
+                lengths.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of pairs ending with the shorter input unless `strict` is true.
         """
         return self._append(ZipOp(Source.from_iterable(other), strict))
 
@@ -685,11 +735,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Pair with another iterable until both sides end, filling missing values.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            fillvalue: The value used when one side of a longest zip is exhausted.
+            other: Synchronous iterable providing right-hand values.
+            fillvalue: Substitute used on whichever input is exhausted first.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of pairs whose length matches the longer input.
         """
         return self._append(ZipLongestOp(Source.from_iterable(other), fillvalue))
 
@@ -697,10 +747,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Insert separator between consecutive items.
 
         Args:
-            separator: The string inserted between adjacent string representations.
+            separator: Item emitted once between each pair of adjacent source items.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow with `separator` between source items and never at either boundary.
         """
         return self._append(IntersperseOp(separator))
 
@@ -708,22 +758,25 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit this flow followed by each supplied iterable.
 
         Args:
-            *others: Additional sources combined with this pipeline.
+            *others: Synchronous iterables opened and emitted after this flow, in argument order.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that drains this source and then each additional iterable in order.
         """
         return self._append(ConcatOp(tuple(Source.from_iterable(other) for other in others)))
 
     def cross(self, other: Iterable[U], *, max_right: int | None = None) -> Flow[tuple[T, U]]:
-        """Emit the Cartesian product with a bounded or reiterable right side.
+        """Buffer another iterable once and emit a left-major Cartesian product.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            max_right: The maximum right-side size allowed when buffering is required.
+            other: Synchronous iterable buffered as the right side after the first left item.
+            max_right: Optional maximum number of right-side items that may be buffered.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of `(left, right)` pairs with every right item repeated for each left item.
+
+        Raises:
+            BufferLimitError: During consumption if `other` contains more than `max_right` items.
         """
         if max_right is not None:
             max_right = operator.index(max_right)
@@ -734,17 +787,16 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
     cartesian = cross
 
     def scan(self, initial: R, function: Callable[[R, T], R]) -> Flow[R]:
-        """Emit each left-to-right accumulator state.
+        """Emit each left-to-right accumulator state after consuming one item.
 
         Unlike `reduce`, `scan` emits every intermediate accumulator state.
 
         Args:
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            function: The callable applied by this operation.
+            initial: Accumulator passed to the first callback; it is not emitted by itself.
+            function: Called as `function(state, item)` to produce each next state.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow with one accumulated state for every source item.
         """
         return self._append(ScanOp(initial, function))
 
@@ -755,16 +807,18 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         *,
         max_items: int | None = None,
     ) -> Flow[R]:
-        """Emit accumulator states while combining items from right to left.
+        """Buffer the source, accumulate from right to left, and emit states in source order.
 
         Args:
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            function: The callable applied by this operation.
-            max_items: The maximum number of source items allowed in the right-side buffer.
+            initial: Accumulator passed to the rightmost callback; it is not emitted by itself.
+            function: Called as `function(item, state)` from the rightmost item to the leftmost.
+            max_items: Optional maximum number of source items that may be buffered.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow with one right-fold state per source item, ordered like the original items.
+
+        Raises:
+            BufferLimitError: During consumption if the source exceeds `max_items`.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -783,7 +837,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             gatherer: The stateful gatherer applied to this pipeline.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of values emitted by `gatherer` while it integrates and finishes the source.
         """
         return self._append(GatherOp(gatherer))
 
@@ -795,11 +849,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Consume all items into one emitted value using fresh state per iteration.
 
         Args:
-            initializer: A zero-argument callable that creates fresh mutable state.
-            function: The callable applied by this operation.
+            initializer: Called once per evaluation to create the initial accumulator.
+            function: Called as `function(state, item)` and returns the replacement accumulator.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow that emits exactly one final accumulator, including for an empty source.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -807,10 +861,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             raise TypeError("function must be callable")
 
         def integrate(state: _FoldState[R], item: T) -> tuple[()]:
+            """Replace the accumulator with `function(state.value, item)` without emitting."""
             state.value = function(state.value, item)
             return ()
 
         def finish(state: _FoldState[R]) -> tuple[R]:
+            """Emit the final accumulator after all source items have been integrated."""
             return (state.value,)
 
         return self.gather(Gatherer(lambda: _FoldState(initializer()), integrate, finish))
@@ -819,10 +875,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit values before the items from this flow.
 
         Args:
-            *values: Values supplied to this operation in encounter order.
+            *values: Items to emit before the first source item, in argument order.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing `values` followed by every source item.
         """
         return self._append(PrependOp(values))
 
@@ -830,10 +886,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit values after the items from this flow.
 
         Args:
-            *values: Values supplied to this operation in encounter order.
+            *values: Items to emit after the source completes, in argument order.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing every source item followed by `values`.
         """
         return self._append(AppendOp(values))
 
@@ -841,10 +897,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Transform only the first item, if one exists.
 
         Args:
-            function: The callable applied by this operation.
+            function: Maps the first item; it is never called for an empty source.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow with only its first item replaced by `function(first)`.
         """
         return self._append(MapFirstOp(function))
 
@@ -852,10 +908,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Transform only the last item, if one exists.
 
         Args:
-            function: The callable applied by this operation.
+            function: Maps the final item; it is never called for an empty source.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow with only its final item replaced by `function(last)`.
         """
         return self._append(MapLastOp(function))
 
@@ -867,11 +923,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Merge adjacent items while collapsible returns true.
 
         Args:
-            collapsible: A callable deciding whether two adjacent items should be combined.
-            merger: A callable that merges two downstream results.
+            collapsible: Called on neighboring original items to decide whether a run continues.
+            merger: Combines the current run aggregate with the next item.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing one merged aggregate for each contiguous collapsible run.
         """
         return self._append(CollapseOp(collapsible, merger))
 
@@ -879,13 +935,14 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Map each item and wrap success or failure in a Result.
 
         Args:
-            function: The callable applied by this operation.
+            function: Maps one source item and may raise an `Exception`.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow of `Ok` mapped values and `Err` objects for raised exceptions.
         """
 
         def capture(item: T) -> Result[R]:
+            """Wrap the mapped value in Ok or convert a raised exception to Err."""
             try:
                 return Ok(function(item))
             except Exception as error:
@@ -902,7 +959,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             engine: The execution engine requested for this pipeline.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            An equivalent lazy flow whose plan requests `engine` during execution.
         """
         if engine not in ("auto", "python", "native"):
             raise ValueError("engine must be 'auto', 'python', or 'native'")
@@ -912,6 +969,9 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Describe engine selection, stages, and fused operations without executing.
 
         This inspection method does not consume or execute the source.
+
+        Args:
+            terminal: Terminal operation to include when validating and selecting the engine.
 
         Returns:
             A structured explanation of the selected engine and planned stages.
@@ -932,10 +992,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit at most count items, then close the upstream iterator.
 
         Args:
-            count: The requested number of items.
+            count: Maximum number of leading items to emit.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing only the first `count` source items.
 
         Raises:
             ValueError: If count is negative.
@@ -948,10 +1008,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit at most count items; alias of take.
 
         Args:
-            count: The requested number of items.
+            count: Maximum number of leading items to emit.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            The same bounded pipeline produced by `take(count)`.
         """
         return self.take(count)
 
@@ -959,10 +1019,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Skip count items before yielding the remainder.
 
         Args:
-            count: The requested number of items.
+            count: Number of leading items to consume without emitting.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow containing every source item after the first `count`.
 
         Raises:
             ValueError: If count is negative.
@@ -975,10 +1035,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Skip count items; alias of drop.
 
         Args:
-            count: The requested number of items.
+            count: Number of leading items to consume without emitting.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            The same suffix pipeline produced by `drop(count)`.
         """
         return self.drop(count)
 
@@ -986,10 +1046,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit the longest prefix that satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called on leading items until its first falsey result.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow ending before the first source item whose predicate result is falsey.
         """
         return self._append(TakeWhileOp(predicate))
 
@@ -997,10 +1057,10 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Emit through the first item that fails predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called on leading items through its first falsey result.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow ending after emitting the first item whose predicate result is falsey.
         """
         return self._append(TakeWhileInclusiveOp(predicate))
 
@@ -1008,15 +1068,17 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Skip the longest prefix that satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called only while leading items produce truthy results.
 
         Returns:
-            A new lazy `Flow` representing this operation.
+            A flow beginning with the first item whose predicate result is falsey; later items are
+            emitted without further predicate calls.
         """
         return self._append(DropWhileOp(predicate))
 
     @contextmanager
     def _open(self) -> Iterator[Iterator[T]]:
+        """Yield one pipeline iterator and close it when the context exits."""
         iterator = iter(self)
         try:
             yield iterator
@@ -1038,7 +1100,7 @@ class _FlowFactory:
             source: The iterable consumed when the flow is evaluated.
 
         Returns:
-            A new lazy `Flow`.
+            A flow that emits items from `source` when consumed.
         """
         return Flow(source)
 
@@ -1046,10 +1108,10 @@ class _FlowFactory:
         """Create a reusable flow that calls factory for each iteration.
 
         Args:
-            factory: A callable that opens a fresh source for every iteration.
+            factory: Called for each evaluation and returns that evaluation's synchronous iterable.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A reusable flow that invokes `factory` separately for each evaluation.
         """
         return Flow(Source.defer(factory))
 
@@ -1057,7 +1119,7 @@ class _FlowFactory:
         """Create a flow that emits no items.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A reusable flow that emits no items.
         """
         return Flow.empty()
 
@@ -1065,10 +1127,10 @@ class _FlowFactory:
         """Create an empty flow for None, otherwise emit the value once.
 
         Args:
-            value: The value consumed by this operation.
+            value: The optional item to emit; `None` produces an empty flow.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A flow containing `value` once, or no items when `value` is `None`.
         """
         return Flow.of_nullable(value)
 
@@ -1076,10 +1138,10 @@ class _FlowFactory:
         """Create an infinite flow by calling supplier for each item.
 
         Args:
-            supplier: A zero-argument callable that supplies a value or iterable.
+            supplier: Called once for each requested item to produce that item.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A reusable, infinite flow of values returned by `supplier`.
         """
         return Flow.generate(supplier)
 
@@ -1090,7 +1152,7 @@ class _FlowFactory:
             *sources: Sources emitted sequentially by the new pipeline.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A flow that drains each supplied source in argument order.
         """
         if not sources:
             return Flow(())
@@ -1102,10 +1164,10 @@ class _FlowFactory:
 
         Args:
             seed: The first value emitted or used to initialize the sequence.
-            function: The callable applied by this operation.
+            function: Called with the previously emitted value to produce the next value.
 
         Returns:
-            A new reusable lazy `Flow`.
+            A reusable, infinite flow beginning with `seed`.
         """
         return Flow.iterate(seed, function)
 

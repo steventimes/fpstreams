@@ -20,18 +20,18 @@ JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 
 
 class _RowsFactory:
-    """Callable factory for creating record pipelines from supported sources."""
+    """Callable namespace exposed as `rows` for constructing lazy record pipelines."""
 
     __slots__ = ()
 
     def __call__(self, source: Iterable[T] | Flow[T]) -> Rows[T]:
-        """Create a lazy row pipeline from a supported source.
+        """Wrap records in Rows, dispatching dataframe objects to their adapters.
 
         Args:
-            source: Records, a `Flow`, or a supported dataframe object.
+            source: A Flow or iterable of records, Polars frame, or __dataframe__ provider.
 
         Returns:
-            A lazy `Rows` pipeline over the source.
+            A lazy Rows wrapper; construction does not iterate record sources.
         """
         if is_polars_frame(source):
             return cast(Rows[T], Rows.from_polars(source))
@@ -46,16 +46,16 @@ class _RowsFactory:
         encoding: str = "utf-8",
         **format_parameters: Any,
     ) -> Rows[dict[str, Any]]:
-        """Read a CSV file lazily and emit rows as dictionaries.
+        """Return reusable rows that reopen a CSV file and validate its header when iterated.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
-            **format_parameters: Additional keyword arguments passed to the underlying
-                file-format reader.
+            path: CSV input file opened on each iteration.
+            encoding: Text encoding used by the CSV reader.
+            **format_parameters: Keyword options forwarded to csv.DictReader, such as
+                dialect, delimiter, or quoting.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            A lazy Rows pipeline of dictionaries keyed by the unique CSV header.
         """
         return Rows.from_csv(path, encoding=encoding, **format_parameters)
 
@@ -66,15 +66,15 @@ class _RowsFactory:
         encoding: str = "utf-8",
         max_record_bytes: int | None = 8 * 1024 * 1024,
     ) -> Rows[dict[str, Any]]:
-        """Read a JSON Lines file lazily and emit decoded objects.
+        """Return reusable rows that decode nonblank JSON objects from a file on demand.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
-            max_record_bytes: Maximum encoded bytes per physical record, or None to disable.
+            path: JSON Lines input file reopened for each iteration.
+            encoding: Encoding applied after each physical line passes its byte limit.
+            max_record_bytes: Encoded-byte limit per line, or None for no limit.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows; duplicate keys and non-object records fail when consumed.
         """
         return Rows.from_jsonl(
             path,
@@ -83,14 +83,14 @@ class _RowsFactory:
         )
 
     def from_arrow(self, source: Any, *, batch_size: int = 65_536) -> Rows[dict[str, Any]]:
-        """Create rows from an Arrow-compatible source.
+        """Adapt a PyArrow Table, RecordBatch, or RecordBatchReader to dictionary rows.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
-            batch_size: The maximum number of rows processed in each batch.
+            source: Reusable Table/RecordBatch or one-shot RecordBatchReader.
+            batch_size: Maximum rows converted from each Arrow batch slice.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows; a RecordBatchReader may be consumed only once and is closed afterward.
         """
         return Rows.from_arrow(source, batch_size=batch_size)
 
@@ -101,15 +101,15 @@ class _RowsFactory:
         batch_size: int = 65_536,
         allow_copy: bool = True,
     ) -> Rows[dict[str, Any]]:
-        """Create rows through the dataframe interchange protocol.
+        """Adapt an object implementing the dataframe interchange protocol through PyArrow.
 
         Args:
-            frame: The dataframe-like object used as the row source.
-            batch_size: The maximum number of rows processed in each batch.
-            allow_copy: Whether an adapter may copy data when zero-copy conversion is unavailable.
+            frame: Object providing __dataframe__(), optionally with an Arrow C stream.
+            batch_size: Maximum rows converted from each Arrow batch.
+            allow_copy: Permit interchange conversion to allocate copied buffers.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows that perform dataframe-to-Arrow conversion when iterated.
         """
         return Rows.from_dataframe(
             frame,
@@ -127,16 +127,16 @@ class _RowsFactory:
         maintain_order: bool = True,
         engine: Any = "auto",
     ) -> Rows[dict[str, Any]]:
-        """Create rows from a Polars DataFrame or LazyFrame.
+        """Adapt an eager Polars DataFrame or batch-collected LazyFrame to dictionary rows.
 
         Args:
-            frame: The dataframe-like object used as the row source.
-            batch_size: The maximum number of rows processed in each batch.
-            maintain_order: Whether output must preserve the source row order.
-            engine: The execution engine requested for this pipeline.
+            frame: Polars DataFrame or LazyFrame to slice or collect.
+            batch_size: Rows requested per eager slice or lazy collection batch.
+            maintain_order: Preserve LazyFrame row order while collecting batches.
+            engine: Polars engine used only for LazyFrame batch collection.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy reusable Rows; a LazyFrame is collected again for each iteration.
         """
         return Rows.from_polars(
             frame,
@@ -156,19 +156,19 @@ class _RowsFactory:
         filesystem: Any = None,
         partitioning: Any = None,
     ) -> Rows[dict[str, Any]]:
-        """Scan Parquet data lazily with optional projection and filtering.
+        """Build reusable rows from a fresh PyArrow dataset scanner per iteration.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
-            columns: The columns or column mapping used by the operation.
-            filter: An optional dataset filter pushed into the underlying reader.
-            batch_size: The maximum number of rows processed in each batch.
-            use_threads: Whether the underlying Arrow operation may use worker threads.
-            filesystem: The optional filesystem implementation used to access the data source.
-            partitioning: The partitioning scheme used to interpret a dataset.
+            source: PyArrow Dataset or dataset source accepted by pyarrow.dataset().
+            columns: Unique projected column names, or None for all columns.
+            filter: PyArrow dataset expression pushed into the scanner.
+            batch_size: Maximum rows requested from each scanner batch.
+            use_threads: Allow the PyArrow scanner to use worker threads.
+            filesystem: Optional PyArrow filesystem for resolving the source.
+            partitioning: Optional dataset partitioning specification.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows with projection and filtering performed by PyArrow.
         """
         return Rows.from_parquet(
             source,
@@ -188,16 +188,16 @@ class _RowsFactory:
         *,
         batch_size: int = 1_000,
     ) -> Rows[dict[str, Any]]:
-        """Execute a DB-API query lazily and emit rows as dictionaries.
+        """Build a reiterable DB-API query source that owns its connections and cursors.
 
         Args:
-            connect: A zero-argument callable that opens a new database connection.
-            query: The SQL query executed for each fresh iteration.
-            parameters: Parameters passed to the database query or statement.
-            batch_size: The maximum number of rows processed in each batch.
+            connect: Zero-argument factory called once per iteration for a new connection.
+            query: Statement executed by each newly opened cursor.
+            parameters: Optional mapping or positional values passed to cursor.execute().
+            batch_size: Maximum rows requested by each cursor.fetchmany() call.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy rows that close the cursor and connection on exhaustion, error, or early stop.
         """
         return Rows.from_db(connect, query, parameters, batch_size=batch_size)
 
@@ -211,18 +211,18 @@ class _RowsFactory:
         timeout: float = 5.0,
         uri: bool = False,
     ) -> Rows[dict[str, Any]]:
-        """Execute a SQLite query lazily and emit rows as dictionaries.
+        """Build a reiterable SQLite query source that owns one connection per iteration.
 
         Args:
-            database: The SQLite database path or connection target.
-            query: The SQL query executed for each fresh iteration.
-            parameters: Parameters passed to the database query or statement.
-            batch_size: The maximum number of rows processed in each batch.
-            timeout: The optional maximum duration in seconds before the operation fails.
-            uri: Whether the SQLite database string should be interpreted as a URI.
+            database: SQLite path or URI passed to sqlite3.connect().
+            query: Statement executed by each newly opened cursor.
+            parameters: Optional mapping or positional values passed to cursor.execute().
+            batch_size: Maximum rows requested by each cursor.fetchmany() call.
+            timeout: Seconds sqlite3 waits for a locked database.
+            uri: Interpret database as a SQLite URI when true.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows that close their cursor and connection after iteration.
         """
         return Rows.from_sqlite(
             database,

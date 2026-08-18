@@ -1,4 +1,4 @@
-"""Compatibility facade for streaming collectors."""
+"""Re-export collector factories and lifecycle helpers for legacy imports."""
 
 from .collecting.collector import (
     Collector,

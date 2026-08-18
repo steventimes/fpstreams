@@ -27,4 +27,3 @@ htmlcov/
 .mypy_cache/
 site/
 rust/target/
-next.txt

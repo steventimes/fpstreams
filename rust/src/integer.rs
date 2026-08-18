@@ -1,4 +1,4 @@
-//! Fused signed-integer expression and pipeline kernels.
+//! Signed-integer kernels that fuse pipeline stages into streaming materializers and terminals.
 
 use crate::common::{KernelError, OnlineStatistics, kernel_error};
 use pyo3::exceptions::PyValueError;

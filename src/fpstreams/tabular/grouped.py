@@ -40,6 +40,7 @@ class GroupedRows(Generic[T]):
         tempdir: str | os.PathLike[str] | None = None,
         limits: SpillLimits | None = None,
     ) -> None:
+        """Store a deferred grouping configuration without consuming the row source."""
         self._rows = source
         self._keys = keys
         self._partitions = partitions
@@ -53,15 +54,15 @@ class GroupedRows(Generic[T]):
         tempdir: str | os.PathLike[str] | None = None,
         limits: SpillLimits | None = None,
     ) -> GroupedRows[T]:
-        """Configure partitioned temporary storage for grouped aggregation.
+        """Return grouping configured to aggregate through bounded temporary partitions.
 
         Args:
-            partitions: The number of spill partitions used for bounded-memory processing.
-            tempdir: The directory used for temporary spill files.
-            limits: Finite partition, state, match, and output budgets.
+            partitions: Hash-partition count from 2 through 256.
+            tempdir: Parent directory for automatically removed spill files.
+            limits: Partition, group-state, output, and repartition budgets.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            A new GroupedRows configuration; call aggregate() to obtain a lazy pipeline.
         """
         return GroupedRows(
             self._rows,
@@ -92,6 +93,7 @@ class GroupedRows(Generic[T]):
             raise DuplicateKeyError(f"aggregate output column {name!r} collides with a group key")
 
         def evaluate() -> Iterator[dict[str, Any]]:
+            """Aggregate groups in memory or use bounded spill processing when configured."""
             if self._partitions is not None:
                 yield from spilled_group_aggregate(
                     self._rows,

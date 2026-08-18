@@ -12,6 +12,7 @@ from .arrow import _arrow_modules, _positive_size, arrow_row_source
 
 
 def _without_pandas_index(table: Any) -> Any:
+    """Drop physical pandas index columns and remove pandas schema metadata."""
     metadata = table.schema.metadata or {}
     pandas_metadata = metadata.get(b"pandas")
     if pandas_metadata is None:
@@ -32,12 +33,14 @@ def dataframe_row_factory(
     batch_size: int = 65_536,
     allow_copy: bool = True,
 ) -> Callable[[], Iterator[dict[str, Any]]]:
+    """Build a row opener for an object implementing the dataframe interchange protocol."""
     pa, _dataset, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
     if not callable(getattr(frame, "__dataframe__", None)):
         raise TypeError("from_dataframe() expects an object implementing __dataframe__()")
 
     def records() -> Iterator[dict[str, Any]]:
+        """Convert the dataframe to Arrow, remove pandas indexes, and yield bounded rows."""
         if allow_copy and callable(getattr(frame, "__arrow_c_stream__", None)):
             table = _without_pandas_index(pa.table(frame))
         else:

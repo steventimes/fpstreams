@@ -1,4 +1,4 @@
-"""Small functional value types."""
+"""Export immutable `Option` values and explicit `Ok`/`Err` results."""
 
 from .option import Option
 from .result import Err, Ok, Result

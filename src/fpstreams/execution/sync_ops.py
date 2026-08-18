@@ -1,4 +1,9 @@
-"""Iterator transformations for one synchronous plan operation."""
+"""Construct the synchronous iterator layer for each plan operation.
+
+The plan executor owns and closes the passed upstream iterator and every closeable
+layer it creates. Operators that open additional sources or executors own and clean
+up those local resources themselves.
+"""
 
 from __future__ import annotations
 
@@ -55,6 +60,7 @@ from .sorting import external_sort
 
 
 def _map(iterator: Iterator[Any], operation: MapOp) -> Iterator[Any]:
+    """Apply the mapping function lazily to each input item in encounter order."""
     for item in iterator:
         yield operation.function(item)
 
@@ -62,6 +68,7 @@ def _map(iterator: Iterator[Any], operation: MapOp) -> Iterator[Any]:
 def _take_while_inclusive(
     iterator: Iterator[Any], operation: TakeWhileInclusiveOp
 ) -> Iterator[Any]:
+    """Yield through the first predicate failure, including that terminating item."""
     for item in iterator:
         yield item
         if not operation.predicate(item):
@@ -69,6 +76,13 @@ def _take_while_inclusive(
 
 
 def _map_parallel(iterator: Iterator[Any], operation: ParallelMapOp) -> Iterator[Any]:
+    """Map with a bounded thread pool or spawn-based process pool.
+
+    At most buffer futures remain queued. Ordered mode awaits futures in submission
+    order; unordered mode yields completed sets as they become available. Callback
+    failures propagate through Future.result, and early exit cancels queued work
+    before waiting for executor shutdown.
+    """
     executor = (
         ThreadPoolExecutor(max_workers=operation.workers)
         if operation.backend == "thread"
@@ -111,23 +125,31 @@ def _map_parallel(iterator: Iterator[Any], operation: ParallelMapOp) -> Iterator
 
 
 def _tap(iterator: Iterator[Any], operation: TapOp) -> Iterator[Any]:
+    """Run the side-effect callback before yielding each original item unchanged."""
     for item in iterator:
         operation.function(item)
         yield item
 
 
 def _filter(iterator: Iterator[Any], operation: FilterOp) -> Iterator[Any]:
+    """Yield items whose predicate truth value differs from the negate flag."""
     for item in iterator:
         if bool(operation.predicate(item)) is not operation.negate:
             yield item
 
 
 def _flat_map(iterator: Iterator[Any], operation: FlatMapOp) -> Iterator[Any]:
+    """Map each item to an iterable and flatten those iterables in source order."""
     for item in iterator:
         yield from operation.function(item)
 
 
 def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
+    """Yield the first item for each key while preserving source order.
+
+    The item itself is the key when no key function is configured. Hashable keys
+    use a set; unhashable keys fall back to equality against a linear list.
+    """
     hashable: set[Any] = set()
     unhashable: list[Any] = []
     for item in iterator:
@@ -144,11 +166,17 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
 
 
 def _chunk(iterator: Iterator[Any], operation: ChunkOp) -> Iterator[tuple[Any, ...]]:
+    """Group consecutive items into tuples, including a final short chunk."""
     while chunk := tuple(islice(iterator, operation.size)):
         yield chunk
 
 
 def _window(iterator: Iterator[Any], operation: WindowOp) -> Iterator[tuple[Any, ...]]:
+    """Yield fixed-size sliding windows, advancing step source items each time.
+
+    A nonempty source shorter than size produces one partial window. Exhaustion
+    while advancing a full window ends iteration without a trailing partial one.
+    """
     current = deque(islice(iterator, operation.size), maxlen=operation.size)
     if not current:
         return
@@ -165,6 +193,7 @@ def _window(iterator: Iterator[Any], operation: WindowOp) -> Iterator[tuple[Any,
 
 
 def _group_runs(iterator: Iterator[Any], operation: GroupRunsOp) -> Iterator[tuple[Any, ...]]:
+    """Group consecutive items with equal keys into nonempty tuples."""
     try:
         first = next(iterator)
     except StopIteration:
@@ -183,12 +212,19 @@ def _group_runs(iterator: Iterator[Any], operation: GroupRunsOp) -> Iterator[tup
 
 
 def close_iterator(iterator: Iterator[Any]) -> None:
+    """Close an iterator when it exposes a callable close method."""
     close = getattr(iterator, "close", None)
     if callable(close):
         close()
 
 
 def close_iterators(iterators: Iterable[Iterator[Any]]) -> None:
+    """Close every supplied iterator without hiding a pipeline or cleanup failure.
+
+    During an active exception, cleanup failures become notes on that exception.
+    Otherwise the first cleanup failure is raised after all iterators are attempted,
+    with later failures attached as notes.
+    """
     active_error = sys.exception()
     first_cleanup_error: BaseException | None = None
 
@@ -209,6 +245,11 @@ def close_iterators(iterators: Iterable[Iterator[Any]]) -> None:
 
 
 def _zip(iterator: Iterator[Any], operation: ZipOp) -> Iterator[tuple[Any, Any]]:
+    """Zip with a locally opened right source, optionally requiring equal lengths.
+
+    Built-in strict zip supplies mismatch diagnostics. This layer closes the right
+    iterator; the plan executor owns the passed left iterator.
+    """
     other = operation.source.open()
     try:
         yield from zip(iterator, other, strict=operation.strict)
@@ -217,6 +258,7 @@ def _zip(iterator: Iterator[Any], operation: ZipOp) -> Iterator[tuple[Any, Any]]
 
 
 def _zip_longest(iterator: Iterator[Any], operation: ZipLongestOp) -> Iterator[tuple[Any, Any]]:
+    """Zip to the longer input with fillvalue and close the locally opened right side."""
     other = operation.source.open()
     try:
         yield from zip_longest(iterator, other, fillvalue=operation.fillvalue)
@@ -225,6 +267,7 @@ def _zip_longest(iterator: Iterator[Any], operation: ZipLongestOp) -> Iterator[t
 
 
 def _intersperse(iterator: Iterator[Any], operation: IntersperseOp) -> Iterator[Any]:
+    """Insert one separator between adjacent items, with none at either boundary."""
     try:
         first = next(iterator)
     except StopIteration:
@@ -236,6 +279,10 @@ def _intersperse(iterator: Iterator[Any], operation: IntersperseOp) -> Iterator[
 
 
 def _concat(iterator: Iterator[Any], operation: ConcatOp) -> Iterator[Any]:
+    """Drain upstream, then lazily open and drain each additional source in order.
+
+    Every additional iterator is closed before advancing to the next source.
+    """
     yield from iterator
     for source in operation.sources:
         other = source.open()
@@ -246,6 +293,7 @@ def _concat(iterator: Iterator[Any], operation: ConcatOp) -> Iterator[Any]:
 
 
 def _scan(iterator: Iterator[Any], operation: ScanOp) -> Iterator[Any]:
+    """Emit each left-to-right accumulated state after incorporating one item."""
     state = operation.initial
     for item in iterator:
         state = operation.function(state, item)
@@ -253,6 +301,11 @@ def _scan(iterator: Iterator[Any], operation: ScanOp) -> Iterator[Any]:
 
 
 def _scan_right(iterator: Iterator[Any], operation: ScanRightOp) -> Iterator[Any]:
+    """Buffer input, accumulate from right to left, then emit states in source order.
+
+    The callback receives (item, state), and the initial state is not emitted.
+    max_items raises before retaining an excess item.
+    """
     values: list[Any] = []
     for item in iterator:
         if operation.max_items is not None and len(values) >= operation.max_items:
@@ -266,6 +319,12 @@ def _scan_right(iterator: Iterator[Any], operation: ScanRightOp) -> Iterator[Any
 
 
 def _cross(iterator: Iterator[Any], operation: CrossOp) -> Iterator[tuple[Any, Any]]:
+    """Emit a left-major Cartesian product after caching the right source once.
+
+    The right side is opened only when a first left item exists. max_right bounds
+    its cache and raises before retaining an excess item. This layer closes the
+    right iterator; the plan executor owns the left iterator.
+    """
     right_values: list[Any] = []
     right_iterator: Iterator[Any] | None = None
     initialized = False
@@ -295,11 +354,19 @@ def _cross(iterator: Iterator[Any], operation: CrossOp) -> Iterator[tuple[Any, A
 
 
 def _gather(iterator: Iterator[Any], operation: GatherOp) -> Iterator[Any]:
+    """Drive one stateful gatherer and yield values pushed for each input.
+
+    Integration may emit zero or more buffered values and may stop source
+    consumption by returning false. The finisher runs after normal exhaustion or
+    gatherer-directed stop. If downstream closes this generator, the finisher
+    receives a rejecting channel so it can clean up without emitting.
+    """
     gatherer = operation.gatherer
     state = gatherer.initializer()
     emitted: list[Any] = []
 
     def emit(value: Any) -> bool:
+        """Buffer one gatherer output for emission after the current callback returns."""
         emitted.append(value)
         return True
 
@@ -324,16 +391,19 @@ def _gather(iterator: Iterator[Any], operation: GatherOp) -> Iterator[Any]:
 
 
 def _prepend(iterator: Iterator[Any], operation: PrependOp) -> Iterator[Any]:
+    """Yield configured leading values before consuming the upstream iterator."""
     yield from operation.values
     yield from iterator
 
 
 def _append(iterator: Iterator[Any], operation: AppendOp) -> Iterator[Any]:
+    """Drain upstream before yielding the configured trailing values."""
     yield from iterator
     yield from operation.values
 
 
 def _map_first(iterator: Iterator[Any], operation: MapFirstOp) -> Iterator[Any]:
+    """Map only the first item and pass every later item through unchanged."""
     try:
         first = next(iterator)
     except StopIteration:
@@ -343,6 +413,10 @@ def _map_first(iterator: Iterator[Any], operation: MapFirstOp) -> Iterator[Any]:
 
 
 def _map_last(iterator: Iterator[Any], operation: MapLastOp) -> Iterator[Any]:
+    """Pass all but the final item unchanged, then map and emit that final item.
+
+    One item is held pending so an empty input remains empty.
+    """
     try:
         pending = next(iterator)
     except StopIteration:
@@ -354,6 +428,11 @@ def _map_last(iterator: Iterator[Any], operation: MapLastOp) -> Iterator[Any]:
 
 
 def _collapse(iterator: Iterator[Any], operation: CollapseOp) -> Iterator[Any]:
+    """Merge adjacent collapsible runs and emit one aggregate per run.
+
+    Collapsibility is tested on neighboring original items, while merger combines
+    the current run aggregate with the new item.
+    """
     try:
         previous = aggregate = next(iterator)
     except StopIteration:
@@ -369,30 +448,41 @@ def _collapse(iterator: Iterator[Any], operation: CollapseOp) -> Iterator[Any]:
 
 
 def _take(iterator: Iterator[Any], operation: TakeOp) -> Iterator[Any]:
+    """Return an islice that yields at most the first count items."""
     return islice(iterator, operation.count)
 
 
 def _drop(iterator: Iterator[Any], operation: DropOp) -> Iterator[Any]:
+    """Return an islice that skips count items before yielding the remainder."""
     return islice(iterator, operation.count, None)
 
 
 def _take_while(iterator: Iterator[Any], operation: TakeWhileOp) -> Iterator[Any]:
+    """Yield the leading truthy-predicate run and consume its first failing item."""
     return takewhile(operation.predicate, iterator)
 
 
 def _drop_while(iterator: Iterator[Any], operation: DropWhileOp) -> Iterator[Any]:
+    """Discard the leading truthy-predicate run, then stop testing and yield the rest."""
     return dropwhile(operation.predicate, iterator)
 
 
 def _pairwise(iterator: Iterator[Any], _operation: PairwiseOp) -> Iterator[Any]:
+    """Return overlapping adjacent pairs; the operation node carries no settings."""
     return pairwise(iterator)
 
 
 def _enumerate(iterator: Iterator[Any], operation: EnumerateOp) -> Iterator[Any]:
+    """Pair items with consecutive integers beginning at operation.start."""
     return enumerate(iterator, operation.start)
 
 
 def _sort(iterator: Iterator[Any], operation: SortOp) -> Iterator[Any]:
+    """Select in-memory sorted or bounded external sorting.
+
+    A missing buffer_size materializes directly with built-in sorted; otherwise
+    external_sort spills sorted runs under the configured temporary directory.
+    """
     if operation.buffer_size is None:
         return iter(sorted(iterator, key=operation.key, reverse=operation.reverse))
     return external_sort(iterator, operation)
@@ -435,6 +525,10 @@ SUPPORTED_OPERATION_TYPES: tuple[type[object], ...] = tuple(OPERATION_HANDLERS)
 
 
 def apply_operation(iterator: Iterator[Any], operation: Operation) -> Iterator[Any]:
+    """Construct the iterator layer registered for the operation's exact type.
+
+    Unknown subclasses are rejected instead of implicitly reusing a base handler.
+    """
     handler = OPERATION_HANDLERS.get(type(operation))
     if handler is None:
         raise TypeError(f"unsupported synchronous operation: {type(operation).__name__}")

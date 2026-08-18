@@ -1,4 +1,4 @@
-"""Enforce repository and focus-area coverage thresholds from coverage.py JSON."""
+"""Enforce total and focus-area line-plus-branch thresholds from coverage.py JSON."""
 
 from __future__ import annotations
 

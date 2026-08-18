@@ -1,4 +1,4 @@
-"""Compile eligible plans into fused Rust programs."""
+"""Compile numeric plan stages and choose Python, Rust, or hybrid execution."""
 
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ _EXTENSION_CAPABILITY_CACHE: dict[NativeKind, tuple[object, bool]] = {}
 
 @dataclass(frozen=True, slots=True)
 class NativeProgram:
+    """Hold retained numeric source data and fused opcode stages for one Rust kernel kind."""
+
     source: range | list[Any] | tuple[Any, ...]
     stages: tuple[Any, ...]
     kind: NativeKind = "i64"
@@ -58,6 +60,8 @@ class NativeProgram:
 
 @dataclass(frozen=True, slots=True)
 class EngineDecision:
+    """Report the selected engine, rationale, native prefix, and predicted data movement."""
+
     engine: Literal["python", "native", "hybrid"]
     reason: str
     program: NativeProgram | None = None
@@ -87,6 +91,7 @@ _TERMINALS = frozenset(
 
 
 def validate_terminal(terminal: str) -> TerminalName:
+    """Validate and narrow a terminal name before engine selection."""
     if terminal not in _TERMINALS:
         raise ValueError(f"unknown terminal {terminal!r}")
     return cast(TerminalName, terminal)
@@ -97,6 +102,7 @@ def _terminal_metadata(
     plan: Plan,
     terminal: TerminalName,
 ) -> EngineDecision:
+    """Attach source scanning, copying, materialization, and complexity metadata to a decision."""
     source = plan.source.native_data
     crosses_native_boundary = decision.engine in {"native", "hybrid"}
     container_source = isinstance(source, (list, tuple))
@@ -119,7 +125,7 @@ def _terminal_metadata(
 
 
 def exact_count(plan: Plan) -> int | None:
-    """Return a semantically exact source size without opening it, when available."""
+    """Return the unopened exact size only for an operation-free, reiterable source."""
     capabilities = plan.source.capabilities
     if plan.operations or not capabilities.reiterable:
         return None
@@ -127,6 +133,7 @@ def exact_count(plan: Plan) -> int | None:
 
 
 def _valid_source(source: object) -> bool:
+    """Accept list/tuple storage or a range whose endpoints and step fit signed i64."""
     if isinstance(source, range):
         return all(
             _I64_MIN <= value <= _I64_MAX for value in (source.start, source.stop, source.step)
@@ -135,6 +142,7 @@ def _valid_source(source: object) -> bool:
 
 
 def _f64_preserves_filter_type(plan: Plan, source: object) -> bool:
+    """Require predicate-only f64 plans to start from homogeneous Python floats."""
     for operation in plan.operations:
         if isinstance(operation, MapOp) and isinstance(operation.function, FExpr):
             return True
@@ -148,6 +156,7 @@ def _f64_preserves_filter_type(plan: Plan, source: object) -> bool:
 
 
 def _expression(operation: object) -> Expr | FExpr | None:
+    """Extract a native scalar expression from supported map and predicate nodes."""
     if isinstance(operation, MapOp):
         return operation.function if isinstance(operation.function, (Expr, FExpr)) else None
     if isinstance(operation, (FilterOp, TakeWhileOp, TakeWhileInclusiveOp, DropWhileOp)):
@@ -156,7 +165,12 @@ def _expression(operation: object) -> Expr | FExpr | None:
 
 
 def _compile(plan: Plan) -> tuple[NativeProgram | None, str]:
-    # A native program uses one numeric representation from source to terminal.
+    # One fused instruction stream cannot switch between i64 item and f64 fitem expressions.
+    """Compile every operation into one typed native instruction stream.
+
+    The compiler rejects mixed expression kinds, opaque callables, unsupported operations,
+    nonnumeric map results, f64 distinct stages, and sources that cannot cross the Rust boundary.
+    """
     expression_kinds = {
         "i64" if isinstance(expression, Expr) else "f64"
         for operation in plan.operations
@@ -216,6 +230,7 @@ def _compile(plan: Plan) -> tuple[NativeProgram | None, str]:
 
 
 def _longest_native_prefix(plan: Plan) -> tuple[NativeProgram | None, int]:
+    """Compile the longest leading stage sequence that obeys one native numeric representation."""
     source = plan.source.native_data
     if not _valid_source(source):
         return None, 0
@@ -291,6 +306,8 @@ def _longest_native_prefix(plan: Plan) -> tuple[NativeProgram | None, int]:
 
 
 def _extension_available(kind: NativeKind) -> bool:
+    """Check and cache whether the native module exposes every kernel for
+    ``kind``."""
     try:
         from .. import _native
     except ImportError:
@@ -333,6 +350,7 @@ def _extension_available(kind: NativeKind) -> bool:
 
 
 def _copy_would_dominate_short_circuit(plan: Plan) -> bool:
+    """Detect a tiny ``take`` bound whose output does not justify copying a large container."""
     source = plan.source.native_data
     size = plan.source.capabilities.exact_size
     if not isinstance(source, (list, tuple)) or size is None:
@@ -348,9 +366,14 @@ def _copy_would_dominate_short_circuit(plan: Plan) -> bool:
 
 
 def select_engine(plan: Plan) -> EngineDecision:
+    """Select Python or native execution for a fully compilable operation pipeline.
+
+    Forced native mode raises on compilation or extension failure. Automatic mode also applies
+    source-size and short-circuit copy-cost guards before crossing into Rust.
+    """
     if plan.engine == "python":
         return EngineDecision("python", "python engine explicitly requested")
-    # Crossing into Rust copies list/tuple inputs, so tiny prefixes stay in Python.
+    # Rust adapters copy list/tuple sources in full; a tiny take result cannot amortize that cost.
     if plan.engine == "auto" and _copy_would_dominate_short_circuit(plan):
         return EngineDecision(
             "python",
@@ -377,6 +400,7 @@ def select_engine(plan: Plan) -> EngineDecision:
 
 
 def _identity_program(plan: Plan) -> tuple[NativeProgram | None, str]:
+    """Build an operation-free native program for an i64 range or homogeneous numeric container."""
     source = plan.source.native_data
     if isinstance(source, range):
         if not _valid_source(source):
@@ -401,6 +425,11 @@ def _identity_program(plan: Plan) -> tuple[NativeProgram | None, str]:
 
 
 def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision:
+    """Select an engine for a terminal, including operation-free native identity kernels.
+
+    Automatic list/tuple terminals stay in Python to avoid a type scan and Rust copy; ranges can
+    use native identity kernels after capability and crossover checks.
+    """
     terminal = validate_terminal(terminal)
     if plan.operations:
         return _terminal_metadata(select_engine(plan), plan, terminal)
@@ -444,13 +473,11 @@ def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision
 
 
 def select_materializing_engine(plan: Plan) -> EngineDecision:
-    """Select a full or partial native plan for terminals that consume all output.
+    """Select full native or safe hybrid execution for a terminal that consumes all output.
 
-    Args:
-        plan: The execution plan to inspect or execute.
-
-    Returns:
-        The selected engine, reason, and any compiled native program.
+    Hybrid mode is considered only after automatic full-plan compilation fails. It requires an
+    available extension, a source above the crossover threshold, and a Python suffix that does
+    not depend on streaming a short-circuit or bounded external-sort stage.
     """
     decision = select_engine(plan)
     if decision.engine != "python" or plan.engine != "auto":
@@ -471,7 +498,7 @@ def select_materializing_engine(plan: Plan) -> EngineDecision:
         return decision
 
     suffix = plan.operations[prefix_length:]
-    # A hybrid prefix must not materialize data before a downstream short circuit.
+    # Executing the prefix eagerly would defeat short-circuit and bounded-spill suffix stages.
     unsafe_suffix = next(
         (
             operation

@@ -48,6 +48,7 @@ MergeRecords = Callable[
 
 
 def validate_partitions(partitions: int) -> int:
+    """Coerce and validate a partition count between two and the implementation cap."""
     try:
         count = operator.index(partitions)
     except TypeError:
@@ -61,6 +62,7 @@ def _partition_issue(
     file: PartitionFile,
     limits: SpillLimits,
 ) -> tuple[str, int, str, int] | None:
+    """Return the first row-count or byte-size limit exceeded by a partition."""
     if file.rows > limits.max_partition_rows:
         return ("rows", file.rows, "max_partition_rows", limits.max_partition_rows)
     if file.bytes > limits.max_partition_bytes:
@@ -69,6 +71,7 @@ def _partition_issue(
 
 
 def _repartition_salt(depth: int) -> int:
+    """Derive a deterministic nonzero hash salt for one repartition depth."""
     return 0x9E3779B1 * depth
 
 
@@ -80,6 +83,7 @@ def _bounded_group_partitions(
     limits: SpillLimits,
     depth: int = 0,
 ) -> Iterator[PartitionFile]:
+    """Recursively repartition group data until every non-empty leaf fits its limits."""
     issue = _partition_issue(source, limits)
     if issue is None:
         if source.rows:
@@ -122,6 +126,7 @@ def _bounded_join_partitions(
     limits: SpillLimits,
     depth: int = 0,
 ) -> Iterator[tuple[PartitionFile, PartitionFile]]:
+    """Recursively repartition matching join sides until both leaves fit their limits."""
     left_issue = _partition_issue(left, limits)
     right_issue = _partition_issue(right, limits)
     if left_issue is None and right_issue is None:
@@ -180,6 +185,7 @@ def spilled_group_aggregate(
     tempdir: str | os.PathLike[str] | None,
     limits: SpillLimits,
 ) -> Iterator[dict[str, Any]]:
+    """Partition rows by group key, aggregate bounded leaves, and restore first-seen order."""
     multiple_keys = len(keys) > 1
     with tempfile.TemporaryDirectory(prefix="fpstreams-group-", dir=tempdir) as directory_name:
         directory = Path(directory_name)
@@ -249,6 +255,7 @@ def _partition_join_side(
     remember_columns: Callable[[Mapping[str, Any], list[str], set[str]], None],
     keys_only: bool = False,
 ) -> tuple[str, ...]:
+    """Stream one join side into keyed partitions while recording its output columns."""
     columns: list[str] = []
     seen: set[str] = set()
     iterator = iter(source)
@@ -293,6 +300,8 @@ def _validated_join_rows(
 
 @dataclass(frozen=True, slots=True)
 class _JoinLeafConfig:
+    """Bundle join mode, schema mapping, validation, and record-merging policy for a leaf."""
+
     how: str
     shared_names: set[str]
     suffix: str
@@ -312,6 +321,7 @@ def _join_leaf_pairs(
     partitions: int,
     limits: SpillLimits,
 ) -> Iterator[tuple[PartitionFile, PartitionFile]]:
+    """Pair corresponding partitions and yield recursively bounded join leaves."""
     for left_file, right_file in zip(left_files, right_files, strict=True):
         yield from _bounded_join_partitions(
             left_file,
@@ -323,6 +333,7 @@ def _join_leaf_pairs(
 
 
 def _require_join_record(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a materialized join record or flag an invalid internal keys-only row."""
     if record is None:
         raise RuntimeError("regular spilled join row is missing its record")
     return record
@@ -336,6 +347,7 @@ def _write_semi_or_anti_leaf(
     output: _LazyWriter,
     budget: SpillBudget,
 ) -> None:
+    """Emit left rows selected by semi/anti key membership in the right leaf."""
     right_keys = {key for _position, key, _record in right_rows}
     for left_position, key, left_record in left_rows:
         if (key in right_keys) == (how == "semi"):
@@ -344,6 +356,7 @@ def _write_semi_or_anti_leaf(
 
 
 def _index_right_rows(right_rows: list[JoinRow]) -> dict[Any, list[int]]:
+    """Map each right-side key to all matching local row positions."""
     index: dict[Any, list[int]] = {}
     for local_position, (_right_position, key, _right) in enumerate(right_rows):
         index.setdefault(key, []).append(local_position)
@@ -351,6 +364,7 @@ def _index_right_rows(right_rows: list[JoinRow]) -> dict[Any, list[int]]:
 
 
 def _left_targets(config: _JoinLeafConfig, left: dict[str, Any]) -> JoinTargets:
+    """Resolve right-column output names, using global names when unmatched rights may emit."""
     if config.how in {"right", "full"}:
         return config.global_targets
     return config.join_targets(
@@ -372,6 +386,7 @@ def _write_left_matches(
     output: _LazyWriter,
     budget: SpillBudget,
 ) -> bool:
+    """Emit every right match for one left row and mark matched right positions."""
     if not matches:
         return False
     budget.check_matches(len(matches))
@@ -393,6 +408,7 @@ def _write_unmatched_left(
     output: _LazyWriter,
     budget: SpillBudget,
 ) -> None:
+    """Emit an unmatched left row with None-filled right-side columns."""
     budget.add_output()
     targets = (
         config.global_targets
@@ -419,6 +435,7 @@ def _write_regular_left_rows(
     output: _LazyWriter,
     budget: SpillBudget,
 ) -> bytearray:
+    """Drive a regular join from left rows and return flags for matched right rows."""
     index = _index_right_rows(right_rows)
     matched_right = bytearray(len(right_rows))
     for left_position, key, left_record in left_rows:
@@ -452,6 +469,7 @@ def _write_unmatched_right_rows(
     output: _LazyWriter,
     budget: SpillBudget,
 ) -> None:
+    """Emit unmatched right rows with None-filled left-side columns."""
     for local_position, (right_position, _key, right_record) in enumerate(right_rows):
         if matched_right[local_position]:
             continue
@@ -473,6 +491,7 @@ def _process_join_leaf(
     config: _JoinLeafConfig,
     budget: SpillBudget,
 ) -> None:
+    """Validate and join one bounded partition pair into ordered temporary outputs."""
     right_rows = list(
         _validated_join_rows(
             _read(right_input.path),

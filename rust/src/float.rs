@@ -1,4 +1,4 @@
-//! Fused floating-point expression and pipeline kernels.
+//! Floating-point kernels that fuse pipeline stages into streaming materializers and terminals.
 
 use crate::common::{KernelError, OnlineStatistics, kernel_error};
 use crate::integer::I64Range;

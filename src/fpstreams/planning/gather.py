@@ -1,4 +1,4 @@
-"""Stateful gatherer protocols for custom intermediate operations."""
+"""Define legacy and push-based stateful gatherers with downstream short-circuiting."""
 
 from __future__ import annotations
 
@@ -13,36 +13,37 @@ RR = TypeVar("RR")
 
 
 def _finish_empty(state: object) -> tuple[()]:
+    """Provide the legacy default finisher, which emits no trailing values."""
     return ()
 
 
 def _finish_push_empty(state: object, downstream: Downstream[object]) -> None:
+    """Provide the push-mode default finisher, which emits nothing."""
     return None
 
 
 def _initialize_stateless() -> None:
+    """Initialize a stateless push gatherer with ``None`` state."""
     return None
 
 
 class Downstream(Generic[R]):
-    """A short-circuit-aware output channel owned by a Gatherer."""
+    """Forward gatherer output while making downstream rejection permanent."""
 
     __slots__ = ("_push", "_rejecting")
 
     def __init__(self, push: Callable[[R], bool], *, rejecting: bool = False) -> None:
+        """Validate the callback and store it with the initial rejection state."""
         if not callable(push):
             raise TypeError("push must be callable")
         self._push = push
         self._rejecting = rejecting
 
     def push(self, value: R) -> bool:
-        """Emit value and return whether the downstream accepts more output.
+        """Offer one value to the callback and latch rejection when it returns ``False``.
 
-        Args:
-            value: The value consumed by this operation.
-
-        Returns:
-            Whether the condition described above is true.
+        Once rejecting, the channel returns ``False`` without invoking the callback. Callback
+        results must be actual booleans so short-circuit behavior cannot depend on truthiness.
         """
         if self._rejecting:
             return False
@@ -54,11 +55,7 @@ class Downstream(Generic[R]):
         return accepted
 
     def is_rejecting(self) -> bool:
-        """Return whether the downstream has stopped accepting output.
-
-        Returns:
-            Whether the condition described above is true.
-        """
+        """Return the latched downstream rejection state."""
         return self._rejecting
 
 
@@ -71,6 +68,8 @@ Combiner = Callable[[S, S], S]
 
 @dataclass(slots=True)
 class _CompositeState:
+    """Hold both composed gatherer states and their independent proceed flags."""
+
     left: Any
     right: Any
     left_proceed: bool = True
@@ -79,7 +78,7 @@ class _CompositeState:
 
 @dataclass(frozen=True, slots=True, init=False)
 class Gatherer(Generic[T, S, R]):
-    """A stateful intermediate operation that can emit zero or more values."""
+    """Describe a stateful intermediate operation in legacy iterable or push-callback form."""
 
     initializer: Callable[[], S]
     integrator: LegacyIntegrator[S, T, R] | PushIntegrator[S, T, R]
@@ -94,6 +93,7 @@ class Gatherer(Generic[T, S, R]):
         integrator: LegacyIntegrator[S, T, R],
         finisher: LegacyFinisher[S, R] = _finish_empty,
     ) -> None:
+        """Construct the legacy iterable-emitting form with no combiner and greedy metadata."""
         self._set_fields(
             initializer=initializer,
             integrator=integrator,
@@ -113,6 +113,7 @@ class Gatherer(Generic[T, S, R]):
         greedy: bool,
         push_mode: bool,
     ) -> None:
+        """Validate callbacks and metadata, then populate the frozen gatherer fields internally."""
         values = {
             "initializer": initializer,
             "integrator": integrator,
@@ -141,7 +142,9 @@ class Gatherer(Generic[T, S, R]):
         finisher: PushFinisher[None, R] | None = None,
         combiner: Combiner[None] | None = None,
         greedy: bool = False,
-    ) -> Gatherer[T, None, R]: ...
+    ) -> Gatherer[T, None, R]:
+        """Type the stateless push form whose sole callable is the integrator."""
+        ...
 
     @overload
     @classmethod
@@ -153,7 +156,9 @@ class Gatherer(Generic[T, S, R]):
         finisher: PushFinisher[S, R] | None = None,
         combiner: Combiner[S] | None = None,
         greedy: bool = False,
-    ) -> Gatherer[T, S, R]: ...
+    ) -> Gatherer[T, S, R]:
+        """Type the stateful push form with separate initializer and integrator callables."""
+        ...
 
     @classmethod
     def of(
@@ -165,18 +170,11 @@ class Gatherer(Generic[T, S, R]):
         combiner: Callable[..., Any] | None = None,
         greedy: bool = False,
     ) -> Gatherer[Any, Any, Any]:
-        """Build a push-based gatherer with optional state, finishing, and combining.
+        """Build a push-mode gatherer in stateless or explicitly initialized form.
 
-        Args:
-            initializer_or_integrator: A state initializer, or the integrator when no
-                initializer is required.
-            integrator: A callable that consumes one item and may emit downstream values.
-            finisher: A callable that converts accumulated state into the final result.
-            combiner: A callable that combines two partial gatherer states.
-            greedy: Whether the integrator should continue after downstream rejection.
-
-        Returns:
-            A reusable `Gatherer` implementing the described stateful operation.
+        Omitting ``integrator`` makes the first callable a stateless integrator with ``None``
+        state. The finisher defaults to no output. ``combiner`` and ``greedy`` are retained
+        as metadata for state composition; sequential integration still stops on rejection.
         """
         if integrator is None:
             initializer: Callable[[], Any] = _initialize_stateless
@@ -208,7 +206,9 @@ class Gatherer(Generic[T, S, R]):
         *,
         finisher: PushFinisher[None, R] | None = None,
         greedy: bool = False,
-    ) -> Gatherer[T, None, R]: ...
+    ) -> Gatherer[T, None, R]:
+        """Type the stateless push form with no state combiner."""
+        ...
 
     @overload
     @classmethod
@@ -219,7 +219,9 @@ class Gatherer(Generic[T, S, R]):
         *,
         finisher: PushFinisher[S, R] | None = None,
         greedy: bool = False,
-    ) -> Gatherer[T, S, R]: ...
+    ) -> Gatherer[T, S, R]:
+        """Type the initialized push form with no state combiner."""
+        ...
 
     @classmethod
     def of_sequential(
@@ -230,18 +232,7 @@ class Gatherer(Generic[T, S, R]):
         finisher: Callable[..., Any] | None = None,
         greedy: bool = False,
     ) -> Gatherer[Any, Any, Any]:
-        """Build a push-based gatherer whose state cannot be combined in parallel.
-
-        Args:
-            initializer_or_integrator: A state initializer, or the integrator when no
-                initializer is required.
-            integrator: A callable that consumes one item and may emit downstream values.
-            finisher: A callable that converts accumulated state into the final result.
-            greedy: Whether the integrator should continue after downstream rejection.
-
-        Returns:
-            A reusable `Gatherer` implementing the described stateful operation.
-        """
+        """Build the push-mode form through ``of`` while always storing no state combiner."""
         if integrator is None:
             return cls.of(
                 initializer_or_integrator,
@@ -258,6 +249,11 @@ class Gatherer(Generic[T, S, R]):
         )
 
     def _integrate(self, state: S, item: T, downstream: Downstream[R]) -> bool:
+        """Integrate one item and report whether both gatherer and downstream may continue.
+
+        Push integrators must return a real boolean. Legacy integrators yield values that are
+        forwarded only until downstream rejects them.
+        """
         if self._push_mode:
             integrate = cast("PushIntegrator[S, T, R]", self.integrator)
             proceed = integrate(state, item, downstream)
@@ -269,6 +265,7 @@ class Gatherer(Generic[T, S, R]):
         return all(downstream.push(value) for value in integrate_legacy(state, item))
 
     def _finish(self, state: S, downstream: Downstream[R]) -> None:
+        """Run the configured finisher and stop forwarding legacy output after rejection."""
         if self._push_mode:
             finish = cast("PushFinisher[S, R]", self.finisher)
             finish(state, downstream)
@@ -280,18 +277,17 @@ class Gatherer(Generic[T, S, R]):
                 return
 
     def and_then(self, other: Gatherer[R, Any, RR]) -> Gatherer[T, Any, RR]:
-        """Compose this gatherer with another gatherer without an intermediate collection.
+        """Feed this gatherer directly into ``other`` through a short-circuiting bridge.
 
-        Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-
-        Returns:
-            A reusable `Gatherer` implementing the described stateful operation.
+        Both states and proceed flags are retained together. This finisher sends left-finisher
+        output through the right integrator before running the right finisher. A composite state
+        combiner exists only when both component gatherers provide one.
         """
         if not isinstance(other, Gatherer):
             raise TypeError("other must be a Gatherer")
 
         def initialize() -> _CompositeState:
+            """Initialize independent left and right states for the composed gatherer."""
             return _CompositeState(self.initializer(), other.initializer())
 
         def integrate(
@@ -299,10 +295,13 @@ class Gatherer(Generic[T, S, R]):
             item: T,
             downstream: Downstream[RR],
         ) -> bool:
+            """Integrate one left input while bridging its emissions into the right
+            gatherer."""
             if not state.left_proceed or not state.right_proceed or downstream.is_rejecting():
                 return False
 
             def push_right(value: R) -> bool:
+                """Push a left emission through the right integrator and update its proceed flag."""
                 if not state.right_proceed or downstream.is_rejecting():
                     state.right_proceed = False
                     return False
@@ -314,7 +313,11 @@ class Gatherer(Generic[T, S, R]):
             return state.left_proceed and state.right_proceed and not downstream.is_rejecting()
 
         def finish(state: _CompositeState, downstream: Downstream[RR]) -> None:
+            """Finish left through the bridge, then finish right into the final downstream."""
+
             def push_right(value: R) -> bool:
+                """Feed left-finisher output through the right integrator while it still
+                accepts input."""
                 if not state.right_proceed or downstream.is_rejecting():
                     state.right_proceed = False
                     return False
@@ -329,6 +332,7 @@ class Gatherer(Generic[T, S, R]):
             other._finish(state.right, downstream)
 
         def combine(left: _CompositeState, right: _CompositeState) -> _CompositeState:
+            """Combine component states and proceed only when both partial states do."""
             left_combiner = self.combiner
             right_combiner = other.combiner
             if left_combiner is None or right_combiner is None:

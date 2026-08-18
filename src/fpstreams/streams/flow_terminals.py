@@ -57,25 +57,30 @@ class FlowTerminalsMixin(Generic[T]):
     _plan: Plan
 
     def __iter__(self) -> Iterator[T]:
+        """Yield items from the concrete Flow implementation."""
         raise NotImplementedError
 
     def _open(self) -> Any:
+        """Return a context manager that closes the active pipeline iterator."""
         raise NotImplementedError
 
     def filter(self, predicate: Callable[[T], Any]) -> FlowTerminalsMixin[T]:
+        """Build a lazy pipeline that keeps items satisfying `predicate`."""
         raise NotImplementedError
 
     def reject(self, predicate: Callable[[T], Any]) -> FlowTerminalsMixin[T]:
+        """Build a lazy pipeline that drops items satisfying `predicate`."""
         raise NotImplementedError
 
     def drop(self, count: int) -> FlowTerminalsMixin[T]:
+        """Build a lazy pipeline that skips the first `count` items."""
         raise NotImplementedError
 
     def to_list(self) -> list[T]:
         """Execute the pipeline and collect its items in a list.
 
         Returns:
-            A list containing the consumed results in encounter order.
+            All emitted items in encounter order.
         """
         return list(execute(self._plan))
 
@@ -83,7 +88,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute the pipeline and collect its items in a tuple.
 
         Returns:
-            A tuple containing the resulting values.
+            All emitted items in encounter order as a tuple.
         """
         return tuple(execute(self._plan))
 
@@ -91,7 +96,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute the pipeline and collect distinct hashable items.
 
         Returns:
-            A set containing the distinct resulting values.
+            The distinct emitted items; every item must be hashable.
         """
         return set(execute(self._plan))
 
@@ -99,7 +104,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute the pipeline and build a pandas DataFrame.
 
         Args:
-            columns: The columns or column mapping used by the operation.
+            columns: Optional column labels passed to `pandas.DataFrame`.
 
         Returns:
             A pandas `DataFrame` containing the emitted items.
@@ -145,10 +150,11 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute the pipeline and stream its items to a CSV file.
 
         Args:
-            path: The filesystem path to read from or write to.
-            header: The CSV header policy or explicit field names.
-            encoding: The text encoding used to open the file.
-            spreadsheet_safe: Whether to neutralize cells that spreadsheet programs may execute.
+            path: Destination file, opened in text write mode.
+            header: Optional header row. For mapping items, these names also select and order cells.
+            encoding: Encoding used when opening the destination.
+            spreadsheet_safe: Prefix formula-like string cells so spreadsheet software treats them
+                as text.
         """
         columns = tuple(header) if header is not None else None
         with (
@@ -187,11 +193,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute the pipeline and stream its items to one JSON array.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
+            path: Destination file, replaced with one streamed JSON array.
+            encoding: Encoding used when opening the destination.
             ensure_ascii: Whether JSON output escapes non-ASCII characters.
-            default: The value returned when no matching item is available.
-
+            default: Optional serializer called for objects the JSON encoder cannot handle.
         """
         encoder = (
             json.JSONEncoder(ensure_ascii=ensure_ascii)
@@ -213,7 +218,9 @@ class FlowTerminalsMixin(Generic[T]):
         """Return count and one-pass summary statistics for numeric items.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            An empty dictionary for an empty flow; otherwise `count` plus numeric `sum`, `min`,
+            `max`, and `mean` when real values occur. Mixed input also includes
+            `numeric_count`, and two or more numeric values add sample `std`.
         """
         count = 0
         numeric_count = 0
@@ -275,10 +282,10 @@ class FlowTerminalsMixin(Generic[T]):
         All named aggregators are updated during the same source traversal.
 
         Args:
-            **aggregations: Named aggregators evaluated during the same traversal.
+            **aggregations: Result names mapped to aggregators updated in one traversal.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Finished aggregation values keyed by the supplied argument names.
         """
         items = prepare_aggregations(aggregations)
         first_name = native_first_only(items)
@@ -308,8 +315,8 @@ class FlowTerminalsMixin(Generic[T]):
         and return a dictionary.
 
         Args:
-            collector: The collector used to reduce input items.
-            **collectors: Named collectors evaluated during the same traversal.
+            collector: One `Collector` or callable invoked with this flow to produce the result.
+            **collectors: Named streaming collectors updated together in one traversal.
 
         Returns:
             The collector result, or a dictionary of results for named collectors.
@@ -327,7 +334,7 @@ class FlowTerminalsMixin(Generic[T]):
         relational join.
 
         Args:
-            separator: The string inserted between adjacent string representations.
+            separator: String placed between consecutive `str(item)` values.
 
         Returns:
             One string containing every item separated by `separator`.
@@ -338,7 +345,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Execute action once for every item.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Called once for each emitted item; its return value is ignored.
         """
         for item in self:
             action(item)
@@ -347,10 +354,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Collect matching and non-matching items in separate lists.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called once per item; truthy items enter the first returned list.
 
         Returns:
-            A tuple containing the resulting values.
+            `(matches, misses)`, preserving encounter order within both lists.
         """
         matches: list[T] = []
         misses: list[T] = []
@@ -362,7 +369,11 @@ class FlowTerminalsMixin(Generic[T]):
         """Separate Result values into successes and failures.
 
         Returns:
-            A tuple containing the resulting values.
+            `(success_values, exceptions)`, with `Ok` and `Err` payloads unwrapped in their
+            respective encounter orders.
+
+        Raises:
+            TypeError: If any emitted item is neither `Ok` nor `Err`.
         """
         successes: list[Any] = []
         failures: list[Exception] = []
@@ -389,7 +400,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the first item without consuming an unnecessary tail.
 
         Args:
-            default: The value returned when no matching item is available.
+            default: Returned only when the flow is empty.
 
         Returns:
             The first item, or `default` when the flow is empty.
@@ -416,10 +427,13 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the last item, or default when the flow is empty.
 
         Args:
-            default: The value returned when no matching item is available.
+            default: Returned only when the flow is empty.
 
         Returns:
             The last item, or `default` when the flow is empty.
+
+        Raises:
+            EmptyFlowError: If the flow is empty and no default is supplied.
         """
         native, result = try_native_terminal(self._plan, "last")
         if native:
@@ -439,11 +453,14 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the first matching item, a default, or raise EmptyFlowError.
 
         Args:
-            predicate: A callable that decides whether an item matches.
-            default: The value returned when no matching item is available.
+            predicate: Called in order until its first truthy result.
+            default: Returned when no predicate result is truthy.
 
         Returns:
             The first matching item, or `default` when no item matches.
+
+        Raises:
+            EmptyFlowError: If no item matches and no default is supplied.
         """
         matches = self.filter(predicate)
         if default is not _MISSING:
@@ -457,10 +474,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the index of the first matching item, or None.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Called with each item in order until its first truthy result.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The zero-based position of the first truthy predicate result, or `None`.
         """
         if not callable(predicate):
             raise TypeError("predicate must be callable")
@@ -474,10 +491,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the index of the first equal value, or None.
 
         Args:
-            value: The value consumed by this operation.
+            value: Target compared to each source item with equality.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The zero-based position of the first item equal to `value`, or `None`.
         """
         return self.find_index(lambda item: item == value)
 
@@ -485,11 +502,14 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the item at a positive or negative index.
 
         Args:
-            index: The zero-based item or field position to select.
-            default: The value returned when no matching item is available.
+            index: Zero-based position; negative values count backward from the end.
+            default: Returned when `index` is outside the flow.
 
         Returns:
             The selected item, or `default` when the index is out of range.
+
+        Raises:
+            EmptyFlowError: If the index is out of range and no default is supplied.
         """
         position = operator.index(index)
         if position >= 0:
@@ -521,7 +541,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Count all items produced by the pipeline.
 
         Returns:
-            The number of matching input items.
+            The total number of emitted items.
         """
         known_size = exact_count(self._plan)
         if known_size is not None:
@@ -535,7 +555,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Add all items, starting with start.
 
         Args:
-            start: The first index, numeric value, or additive identity to use.
+            start: Value added before all emitted items, matching Python's built-in `sum`.
 
         Returns:
             The total of `start` and all emitted items.
@@ -547,6 +567,7 @@ class FlowTerminalsMixin(Generic[T]):
         return builtins.sum(cast(Iterable[Any], self), start)
 
     def _statistics_snapshot(self) -> StatisticsSnapshot:
+        """Compute one-pass numeric statistics, using the native terminal when supported."""
         native, snapshot = try_native_statistics(self._plan)
         if native:
             if snapshot is None:
@@ -562,7 +583,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the arithmetic mean, or None for an empty flow.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The compensated floating-point mean, or `None` when no items are emitted.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
         """
         return mean_from(self._statistics_snapshot())
 
@@ -572,10 +596,14 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the variance, or None when too few values are available.
 
         Args:
-            ddof: Delta degrees of freedom used in the variance divisor.
+            ddof: Non-negative adjustment in the divisor `count - ddof`.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The floating-point variance, or `None` when `count <= ddof`.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
+            ValueError: If `ddof` is negative.
         """
         validate_ddof(ddof)
         return variance_from(self._statistics_snapshot(), ddof)
@@ -584,10 +612,14 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the standard deviation, or None when too few values are available.
 
         Args:
-            ddof: Delta degrees of freedom used in the variance divisor.
+            ddof: Non-negative adjustment in the variance divisor `count - ddof`.
 
         Returns:
-            The matching or computed value, or `None` when unavailable.
+            The square root of the variance, or `None` when `count <= ddof`.
+
+        Raises:
+            TypeError: If an emitted item is not a real number.
+            ValueError: If `ddof` is negative.
         """
         validate_ddof(ddof)
         return std_from(self._statistics_snapshot(), ddof)
@@ -596,7 +628,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the smallest item and raise on an empty flow.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional callable whose result is compared instead of the item.
 
         Returns:
             The smallest item according to `key`.
@@ -616,7 +648,7 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the largest item and raise on an empty flow.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional callable whose result is compared instead of the item.
 
         Returns:
             The largest item according to `key`.
@@ -636,11 +668,11 @@ class FlowTerminalsMixin(Generic[T]):
         """Return up to count largest items without sorting the entire result.
 
         Args:
-            count: The requested number of items.
-            key: The callable or selector used to derive a key.
+            count: Maximum number of items to return.
+            key: Optional callable, field name, index, path, or expression used for ranking.
 
         Returns:
-            A list containing the consumed results in encounter order.
+            Up to `count` items ordered from largest to smallest selected value.
         """
         if count < 0:
             raise ValueError("top count must be non-negative")
@@ -654,11 +686,11 @@ class FlowTerminalsMixin(Generic[T]):
         """Return up to count smallest items without sorting the entire result.
 
         Args:
-            count: The requested number of items.
-            key: The callable or selector used to derive a key.
+            count: Maximum number of items to return.
+            key: Optional callable, field name, index, path, or expression used for ranking.
 
         Returns:
-            A list containing the consumed results in encounter order.
+            Up to `count` items ordered from smallest to largest selected value.
         """
         if count < 0:
             raise ValueError("bottom count must be non-negative")
@@ -672,10 +704,13 @@ class FlowTerminalsMixin(Generic[T]):
         """Return the smallest and largest items in one traversal.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional callable, field name, index, path, or expression used for comparison.
 
         Returns:
-            A tuple containing the resulting values.
+            `(minimum_item, maximum_item)` according to the selected values.
+
+        Raises:
+            EmptyFlowError: If the flow emits no items.
         """
         select: Callable[[T], Any] = (
             (lambda item: item) if key is None else cast(Callable[[T], Any], compile_selector(key))
@@ -700,10 +735,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return whether at least one item satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Tested in order until one result is truthy; defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` when any item satisfies `predicate`; `False` for an empty flow.
         """
         if predicate is bool:
             native, result = try_native_terminal(self._plan, "any")
@@ -721,10 +756,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return whether every item satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Tested in order until one result is falsey; defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` when every item satisfies `predicate`, including for an empty flow.
         """
         if predicate is bool:
             native, result = try_native_terminal(self._plan, "all")
@@ -742,10 +777,10 @@ class FlowTerminalsMixin(Generic[T]):
         """Return whether no item satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Tested in order until one result is truthy; defaults to `bool`.
 
         Returns:
-            Whether the condition described above is true.
+            `True` only when no item satisfies `predicate`, including for an empty flow.
         """
         return not self.any(predicate)
 
@@ -757,12 +792,14 @@ class FlowTerminalsMixin(Generic[T]):
         """Combine items from left to right with an optional initial value.
 
         Args:
-            function: The callable applied by this operation.
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
+            function: Called as `function(accumulator, item)` from left to right.
+            initial: Starting accumulator; when omitted, the first item becomes the accumulator.
 
         Returns:
             The final left-to-right accumulator.
+
+        Raises:
+            EmptyFlowError: If the flow is empty and `initial` is omitted.
         """
         with self._open() as iterator:
             if initial is _MISSING:
@@ -786,13 +823,16 @@ class FlowTerminalsMixin(Generic[T]):
         """Combine buffered items from right to left.
 
         Args:
-            function: The callable applied by this operation.
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            max_items: The maximum number of source items allowed in the right-side buffer.
+            function: Called as `function(item, accumulator)` from right to left.
+            initial: Starting accumulator; when omitted, the last item becomes the accumulator.
+            max_items: Optional maximum number of source items that may be buffered.
 
         Returns:
             The final right-to-left accumulator.
+
+        Raises:
+            BufferLimitError: If the source contains more than `max_items` items.
+            EmptyFlowError: If the flow is empty and `initial` is omitted.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -828,12 +868,12 @@ class FlowTerminalsMixin(Generic[T]):
         """Reduce items independently for each selected key.
 
         Args:
-            key: The callable or selector used to derive a key.
-            function: The callable applied by this operation.
-            initializer: A zero-argument callable that creates fresh mutable state.
+            key: Callable, field name, index, path, or expression selecting each group key.
+            function: Called as `function(group_state, item)` for items in that group.
+            initializer: Called once when each distinct group is first encountered.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Final accumulator state for each hashable key, in first-key encounter order.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -857,10 +897,11 @@ class FlowTerminalsMixin(Generic[T]):
         """Count occurrences of values or selected keys.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional callable, field name, index, path, or expression selecting the value to
+                count; the item itself is counted when omitted.
 
         Returns:
-            A dictionary containing the computed keys and values.
+            Occurrence counts keyed by each hashable selected value.
         """
         selector: Selector = (lambda item: item) if key is None else key
         return self.reduce_by(

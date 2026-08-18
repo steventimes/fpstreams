@@ -1,6 +1,20 @@
-"""Stable public API for fpstreams v2."""
+"""Expose the fpstreams v2 flow, expression, collection, and value-type APIs."""
 
-from .collecting import Aggregator, Collector, Collectors, SummaryStatistics, agg
+from .collecting import (
+    Aggregator,
+    Collector,
+    Collectors,
+    EmptyInputPolicy,
+    LawProvenance,
+    Reducer,
+    ReducerAggregator,
+    ReducerLawError,
+    ReducerLaws,
+    ReductionExplanation,
+    SummaryStatistics,
+    agg,
+    explain_reduction,
+)
 from .errors import (
     BufferLimitError,
     DuplicateKeyError,
@@ -40,6 +54,7 @@ __all__ = [
     "Downstream",
     "DuplicateKeyError",
     "EmptyFlowError",
+    "EmptyInputPolicy",
     "Err",
     "Expr",
     "FExpr",
@@ -47,11 +62,17 @@ __all__ = [
     "FlowConsumedError",
     "FlowError",
     "Gatherer",
+    "LawProvenance",
     "NativeUnsupportedError",
     "Ok",
     "Option",
     "Pairs",
     "ParallelStream",
+    "Reducer",
+    "ReducerAggregator",
+    "ReducerLawError",
+    "ReducerLaws",
+    "ReductionExplanation",
     "Result",
     "RowExpr",
     "Rows",
@@ -65,6 +86,7 @@ __all__ = [
     "coalesce",
     "col",
     "curry",
+    "explain_reduction",
     "fitem",
     "flow",
     "item",

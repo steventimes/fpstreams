@@ -17,9 +17,11 @@ from ..errors import BufferLimitError, DuplicateKeyError, SelectionError
 from ..expressions.row import RowExpr, lit
 from ..expressions.selectors import Selector, compile_selector
 from ..io_safety import validate_max_record_bytes
+from ..planning.arrow import PlannedRowCallable
+from ..planning.sync import Engine
 from ..streams.flow import Flow, flow
 from .arrow import (
-    arrow_row_source,
+    arrow_source,
     parquet_row_factory,
 )
 from .dataframe import dataframe_row_factory
@@ -45,6 +47,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
     __slots__ = ("_flow",)
 
     def __init__(self, source: Iterable[T] | Flow[T]) -> None:
+        """Wrap an existing Flow or convert an iterable into a lazy row pipeline."""
         self._flow = source if isinstance(source, Flow) else flow(source)
 
     @staticmethod
@@ -54,19 +57,20 @@ class Rows(RowsIOMixin[T], Generic[T]):
         encoding: str = "utf-8",
         **format_parameters: Any,
     ) -> Rows[dict[str, Any]]:
-        """Read CSV rows lazily as dictionaries.
+        """Return reusable rows that reopen a CSV file and validate its header when iterated.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
-            **format_parameters: Additional keyword arguments passed to the underlying
-                file-format reader.
+            path: CSV input file opened on each iteration.
+            encoding: Text encoding used by the CSV reader.
+            **format_parameters: Keyword options forwarded to csv.DictReader, such as
+                dialect, delimiter, or quoting.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            A lazy Rows pipeline of dictionaries keyed by the unique CSV header.
         """
 
         def records() -> Iterator[dict[str, Any]]:
+            """Open the CSV on each iteration and yield dictionaries after validating its header."""
             with open(path, encoding=encoding, newline="") as handle:
                 reader = csv.DictReader(handle, **format_parameters)
                 _require_unique_names(reader.fieldnames or (), operation="CSV header")
@@ -82,20 +86,21 @@ class Rows(RowsIOMixin[T], Generic[T]):
         encoding: str = "utf-8",
         max_record_bytes: int | None = 8 * 1024 * 1024,
     ) -> Rows[dict[str, Any]]:
-        """Read one JSON object per line lazily.
+        """Return reusable rows that decode nonblank JSON objects from a file on demand.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
-            max_record_bytes: Maximum encoded bytes per physical record, or None to disable.
+            path: JSON Lines input file reopened for each iteration.
+            encoding: Encoding applied after each physical line passes its byte limit.
+            max_record_bytes: Encoded-byte limit per line, or None for no limit.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows; duplicate keys and non-object records fail when consumed.
         """
 
         record_limit = validate_max_record_bytes(max_record_bytes)
 
         def records() -> Iterator[dict[str, Any]]:
+            """Read bounded lines, decode JSON objects, and yield validated dictionaries."""
             with open(path, "rb") as handle:
                 line_number = 0
                 while True:
@@ -121,6 +126,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
                         *,
                         record_number: int = line_number,
                     ) -> dict[str, Any]:
+                        """Build one JSON object while rejecting duplicate keys before loss."""
                         value: dict[str, Any] = {}
                         for name, item in pairs:
                             if name in value:
@@ -140,17 +146,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
 
     @staticmethod
     def from_arrow(source: Any, *, batch_size: int = 65_536) -> Rows[dict[str, Any]]:
-        """Create rows from an Arrow table, batch, reader, dataset, or stream.
+        """Adapt a PyArrow Table, RecordBatch, or RecordBatchReader to dictionary rows.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
-            batch_size: The maximum number of rows processed in each batch.
+            source: Reusable Table/RecordBatch or one-shot RecordBatchReader.
+            batch_size: Maximum rows converted from each Arrow batch slice.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows; a RecordBatchReader may be consumed only once and is closed afterward.
         """
-        factory, reiterable = arrow_row_source(source, batch_size=batch_size)
-        return Rows(flow.defer(factory) if reiterable else flow(factory()))
+        return Rows(Flow(arrow_source(source, batch_size=batch_size)))
 
     @staticmethod
     def from_dataframe(
@@ -159,15 +164,15 @@ class Rows(RowsIOMixin[T], Generic[T]):
         batch_size: int = 65_536,
         allow_copy: bool = True,
     ) -> Rows[dict[str, Any]]:
-        """Create rows from an object implementing the dataframe interchange protocol.
+        """Adapt an object implementing the dataframe interchange protocol through PyArrow.
 
         Args:
-            frame: The dataframe-like object used as the row source.
-            batch_size: The maximum number of rows processed in each batch.
-            allow_copy: Whether an adapter may copy data when zero-copy conversion is unavailable.
+            frame: Object providing __dataframe__(), optionally with an Arrow C stream.
+            batch_size: Maximum rows converted from each Arrow batch.
+            allow_copy: Permit interchange conversion to allocate copied buffers.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows that perform dataframe-to-Arrow conversion when iterated.
         """
         return Rows(
             flow.defer(
@@ -189,16 +194,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
         maintain_order: bool = True,
         engine: Any = "auto",
     ) -> Rows[dict[str, Any]]:
-        """Create rows from a Polars DataFrame or LazyFrame.
+        """Adapt an eager Polars DataFrame or batch-collected LazyFrame to dictionary rows.
 
         Args:
-            frame: The dataframe-like object used as the row source.
-            batch_size: The maximum number of rows processed in each batch.
-            maintain_order: Whether output must preserve the source row order.
-            engine: The execution engine requested for this pipeline.
+            frame: Polars DataFrame or LazyFrame to slice or collect.
+            batch_size: Rows requested per eager slice or lazy collection batch.
+            maintain_order: Preserve LazyFrame row order while collecting batches.
+            engine: Polars engine used only for LazyFrame batch collection.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy reusable Rows; a LazyFrame is collected again for each iteration.
         """
         return Rows(
             flow.defer(
@@ -222,19 +227,19 @@ class Rows(RowsIOMixin[T], Generic[T]):
         filesystem: Any = None,
         partitioning: Any = None,
     ) -> Rows[dict[str, Any]]:
-        """Read Parquet batches lazily through PyArrow.
+        """Build reusable rows from a fresh PyArrow dataset scanner per iteration.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
-            columns: The columns or column mapping used by the operation.
-            filter: An optional dataset filter pushed into the underlying reader.
-            batch_size: The maximum number of rows processed in each batch.
-            use_threads: Whether the underlying Arrow operation may use worker threads.
-            filesystem: The optional filesystem implementation used to access the data source.
-            partitioning: The partitioning scheme used to interpret a dataset.
+            source: PyArrow Dataset or dataset source accepted by pyarrow.dataset().
+            columns: Unique projected column names, or None for all columns.
+            filter: PyArrow dataset expression pushed into the scanner.
+            batch_size: Maximum rows requested from each scanner batch.
+            use_threads: Allow the PyArrow scanner to use worker threads.
+            filesystem: Optional PyArrow filesystem for resolving the source.
+            partitioning: Optional dataset partitioning specification.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows with projection and filtering performed by PyArrow.
         """
         return Rows(
             flow.defer(
@@ -258,16 +263,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
         *,
         batch_size: int = 1_000,
     ) -> Rows[dict[str, Any]]:
-        """Run a DB-API query and stream rows in batches.
+        """Build a reiterable DB-API query source that owns its connections and cursors.
 
         Args:
-            connect: A zero-argument callable that opens a new database connection.
-            query: The SQL query executed for each fresh iteration.
-            parameters: Parameters passed to the database query or statement.
-            batch_size: The maximum number of rows processed in each batch.
+            connect: Zero-argument factory called once per iteration for a new connection.
+            query: Statement executed by each newly opened cursor.
+            parameters: Optional mapping or positional values passed to cursor.execute().
+            batch_size: Maximum rows requested by each cursor.fetchmany() call.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy rows that close the cursor and connection on exhaustion, error, or early stop.
         """
         return Rows(
             flow.defer(
@@ -290,18 +295,18 @@ class Rows(RowsIOMixin[T], Generic[T]):
         timeout: float = 5.0,
         uri: bool = False,
     ) -> Rows[dict[str, Any]]:
-        """Execute a SQLite query lazily and emit rows as dictionaries.
+        """Build a reiterable SQLite query source that owns one connection per iteration.
 
         Args:
-            database: The SQLite database path or connection target.
-            query: The SQL query executed for each fresh iteration.
-            parameters: Parameters passed to the database query or statement.
-            batch_size: The maximum number of rows processed in each batch.
-            timeout: The optional maximum duration in seconds before the operation fails.
-            uri: Whether the SQLite database string should be interpreted as a URI.
+            database: SQLite path or URI passed to sqlite3.connect().
+            query: Statement executed by each newly opened cursor.
+            parameters: Optional mapping or positional values passed to cursor.execute().
+            batch_size: Maximum rows requested by each cursor.fetchmany() call.
+            timeout: Seconds sqlite3 waits for a locked database.
+            uri: Interpret database as a SQLite URI when true.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary rows that close their cursor and connection after iteration.
         """
         return Rows(
             flow.defer(
@@ -317,6 +322,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         )
 
     def __iter__(self) -> Iterator[T]:
+        """Execute the underlying Flow and yield records lazily."""
         return iter(self._flow)
 
     def to_list(self) -> list[T]:
@@ -328,40 +334,44 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return self._flow.to_list()
 
     def count(self) -> int:
-        """Count all rows produced by the pipeline.
+        """Consume the pipeline and count every emitted row.
 
         Returns:
-            The number of matching input items.
+            The number of rows remaining after all lazy transformations.
         """
         return self._flow.count()
 
+    def with_engine(self, engine: Engine) -> Rows[T]:
+        """Return equivalent lazy Rows requesting auto, Python, or native Flow execution."""
+        return Rows(self._flow.with_engine(engine))
+
     def first(self) -> T:
-        """Return the first row, a default, or raise EmptyFlowError.
+        """Return the first row and close upstream without requesting an unnecessary tail.
 
         Returns:
-            The first row.
+            The first emitted row.
 
         Raises:
-            EmptyFlowError: If the pipeline is empty and no default is supplied.
+            EmptyFlowError: If the pipeline emits no rows.
         """
         return self._flow.first()
 
     def last(self) -> T:
-        """Return the last row, a default, or raise EmptyFlowError.
+        """Consume the pipeline and return its final row, raising EmptyFlowError when empty.
 
         Returns:
-            The last row.
+            The last emitted row.
         """
         return self._flow.last()
 
     def take(self, count: int) -> Rows[T]:
-        """Keep at most count rows.
+        """Return a lazy prefix that stops and closes upstream after at most count rows.
 
         Args:
-            count: The requested number of items.
+            count: Nonnegative maximum number of rows to emit.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            New Rows preserving encounter order; zero emits nothing.
         """
         return Rows(self._flow.take(count))
 
@@ -369,61 +379,62 @@ class Rows(RowsIOMixin[T], Generic[T]):
     head = take
 
     def skip(self, count: int) -> Rows[T]:
-        """Skip count rows; alias of drop.
+        """Return lazy rows after discarding the first count upstream items.
 
         Args:
-            count: The requested number of items.
+            count: Nonnegative number of rows to consume without emitting.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            New Rows containing the remaining encounter-ordered rows.
         """
         return Rows(self._flow.drop(count))
 
     offset = skip
 
     def unique_by(self, selector: Selector) -> Rows[T]:
-        """Keep the first row for each selected key.
+        """Keep the first row for each distinct selected key in encounter order.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Field, path, index, expression, or callable producing a hashable key.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows whose later duplicate keys are omitted.
         """
         return Rows(self._flow.unique_by(selector))
 
     distinct_by = unique_by
 
     def filter(self, predicate: Callable[[T], bool]) -> Rows[T]:
-        """Keep rows for which predicate returns true.
+        """Keep rows for which predicate returns a truthy result.
 
-        Rows remain lazy; the predicate is evaluated only while the returned pipeline is
-        consumed.
+        The predicate runs lazily in encounter order, and the parent Rows pipeline remains
+        unchanged.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Callable evaluated once for each upstream row reached.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            New lazy Rows containing only matching rows.
         """
         return Rows(self._flow.filter(predicate))
 
     def where(self, predicate: Callable[[T], bool] | None = None, **equalities: Any) -> Rows[T]:
-        """Filter rows with a predicate and/or field equalities.
+        """Require the optional predicate and every named field equality.
 
-        A row must satisfy the optional predicate and every supplied field equality.
+        Named fields are compiled once, then selected lazily from each consumed row.
 
         Args:
-            predicate: A callable that decides whether an item matches.
-            **equalities: Field names mapped to values that rows must equal.
+            predicate: Optional callable that must return truthy for a row.
+            **equalities: Top-level or dotted field paths mapped to required values.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            New lazy Rows containing rows that satisfy all supplied conditions.
         """
         # Compile equality selectors once; evaluation still happens lazily per row.
         selectors = [(compile_selector(name), expected) for name, expected in equalities.items()]
 
         def matches(row: T) -> bool:
+            """Require both the optional predicate and every named equality to match."""
             if predicate is not None and not predicate(row):
                 return False
             return all(select(row) == expected for select, expected in selectors)
@@ -431,37 +442,39 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return self.filter(matches)
 
     def with_columns(self, **columns: Selector) -> Rows[dict[str, Any]]:
-        """Add or replace fields using selectors and row expressions.
+        """Copy each row and add or replace fields evaluated against the original row.
 
         Args:
-            **columns: Names mapped to selectors, expressions, or replacement values.
+            **columns: Output field names mapped to selectors or RowExpr values.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary Rows; computed columns do not observe earlier additions.
         """
         selectors = [(name, compile_selector(selector)) for name, selector in columns.items()]
 
         def enrich(row: T) -> dict[str, Any]:
+            """Copy a row to a dictionary and evaluate each new column against the original row."""
             record = _as_record(row)
             for name, select in selectors:
                 record[name] = select(row)
             return record
 
-        return Rows(self._flow.map(enrich))
+        return Rows(self._flow.map(PlannedRowCallable(enrich)))
 
     def rename(self, **columns: str) -> Rows[dict[str, Any]]:
-        """Rename fields and reject duplicate output names.
+        """Rename top-level fields while rejecting collisions in each output record.
 
         Args:
-            **columns: Names mapped to selectors, expressions, or replacement values.
+            **columns: Existing field names mapped to nonempty destination names.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy copied dictionaries; unmapped fields retain their names and order.
         """
         if any(not name for name in columns.values()):
             raise ValueError("renamed columns cannot be empty")
 
         def transform(row: T) -> dict[str, Any]:
+            """Rename fields while detecting collisions in the resulting record."""
             renamed: dict[str, Any] = {}
             for name, value in _as_record(row).items():
                 target = columns.get(name, name)
@@ -473,13 +486,13 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return Rows(self._flow.map(transform))
 
     def drop(self, *columns: str) -> Rows[dict[str, Any]]:
-        """Remove the named fields from each row.
+        """Copy each row without the named top-level fields.
 
         Args:
-            *columns: Column names selected by the operation.
+            *columns: Field names to omit; absent names are ignored.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy dictionary Rows preserving the order of retained fields.
         """
         names = frozenset(columns)
         return Rows(
@@ -491,13 +504,13 @@ class Rows(RowsIOMixin[T], Generic[T]):
         )
 
     def cast(self, **columns: Callable[[Any], Any]) -> Rows[dict[str, Any]]:
-        """Convert selected field values with the supplied callables.
+        """Convert existing named fields with one callable per field.
 
         Args:
-            **columns: Names mapped to selectors, expressions, or replacement values.
+            **columns: Field names mapped to callable value converters.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy copied dictionaries; a missing field raises SelectionError when consumed.
         """
         if not columns:
             raise ValueError("cast requires at least one named converter")
@@ -508,6 +521,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
                 raise TypeError(f"cast converter for {name!r} must be callable")
 
         def transform(row: T) -> dict[str, Any]:
+            """Apply each converter to its named field and reject missing columns."""
             record = _as_record(row)
             for name, converter in columns.items():
                 if name not in record:
@@ -520,13 +534,13 @@ class Rows(RowsIOMixin[T], Generic[T]):
     parse = cast
 
     def fill_nulls(self, **replacements: object) -> Rows[dict[str, Any]]:
-        """Replace None values with constants, selectors, or row expressions.
+        """Replace missing or None named fields with constants or RowExpr results.
 
         Args:
-            **replacements: Field names mapped to their new names.
+            **replacements: Field names mapped to literal values or row expressions.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy copied dictionaries; non-None existing values are preserved.
         """
         if not replacements:
             raise ValueError("fill_nulls requires at least one named replacement")
@@ -541,6 +555,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         )
 
         def transform(row: T) -> dict[str, Any]:
+            """Replace selected None fields by evaluating their replacement expressions."""
             record = _as_record(row)
             for name, replacement in expressions:
                 if record.get(name) is None:
@@ -556,26 +571,28 @@ class Rows(RowsIOMixin[T], Generic[T]):
         *selectors: Selector,
         how: Literal["any", "all"] = "any",
     ) -> Rows[T]:
-        """Drop rows containing None in selected fields.
+        """Drop rows according to None values in selected fields or the whole record.
 
         Args:
-            *selectors: Selectors that define projected fields or grouping keys.
-            how: The join mode or operation policy to apply.
+            *selectors: Fields to inspect; omitted means every field in each record.
+            how: "any" drops on one null; "all" requires every inspected value to be null.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows; a missing selected field is treated as None.
         """
         if how not in {"any", "all"}:
             raise ValueError("drop_nulls how must be 'any' or 'all'")
         selected = tuple(compile_selector(selector) for selector in selectors)
 
         def select_or_none(select: Callable[[T], Any], row: T) -> Any:
+            """Treat a missing selected field as None for null filtering."""
             try:
                 return select(row)
             except SelectionError:
                 return None
 
         def keep(row: T) -> bool:
+            """Keep a row unless its selected values satisfy the requested null policy."""
             values = (
                 (select_or_none(select, row) for select in selected)
                 if selected
@@ -595,15 +612,15 @@ class Rows(RowsIOMixin[T], Generic[T]):
         into: str | None = None,
         outer: bool = False,
     ) -> Rows[dict[str, Any]]:
-        """Emit one row for each element of a selected nested iterable.
+        """Expand a selected iterable into one copied row per element.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
-            into: A collector or container factory used for the final values.
-            outer: Whether unnesting should retain the original nested field.
+            selector: Selector returning a non-string iterable or None.
+            into: Output field name; required for non-top-level selectors.
+            outer: Emit one row with None when the selected value is None or empty.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy flattened dictionary Rows that close upstream on downstream stop.
         """
         if into is None:
             if not isinstance(selector, str) or not selector or "." in selector:
@@ -616,6 +633,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         select = compile_selector(selector)
 
         def expand(row: T) -> Iterator[dict[str, Any]]:
+            """Yield one record per selected element, optionally preserving empty rows."""
             record = _as_record(row)
             values = select(row)
             if values is None:
@@ -641,19 +659,20 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return Rows(self._flow.flat_map(expand))
 
     def unnest(self, column: str, *, prefix: str = "") -> Rows[dict[str, Any]]:
-        """Expand a nested record into top-level fields.
+        """Replace one top-level nested record with its fields.
 
         Args:
-            column: The field whose nested values should be expanded.
-            prefix: The prefix added to fields expanded from a nested record.
+            column: Non-dotted field name containing a supported record-like value.
+            prefix: Text prepended to every promoted nested field.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy copied dictionaries; output-name collisions raise DuplicateKeyError.
         """
         if not column or "." in column:
             raise ValueError("unnest column must be a top-level name")
 
         def expand(row: T) -> dict[str, Any]:
+            """Remove the nested column and merge its fields into the top-level record."""
             record = _as_record(row)
             try:
                 nested_value = record.pop(column)
@@ -677,15 +696,15 @@ class Rows(RowsIOMixin[T], Generic[T]):
         names_to: str = "variable",
         values_to: str = "value",
     ) -> Rows[dict[str, Any]]:
-        """Convert selected columns from wide form to name/value rows.
+        """Convert selected top-level fields from wide form into name/value rows.
 
         Args:
-            *columns: Column names selected by the operation.
-            names_to: The output field that stores former column names.
-            values_to: The output field that stores former column values.
+            *columns: Unique fields expanded in the given order.
+            names_to: Noncolliding output field for each former column name.
+            values_to: Noncolliding output field for each former column value.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy Rows emitting len(columns) records per input row.
         """
         if not columns:
             raise ValueError("unpivot requires at least one column")
@@ -693,6 +712,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         _require_unique_names((names_to, values_to), operation="unpivot")
 
         def reshape(row: T) -> Iterable[dict[str, Any]]:
+            """Yield one name/value record for each column selected from a wide row."""
             record = _as_record(row)
             missing = [name for name in columns if name not in record]
             if missing:
@@ -713,17 +733,17 @@ class Rows(RowsIOMixin[T], Generic[T]):
         aggregate: str | Callable[[Any, Any], Any] = "error",
         fill: Any = None,
     ) -> Rows[dict[str, Any]]:
-        """Convert long-form rows to columns with an explicit duplicate policy.
+        """Materialize long-form rows into encounter-ordered wide records.
 
         Args:
-            index: The zero-based item or field position to select.
-            columns: The columns or column mapping used by the operation.
-            values: The values consumed by this operation.
-            aggregate: The aggregator used to combine duplicate pivot cells.
-            fill: The value used for pivot cells with no matching input row.
+            index: Selector or selector tuple defining each output row and its key fields.
+            columns: Selector whose values become dynamic output field names.
+            values: Selector producing each pivot cell value.
+            aggregate: Duplicate-cell policy: error, first, last, sum, or a reducer callable.
+            fill: Value inserted for missing cells among discovered columns.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy pipeline that builds the full pivot only when consumed.
         """
         reducers = {"error", "first", "last", "sum"}
         if not callable(aggregate) and aggregate not in reducers:
@@ -742,6 +762,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         value_selector = compile_selector(values)
 
         def evaluate() -> Iterator[dict[str, Any]]:
+            """Build pivot cells by index key, apply duplicate policy, and emit wide rows."""
             groups: dict[tuple[Any, ...], dict[str, Any]] = {}
             column_names: list[str] = []
             for row in self:
@@ -774,14 +795,14 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return Rows(flow.defer(evaluate))
 
     def select(self, *selectors: str | int, **named: Selector) -> Rows[dict[str, Any]]:
-        """Project fields and computed selectors into new dictionaries.
+        """Project positional and named selectors into new dictionaries.
 
         Args:
-            *selectors: Selectors that define projected fields or grouping keys.
-            **named: Names mapped to collectors or expressions.
+            *selectors: String paths or integer indexes; output names are derived automatically.
+            **named: Explicit output names mapped to any supported selector.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy projected Rows; duplicate derived or explicit names are rejected immediately.
         """
         positional = [
             (
@@ -797,9 +818,10 @@ class Rows(RowsIOMixin[T], Generic[T]):
         )
 
         def project(row: T) -> dict[str, Any]:
+            """Evaluate positional and named selectors into a new projected dictionary."""
             return {name: select(row) for name, select in (*positional, *aliases)}
 
-        return Rows(self._flow.map(project))
+        return Rows(self._flow.map(PlannedRowCallable(project)))
 
     def sort_by(
         self,
@@ -809,16 +831,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
         buffer_size: int | None = None,
         tempdir: str | os.PathLike[str] | None = None,
     ) -> Rows[T]:
-        """Sort rows by a selector, optionally with a bounded buffer.
+        """Sort rows by a selected key, in memory or through bounded external runs.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            selector: Field, path, index, expression, or callable producing the sort key.
+            reverse: Emit descending order when true.
+            buffer_size: None for full in-memory sort, or positive rows per spilled run.
+            tempdir: Parent directory for automatically cleaned external-sort files.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy stably sorted Rows.
         """
         return Rows(
             self._flow.sort_by(
@@ -837,19 +859,19 @@ class Rows(RowsIOMixin[T], Generic[T]):
         buffer_size: int = 100_000,
         tempdir: str | os.PathLike[str] | None = None,
     ) -> Rows[T]:
-        """Sort rows with bounded in-memory runs and temporary files.
+        """Sort rows stably with bounded in-memory runs and temporary files.
 
-        Sorted runs are written to temporary files and merged lazily, keeping peak in-memory
-        rows bounded.
+        Each run holds at most buffer_size rows; the lazy merge closes upstream and removes
+        temporary files after completion, failure, or downstream short-circuit.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
-            reverse: If true, produce values in descending order.
-            buffer_size: The maximum number of items held in an in-memory buffer or batch.
-            tempdir: The directory used for temporary spill files.
+            selector: Field, path, index, expression, or callable producing the sort key.
+            reverse: Emit descending order when true.
+            buffer_size: Positive maximum rows held in each sorted run.
+            tempdir: Parent directory for automatically cleaned run files.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            Lazy externally sorted Rows.
         """
         return self.sort_by(
             selector,
@@ -872,19 +894,20 @@ class Rows(RowsIOMixin[T], Generic[T]):
         aggregation_items = prepare_aggregations(aggregations)
 
         def evaluate() -> Iterator[dict[str, Any]]:
+            """Run all named aggregators in one pass and emit their results as one row."""
             yield run_aggregations(self, aggregation_items)
 
         return Rows(flow.defer(evaluate))
 
     def group_by(self, *selectors: Selector, **named: Selector) -> GroupedRows[T]:
-        """Create a deferred grouped aggregation by one or more selectors.
+        """Describe grouped aggregation by positional and/or explicitly named selectors.
 
         Args:
-            *selectors: Selectors that define projected fields or grouping keys.
-            **named: Names mapped to collectors or expressions.
+            *selectors: Keys named from field paths or as key_N for other selector types.
+            **named: Explicit output key names mapped to supported selectors.
 
         Returns:
-            A new lazy `Rows` pipeline representing this operation.
+            GroupedRows configuration; no source rows are read until aggregate() is consumed.
         """
         # Grouping remains deferred; rows are read only when aggregate() is consumed.
         if not selectors and not named:
@@ -940,7 +963,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
             limits: Finite partition, match, and output budgets for spilled execution.
 
         Returns:
-            A new lazy Rows pipeline containing the joined records.
+            Lazy dictionary Rows that execute the selected in-memory or spilled join when consumed.
 
         Raises:
             ValueError: If selectors, modes, partition options, or key cardinality are invalid.

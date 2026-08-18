@@ -1,4 +1,4 @@
-//! PyO3 module registration for fpstreams native kernels.
+//! PyO3 registration for GIL-detached native stage executors and fused terminal kernels.
 
 mod common;
 mod float;
@@ -28,7 +28,7 @@ fn build_profile() -> &'static str {
     }
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(build_profile, module)?)?;

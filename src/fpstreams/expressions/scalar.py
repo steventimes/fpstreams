@@ -1,4 +1,4 @@
-"""Scalar expression trees shared by Python and native execution."""
+"""Compile integer and float expression trees for Python and native numeric execution."""
 
 from __future__ import annotations
 
@@ -57,6 +57,8 @@ OutputT = TypeVar("OutputT")
 
 @dataclass(frozen=True, slots=True)
 class _EvaluatorNode(Generic[InputT, OutputT]):
+    """Hold a constant, the input item, or a callable while composing an evaluator."""
+
     kind: Literal["item", "const", "call"]
     value: OutputT | Callable[[InputT], OutputT] | None = None
 
@@ -68,6 +70,12 @@ def _binary_node(
     *,
     item_converter: Callable[[InputT], OutputT] | None,
 ) -> _EvaluatorNode[InputT, OutputT]:
+    """Fold a binary constant pair or specialize a callable for the operand kinds.
+
+    Item nodes read the current input, optionally through item_converter. Call nodes invoke
+    already composed subexpressions. The returned node is constant only when both operands
+    are constant.
+    """
     if left.kind == "const" and right.kind == "const":
         return _EvaluatorNode(
             "const",
@@ -155,6 +163,7 @@ def _unary_node(
     *,
     item_converter: Callable[[InputT], OutputT] | None,
 ) -> _EvaluatorNode[InputT, OutputT]:
+    """Fold a unary constant or wrap an item/call node with the unary operation."""
     if operand.kind == "const":
         return _EvaluatorNode("const", operation(cast(OutputT, operand.value)))
     if operand.kind == "item":
@@ -170,6 +179,11 @@ def _node_evaluator(
     *,
     item_converter: Callable[[InputT], OutputT] | None,
 ) -> Callable[[InputT], OutputT]:
+    """Convert the final composition node into an input callable.
+
+    A call node supplies its stored function, an item node supplies either item_converter or
+    the identity operation, and a constant node ignores its input.
+    """
     if node.kind == "call":
         return cast(Callable[[InputT], OutputT], node.value)
     if node.kind == "item":
@@ -188,6 +202,12 @@ def _compose_evaluator(
     item_converter: Callable[[InputT], OutputT] | None,
     description: str,
 ) -> Callable[[InputT], OutputT]:
+    """Compose and constant-fold a callable from postfix instructions.
+
+    The value stack holds evaluator nodes rather than runtime values, so short programs
+    become specialized closures. item_converter adapts source values for float expressions.
+    Missing or leftover operands raise RuntimeError identified by description.
+    """
     values: list[_EvaluatorNode[InputT, OutputT]] = []
     for opcode, operand in instructions:
         if opcode == _OPCODES["item"]:
@@ -229,6 +249,12 @@ def _postorder_instructions(
     *,
     default_operand: int | float,
 ) -> tuple[tuple[int, int | float], ...]:
+    """Flatten an expression tree iteratively into postfix opcode/operand instructions.
+
+    Constant instructions carry their value. Every other opcode carries default_operand,
+    which is ignored by both Python evaluators and the native executor for non-constants.
+    Unknown operation names fail through the opcode lookup.
+    """
     instructions: list[tuple[int, int | float]] = []
     pending = [(expression, False)]
     while pending:
@@ -248,7 +274,14 @@ def _postorder_instructions(
 def _flat_int_evaluator(
     instructions: tuple[tuple[int, int], ...],
 ) -> Callable[[int], int | bool]:
+    """Build the explicit value-stack interpreter used for long integer programs."""
+
     def evaluate(item: int) -> int | bool:
+        """Execute the integer postfix program with item bound to each item instruction.
+
+        Malformed operand counts raise RuntimeError; arithmetic and comparison failures propagate
+        from their Python operators.
+        """
         values: list[int | bool] = []
         for opcode, operand in instructions:
             if opcode == _OPCODES["item"]:
@@ -282,14 +315,17 @@ def _flat_int_evaluator(
 
 
 def _int_neg(value: int | bool) -> int | bool:
+    """Apply arithmetic negation in a composed integer evaluator."""
     return -value
 
 
 def _int_abs(value: int | bool) -> int | bool:
+    """Apply absolute value in a composed integer evaluator."""
     return abs(value)
 
 
 def _int_not(value: int | bool) -> int | bool:
+    """Return the logical negation of an integer evaluator value."""
     return not bool(value)
 
 
@@ -304,6 +340,12 @@ _INT_UNARY: dict[int, Callable[[int | bool], int | bool]] = {
 def _compile_int_evaluator(
     instructions: tuple[tuple[int, int], ...],
 ) -> Callable[[int], int | bool]:
+    """Compile and LRU-cache an integer evaluator for one instruction tuple.
+
+    Programs of at most 128 instructions use composed callables with constant folding.
+    Longer programs use the explicit value stack to avoid a large chain of closures. The
+    global cache retains up to 1,024 compiled evaluators.
+    """
     if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
         return _flat_int_evaluator(instructions)
     return _compose_evaluator(
@@ -317,7 +359,12 @@ def _compile_int_evaluator(
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Expr:
-    """A callable expression that can also be compiled by a native executor."""
+    """Represent an integer expression for Python evaluation and native i64 execution.
+
+    operation, left, right, and value form the tree; kind records whether the result is
+    integer or Boolean for planning. Postfix instructions and the Python evaluator are
+    populated lazily in per-instance cache fields.
+    """
 
     operation: str
     left: Expr | None = None
@@ -333,13 +380,9 @@ class Expr:
 
     @staticmethod
     def constant(value: int) -> Expr:
-        """Build an integer expression that always returns value.
+        """Return a constant integer expression after exact-type validation.
 
-        Args:
-            value: The value consumed by this operation.
-
-        Returns:
-            A composable scalar expression.
+        bool and all non-int objects raise TypeError even though bool is an int subclass.
         """
         if type(value) is not int:
             raise TypeError("native expressions currently accept integer constants")
@@ -347,6 +390,10 @@ class Expr:
 
     @staticmethod
     def _coerce(value: object) -> Expr:
+        """Keep an Expr operand or convert an exact int into a constant expression.
+
+        Unsupported operand types raise TypeError naming their runtime type.
+        """
         if isinstance(value, Expr):
             return value
         if type(value) is int:
@@ -354,93 +401,127 @@ class Expr:
         raise TypeError(f"unsupported expression operand: {type(value).__name__}")
 
     def _binary(self, operation: str, other: object, *, kind: ExpressionKind = "int") -> Expr:
+        """Create a binary node with this expression on the left and a coerced right operand.
+
+        kind records whether the new node produces an integer or Boolean result.
+        """
         return Expr(operation, self, self._coerce(other), kind=kind)
 
     def _reverse(self, operation: str, other: object) -> Expr:
+        """Build an arithmetic node with a coerced left operand and this value on the right."""
         return Expr(operation, self._coerce(other), self)
 
     def __add__(self, other: object) -> Expr:
+        """Build an integer addition node with this expression on the left."""
         return self._binary("add", other)
 
     def __radd__(self, other: object) -> Expr:
+        """Build an integer addition node with this expression on the right."""
         return self._reverse("add", other)
 
     def __sub__(self, other: object) -> Expr:
+        """Build an integer subtraction node with this expression on the left."""
         return self._binary("sub", other)
 
     def __rsub__(self, other: object) -> Expr:
+        """Build an integer subtraction node with this expression on the right."""
         return self._reverse("sub", other)
 
     def __mul__(self, other: object) -> Expr:
+        """Build an integer multiplication node with this expression on the left."""
         return self._binary("mul", other)
 
     def __rmul__(self, other: object) -> Expr:
+        """Build an integer multiplication node with this expression on the right."""
         return self._reverse("mul", other)
 
     def __floordiv__(self, other: object) -> Expr:
+        """Build an integer floor-division node with this expression on the left."""
         return self._binary("floordiv", other)
 
     def __rfloordiv__(self, other: object) -> Expr:
+        """Build an integer floor-division node with this expression on the right."""
         return self._reverse("floordiv", other)
 
     def __mod__(self, other: object) -> Expr:
+        """Build an integer remainder node with this expression on the left."""
         return self._binary("mod", other)
 
     def __rmod__(self, other: object) -> Expr:
+        """Build an integer remainder node with this expression on the right."""
         return self._reverse("mod", other)
 
     def __neg__(self) -> Expr:
+        """Build an arithmetic-negation node for this expression."""
         return Expr("neg", self)
 
     def __abs__(self) -> Expr:
+        """Build an absolute-value node for this expression."""
         return Expr("abs", self)
 
     def __and__(self, other: object) -> Expr:
+        """Build a Boolean conjunction expression.
+
+        Both scalar operand subtrees are evaluated by the postfix program before their truth
+        values are combined; unlike row-expression and, this operation does not short-circuit.
+        """
         return self._binary("and", other, kind="bool")
 
     def __or__(self, other: object) -> Expr:
+        """Build a Boolean disjunction expression.
+
+        Both scalar operand subtrees are evaluated by the postfix program before their truth
+        values are combined; unlike row-expression or, this operation does not short-circuit.
+        """
         return self._binary("or", other, kind="bool")
 
     def __invert__(self) -> Expr:
+        """Build a logical-not expression; tilde is not treated as integer bitwise complement."""
         return Expr("not", self, kind="bool")
 
-    def __eq__(self, other: object) -> Expr:  # type: ignore[override]
+    def __eq__(self, other: object) -> Expr:  # type: ignore[override]  # builds an Expr
+        """Build a Boolean node comparing this expression equal to a coerced operand."""
         return self._binary("eq", other, kind="bool")
 
-    def __ne__(self, other: object) -> Expr:  # type: ignore[override]
+    def __ne__(self, other: object) -> Expr:  # type: ignore[override]  # builds an Expr
+        """Build a Boolean node comparing this expression unequal to a coerced operand."""
         return self._binary("ne", other, kind="bool")
 
     def __lt__(self, other: object) -> Expr:
+        """Build a Boolean less-than node with this expression on the left."""
         return self._binary("lt", other, kind="bool")
 
     def __le__(self, other: object) -> Expr:
+        """Build a Boolean less-than-or-equal node with this expression on the left."""
         return self._binary("le", other, kind="bool")
 
     def __gt__(self, other: object) -> Expr:
+        """Build a Boolean greater-than node with this expression on the left."""
         return self._binary("gt", other, kind="bool")
 
     def __ge__(self, other: object) -> Expr:
+        """Build a Boolean greater-than-or-equal node with this expression on the left."""
         return self._binary("ge", other, kind="bool")
 
     def __bool__(self) -> bool:
+        """Reject truth-testing an unevaluated integer expression with TypeError."""
         raise TypeError("expressions cannot be used as booleans before evaluation")
 
     def __call__(self, item: int) -> int | bool:
-        """Evaluate this expression for one integer item.
+        """Evaluate the expression with one input bound to item.
 
-        Args:
-            item: The integer bound to `item` while evaluating the expression.
-
-        Returns:
-            The computed integer or boolean result.
-
-        Raises:
-            RuntimeError: If the expression tree is malformed.
+        Python evaluation does not enforce the int annotation at runtime. The lazily compiled
+        evaluator is reused on later calls. Malformed trees raise
+        RuntimeError during compilation or stack execution; operator exceptions propagate.
         """
         return self._python_evaluator()(item)
 
     def _python_evaluator(self) -> Callable[[int], int | bool]:
-        """Return the cached callable used by Python execution loops."""
+        """Return the per-instance Python evaluator, compiling and caching it on first use.
+
+        Compilation uses the module-level LRU cache, so identical instruction tuples can share
+        the same callable across different Expr instances.
+        """
         evaluator = self._evaluator
         if evaluator is None:
             evaluator = _compile_int_evaluator(self.native_instructions())
@@ -448,10 +529,10 @@ class Expr:
         return evaluator
 
     def native_instructions(self) -> tuple[tuple[int, int], ...]:
-        """Compile this expression into native executor instructions.
+        """Return and cache this tree's postfix instructions for Python or native execution.
 
-        Returns:
-            A tuple containing the resulting values.
+        Each pair contains a numeric opcode and an integer operand. Only const opcodes consume
+        the operand; other instructions store zero as a placeholder.
         """
         instructions = self._instructions
         if instructions is None:
@@ -486,7 +567,14 @@ _FLOAT_BINARY: dict[str, Callable[[float | bool, float | bool], float | bool]] =
 def _flat_float_evaluator(
     instructions: tuple[tuple[int, float], ...],
 ) -> Callable[[float], float | bool]:
+    """Build the explicit value-stack interpreter used for long float programs."""
+
     def evaluate(item: float) -> float | bool:
+        """Execute the float postfix program, converting item instructions to float.
+
+        Malformed operand counts raise RuntimeError; arithmetic and comparison failures propagate
+        from their Python operators.
+        """
         values: list[float | bool] = []
         for opcode, operand in instructions:
             if opcode == _OPCODES["item"]:
@@ -520,14 +608,17 @@ def _flat_float_evaluator(
 
 
 def _float_neg(value: float | bool) -> float | bool:
+    """Apply arithmetic negation in a composed float evaluator."""
     return -value
 
 
 def _float_abs(value: float | bool) -> float | bool:
+    """Apply absolute value in a composed float evaluator."""
     return abs(value)
 
 
 def _float_not(value: float | bool) -> float | bool:
+    """Return the logical negation of a float evaluator value."""
     return not bool(value)
 
 
@@ -542,6 +633,12 @@ _FLOAT_UNARY: dict[int, Callable[[float | bool], float | bool]] = {
 def _compile_float_evaluator(
     instructions: tuple[tuple[int, float], ...],
 ) -> Callable[[float], float | bool]:
+    """Compile and LRU-cache a float evaluator for one instruction tuple.
+
+    Programs of at most 128 instructions use composed callables and convert each item read to
+    float. Longer programs use the explicit value stack. The global cache retains up to 1,024
+    compiled evaluators.
+    """
     if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
         return _flat_float_evaluator(instructions)
     return _compose_evaluator(
@@ -555,7 +652,12 @@ def _compile_float_evaluator(
 
 @dataclass(frozen=True, slots=True, eq=False)
 class FExpr:
-    """A callable floating-point expression compiled by the f64 executor."""
+    """Represent a float expression for Python evaluation and native f64 execution.
+
+    operation, left, right, and value form the tree; kind records whether the result is float
+    or Boolean for planning. Postfix instructions and the Python evaluator are populated
+    lazily in per-instance cache fields.
+    """
 
     operation: str
     left: FExpr | None = None
@@ -571,13 +673,9 @@ class FExpr:
 
     @staticmethod
     def constant(value: int | float) -> FExpr:
-        """Build a floating-point expression that always returns value.
+        """Return a float constant expression from an exact int or float.
 
-        Args:
-            value: The value consumed by this operation.
-
-        Returns:
-            A composable scalar expression.
+        The value is converted immediately to float. bool and every other type raise TypeError.
         """
         if type(value) not in (int, float):
             raise TypeError("native float expressions accept int or float constants")
@@ -585,10 +683,14 @@ class FExpr:
 
     @staticmethod
     def _coerce(value: object) -> FExpr:
+        """Keep an FExpr operand or convert an exact int/float into a constant expression.
+
+        Unsupported operand types raise TypeError naming their runtime type.
+        """
         if isinstance(value, FExpr):
             return value
         if type(value) in (int, float):
-            return FExpr.constant(value)  # type: ignore[arg-type]
+            return FExpr.constant(value)  # type: ignore[arg-type]  # narrowed above
         raise TypeError(f"unsupported float expression operand: {type(value).__name__}")
 
     def _binary(
@@ -598,87 +700,118 @@ class FExpr:
         *,
         kind: FloatExpressionKind = "float",
     ) -> FExpr:
+        """Create a binary node with this expression on the left and a coerced right operand.
+
+        kind records whether the new node produces a float or Boolean result.
+        """
         return FExpr(operation, self, self._coerce(other), kind=kind)
 
     def _reverse(self, operation: str, other: object) -> FExpr:
+        """Build an arithmetic node with a coerced left operand and this value on the right."""
         return FExpr(operation, self._coerce(other), self)
 
     def __add__(self, other: object) -> FExpr:
+        """Build a float addition node with this expression on the left."""
         return self._binary("add", other)
 
     def __radd__(self, other: object) -> FExpr:
+        """Build a float addition node with this expression on the right."""
         return self._reverse("add", other)
 
     def __sub__(self, other: object) -> FExpr:
+        """Build a float subtraction node with this expression on the left."""
         return self._binary("sub", other)
 
     def __rsub__(self, other: object) -> FExpr:
+        """Build a float subtraction node with this expression on the right."""
         return self._reverse("sub", other)
 
     def __mul__(self, other: object) -> FExpr:
+        """Build a float multiplication node with this expression on the left."""
         return self._binary("mul", other)
 
     def __rmul__(self, other: object) -> FExpr:
+        """Build a float multiplication node with this expression on the right."""
         return self._reverse("mul", other)
 
     def __truediv__(self, other: object) -> FExpr:
+        """Build a float true-division node with this expression on the left."""
         return self._binary("truediv", other)
 
     def __rtruediv__(self, other: object) -> FExpr:
+        """Build a float true-division node with this expression on the right."""
         return self._reverse("truediv", other)
 
     def __neg__(self) -> FExpr:
+        """Build an arithmetic-negation node for this float expression."""
         return FExpr("neg", self)
 
     def __abs__(self) -> FExpr:
+        """Build an absolute-value node for this float expression."""
         return FExpr("abs", self)
 
     def __and__(self, other: object) -> FExpr:
+        """Build a Boolean conjunction expression.
+
+        Both scalar operand subtrees are evaluated by the postfix program before their truth
+        values are combined; this operation does not short-circuit.
+        """
         return self._binary("and", other, kind="bool")
 
     def __or__(self, other: object) -> FExpr:
+        """Build a Boolean disjunction expression.
+
+        Both scalar operand subtrees are evaluated by the postfix program before their truth
+        values are combined; this operation does not short-circuit.
+        """
         return self._binary("or", other, kind="bool")
 
     def __invert__(self) -> FExpr:
+        """Build a logical-not expression; tilde is not a numeric bitwise operation."""
         return FExpr("not", self, kind="bool")
 
-    def __eq__(self, other: object) -> FExpr:  # type: ignore[override]
+    def __eq__(self, other: object) -> FExpr:  # type: ignore[override]  # builds an FExpr
+        """Build a Boolean node comparing this expression equal to a coerced operand."""
         return self._binary("eq", other, kind="bool")
 
-    def __ne__(self, other: object) -> FExpr:  # type: ignore[override]
+    def __ne__(self, other: object) -> FExpr:  # type: ignore[override]  # builds an FExpr
+        """Build a Boolean node comparing this expression unequal to a coerced operand."""
         return self._binary("ne", other, kind="bool")
 
     def __lt__(self, other: object) -> FExpr:
+        """Build a Boolean less-than node with this expression on the left."""
         return self._binary("lt", other, kind="bool")
 
     def __le__(self, other: object) -> FExpr:
+        """Build a Boolean less-than-or-equal node with this expression on the left."""
         return self._binary("le", other, kind="bool")
 
     def __gt__(self, other: object) -> FExpr:
+        """Build a Boolean greater-than node with this expression on the left."""
         return self._binary("gt", other, kind="bool")
 
     def __ge__(self, other: object) -> FExpr:
+        """Build a Boolean greater-than-or-equal node with this expression on the left."""
         return self._binary("ge", other, kind="bool")
 
     def __bool__(self) -> bool:
+        """Reject truth-testing an unevaluated float expression with TypeError."""
         raise TypeError("float expressions cannot be used as booleans before evaluation")
 
     def __call__(self, item: float) -> float | bool:
-        """Evaluate this expression for one numeric item.
+        """Evaluate the expression with one numeric input bound to fitem.
 
-        Args:
-            item: The number bound to `fitem` while evaluating the expression.
-
-        Returns:
-            The computed floating-point or boolean result.
-
-        Raises:
-            RuntimeError: If the expression tree is malformed.
+        Item instructions convert the input to float, and the lazily compiled evaluator is reused
+        on later calls. Malformed trees raise RuntimeError; operator exceptions propagate.
         """
         return self._python_evaluator()(item)
 
     def _python_evaluator(self) -> Callable[[float], float | bool]:
-        """Return the cached callable used by Python execution loops."""
+        """Return the per-instance float evaluator, compiling and caching it on first use.
+
+        Compilation uses the module-level LRU cache, so identical instruction tuples can share
+        the same callable across different FExpr instances.
+        """
         evaluator = self._evaluator
         if evaluator is None:
             evaluator = _compile_float_evaluator(self.native_instructions())
@@ -686,10 +819,10 @@ class FExpr:
         return evaluator
 
     def native_instructions(self) -> tuple[tuple[int, float], ...]:
-        """Compile this expression into native executor instructions.
+        """Return and cache this tree's postfix instructions for Python or native execution.
 
-        Returns:
-            A tuple containing the resulting values.
+        Each pair contains a numeric opcode and a float operand. Only const opcodes consume the
+        operand; other instructions store 0.0 as a placeholder.
         """
         instructions = self._instructions
         if instructions is None:

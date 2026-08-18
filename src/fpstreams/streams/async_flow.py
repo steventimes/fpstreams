@@ -54,6 +54,15 @@ from ..planning.async_ import (
     _ZipLongest,
 )
 from ..planning.async_utils import _resolve
+from ..planning.explain import AsyncPlanExplanation
+from ..planning.semantics import (
+    AsyncTerminalName,
+    Cardinality,
+    OrderingGuarantee,
+    Replayability,
+    StreamFacts,
+    TerminationEvidence,
+)
 from ..primitives.result import Err, Ok, Result
 from .async_terminals import AsyncFlowTerminalsMixin
 
@@ -64,32 +73,61 @@ U = TypeVar("U")
 
 
 def _default_item_size(value: Any) -> int:
+    """Measure an item with `len()` for size-constrained batching."""
     return len(value)
 
 
 class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
-    """A lazy pipeline over synchronous or asynchronous iterable sources."""
+    """An async pipeline that opens its sync or async source when consumption begins."""
 
     __slots__ = ("_plan",)
 
     def __init__(self, source: AsyncIterable[T] | Iterable[T]) -> None:
+        """Own a sync or async iterable, preserving one-shot iterator consumption semantics."""
         self._plan: _AsyncPlan[T] = _AsyncPlan(_AsyncSource.from_value(source))
 
     @staticmethod
     def _from_plan(plan: _AsyncPlan[R]) -> AsyncFlow[R]:
+        """Construct an `AsyncFlow` around an existing immutable plan without rewrapping it."""
         instance: AsyncFlow[R] = object.__new__(AsyncFlow)
         instance._plan = plan
         return instance
+
+    def explain(self, terminal: AsyncTerminalName = "iterate") -> AsyncPlanExplanation:
+        """Describe stream facts and terminal completion risks without consuming the source.
+
+        Args:
+            terminal: Async terminal whose completion requirements should be analyzed.
+
+        Returns:
+            A lazy explanation view over the current plan and selected terminal.
+
+        Raises:
+            ValueError: If `terminal` is not a supported async terminal name.
+        """
+        if terminal not in {
+            "iterate",
+            "list",
+            "count",
+            "statistics",
+            "aggregate",
+            "first",
+            "last",
+            "any",
+            "all",
+        }:
+            raise ValueError(f"unknown async terminal: {terminal!r}")
+        return AsyncPlanExplanation(self._plan, terminal)
 
     @staticmethod
     def of(*items: R) -> AsyncFlow[R]:
         """Create an async flow from positional items.
 
         Args:
-            *items: Items emitted by the new pipeline.
+            *items: Positional values to emit in argument order.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            A reusable async flow that emits `items` in argument order.
         """
         return AsyncFlow[R](items)
 
@@ -98,10 +136,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Create an async flow over a synchronous iterable.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
+            source: Synchronous iterable adapted to async iteration when consumed.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            An async flow that emits each item from `source`; iterator instances are one-shot.
         """
         return AsyncFlow[R](source)
 
@@ -110,10 +148,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Create an async flow over an asynchronous iterable.
 
         Args:
-            source: The iterable, async iterable, or data source to read lazily.
+            source: Asynchronous iterable opened when consumption begins.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            An async flow over `source`; async iterator instances are one-shot.
         """
         return AsyncFlow[R](source)
 
@@ -122,14 +160,15 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Read a text file asynchronously and emit lines without trailing newlines.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
+            path: Text file opened only when the returned flow is consumed.
+            encoding: Encoding used by `aiofiles.open`.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            A reusable async flow of lines with trailing CR and LF characters removed.
         """
 
         async def lines() -> AsyncIterator[str]:
+            """Open the file lazily and yield lines with newline terminators removed."""
             try:
                 import aiofiles  # type: ignore[import-untyped]
             except ImportError:
@@ -145,22 +184,35 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit increasing integers separated by seconds.
 
         Args:
-            seconds: The duration in seconds used by the timing operation.
+            seconds: Delay before the first integer and between later integers.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            A reusable, infinite flow emitting `0, 1, 2, ...` at the requested interval.
         """
         if seconds < 0:
             raise ValueError("seconds cannot be negative")
 
         async def ticks() -> AsyncIterator[int]:
+            """Sleep before each tick and emit increasing integers indefinitely."""
             current = 0
             while True:
                 await asyncio.sleep(seconds)
                 yield current
                 current += 1
 
-        return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(ticks)))
+        return AsyncFlow._from_plan(
+            _AsyncPlan(
+                _AsyncSource.defer(
+                    ticks,
+                    facts=StreamFacts(
+                        TerminationEvidence.PROVEN_INFINITE,
+                        Cardinality.unknown(),
+                        Replayability.REOPENABLE,
+                        OrderingGuarantee.ORDERED,
+                    ),
+                )
+            )
+        )
 
     @staticmethod
     def paginate(
@@ -175,14 +227,16 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Fetch pages lazily until the returned cursor is None.
 
         Args:
-            fetch_page: An async callable that returns page items and the next cursor.
-            start: The first index, numeric value, or additive identity to use.
+            fetch_page: Sync or async callable receiving the current cursor and returning
+                `(page, next_cursor)`; each page may be sync or async iterable.
+            start: Cursor passed to the first `fetch_page` call.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            A reusable async flow that flattens each page and stops after a `None` next cursor.
         """
 
         async def items() -> AsyncIterator[R]:
+            """Fetch and flatten pages until the page function returns a None cursor."""
             cursor = start
             while True:
                 page, next_cursor = await _resolve(fetch_page(cursor))
@@ -199,9 +253,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(items)))
 
     def __aiter__(self) -> AsyncIterator[T]:
+        """Execute the stored async plan and return its managed output iterator."""
         return cast(AsyncIterator[T], _execute(self._plan))
 
     def _append(self, operation: _AsyncOperation) -> AsyncFlow[Any]:
+        """Return a new AsyncFlow whose immutable plan includes `operation`."""
         return self._from_plan(_AsyncPlan(self._plan.source, (*self._plan.operations, operation)))
 
     def map_async(
@@ -218,13 +274,13 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         finish.
 
         Args:
-            function: The callable applied by this operation.
-            concurrency: The maximum number of operations or inner sources active at once.
-            ordered: Whether results must preserve source encounter order.
-            timeout: The optional maximum duration in seconds before the operation fails.
+            function: Sync or async mapper called once for each source item.
+            concurrency: Maximum mapper calls in flight.
+            ordered: Emit in source order when true, otherwise in task-completion order.
+            timeout: Optional per-item deadline covering mapper invocation and awaiting its result.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of mapped values with bounded work and cleanup on early exit.
 
         Raises:
             ValueError: If concurrency is less than one.
@@ -244,10 +300,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         flow is consumed.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper called once per item; awaitable results are resolved.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of mapped values in source order, with one mapper call in flight.
         """
         return self.map_async(function, concurrency=1)
 
@@ -257,10 +313,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         The predicate may be synchronous or asynchronous and is evaluated in encounter order.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved for each item; truthy results retain it.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing only items whose resolved predicate result is truthy.
         """
         # The predicate is resolved during async iteration, not while building the flow.
         return cast(AsyncFlow[T], self._append(_Filter(predicate)))
@@ -271,10 +327,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         This is an alias-style filtering operation for a synchronous or asynchronous predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved for each item; truthy results retain it.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            The same ordered async filtering pipeline produced by `filter(predicate)`.
         """
         return self.filter(predicate)
 
@@ -282,13 +338,14 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Drop items for which the sync or async predicate is truthy.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved for each item; truthy results drop it.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing only items whose resolved predicate result is falsey.
         """
 
         async def inverse(item: T) -> bool:
+            """Await the predicate when needed and negate its truth value."""
             return not await _resolve(predicate(item))
 
         return self.filter(inverse)
@@ -297,10 +354,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Run a sync or async side effect while passing each item through.
 
         Args:
-            action: The side-effecting callable invoked for each matching item.
+            action: Sync or async side effect resolved before the original item is emitted.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that passes every item through unchanged after running `action`.
         """
         return cast(AsyncFlow[T], self._append(_Tap(action)))
 
@@ -317,10 +374,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         encounter order.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper returning a sync or async iterable for each item.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that drains each mapped iterable in source order before mapping the next
+            item.
         """
         return cast(AsyncFlow[R], self._append(_FlatMap(function)))
 
@@ -331,10 +389,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Merge this flow with other sources in completion order.
 
         Args:
-            *others: Additional sources combined with this pipeline.
+            *others: Sync or async sources to interleave with this flow.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that emits each source's next item as its pull completes.
         """
         if not others:
             return self
@@ -348,10 +406,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit the latest value from every source after all have produced once.
 
         Args:
-            *others: Additional sources combined with this pipeline.
+            *others: Sync or async sources whose latest values join this flow's latest value.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            A flow of latest-value tuples in source argument order. Emission starts only after every
+            source has produced once; completed sources retain their final value.
         """
         sources = tuple(_AsyncSource.from_value(other) for other in others)
         return cast(AsyncFlow[tuple[Any, ...]], self._append(_CombineLatest(sources)))
@@ -368,11 +427,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Map items to inner sources and merge them with bounded concurrency.
 
         Args:
-            function: The callable applied by this operation.
-            concurrency: The maximum number of operations or inner sources active at once.
+            function: Sync or async mapper returning a sync or async inner source.
+            concurrency: Shared maximum for inner sources being opened or actively consumed.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow interleaving inner items in completion order under the concurrency cap.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -398,7 +457,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             function: A sync or async callable returning a sync or async iterable.
 
         Returns:
-            A new lazy `AsyncFlow` that emits items from the most recent inner source.
+            An async flow that emits only from the most recently mapped inner source.
 
         Raises:
             TypeError: If function is not callable.
@@ -417,7 +476,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             seconds: The positive delay in seconds before the first upstream request.
 
         Returns:
-            A new lazy `AsyncFlow` with delayed consumption.
+            An async flow that waits once before its first upstream pull, then forwards normally.
 
         Raises:
             ValueError: If seconds is not positive.
@@ -434,11 +493,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         preserved.
 
         Args:
-            max_count: The maximum number of emissions allowed in one window.
+            max_count: Maximum emissions permitted in each rolling `per`-second window.
             per: The positive sliding-window duration in seconds.
 
         Returns:
-            A new lazy `AsyncFlow` with bounded emission rate.
+            An async flow that delays, but never drops, items to enforce the rolling rate limit.
 
         Raises:
             TypeError: If max_count is not an integer.
@@ -464,7 +523,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             seconds: The positive minimum interval between emissions.
 
         Returns:
-            A new lazy `AsyncFlow` with evenly spaced emissions.
+            An async flow that emits the first item immediately and delays later items as needed.
 
         Raises:
             ValueError: If seconds is not positive.
@@ -477,10 +536,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Fail when the next item takes longer than seconds.
 
         Args:
-            seconds: The duration in seconds used by the timing operation.
+            seconds: Maximum wait for each individual upstream `anext` call.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that raises `TimeoutError` and cancels an overdue item pull.
         """
         if seconds <= 0:
             raise ValueError("seconds must be positive")
@@ -490,10 +549,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit an item only after the source stays quiet for seconds.
 
         Args:
-            seconds: The duration in seconds used by the timing operation.
+            seconds: Quiet interval required before the latest pending item is emitted.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that drops superseded pending items and flushes the latest item when the
+            source completes.
         """
         if seconds < 0:
             raise ValueError("seconds cannot be negative")
@@ -503,11 +563,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Flush a tuple when it reaches max_count or seconds elapse.
 
         Args:
-            max_count: The maximum number of items emitted in one batch.
-            seconds: The duration in seconds used by the timing operation.
+            max_count: Item count that flushes the current batch immediately.
+            seconds: Maximum time from a batch's first item until that batch is flushed.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of non-empty tuples flushed by count, timeout, or source completion.
         """
         try:
             count = operator.index(max_count)
@@ -531,10 +591,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Map items and discard results equal to None.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper returning one output value or `None`.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of non-`None` mapped results; falsey values such as `0` are retained.
         """
         mapped = self.map(function)
         return cast(AsyncFlow[R], mapped.filter(lambda item: item is not None))
@@ -543,40 +603,43 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Select one field, index, attribute, or nested path from each item.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Callable, field name, index, path, or expression evaluated for each output.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing the value selected from each source item.
         """
         return self.map(compile_selector(selector))
 
     pick = pluck
 
     def compact(self, selector: Selector | None = None) -> AsyncFlow[T]:
-        """Drop None values, optionally selected from each item.
+        """Drop items whose own or selected value is falsey.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Optional callable, field name, index, path, or expression whose truth value
+                determines whether the original item is retained.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow retaining only items with truthy selected values; without a selector,
+            falsey items such as `None`, `0`, and empty containers are omitted.
         """
         select = bool if selector is None else compile_selector(selector)
         return self.filter(select)
 
     def filter_none(self) -> AsyncFlow[T]:
-        """Drop None values, optionally selected from each item.
+        """Drop only items equal to `None`, retaining every other falsey value.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing every non-`None` source item.
         """
         return self.filter(lambda item: item is not None)
 
     def unique(self) -> AsyncFlow[T]:
-        """Keep the first occurrence of each hashable value.
+        """Keep the first occurrence of each value in source order.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing the first occurrence of each distinct value; unhashable values
+            are compared by equality.
         """
         return cast(AsyncFlow[T], self._append(_Unique(lambda item: item)))
 
@@ -586,10 +649,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Keep the first item for each selected key.
 
         Args:
-            selector: A callable, field name, index, path, or expression used to select a value.
+            selector: Callable, field name, index, path, or expression producing each uniqueness
+                key; callable results may be awaitable.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing the first item for each distinct resolved selected key.
         """
         return cast(AsyncFlow[T], self._append(_Unique(compile_selector(selector))))
 
@@ -599,13 +663,14 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Map each item and wrap success or failure in a Result.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper that may raise an `Exception`.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of `Ok` mapped values and `Err` objects for raised exceptions.
         """
 
         async def capture(item: T) -> Result[R]:
+            """Await the mapping and wrap success in Ok or a raised exception in Err."""
             try:
                 return Ok(cast(R, await _resolve(function(item))))
             except Exception as error:
@@ -617,10 +682,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit at most count items and cancel pending upstream work.
 
         Args:
-            count: The requested number of items.
+            count: Maximum number of leading items to emit.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing only the first `count` items, with upstream work cancelled
+            and closed after the limit.
 
         Raises:
             ValueError: If count is negative.
@@ -635,10 +701,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Skip count items before yielding the remainder.
 
         Args:
-            count: The requested number of items.
+            count: Number of leading source items to consume without emitting.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing every source item after the first `count`.
 
         Raises:
             ValueError: If count is negative.
@@ -653,10 +719,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit the longest prefix that satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved on leading items until its first falsey
+                result.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow ending before the first item whose resolved predicate is falsey.
         """
         return cast(AsyncFlow[T], self._append(_TakeWhile(predicate)))
 
@@ -666,10 +733,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit through the first item that fails predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved on leading items through its first falsey
+                result.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow ending after emitting the first item whose resolved predicate is falsey.
         """
         return cast(AsyncFlow[T], self._append(_TakeWhileInclusive(predicate)))
 
@@ -677,10 +745,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Skip the longest prefix that satisfies predicate.
 
         Args:
-            predicate: A callable that decides whether an item matches.
+            predicate: Sync or async callable resolved only while leading items are truthy.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow beginning with the first falsey-predicate item; later items are emitted
+            without further predicate calls.
         """
         return cast(AsyncFlow[T], self._append(_DropWhile(predicate)))
 
@@ -688,10 +757,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Group consecutive items into fixed-size tuples.
 
         Args:
-            size: The requested window, chunk, or batch size.
+            size: Maximum number of consecutive items in each tuple.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of non-overlapping tuples, including a final shorter tuple when needed.
 
         Raises:
             ValueError: If size is less than one.
@@ -706,11 +775,12 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit sliding tuples of size with the requested step.
 
         Args:
-            size: The requested window, chunk, or batch size.
-            step: The distance between consecutive windows or numeric increments.
+            size: Number of items in each full window.
+            step: Number of source items consumed between successive windows.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            A flow of full sliding windows; a non-empty source shorter than `size` produces one
+            partial window, but no trailing partial window is emitted otherwise.
 
         Raises:
             ValueError: If size or step is less than one.
@@ -725,7 +795,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit each adjacent pair of items.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of overlapping `(previous, current)` pairs; fewer than two items emit
+            nothing.
         """
         return cast(AsyncFlow[tuple[T, T]], self._append(_Pairwise()))
 
@@ -736,10 +807,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Apply a two-argument function to each adjacent pair.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper called as `function(previous, current)`.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing one resolved mapped result per adjacent pair.
         """
         return self.pairwise().map(lambda pair: function(pair[0], pair[1]))
 
@@ -747,10 +818,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Group consecutive items that share the same key.
 
         Args:
-            key: The callable or selector used to derive a key.
+            key: Optional selector for run identity; adjacent items themselves are compared when
+                omitted. Callable results may be awaitable.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of non-empty tuples, one for each contiguous run of equal resolved keys.
         """
         select = (lambda item: item) if key is None else compile_selector(key)
         return cast(AsyncFlow[tuple[T, ...]], self._append(_GroupRuns(select)))
@@ -761,10 +833,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Pair each item with a consecutive index starting at start.
 
         Args:
-            start: The first index, numeric value, or additive identity to use.
+            start: Integer-compatible index paired with the first source item.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of `(index, item)` pairs with consecutive integer indices.
         """
         return cast(
             AsyncFlow[tuple[int, T]],
@@ -782,11 +854,12 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Pair items with another source until one side ends.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            strict: Whether invalid or empty input should raise instead of returning a fallback.
+            other: Sync or async source providing the right-hand item in each pair.
+            strict: Raise `ValueError` during consumption when the two sources have different
+                lengths.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of pairs ending with the shorter source unless `strict` is true.
         """
         operation = _Zip(_AsyncSource.from_value(other), strict)
         return cast(AsyncFlow[tuple[T, U]], self._append(operation))
@@ -800,11 +873,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Pair with another source until both sides end, filling missing values.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            fillvalue: The value used when one side of a longest zip is exhausted.
+            other: Sync or async source providing right-hand values.
+            fillvalue: Substitute used on whichever source is exhausted first.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of pairs whose length matches the longer source.
         """
         operation = _ZipLongest(_AsyncSource.from_value(other), fillvalue)
         return cast(AsyncFlow[tuple[T | Any, U | Any]], self._append(operation))
@@ -813,10 +886,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Insert separator between consecutive items.
 
         Args:
-            separator: The string inserted between adjacent string representations.
+            separator: Item emitted once between each pair of adjacent source items.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow with `separator` between source items and never at either boundary.
         """
         return cast(AsyncFlow[T], self._append(_Intersperse(separator)))
 
@@ -827,10 +900,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit this flow followed by each supplied source.
 
         Args:
-            *others: Additional sources combined with this pipeline.
+            *others: Sync or async sources opened and drained after this flow, in argument order.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow that drains this source and then each additional source in order.
         """
         sources = tuple(_AsyncSource.from_value(other) for other in others)
         return cast(AsyncFlow[T], self._append(_Concat(sources)))
@@ -841,14 +914,18 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         *,
         max_right: int | None = None,
     ) -> AsyncFlow[tuple[T, U]]:
-        """Emit the Cartesian product with a bounded or reiterable right side.
+        """Buffer another source once and emit a left-major Cartesian product.
 
         Args:
-            other: The other iterable, flow, value, or fallback used by the operation.
-            max_right: The maximum right-side size allowed when buffering is required.
+            other: Sync or async source buffered after the first left item arrives.
+            max_right: Optional maximum number of right-side items that may be buffered.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of `(left, right)` pairs with every right item repeated for each left
+            item.
+
+        Raises:
+            BufferLimitError: During consumption if `other` contains more than `max_right` items.
         """
         if max_right is not None:
             max_right = operator.index(max_right)
@@ -866,17 +943,16 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         initial: R,
         function: Callable[[R, T], R | Awaitable[R]],
     ) -> AsyncFlow[R]:
-        """Emit each left-to-right accumulator state.
+        """Emit each resolved left-to-right accumulator state after consuming one item.
 
         Unlike `reduce`, `scan` emits every intermediate accumulator state.
 
         Args:
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            function: The callable applied by this operation.
+            initial: Accumulator passed to the first callback; it is not emitted by itself.
+            function: Sync or async callback invoked as `function(state, item)`.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow with one accumulated state for every source item.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -889,16 +965,19 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         *,
         max_items: int | None = None,
     ) -> AsyncFlow[R]:
-        """Emit accumulator states while combining items from right to left.
+        """Buffer the source, fold right, and emit resolved states in source order.
 
         Args:
-            initial: The initial accumulator value. When omitted, the first item is used where
-                supported.
-            function: The callable applied by this operation.
-            max_items: The maximum number of source items allowed in the right-side buffer.
+            initial: Accumulator passed to the rightmost callback; it is not emitted by itself.
+            function: Sync or async callback invoked as `function(item, state)` from right to
+                left.
+            max_items: Optional maximum number of source items that may be buffered.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow with one right-fold state per source item, ordered like the source.
+
+        Raises:
+            BufferLimitError: During consumption if the source exceeds `max_items`.
         """
         if not callable(function):
             raise TypeError("function must be callable")
@@ -912,10 +991,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit values before the items from this flow.
 
         Args:
-            *values: Values supplied to this operation in encounter order.
+            *values: Items emitted before the first source item, in argument order.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing `values` followed by every source item.
         """
         return cast(AsyncFlow[T], self._append(_Prepend(values)))
 
@@ -923,10 +1002,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit values after the items from this flow.
 
         Args:
-            *values: Values supplied to this operation in encounter order.
+            *values: Items emitted after the source completes, in argument order.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing every source item followed by `values`.
         """
         return cast(AsyncFlow[T], self._append(_Append(values)))
 
@@ -934,10 +1013,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Transform only the first item, if one exists.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper for the first item; never called for an empty source.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow with only its first item replaced by the resolved mapped value.
         """
         return cast(AsyncFlow[T], self._append(_MapFirst(function)))
 
@@ -945,10 +1024,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Transform only the last item, if one exists.
 
         Args:
-            function: The callable applied by this operation.
+            function: Sync or async mapper for the final item; never called for an empty source.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow with only its final item replaced by the resolved mapped value.
         """
         return cast(AsyncFlow[T], self._append(_MapLast(function)))
 
@@ -960,11 +1039,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Merge adjacent items while collapsible returns true.
 
         Args:
-            collapsible: A callable deciding whether two adjacent items should be combined.
-            merger: A callable that merges two downstream results.
+            collapsible: Sync or async predicate called on neighboring original items.
+            merger: Sync or async callback combining the current run aggregate with the next item.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow containing one resolved aggregate per contiguous collapsible run.
         """
         if not callable(collapsible) or not callable(merger):
             raise TypeError("collapsible and merger must be callable")
@@ -975,14 +1054,15 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         initializer: Callable[[], R | Awaitable[R]],
         function: Callable[[R, T], R | Awaitable[R]],
     ) -> AsyncFlow[R]:
-        """Apply a Gatherer-compatible stateful fold.
+        """Reduce the whole source and emit one resolved accumulator.
 
         Args:
-            initializer: A zero-argument callable that creates fresh mutable state.
-            function: The callable applied by this operation.
+            initializer: Sync or async callable invoked once per evaluation for initial state.
+            function: Sync or async callback invoked as `function(state, item)`.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow emitting exactly one final state, including the initializer for an empty
+            source.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -1001,13 +1081,16 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Build batches constrained by count and measured size.
 
         Args:
-            max_size: The maximum measured size allowed in one batch.
-            max_count: The maximum number of items emitted in one batch.
-            get_size: A callable that returns the measured size of one item.
-            strict: Whether invalid or empty input should raise instead of returning a fallback.
+            max_size: Maximum sum of resolved item sizes in a normal batch.
+            max_count: Optional maximum item count per batch.
+            get_size: Sync or async callable returning a non-negative integer size; defaults to
+                `len`.
+            strict: Raise when one item exceeds `max_size`; when false, emit it in an oversized
+                singleton batch.
 
         Returns:
-            A new lazy `AsyncFlow` representing this operation.
+            An async flow of non-empty tuples packed within both limits, except for non-strict
+            oversized singleton items.
         """
         if max_size <= 0:
             raise ValueError("max_size must be positive")
@@ -1033,7 +1116,7 @@ class _AsyncFlowFactory:
             source: The synchronous or asynchronous iterable consumed by the flow.
 
         Returns:
-            A new lazy `AsyncFlow`.
+            An async flow that adapts and emits items from `source` when consumed.
         """
         return AsyncFlow(source)
 
@@ -1041,10 +1124,10 @@ class _AsyncFlowFactory:
         """Create a reusable async flow that calls factory for each iteration.
 
         Args:
-            factory: A callable that opens a fresh source for every iteration.
+            factory: Called for each evaluation and returns that evaluation's sync or async source.
 
         Returns:
-            A new reusable lazy `AsyncFlow`.
+            A reusable async flow that invokes `factory` separately for each evaluation.
         """
         return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(factory)))
 
@@ -1052,11 +1135,11 @@ class _AsyncFlowFactory:
         """Read a text file asynchronously and emit its lines.
 
         Args:
-            path: The filesystem path to read from or write to.
-            encoding: The text encoding used to open the file.
+            path: Text file opened when the returned flow is consumed.
+            encoding: Encoding used by `aiofiles.open`.
 
         Returns:
-            A new reusable lazy `AsyncFlow`.
+            A reusable async flow of lines with trailing CR and LF characters removed.
         """
         return AsyncFlow.from_file(path, encoding=encoding)
 
@@ -1064,10 +1147,10 @@ class _AsyncFlowFactory:
         """Emit increasing integers separated by seconds.
 
         Args:
-            seconds: The duration in seconds used by the timing operation.
+            seconds: Delay before the first integer and between later integers.
 
         Returns:
-            A new reusable lazy `AsyncFlow`.
+            A reusable, infinite async flow emitting `0, 1, 2, ...`.
         """
         return AsyncFlow.interval(seconds)
 
@@ -1084,11 +1167,11 @@ class _AsyncFlowFactory:
         """Fetch pages lazily until the returned cursor is None.
 
         Args:
-            fetch_page: An async callable that returns page items and the next cursor.
-            start: The first index, numeric value, or additive identity to use.
+            fetch_page: Sync or async callable returning `(page, next_cursor)` for each cursor.
+            start: Cursor passed to the first page request.
 
         Returns:
-            A new reusable lazy `AsyncFlow`.
+            A reusable async flow that flattens pages through the first `None` next cursor.
         """
         return AsyncFlow.paginate(fetch_page, start=start)
 

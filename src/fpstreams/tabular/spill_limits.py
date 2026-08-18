@@ -9,6 +9,7 @@ from ..errors import BufferLimitError
 
 
 def _positive_integer(name: str, value: int) -> int:
+    """Coerce an integer-like limit and require it to be greater than zero."""
     try:
         result = operator.index(value)
     except TypeError:
@@ -19,6 +20,7 @@ def _positive_integer(name: str, value: int) -> int:
 
 
 def _nonnegative_integer(name: str, value: int) -> int:
+    """Coerce an integer-like limit and reject negative values."""
     try:
         result = operator.index(value)
     except TypeError:
@@ -30,7 +32,7 @@ def _nonnegative_integer(name: str, value: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class SpillLimits:
-    """Finite memory and output budgets for spilled joins and groupings."""
+    """Bound partition rows and bytes, join fan-out, output rows, and repartition depth."""
 
     max_partition_rows: int = 100_000
     max_partition_bytes: int = 64 * 1024 * 1024
@@ -39,6 +41,7 @@ class SpillLimits:
     max_repartition_depth: int = 3
 
     def __post_init__(self) -> None:
+        """Validate and normalize every configured spill limit on construction."""
         object.__setattr__(
             self,
             "max_partition_rows",
@@ -75,6 +78,7 @@ def raise_spill_limit(
     *,
     depth: int | None = None,
 ) -> None:
+    """Raise a BufferLimitError containing the measured value and configured budget."""
     depth_text = "" if depth is None else f" after {depth} repartition levels"
     raise BufferLimitError(
         f"{operation} {measurement} {actual} exceed {field}={allowed}{depth_text}"
@@ -87,11 +91,13 @@ class SpillBudget:
     __slots__ = ("_limits", "_operation", "outputs")
 
     def __init__(self, operation: str, limits: SpillLimits) -> None:
+        """Start an output counter governed by the supplied spill limits."""
         self._operation = operation
         self._limits = limits
         self.outputs = 0
 
     def check_matches(self, count: int) -> None:
+        """Reject a join key whose match fan-out exceeds the configured maximum."""
         if count > self._limits.max_matches_per_key:
             raise_spill_limit(
                 self._operation,
@@ -102,6 +108,7 @@ class SpillBudget:
             )
 
     def add_output(self) -> None:
+        """Reserve one output row, raising before the total exceeds its budget."""
         output = self.outputs + 1
         if output > self._limits.max_output_rows:
             raise_spill_limit(

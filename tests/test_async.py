@@ -1,6 +1,10 @@
-"""AsyncFlow transformations, concurrency, timing, and cleanup."""
-
 from __future__ import annotations
+
+
+# --- Tests consolidated from test_async_api.py ---
+
+"""AsyncFlow transforms, bounded concurrency, real-time operators, terminals, and cleanup."""
+
 
 import asyncio
 from collections.abc import AsyncIterator
