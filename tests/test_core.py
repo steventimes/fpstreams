@@ -1,16 +1,43 @@
-from __future__ import annotations
-
-
-# --- Tests consolidated from test_primitives.py ---
-
 """Option and Result behavior, functional helpers, and finite-domain algebraic laws."""
 
+from __future__ import annotations
 
-from typing import Any, cast
+import asyncio
+import hashlib
+import importlib.util
+import itertools
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import textwrap
+import typing
+from pathlib import Path
+from typing import Any, cast, get_args
 
 import pytest
 
-from fpstreams import Err, Option, Result, Stream, curry, pipe, retry
+import fpstreams
+from fpstreams import (
+    AsyncStream,
+    Collectors,
+    Err,
+    Option,
+    ParallelStream,
+    Result,
+    Stream,
+    aflow,
+    curry,
+    flow,
+    item,
+    pipe,
+    retry,
+)
+from fpstreams.planning.sync import FilterOp, MapOp, Operation, TapOp
+
+# --- Tests consolidated from test_primitives.py ---
 
 
 def test_option_paths_present_and_empty() -> None:
@@ -115,19 +142,6 @@ def test_theorem_stream_sum_homomorphism_under_concatenation() -> None:
 # --- Tests consolidated from test_compatibility.py ---
 
 """Legacy compatibility, integration behavior, coverage tracing, and package exports."""
-
-
-import asyncio
-import os
-import subprocess
-import sys
-import textwrap
-import typing
-
-import pytest
-
-import fpstreams
-from fpstreams import AsyncStream, Collectors, Option, ParallelStream, Result, Stream
 
 
 def _times_two(x: int) -> int:
@@ -340,17 +354,6 @@ def test_legacy_module_imports_remain_compatible() -> None:
 # --- Tests consolidated from test_invariants.py ---
 
 """Randomized, property, finite-state, and operation-dispatch invariant tests."""
-
-
-import importlib.util
-import itertools
-import random
-from typing import cast, get_args
-
-import pytest
-
-from fpstreams import Stream, aflow, flow, item
-from fpstreams.planning.sync import FilterOp, MapOp, Operation, TapOp
 
 
 def test_fuzz_random_numeric_pipelines_are_crash_free_and_match_oracle() -> None:
@@ -645,14 +648,6 @@ async def test_async_stateless_dispatch_preserves_callable_order() -> None:
 
 """Release tools, action pinning, and publish-workflow ordering safeguards."""
 
-
-import hashlib
-import json
-import os
-import re
-import subprocess
-import sys
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PINNED_ACTION = re.compile(

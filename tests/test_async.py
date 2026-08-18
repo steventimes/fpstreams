@@ -1,10 +1,6 @@
-from __future__ import annotations
-
-
-# --- Tests consolidated from test_async_api.py ---
-
 """AsyncFlow transforms, bounded concurrency, real-time operators, terminals, and cleanup."""
 
+from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -13,6 +9,8 @@ from itertools import pairwise
 import pytest
 
 import fpstreams
+
+# --- Tests consolidated from test_async_api.py ---
 
 
 def _square(value: int) -> int:

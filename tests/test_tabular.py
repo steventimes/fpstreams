@@ -1,20 +1,28 @@
-from __future__ import annotations
-
-
-# --- Tests consolidated from test_rows_api.py ---
-
 """Rows expressions, joins, aggregation, reshaping, text I/O, cleaning, and spilling."""
 
+from __future__ import annotations
 
 import gc
+import sqlite3
+import subprocess
+import sys
 import weakref
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import pandas as pd
+import polars as pl
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import pytest
 
 import fpstreams
 from fpstreams import flow
+
+# --- Tests consolidated from test_rows_api.py ---
 
 
 def _square(value: int) -> int:
@@ -1155,23 +1163,6 @@ def test_spilled_join_guards_matches_and_total_output(tmp_path) -> None:
 """Dataframe protocols plus Arrow, Polars, Parquet, and SQL source and sink adapters."""
 
 
-import sqlite3
-import subprocess
-import sys
-from collections.abc import Iterator, Sequence
-from pathlib import Path
-from typing import Any
-
-import pandas as pd
-import polars as pl
-import pyarrow as pa
-import pyarrow.dataset as ds
-import pyarrow.parquet as pq
-import pytest
-
-import fpstreams
-
-
 def test_process_parallel_is_safe_after_arrow_initializes_threads(tmp_path: Path) -> None:
     program = tmp_path / "parallel_after_arrow.py"
     program.write_text(
@@ -1227,6 +1218,121 @@ def test_arrow_reader_stays_one_shot_and_closes_after_short_circuit() -> None:
     assert source.take(1).to_list() == [{"id": 1}]
     with pytest.raises(fpstreams.FlowConsumedError):
         source.to_list()
+
+
+def test_row_expression_ir_covers_operator_and_call_families() -> None:
+    row = {
+        "value": 3,
+        "negative": -4,
+        "text": " AbC ",
+        "items": [10, 20],
+        "nested": {"amount": 5},
+        "missing": None,
+    }
+    expressions = [
+        (10 + fpstreams.col("value"), 13),
+        (10 - fpstreams.col("value"), 7),
+        (4 * fpstreams.col("value"), 12),
+        (12 / fpstreams.col("value"), 4),
+        (7 // fpstreams.col("value"), 2),
+        (7 % fpstreams.col("value"), 1),
+        (2 ** fpstreams.col("value"), 8),
+        (-fpstreams.col("value"), -3),
+        (abs(fpstreams.col("negative")), 4),
+        (fpstreams.col("items")[1], 20),
+        (fpstreams.col("value").cast(float), 3.0),
+        (fpstreams.col("value").isin([1, 3]), True),
+        (fpstreams.col("missing").is_null(), True),
+        (fpstreams.col("value").is_not_null(), True),
+        (fpstreams.col("text").lower(), " abc "),
+        (fpstreams.col("text").upper(), " ABC "),
+        (fpstreams.col("text").strip(), "AbC"),
+        (fpstreams.col("text").contains("b"), True),
+        (fpstreams.when(fpstreams.col("value") >= 3, "yes", "no"), "yes"),
+        ((fpstreams.col("value") > 0) & (fpstreams.col("missing").is_null()), True),
+        ((fpstreams.col("value") < 0) | (fpstreams.col("value") == 3), True),
+    ]
+
+    assert [expression(row) for expression, _expected in expressions] == [
+        expected for _expression, expected in expressions
+    ]
+    assert fpstreams.col("nested.amount").inspect().to_dict()["fields"] == ["nested"]
+    assert fpstreams.lit(1).inspect().to_dict()["deterministic"] == "yes"
+    assert fpstreams.col("missing").coalesce(0).inspect().to_dict()["null_behavior"] == (
+        "coalesces"
+    )
+    assert fpstreams.col("value").map(str).inspect().to_dict() == {
+        "fields": None,
+        "deterministic": "unknown",
+        "pure": "unknown",
+        "null_behavior": "python",
+        "backends": ["python"],
+        "opaque": True,
+    }
+    with pytest.raises(TypeError, match="'&' or '\\|'"):
+        bool(fpstreams.col("value"))
+
+
+def test_arrow_row_expression_prefix_preserves_python_boundaries() -> None:
+    table = pa.table({"value": [1, 2, 3], "enabled": [True, False, True]})
+    source = fpstreams.rows.from_arrow(table, batch_size=2)._flow
+
+    assert source.filter(fpstreams.col("value") > 1).to_list() == [
+        {"value": 2, "enabled": False},
+        {"value": 3, "enabled": True},
+    ]
+    assert source.map(fpstreams.col("value") + 10).to_list() == [11, 12, 13]
+    assert source.filter(fpstreams.col("value") > 1).map(fpstreams.col("value") * 10).to_list() == [
+        20,
+        30,
+    ]
+    assert source.filter((fpstreams.col("value") % 2) == 0).to_list() == [
+        {"value": 2, "enabled": False}
+    ]
+    assert source.filter(fpstreams.col("enabled") | (fpstreams.col("value") > 1)).count() == 3
+
+    nullable = fpstreams.rows.from_arrow(pa.table({"value": [None, 1]}))._flow
+    assert nullable.filter(fpstreams.col("value").is_null()).to_list() == [{"value": None}]
+    assert nullable.map(fpstreams.col("value").fill_null(5).cast(float)).to_list() == [5.0, 1.0]
+
+    explanation = source.filter(fpstreams.col("value") > 0).take(1).explain().to_dict()
+    assert explanation["arrow_prefix"] == {
+        "operation_count": 1,
+        "boundary_reason": "unsupported_operation",
+        "guarded": True,
+    }
+    assert explanation["boundaries"] == [
+        {
+            "from": "arrow",
+            "to": "python",
+            "after_operation": 1,
+            "materializes_rows": True,
+            "guarded": True,
+        }
+    ]
+
+
+def test_arrow_batch_guard_names_each_fallback_reason() -> None:
+    from fpstreams.execution.arrow import prove_batch_safe
+    from fpstreams.planning.sync import FilterOp
+
+    batch = pa.record_batch({"value": [1, 2]})
+    nullable = pa.record_batch({"value": [None, 1]})
+    operations = [
+        (batch, FilterOp(lambda _row: True), "opaque_expression"),
+        (batch, FilterOp(fpstreams.col("missing") > 0), "missing_field"),
+        (batch, FilterOp(fpstreams.col("value").map(bool)), "incompatible_type"),
+        (batch, FilterOp((fpstreams.col("value") // 2) == 1), "incompatible_type"),
+        (batch, FilterOp((fpstreams.col("value") / 0) > 1), "zero_divisor"),
+        (batch, FilterOp(fpstreams.col("value").lower() == "1"), "incompatible_type"),
+        (batch, FilterOp(fpstreams.col("value").cast(str) == "1"), "unsafe_cast"),
+        (nullable, FilterOp(fpstreams.col("value") == 1), "null_semantics"),
+    ]
+
+    assert [
+        prove_batch_safe(item, (operation,)).reason.value for item, operation, _reason in operations
+    ] == [reason for _item, _operation, reason in operations]
+    assert prove_batch_safe(object(), ()).reason.value == "kernel_error"
 
 
 def test_parquet_sink_streams_row_groups_and_scan_pushes_projection_filter(tmp_path: Path) -> None:

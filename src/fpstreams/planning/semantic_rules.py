@@ -669,8 +669,6 @@ for _class, _name in _ASYNC_NAMES.items():
         if _class is _Cross:
             _progress = ProgressKind.SIDE_INPUT_FINAL
             _state = _state_input
-    elif _class is _MergeMap:
-        _state = _state_bounded
     elif _class is _ScanRight:
         _progress = ProgressKind.GLOBAL_FINAL
         _state = _state_input

@@ -1,15 +1,23 @@
-from __future__ import annotations
-
-
-# --- Tests consolidated from test_flow_api.py ---
-
 """Synchronous Flow sources, lazy transforms, selectors, gatherers, and terminals."""
 
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+import benchmark
 import fpstreams
-from fpstreams import NativeUnsupportedError, SelectionError, flow
+from fpstreams import Downstream, Gatherer, NativeUnsupportedError, SelectionError, flow
+
+# --- Tests consolidated from test_flow_api.py ---
 
 
 def _square(value: int) -> int:
@@ -417,6 +425,90 @@ def test_explain_reports_fusion_and_forced_engine_rejections() -> None:
         flow([1, 2]).map(lambda value: value + 1).with_engine("native").to_list()
 
 
+def _semantic_output(pipeline: fpstreams.Flow[object]) -> dict[str, object]:
+    return pipeline.explain().to_dict()["semantics"]["output"]
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "termination", "cardinality", "value"),
+    [
+        (flow([]).filter(bool), "proven_finite", "exact", 0),
+        (flow([]).flat_map(lambda value: [value]), "proven_finite", "exact", 0),
+        (flow([1, 2, 3]).take(0), "proven_finite", "exact", 0),
+        (flow([1, 2, 3]).drop(1), "proven_finite", "exact", 2),
+        (flow([1, 2, 3]).filter(bool).drop(1), "proven_finite", "upper_bound", 2),
+        (flow([1, 2, 3]).filter(bool).pairwise(), "proven_finite", "upper_bound", 2),
+        (flow([1, 2, 3]).filter(bool).chunk(2), "proven_finite", "upper_bound", 2),
+        (flow(range(5)).chunk(2), "proven_finite", "exact", 3),
+        (flow(range(4)).window(3, step=2), "proven_finite", "exact", 1),
+        (flow([1]).window(3), "proven_finite", "exact", 1),
+        (flow([]).window(3), "proven_finite", "exact", 0),
+        (flow(iter([1, 2])).window(2), "unknown", "unknown", None),
+        (flow([1]).concat([2, 3]), "proven_finite", "exact", 3),
+        (flow.iterate(0, lambda value: value + 1).concat([1]), "proven_infinite", "unknown", None),
+        (flow(iter([1])).concat([2]), "unknown", "unknown", None),
+        (flow([1, 2, 3]).zip([4, 5]), "proven_finite", "exact", 2),
+        (
+            flow([1, 2, 3]).filter(bool).zip([4, 5]),
+            "proven_finite",
+            "upper_bound",
+            2,
+        ),
+        (
+            flow.iterate(0, lambda value: value + 1).zip([4, 5]),
+            "proven_finite",
+            "unknown",
+            None,
+        ),
+        (flow([1]).zip_longest([2, 3]), "proven_finite", "unknown", None),
+        (
+            flow.iterate(0, lambda value: value + 1).zip_longest([1]),
+            "proven_infinite",
+            "unknown",
+            None,
+        ),
+        (flow([]).cross(iter([1])), "proven_finite", "exact", 0),
+        (flow([1, 2]).cross(range(3)), "proven_finite", "exact", 6),
+        (flow([1, 2]).cross(iter([3])), "unknown", "unknown", None),
+    ],
+)
+def test_explain_propagates_cardinality_and_termination(
+    pipeline: fpstreams.Flow[object],
+    termination: str,
+    cardinality: str,
+    value: int | None,
+) -> None:
+    output = _semantic_output(pipeline)
+
+    assert output["termination"] == termination
+    assert output["cardinality"] == {"kind": cardinality, "value": value}
+
+
+def test_explain_reports_order_state_and_completion_risks() -> None:
+    unordered = flow({1, 2}).scan(0, lambda total, value: total + value).explain("list").to_dict()
+    infinite = flow.iterate(0, lambda value: value + 1).sorted().explain("list").to_dict()
+    unknown = flow.defer(lambda: iter([2, 1])).sorted().explain("list").to_dict()
+
+    assert {item["code"] for item in unordered["diagnostics"]} == {"ORDER_NOT_PRESERVED"}
+    assert [item["code"] for item in infinite["diagnostics"]] == [
+        "STATE_MAY_GROW",
+        "NON_TERMINATING_PLAN",
+        "NON_TERMINATING_PLAN",
+    ]
+    assert [item["code"] for item in unknown["diagnostics"]] == [
+        "STATE_MAY_GROW",
+        "COMPLETION_NOT_PROVEN",
+        "COMPLETION_NOT_PROVEN",
+    ]
+    assert flow([1]).explain("first").to_dict()["semantics"]["completion"] == (
+        "first_item_or_source_end"
+    )
+    assert flow([1]).explain("all").to_dict()["semantics"]["completion"] == (
+        "witness_or_source_end"
+    )
+    assert flow([1]).explain().to_dict()["semantics"]["completion"] == "consumer_stop"
+
+
 def test_attempt_turns_exceptions_into_composable_values() -> None:
     results = flow([2, 0]).attempt(lambda value: 10 // value).to_list()
 
@@ -440,15 +532,6 @@ def test_stream_is_a_thin_v2_compatibility_alias() -> None:
 # --- Tests consolidated from test_stream_extensions.py ---
 
 """Gatherer contracts and synchronous, asynchronous, and native stream extensions."""
-
-
-from collections.abc import AsyncIterator, Iterator
-from typing import Any
-
-import pytest
-
-import fpstreams
-from fpstreams import Downstream, Gatherer, flow
 
 
 def test_downstream_rejection_is_monotonic() -> None:
@@ -844,18 +927,6 @@ def test_native_inclusive_take_fuses_in_f64_pipelines() -> None:
 # --- Tests consolidated from test_execution_engines.py ---
 
 """Parallel mapping, engine planning, fused terminals, source metadata, and external sorting."""
-
-
-import threading
-import time
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
-from typing import Any
-
-import pytest
-
-import fpstreams
-from fpstreams import flow
 
 
 def _engine_square(value: int) -> int:
@@ -1618,16 +1689,6 @@ def test_external_sort_cleans_up_after_short_circuit_and_errors(tmp_path: Path) 
 
 # --- Tests consolidated from test_benchmark.py ---
 
-
-import json
-import subprocess
-import sys
-from pathlib import Path
-from typing import Any
-
-import pytest
-
-import benchmark
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RESULT_KEYS = {

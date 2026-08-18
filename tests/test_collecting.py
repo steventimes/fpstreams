@@ -1,19 +1,18 @@
-from __future__ import annotations
-
-
-# --- Tests consolidated from test_collecting_api.py ---
-
 """Flow collectors, one-pass aggregations, short-circuiting, and duplicate policies."""
 
+from __future__ import annotations
 
 import json
 import random
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import pytest
 
 import fpstreams
 from fpstreams import flow
+
+# --- Tests consolidated from test_collecting_api.py ---
 
 
 def _square(value: int) -> int:
@@ -411,15 +410,6 @@ def test_native_multi_aggregation_matches_python_for_generated_values(
 """Pairs transforms, per-key collection and aggregation, validation, and cleanup."""
 
 
-from collections.abc import Iterator
-from typing import Any
-
-import pytest
-
-import fpstreams
-from fpstreams import flow
-
-
 def _pairs_square(value: int) -> int:
     return value * value
 
@@ -585,3 +575,160 @@ def test_aggregate_values_validates_before_opening_the_source() -> None:
     with pytest.raises(TypeError, match="must be an Aggregator"):
         fpstreams.pairs(source()).aggregate_values(invalid=object())  # type: ignore[arg-type]
     assert not opened
+
+
+def test_reducer_metadata_and_partitioned_execution_are_observable() -> None:
+    from fpstreams.collecting.reducer import merge_reducer_states, run_partitioned_reducer
+    from fpstreams.planning.semantics import StateProfile
+
+    laws = fpstreams.ReducerLaws(
+        True,
+        True,
+        False,
+        True,
+        fpstreams.EmptyInputPolicy.FINISH_IDENTITY,
+        StateProfile.constant(),
+        fpstreams.LawProvenance.USER_ASSERTED,
+    )
+    reducer = fpstreams.Reducer(
+        lambda: 0,
+        lambda total, value: total + value,
+        merge=lambda left, right: left + right,
+        laws=laws,
+    )
+
+    assert reducer.reduce([1, 2, 3, 4, 5]) == 15
+    assert merge_reducer_states([], reducer) == 0
+    assert merge_reducer_states([7], reducer) == 7
+    assert merge_reducer_states([1, 2, 3, 4, 5], reducer) == 15
+    assert run_partitioned_reducer([], reducer, partition_size=2) == 0
+    assert run_partitioned_reducer(range(1, 6), reducer, partition_size=2) == 15
+    assert fpstreams.explain_reduction(reducer).to_dict() == {
+        "mergeable": True,
+        "combine_declared": True,
+        "laws": {
+            "associative": True,
+            "commutative": True,
+            "order_sensitive": False,
+            "identity": True,
+            "empty_input": "finish_identity",
+            "state": {"kind": "constant", "bound": None, "spillable": False},
+            "provenance": "user_asserted",
+        },
+    }
+
+    ordinary = fpstreams.Collector(list, lambda state, value: [*state, value])
+    assert fpstreams.explain_reduction(ordinary).to_dict() == {
+        "mergeable": False,
+        "combine_declared": False,
+        "laws": None,
+    }
+    with pytest.raises(TypeError, match="collector must be a Collector"):
+        fpstreams.explain_reduction(object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="partition_size"):
+        run_partitioned_reducer([1], reducer, partition_size=0)
+    with pytest.raises(TypeError, match="reducer must be a Reducer"):
+        merge_reducer_states([1], ordinary)  # type: ignore[arg-type]
+
+
+def test_reducer_law_declarations_reject_invalid_contracts() -> None:
+    from fpstreams.planning.semantics import StateProfile
+
+    fields = (
+        fpstreams.EmptyInputPolicy.FINISH_IDENTITY,
+        StateProfile.constant(),
+        fpstreams.LawProvenance.USER_ASSERTED,
+    )
+    with pytest.raises(ValueError, match="associative=True"):
+        fpstreams.ReducerLaws(False, True, False, True, *fields)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="order-sensitive"):
+        fpstreams.ReducerLaws(True, True, True, True, *fields)
+    with pytest.raises(TypeError, match="EmptyInputPolicy"):
+        fpstreams.ReducerLaws(True, True, False, True, "invalid", *fields[1:])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="LawProvenance"):
+        fpstreams.ReducerLaws(True, True, False, True, fields[0], fields[1], "invalid")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="StateProfile"):
+        fpstreams.ReducerLaws(True, True, False, True, fields[0], object(), fields[2])  # type: ignore[arg-type]
+
+    laws = fpstreams.ReducerLaws(True, True, False, True, *fields)
+    with pytest.raises(TypeError, match="merge must be callable"):
+        fpstreams.Reducer(
+            lambda: 0,
+            lambda state, _value: state,
+            merge=None,  # type: ignore[arg-type]
+            laws=laws,
+        )
+    with pytest.raises(TypeError, match="laws must be"):
+        fpstreams.Reducer(
+            lambda: 0,
+            lambda state, _value: state,
+            merge=lambda left, _right: left,
+            laws=object(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="merge must be callable"):
+        fpstreams.ReducerAggregator(
+            lambda: 0,
+            lambda state, _value: state,
+            merge=None,  # type: ignore[arg-type]
+            laws=laws,
+        )
+    with pytest.raises(TypeError, match="laws must be"):
+        fpstreams.ReducerAggregator(
+            lambda: 0,
+            lambda state, _value: state,
+            merge=lambda left, _right: left,
+            laws=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_reducer_law_tools_report_each_failed_property() -> None:
+    from fpstreams.planning.semantics import StateProfile
+    from fpstreams.testing import assert_reducer_laws, check_reducer_laws
+
+    laws = fpstreams.ReducerLaws(
+        True,
+        False,
+        True,
+        True,
+        fpstreams.EmptyInputPolicy.FINISH_IDENTITY,
+        StateProfile.constant(),
+        fpstreams.LawProvenance.USER_ASSERTED,
+    )
+
+    def reducer(step, merge) -> fpstreams.Reducer:
+        return fpstreams.Reducer(lambda: 0, step, merge=merge, laws=laws)
+
+    addition = reducer(lambda state, value: state + value, lambda left, right: left + right)
+    report = check_reducer_laws(addition, [1, 2, 3, 4], partitions=[(4,), (1, 0, 3)])
+    assert report.associative and report.identity and report.partition_equivalent
+    assert report.checked_partitions == ((4,), (1, 0, 3))
+    assert_reducer_laws(addition, [1, 2, 3, 4], partitions=[(2, 2)])
+    assert check_reducer_laws(addition, [], partitions=[(0,)]).associative
+
+    non_associative = reducer(
+        lambda state, value: state + value,
+        lambda left, right: left - right,
+    )
+    with pytest.raises(AssertionError, match="not associative"):
+        assert_reducer_laws(non_associative, [1, 2, 3], partitions=[(1, 1, 1)])
+
+    wrong_identity = reducer(
+        lambda state, value: state + value,
+        lambda left, right: left * right,
+    )
+    with pytest.raises(AssertionError, match="identity"):
+        assert_reducer_laws(wrong_identity, [1, 2, 3], partitions=[(1, 1, 1)])
+
+    incompatible_step = reducer(
+        lambda state, value: state * 10 + value,
+        lambda left, right: left + right,
+    )
+    with pytest.raises(AssertionError, match="partition-equivalent"):
+        assert_reducer_laws(incompatible_step, [1, 2, 3], partitions=[(1, 1, 1)])
+
+    with pytest.raises(ValueError, match="partition sizes"):
+        check_reducer_laws(addition, [1, 2, 3, 4], partitions=[(-1, 5)])
+    with pytest.raises(ValueError, match="partition sizes"):
+        check_reducer_laws(addition, [1, 2, 3, 4], partitions=[(2, 1)])
+    with pytest.raises(TypeError, match="reducer must be a Reducer"):
+        check_reducer_laws(object(), [], partitions=[])  # type: ignore[arg-type]

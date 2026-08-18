@@ -28,6 +28,7 @@ from .sync import execute as execute_python
 class BatchFallbackReason(StrEnum):
     """Classify why a batch must use row-wise Python instead of Arrow kernels."""
 
+    OPAQUE_EXPRESSION = "opaque_expression"
     MISSING_FIELD = "missing_field"
     INCOMPATIBLE_TYPE = "incompatible_type"
     NULL_SEMANTICS = "null_semantics"
@@ -94,12 +95,7 @@ def prove_batch_safe(batch: Any, operations: tuple[Any, ...]) -> BatchSafety:
     for operation in operations:
         root = _expr_of(operation)
         if root is None:
-            return BatchSafety(
-                False,
-                BatchFallbackReason.OPAQUE_EXPRESSION
-                if hasattr(BatchFallbackReason, "OPAQUE_EXPRESSION")
-                else BatchFallbackReason.INCOMPATIBLE_TYPE,
-            )
+            return BatchSafety(False, BatchFallbackReason.OPAQUE_EXPRESSION)
         for node in _nodes(root):
             if isinstance(node, PythonUDF):
                 return BatchSafety(False, BatchFallbackReason.INCOMPATIBLE_TYPE)
