@@ -1456,7 +1456,9 @@ successful value or an exception.</p>
 
 
 
-        <p>A compatibility container for a value that may be absent.</p>
+        <p>Store either one non-<code>None</code> value or an empty state.</p>
+<p>Instances are immutable and cannot distinguish a present <code>None</code> from absence. Use
+:meth:<code>of</code>, :meth:<code>of_nullable</code>, or :meth:<code>empty</code> to make that choice explicit.</p>
 
 
 
@@ -1496,7 +1498,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Wrap a non-None value; use empty() or of_nullable() for absence.</p>
+        <p>Create a present option from a non-<code>None</code> value.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1519,7 +1521,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Value to store.</p>
               </div>
             </td>
             <td>
@@ -1550,7 +1552,30 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p>A present option containing <code>value</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>value</code> is <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -1579,7 +1604,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Wrap value in an Option; None produces an empty Option.</p>
+        <p>Create a present option from <code>value</code>, or an empty option from <code>None</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1602,7 +1627,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Nullable value to convert.</p>
               </div>
             </td>
             <td>
@@ -1633,7 +1658,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p><code>Option.empty()</code> for <code>None</code>; otherwise an option containing <code>value</code>.</p>
               </div>
             </td>
           </tr>
@@ -1662,7 +1687,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return an Option with no value.</p>
+        <p>Create an option whose stored state is absent.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1685,7 +1710,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p>An empty option.</p>
               </div>
             </td>
           </tr>
@@ -1710,7 +1735,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return whether this Option contains a value.</p>
+        <p>Report whether this option stores a non-<code>None</code> value.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1728,7 +1753,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> for a present value and <code>False</code> for an empty option.</p>
               </div>
             </td>
           </tr>
@@ -1753,7 +1778,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return whether this Option contains no value.</p>
+        <p>Report whether this option stores <code>None</code> as its empty marker.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1771,7 +1796,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> for an empty option and <code>False</code> for a present value.</p>
               </div>
             </td>
           </tr>
@@ -1796,7 +1821,7 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Run action when a value is present.</p>
+        <p>Invoke <code>action</code> once with the stored value, if one is present.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1819,7 +1844,7 @@ successful value or an exception.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Side-effecting callable skipped for an empty option.</p>
               </div>
             </td>
             <td>
@@ -1847,9 +1872,9 @@ successful value or an exception.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Keep the value only when predicate returns true.</p>
-<p>An empty option stays empty. A present value is retained only when the predicate is
-true.</p>
+        <p>Keep a present value only when <code>predicate</code> accepts it.</p>
+<p>Empty options and accepted values return the current immutable instance. A rejected
+value produces a new empty option. Exceptions from <code>predicate</code> propagate.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1872,7 +1897,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Callable evaluated only for a present value.</p>
               </div>
             </td>
             <td>
@@ -1903,7 +1928,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p>This option when empty or accepted; otherwise an empty option.</p>
               </div>
             </td>
           </tr>
@@ -1928,8 +1953,9 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform a present value; None becomes an empty Option.</p>
-<p>The callable runs only for a present value. A mapped <code>None</code> becomes an empty <code>Option</code>.</p>
+        <p>Map a present value and convert a mapped <code>None</code> to absence.</p>
+<p>The mapper is skipped for an empty option. Unlike :class:<code>Result</code>, this method does
+not capture mapper exceptions.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1952,7 +1978,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Callable applied to the stored value.</p>
               </div>
             </td>
             <td>
@@ -1983,7 +2009,22 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p>An option containing the mapped value, or an empty option when either input or</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Option
+
+
+  
+      dataclass
+   (fpstreams.primitives.option.Option)" href="#fpstreams.Option">Option</a>[<span title="fpstreams.primitives.option.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>output is <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -2008,8 +2049,9 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform a present value with an Option-returning function.</p>
-<p>The callable runs only for a present value and must return another <code>Option</code>.</p>
+        <p>Return the option produced by mapping a present value.</p>
+<p>The mapper is skipped for an empty option. Its return value and any exception are
+passed through without additional wrapping or validation.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2037,7 +2079,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Option-returning callable applied to the stored value.</p>
               </div>
             </td>
             <td>
@@ -2068,7 +2110,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An <code>Option</code> containing the resulting value, or an empty option.</p>
+                <p>The mapper's result, or an empty option when this option is empty.</p>
               </div>
             </td>
           </tr>
@@ -2093,7 +2135,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the value or raise ValueError when empty.</p>
+        <p>Extract the stored value, rejecting an empty option.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2159,7 +2201,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the value when present, otherwise other.</p>
+        <p>Return the stored value, or the eagerly supplied fallback when empty.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2182,7 +2224,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Value to return only when this option is empty.</p>
               </div>
             </td>
             <td>
@@ -2233,7 +2275,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the value when present, otherwise call supplier.</p>
+        <p>Return the stored value, or lazily call <code>supplier</code> when empty.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2256,7 +2298,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that supplies a value or iterable.</p>
+                <p>Zero-argument fallback callable, skipped for a present value.</p>
               </div>
             </td>
             <td>
@@ -2307,7 +2349,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the value when present, otherwise raise a supplied exception.</p>
+        <p>Return the stored value, or construct and raise an exception when empty.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2417,7 +2459,7 @@ true.</p>
 
 
 
-        <p>A value that is either :class:<code>Ok</code> or :class:<code>Err</code>.</p>
+        <p>Common interface for a successful :class:<code>Ok</code> or failed :class:<code>Err</code> value.</p>
 
 
 
@@ -2455,25 +2497,25 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the failure exception, or None for success.</p>
+        <p>Expose the stored failure exception, or <code>None</code> for success.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
     <table>
       <thead>
         <tr>
-          <th>Type</th>
+<th>Name</th>          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-            <td>
+<td><code>The</code></td>            <td>
                   <code><span title="Exception">Exception</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>class:<code>Err</code> exception or <code>None</code> for :class:<code>Ok</code>.</p>
               </div>
             </td>
           </tr>
@@ -2504,7 +2546,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create a successful Result containing value.</p>
+        <p>Create an :class:<code>Ok</code> containing <code>value</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2527,7 +2569,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Successful value to store.</p>
               </div>
             </td>
             <td>
@@ -2553,7 +2595,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>A new successful result.</p>
               </div>
             </td>
           </tr>
@@ -2582,7 +2624,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create a failed Result containing error.</p>
+        <p>Create an :class:<code>Err</code> containing <code>error</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2631,7 +2673,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>A new failed result typed for the caller's expected success value.</p>
               </div>
             </td>
           </tr>
@@ -2660,7 +2702,9 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Call function and capture its return value or exception.</p>
+        <p>Call a zero-argument function and capture ordinary exceptions as failure.</p>
+<p>A normal return becomes :class:<code>Ok</code>; an :class:<code>Exception</code> becomes :class:<code>Err</code>.
+Exceptions outside the <code>Exception</code> hierarchy, such as <code>KeyboardInterrupt</code>, propagate.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2683,7 +2727,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Zero-argument computation to evaluate immediately.</p>
               </div>
             </td>
             <td>
@@ -2709,7 +2753,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p><code>Ok(function())</code>, or <code>Err(error)</code> when the call raises <code>error</code>.</p>
               </div>
             </td>
           </tr>
@@ -2734,7 +2778,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return whether this Result contains a successful value.</p>
+        <p>Report whether this instance is an :class:<code>Ok</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2752,7 +2796,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> for <code>Ok</code> and <code>False</code> for <code>Err</code>.</p>
               </div>
             </td>
           </tr>
@@ -2777,7 +2821,7 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return whether this Result contains an exception.</p>
+        <p>Report whether this instance is an :class:<code>Err</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2795,7 +2839,7 @@ true.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> for <code>Err</code> and <code>False</code> for <code>Ok</code>.</p>
               </div>
             </td>
           </tr>
@@ -2820,9 +2864,9 @@ true.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform a successful value while preserving failure.</p>
-<p>The callable runs only for success. Existing failures pass through unchanged, and raised
-exceptions become failures.</p>
+        <p>Map an <code>Ok</code> value while preserving an existing <code>Err</code>.</p>
+<p>The mapper runs only for success. Its return value becomes a new <code>Ok</code>, and any ordinary
+exception it raises becomes <code>Err</code>. A failed result returns itself unchanged.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2845,7 +2889,7 @@ exceptions become failures.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Callable applied to a successful value.</p>
               </div>
             </td>
             <td>
@@ -2871,7 +2915,7 @@ exceptions become failures.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>The mapped success, captured mapper failure, or original failed result.</p>
               </div>
             </td>
           </tr>
@@ -2896,7 +2940,9 @@ exceptions become failures.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Chain an operation that returns another Result.</p>
+        <p>Chain an <code>Ok</code> through a result-returning callable and bypass an <code>Err</code>.</p>
+<p>Exceptions raised while mapping a success are captured as <code>Err</code>. The mapper's return
+value is passed through without runtime type validation.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2919,7 +2965,7 @@ exceptions become failures.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Result-returning callable applied only to a successful value.</p>
               </div>
             </td>
             <td>
@@ -2945,7 +2991,7 @@ exceptions become failures.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>The mapper's result, a captured mapper exception, or the original failure.</p>
               </div>
             </td>
           </tr>
@@ -2970,9 +3016,8 @@ exceptions become failures.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Chain an operation that returns another Result.</p>
-<p>The callable runs only for success and must return another <code>Result</code>; failures pass
-through unchanged.</p>
+        <p>Alias :meth:<code>and_then</code> for chaining result-returning computations.</p>
+<p>The callable runs only for success; existing failures pass through unchanged.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2995,7 +3040,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Result-returning callable applied only to a successful value.</p>
               </div>
             </td>
             <td>
@@ -3021,7 +3066,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>Exactly <code>self.and_then(mapper)</code>.</p>
               </div>
             </td>
           </tr>
@@ -3048,7 +3093,8 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform the exception while preserving success.</p>
+        <p>Map an <code>Err</code> exception while preserving an existing <code>Ok</code>.</p>
+<p>Mapper exceptions are not captured; they propagate to the caller.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3071,7 +3117,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Callable that converts the stored exception.</p>
               </div>
             </td>
             <td>
@@ -3097,7 +3143,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>A new <code>Err</code> for a failure, or the original successful result.</p>
               </div>
             </td>
           </tr>
@@ -3124,7 +3170,7 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform the exception while preserving success.</p>
+        <p>Alias :meth:<code>map_err</code> for transforming a stored exception.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3147,7 +3193,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Callable that converts the stored exception.</p>
               </div>
             </td>
             <td>
@@ -3173,7 +3219,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p>Exactly <code>self.map_err(mapper)</code>.</p>
               </div>
             </td>
           </tr>
@@ -3198,7 +3244,8 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Run action for a successful value and return this Result.</p>
+        <p>Run a side effect for <code>Ok</code> and return this same result instance.</p>
+<p>The action is skipped for <code>Err</code>; exceptions raised by the action propagate.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3221,7 +3268,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Callable invoked with the successful value.</p>
               </div>
             </td>
             <td>
@@ -3247,7 +3294,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p><code>self</code>, unchanged.</p>
               </div>
             </td>
           </tr>
@@ -3274,7 +3321,8 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Run action for a failure exception and return this Result.</p>
+        <p>Run a side effect for <code>Err</code> and return this same result instance.</p>
+<p>The action is skipped for <code>Ok</code>; exceptions raised by the action propagate.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3297,7 +3345,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Callable invoked with the stored exception.</p>
               </div>
             </td>
             <td>
@@ -3323,7 +3371,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A <code>Result</code> containing the transformed success or preserved failure.</p>
+                <p><code>self</code>, unchanged.</p>
               </div>
             </td>
           </tr>
@@ -3348,7 +3396,7 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the successful value or raise the failure exception.</p>
+        <p>Extract an <code>Ok</code> value or raise the exception stored by <code>Err</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3414,7 +3462,7 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the successful value or raise the failure exception.</p>
+        <p>Alias :meth:<code>unwrap</code> for extracting success or raising failure.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3457,7 +3505,7 @@ through unchanged.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the successful value, otherwise default.</p>
+        <p>Return the <code>Ok</code> value or an eagerly supplied default for <code>Err</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3480,7 +3528,7 @@ through unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Value returned only for a failed result.</p>
               </div>
             </td>
             <td>

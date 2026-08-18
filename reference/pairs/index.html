@@ -1251,7 +1251,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>The same underlying <code>Flow</code>; no copy or additional operation is created.</p>
               </div>
             </td>
           </tr>
@@ -1294,7 +1294,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing the first element of every pair.</p>
               </div>
             </td>
           </tr>
@@ -1337,7 +1337,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing the second element of every pair.</p>
               </div>
             </td>
           </tr>
@@ -1387,7 +1387,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(key, value)</code> and returns the replacement pair.</p>
               </div>
             </td>
             <td>
@@ -1413,7 +1413,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing each returned <code>(new_key, new_value)</code>.</p>
               </div>
             </td>
           </tr>
@@ -1463,7 +1463,8 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(key, value)</code> and returns an iterable of replacement
+pairs.</p>
               </div>
             </td>
             <td>
@@ -1489,7 +1490,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline that emits every returned iterable in source order.</p>
               </div>
             </td>
           </tr>
@@ -1539,7 +1540,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called as <code>predicate(key, value)</code> for each pair.</p>
               </div>
             </td>
             <td>
@@ -1565,7 +1566,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing only pairs with truthy predicate results.</p>
               </div>
             </td>
           </tr>
@@ -1613,7 +1614,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Called as <code>action(key, value)</code> before the original pair is emitted.</p>
               </div>
             </td>
             <td>
@@ -1639,7 +1640,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline that passes every original pair through unchanged.</p>
               </div>
             </td>
           </tr>
@@ -1687,7 +1688,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of leading pairs to emit.</p>
               </div>
             </td>
             <td>
@@ -1713,7 +1714,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing only the first <code>count</code> pairs.</p>
               </div>
             </td>
           </tr>
@@ -1761,7 +1762,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Number of leading pairs to consume without emitting.</p>
               </div>
             </td>
             <td>
@@ -1787,7 +1788,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing every pair after the first <code>count</code>.</p>
               </div>
             </td>
           </tr>
@@ -1835,7 +1836,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Sort keys descending when true.</p>
               </div>
             </td>
             <td>
@@ -1861,7 +1862,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline globally ordered by key.</p>
               </div>
             </td>
           </tr>
@@ -1909,7 +1910,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Sort values descending when true.</p>
               </div>
             </td>
             <td>
@@ -1935,7 +1936,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline globally ordered by value.</p>
               </div>
             </td>
           </tr>
@@ -1978,7 +1979,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing the earliest pair for each distinct key.</p>
               </div>
             </td>
           </tr>
@@ -2026,7 +2027,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps each key to its replacement key.</p>
               </div>
             </td>
             <td>
@@ -2052,7 +2053,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline of <code>(function(key), value)</code> pairs.</p>
               </div>
             </td>
           </tr>
@@ -2100,7 +2101,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps each value to its replacement value.</p>
               </div>
             </td>
             <td>
@@ -2126,7 +2127,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline of <code>(key, function(value))</code> pairs.</p>
               </div>
             </td>
           </tr>
@@ -2174,7 +2175,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called with each key to decide whether its pair is retained.</p>
               </div>
             </td>
             <td>
@@ -2200,7 +2201,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing pairs whose keys satisfy <code>predicate</code>.</p>
               </div>
             </td>
           </tr>
@@ -2250,7 +2251,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called with each value to decide whether its pair is retained.</p>
               </div>
             </td>
             <td>
@@ -2276,7 +2277,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing pairs whose values satisfy <code>predicate</code>.</p>
               </div>
             </td>
           </tr>
@@ -2319,7 +2320,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Pairs</code> pipeline representing this operation.</p>
+                <p>A lazy pair pipeline containing <code>(value, key)</code> for each source pair.</p>
               </div>
             </td>
           </tr>
@@ -2372,7 +2373,8 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The policy used when the same key appears more than once.</p>
+                <p><code>error</code> raises, <code>first</code> keeps the earliest value, and <code>last</code> keeps the
+latest value for a repeated key.</p>
               </div>
             </td>
             <td>
@@ -2398,7 +2400,40 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>One selected value for each hashable key, in first-key encounter order.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.DuplicateKeyError">DuplicateKeyError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a key repeats under the <code>error</code> policy.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>on_duplicate</code> is not <code>error</code>, <code>first</code>, or <code>last</code>.</p>
               </div>
             </td>
           </tr>
@@ -2441,7 +2476,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Lists of values keyed by each hashable key, preserving key and value encounter order.</p>
               </div>
             </td>
           </tr>
@@ -2497,7 +2532,8 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector used to reduce input items.</p>
+                <p>A streaming <code>Collector</code> applied independently per key, or a callable that
+receives that key's complete value list.</p>
               </div>
             </td>
             <td>
@@ -2523,7 +2559,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Each hashable key mapped to its independently finished collector result.</p>
               </div>
             </td>
           </tr>
@@ -2578,7 +2614,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named aggregators evaluated during the same traversal.</p>
+                <p>Result names mapped to aggregators maintained independently per key.</p>
               </div>
             </td>
             <td>
@@ -2604,7 +2640,7 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Each hashable key mapped to a dictionary of its named finished aggregation values.</p>
               </div>
             </td>
           </tr>

@@ -1334,7 +1334,11 @@ machines used by named and grouped aggregation.</p>
 
 
 
-        <p>An immutable, composable description of a streaming reduction.</p>
+        <p>Describe an immutable streaming reduction from input items to a result.</p>
+<p><code>initializer</code> creates independent state, <code>step</code> consumes one item, and <code>finish</code> converts
+final state to the public result. An optional <code>combine</code> merges partial states. <code>done</code>
+enables source short-circuiting, and <code>native</code> carries planner metadata without affecting
+Python execution.</p>
 
 
 
@@ -1383,7 +1387,7 @@ machines used by named and grouped aggregation.</p>
 
 
 
-        <p>Factories for composable streaming collectors.</p>
+        <p>Build reusable collectors for containers, grouping, adaptation, and summaries.</p>
 
 
 
@@ -1423,7 +1427,7 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect all items into a list.</p>
+        <p>Build an order-preserving, mergeable collector for all input items.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1446,7 +1450,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A reducer whose finished list is also its accumulated state.</p>
               </div>
             </td>
           </tr>
@@ -1475,7 +1479,7 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect distinct hashable items into a set.</p>
+        <p>Build a collector that retains each distinct hashable input item.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1498,7 +1502,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector with set-union support for partial states.</p>
               </div>
             </td>
           </tr>
@@ -1527,7 +1531,7 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect all items into a tuple.</p>
+        <p>Build an order-preserving collector that finishes list state as a tuple.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -1550,7 +1554,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A mergeable reducer returning an immutable tuple.</p>
               </div>
             </td>
           </tr>
@@ -1581,7 +1585,8 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert items to strings and join them with delimiter.</p>
+        <p>Build an order-preserving collector that joins each item's <code>str</code> value.</p>
+<p>Conversion occurs as items are stepped. Empty input finishes as an empty string.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1635,7 +1640,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A mergeable reducer that joins its accumulated strings with <code>delimiter</code>.</p>
               </div>
             </td>
           </tr>
@@ -1669,7 +1674,11 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Group items by classifier and reduce each group.</p>
+        <p>Build a collector that maintains one downstream state per selected key.</p>
+<p>Only encountered keys appear in the result, in first-encounter order. Each item is
+stepped into its group even if the downstream collector has an early-completion
+predicate. A callable downstream is invoked at finish time with a materialized list
+for each group; omitting it collects group members into lists.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1692,7 +1701,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that selects the group for each input item.</p>
+                <p>Selector producing a hashable group key for each item.</p>
               </div>
             </td>
             <td>
@@ -1713,7 +1722,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Per-group collector or callable, defaulting to list collection.</p>
               </div>
             </td>
             <td>
@@ -1744,7 +1753,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector that finishes every encountered group's state into a dictionary.</p>
               </div>
             </td>
           </tr>
@@ -1778,7 +1787,11 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Split items by predicate and reduce both partitions.</p>
+        <p>Build a collector with independently reduced false and true partitions.</p>
+<p>Both Boolean keys are always present, even when one or both partitions receive no
+items. Each source item is stepped into one partition without consulting the
+downstream collector's early-completion predicate. Omitting <code>downstream</code> collects
+partition members into lists.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1801,7 +1814,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Selector whose truth value chooses the partition.</p>
               </div>
             </td>
             <td>
@@ -1822,7 +1835,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Collector or callable applied independently to both partitions.</p>
               </div>
             </td>
             <td>
@@ -1853,7 +1866,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector returning <code>{False: false_result, True: true_result}</code>.</p>
               </div>
             </td>
           </tr>
@@ -1886,7 +1899,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Transform each item before passing it to downstream.</p>
+        <p>Build a collector that selects a new value before each downstream step.</p>
+<p>The adapter preserves downstream initialization, finishing, combining, and early
+completion, but does not carry downstream native metadata or reducer-law type.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1909,7 +1924,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Selector applied once to each consumed source item.</p>
               </div>
             </td>
             <td>
@@ -1930,7 +1945,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Collector or callable receiving mapped values.</p>
               </div>
             </td>
             <td>
@@ -1961,7 +1976,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector that maps each source item before returning the downstream result.</p>
               </div>
             </td>
           </tr>
@@ -1994,7 +2009,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Pass only matching items to downstream.</p>
+        <p>Build a collector that steps downstream only for predicate matches.</p>
+<p>Rejected items leave downstream state unchanged. Initialization, finishing, combining,
+and early completion are preserved; native metadata and reducer-law type are not.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2017,7 +2034,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Selector evaluated for truth against each item.</p>
               </div>
             </td>
             <td>
@@ -2038,7 +2055,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Collector or callable receiving matching items.</p>
               </div>
             </td>
             <td>
@@ -2069,7 +2086,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector that filters source items before returning the downstream result.</p>
               </div>
             </td>
           </tr>
@@ -2102,7 +2119,11 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Expand each item and pass every nested item to downstream.</p>
+        <p>Build a collector that steps downstream over each item's expanded iterable.</p>
+<p>Expansion stops as soon as the downstream state reports completion. A nested iterator
+exposing <code>close</code> is closed after exhaustion, early completion, or error. Downstream
+combining and early completion are preserved, while native metadata and reducer-law
+type are not.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2125,7 +2146,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable used to transform each selected value.</p>
+                <p>Selector returning an iterable for each source item.</p>
               </div>
             </td>
             <td>
@@ -2146,7 +2167,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Collector or callable receiving nested items.</p>
               </div>
             </td>
             <td>
@@ -2177,7 +2198,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector that flattens source items before returning the downstream result.</p>
               </div>
             </td>
           </tr>
@@ -2210,7 +2231,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Apply finisher to the result produced by downstream.</p>
+        <p>Build a collector that applies one more transformation after downstream finish.</p>
+<p>The downstream state machine, combiner, and early-completion behavior are preserved.
+<code>finisher</code> is called exactly once with the downstream public result.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2238,7 +2261,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector or gatherer that receives transformed items.</p>
+                <p>Collector or callable that produces the intermediate result.</p>
               </div>
             </td>
             <td>
@@ -2254,7 +2277,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that converts accumulated state into the final result.</p>
+                <p>Callable converting that intermediate result to the final value.</p>
               </div>
             </td>
             <td>
@@ -2285,7 +2308,30 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>An adapted collector returning <code>finisher(downstream_result)</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>finisher</code> is not callable.</p>
               </div>
             </td>
           </tr>
@@ -2319,7 +2365,10 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Run two collectors in one traversal and merge their results.</p>
+        <p>Build a collector that shares one source between two downstream collectors.</p>
+<p>Each input is offered only to downstream states that are not already complete. Source
+consumption stops when both are complete, then <code>merger</code> receives their finished
+results in left-to-right order. Callable downstreams buffer their respective items.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2347,7 +2396,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first collector, result, or value to combine.</p>
+                <p>First collector or iterable-consuming callable.</p>
               </div>
             </td>
             <td>
@@ -2368,7 +2417,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The second collector, result, or value to combine.</p>
+                <p>Second collector or iterable-consuming callable.</p>
               </div>
             </td>
             <td>
@@ -2415,7 +2464,30 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A short-circuiting collector returning the merger result.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If either downstream or <code>merger</code> is not callable as required.</p>
               </div>
             </td>
           </tr>
@@ -2444,7 +2516,7 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Count all input items.</p>
+        <p>Build a constant-state reducer that increments once per input item.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2467,7 +2539,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A commutative reducer returning zero for empty input.</p>
               </div>
             </td>
           </tr>
@@ -2498,7 +2570,7 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Sum input items or selected values.</p>
+        <p>Build a collector that adds selected values from a zero identity.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2521,7 +2593,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Value selector; <code>None</code> adds each whole input item.</p>
               </div>
             </td>
             <td>
@@ -2552,7 +2624,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector returning zero for empty input and supporting partial-state addition.</p>
               </div>
             </td>
           </tr>
@@ -2583,7 +2655,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the arithmetic mean of items or selected values.</p>
+        <p>Build a collector that tracks selected-value sum and count for a mean.</p>
+<p>Empty input returns <code>0.0</code>. Nonempty input divides the accumulated sum by count during
+finishing, and partial <code>(sum, count)</code> states can be combined component-wise.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2606,7 +2680,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Value selector; <code>None</code> averages each whole input item.</p>
               </div>
             </td>
             <td>
@@ -2637,7 +2711,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector returning the arithmetic mean or <code>0.0</code> for no values.</p>
               </div>
             </td>
           </tr>
@@ -2668,7 +2742,10 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return count, sum, minimum, maximum, and average in one traversal.</p>
+        <p>Build a collector returning mutable count, sum, extrema, and average state.</p>
+<p>Selected values update :class:<code>SummaryStatistics</code> directly. Empty input normalizes
+minimum and maximum from infinities to <code>0.0</code>; the sum, count, and derived average are
+already zero. The returned statistics object is the final mutable state.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2691,7 +2768,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Value selector; <code>None</code> summarizes each whole input item.</p>
               </div>
             </td>
             <td>
@@ -2722,7 +2799,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A one-pass collector returning a :class:<code>SummaryStatistics</code> instance.</p>
               </div>
             </td>
           </tr>
@@ -2751,7 +2828,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the first item, or None when input is empty.</p>
+        <p>Build a collector that stops after and returns the first input item.</p>
+<p>Empty input returns <code>None</code>. A first item whose value is itself <code>None</code> is still treated
+as a completed result.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2774,7 +2853,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector that consumes at most one item.</p>
               </div>
             </td>
           </tr>
@@ -2803,7 +2882,8 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the last item, or None when input is empty.</p>
+        <p>Build a collector that consumes all input and returns its last item.</p>
+<p>Empty input returns <code>None</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2826,7 +2906,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector retaining only the most recently consumed item.</p>
               </div>
             </td>
           </tr>
@@ -2855,7 +2935,8 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect at most the first count items.</p>
+        <p>Build a collector that stops after retaining the first <code>count</code> items.</p>
+<p>A zero count completes before pulling from the source.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2878,7 +2959,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Non-negative maximum number of items to retain.</p>
               </div>
             </td>
             <td>
@@ -2909,7 +2990,30 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>An early-stopping collector returning an encounter-ordered list.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>count</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -2938,7 +3042,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect at most the last count items.</p>
+        <p>Build a bounded-state collector for the final <code>count</code> input items.</p>
+<p>The source is fully consumed. Once the deque is full, each new item discards the
+oldest; a zero count retains nothing.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2961,7 +3067,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Non-negative maximum number of trailing items to retain.</p>
               </div>
             </td>
             <td>
@@ -2992,7 +3098,30 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector finishing its bounded deque as an encounter-ordered list.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>count</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -3021,7 +3150,9 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the sole item, None for empty input, or raise for multiple items.</p>
+        <p>Build a collector that enforces zero-or-one input cardinality.</p>
+<p>Empty input returns <code>None</code>, one item is returned directly, and a second item completes
+collection early so finishing can raise without pulling a third.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3044,7 +3175,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector retaining no more than two items.</p>
               </div>
             </td>
           </tr>
@@ -3063,7 +3194,7 @@ machines used by named and grouped aggregation.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="OnlyElementError">OnlyElementError</span></code>
+                  <code><span title="ValueError">ValueError</span></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3103,7 +3234,10 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect selected keys and values into a dictionary.</p>
+        <p>Build a dictionary collector with an explicit duplicate-key policy.</p>
+<p>On duplicates, <code>"error"</code> raises before selecting the duplicate value, <code>"first"</code>
+preserves the existing entry without selecting another value, and <code>"last"</code> replaces
+it. Selector errors and unhashable keys propagate.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3126,7 +3260,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Selector deriving each dictionary key.</p>
               </div>
             </td>
             <td>
@@ -3142,7 +3276,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Selector deriving each dictionary value.</p>
               </div>
             </td>
             <td>
@@ -3158,7 +3292,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The policy used when the same key appears more than once.</p>
+                <p>One of <code>"error"</code>, <code>"first"</code>, or <code>"last"</code>.</p>
               </div>
             </td>
             <td>
@@ -3189,7 +3323,40 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector preserving key insertion order in its result dictionary.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>on_duplicate</code> is not a supported policy.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.DuplicateKeyError">DuplicateKeyError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a repeated key is encountered under <code>"error"</code>.</p>
               </div>
             </td>
           </tr>
@@ -3220,7 +3387,10 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect mapping rows into column-oriented lists.</p>
+        <p>Build a collector that transposes variably shaped mapping rows into columns.</p>
+<p>Columns retain field encounter order. Fields introduced by later rows are backfilled
+with <code>None</code>, and fields absent from later rows append <code>None</code>, so every column has one
+entry per input row.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3243,7 +3413,7 @@ machines used by named and grouped aggregation.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A reusable <code>Collector</code> implementing the described reduction.</p>
+                <p>A collector returning a dictionary of equally sized column lists.</p>
               </div>
             </td>
           </tr>
@@ -3343,7 +3513,7 @@ record field; expression and callable selectors are also accepted.</p>
 
 
 
-        <p>A named Collector that may carry metadata for fused native terminals.</p>
+        <p>A collector accepted by named aggregate terminals and optional native fusion.</p>
 
 
 

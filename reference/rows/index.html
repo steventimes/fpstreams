@@ -737,6 +737,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Rows.with_engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        with_engine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Rows.first" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1542,6 +1553,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Rows.with_engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        with_engine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Rows.first" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2049,7 +2071,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect records into a dictionary of column lists.</p>
+        <p>Transpose rows into encounter-ordered, None-padded column lists.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2067,7 +2089,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>A field-to-list mapping with one aligned entry for every consumed row.</p>
               </div>
             </td>
           </tr>
@@ -2094,7 +2116,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect rows into a pandas DataFrame through Arrow.</p>
+        <p>Materialize all rows as a pandas DataFrame through bounded Arrow conversion.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2117,7 +2139,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum source rows converted in each intermediate Arrow batch.</p>
               </div>
             </td>
             <td>
@@ -2133,7 +2155,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional Arrow schema fixing field order, types, and allowed columns.</p>
               </div>
             </td>
             <td>
@@ -2159,7 +2181,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A pandas <code>DataFrame</code> containing the rows.</p>
+                <p>A pandas DataFrame containing all rows; the Rows pipeline is fully consumed.</p>
               </div>
             </td>
           </tr>
@@ -2186,7 +2208,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Stream PyArrow RecordBatch objects.</p>
+        <p>Return a lazy Flow of bounded PyArrow RecordBatch objects.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2209,7 +2231,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum source rows retained for one emitted RecordBatch.</p>
               </div>
             </td>
             <td>
@@ -2225,7 +2247,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional fixed schema; later fields outside it are rejected.</p>
               </div>
             </td>
             <td>
@@ -2251,7 +2273,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A Flow that closes its upstream iterator when exhausted, failed, or short-circuited.</p>
               </div>
             </td>
           </tr>
@@ -2278,7 +2300,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect rows into a PyArrow Table.</p>
+        <p>Materialize all rows as one PyArrow Table.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2301,7 +2323,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows converted in each intermediate RecordBatch.</p>
               </div>
             </td>
             <td>
@@ -2317,7 +2339,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional schema used for conversion and for an empty result.</p>
               </div>
             </td>
             <td>
@@ -2343,7 +2365,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A PyArrow <code>Table</code> containing the rows.</p>
+                <p>A Table containing every row; direct Arrow sources may reuse native batches.</p>
               </div>
             </td>
           </tr>
@@ -2370,7 +2392,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Stream Polars DataFrames converted from Arrow batches.</p>
+        <p>Return a lazy Flow of Polars DataFrames converted from bounded Arrow batches.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2393,7 +2415,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum source rows represented by each emitted DataFrame.</p>
               </div>
             </td>
             <td>
@@ -2409,7 +2431,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional Arrow schema fixing conversion fields and types.</p>
               </div>
             </td>
             <td>
@@ -2435,7 +2457,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A Flow that preserves batch order and inherits upstream cleanup behavior.</p>
               </div>
             </td>
           </tr>
@@ -2462,7 +2484,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Collect rows into a Polars DataFrame.</p>
+        <p>Materialize all rows as one Polars DataFrame through Arrow.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2485,7 +2507,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows converted in each intermediate Arrow batch.</p>
               </div>
             </td>
             <td>
@@ -2501,7 +2523,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional Arrow schema fixing conversion fields and types.</p>
               </div>
             </td>
             <td>
@@ -2527,7 +2549,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A Polars <code>DataFrame</code> containing the rows.</p>
+                <p>A non-rechunked Polars DataFrame containing the fully consumed pipeline.</p>
               </div>
             </td>
           </tr>
@@ -2560,7 +2582,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Write rows to a CSV file without retaining the full input.</p>
+        <p>Consume rows into a CSV file incrementally and return None.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2583,7 +2605,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Destination file opened for text overwrite.</p>
               </div>
             </td>
             <td>
@@ -2599,7 +2621,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The CSV field order. Required when it cannot be inferred.</p>
+                <p>Output order; inferred from the first row when omitted.</p>
               </div>
             </td>
             <td>
@@ -2615,7 +2637,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Text encoding used to write the destination.</p>
               </div>
             </td>
             <td>
@@ -2631,7 +2653,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether to write a CSV header row.</p>
+                <p>Write fieldnames before data rows when true.</p>
               </div>
             </td>
             <td>
@@ -2647,7 +2669,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>How CSV writing handles fields absent from fieldnames.</p>
+                <p>Raise or ignore fields absent from fieldnames.</p>
               </div>
             </td>
             <td>
@@ -2663,7 +2685,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether to neutralize cells that spreadsheet programs may execute.</p>
+                <p>Prefix cells that spreadsheet software may execute.</p>
               </div>
             </td>
             <td>
@@ -2696,7 +2718,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Write one JSON record per line.</p>
+        <p>Consume rows into an overwritten file as one JSON object per line.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2719,7 +2741,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Destination JSON Lines file.</p>
               </div>
             </td>
             <td>
@@ -2735,7 +2757,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Text encoding used to write the destination.</p>
               </div>
             </td>
             <td>
@@ -2751,7 +2773,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether JSON output escapes non-ASCII characters.</p>
+                <p>Escape non-ASCII code points when true.</p>
               </div>
             </td>
             <td>
@@ -2789,8 +2811,9 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Write rows to Parquet in bounded Arrow batches.</p>
-<p>Rows are converted and written in bounded batches rather than materialized as one table.</p>
+        <p>Stream rows to a local temporary Parquet file and publish it atomically.</p>
+<p>The destination changes only after all bounded row groups are written;
+failures remove the temporary file.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2813,7 +2836,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Local destination path; URI-style paths are rejected.</p>
               </div>
             </td>
             <td>
@@ -2829,7 +2852,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>How to handle an existing destination table.</p>
+                <p>Error before consuming rows, or atomically replace the target.</p>
               </div>
             </td>
             <td>
@@ -2845,7 +2868,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows converted and written per row group.</p>
               </div>
             </td>
             <td>
@@ -2861,7 +2884,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional Arrow schema, required to write an empty pipeline.</p>
               </div>
             </td>
             <td>
@@ -2877,7 +2900,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The compression codec requested by the output format.</p>
+                <p>Compression setting passed to PyArrow ParquetWriter.</p>
               </div>
             </td>
             <td>
@@ -2893,7 +2916,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether Parquet writing should use dictionary encoding.</p>
+                <p>Dictionary-encoding setting passed to ParquetWriter.</p>
               </div>
             </td>
             <td>
@@ -2909,7 +2932,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether Parquet metadata should include column statistics.</p>
+                <p>Column-statistics setting passed to ParquetWriter.</p>
               </div>
             </td>
             <td>
@@ -2925,7 +2948,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional options passed to the underlying writer.</p>
+                <p>Extra ParquetWriter options except reserved arguments.</p>
               </div>
             </td>
             <td>
@@ -2951,7 +2974,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of rows written.</p>
+                <p>The number of source rows published.</p>
               </div>
             </td>
           </tr>
@@ -2982,8 +3005,9 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Execute a DB-API statement for rows in batches.</p>
-<p>Rows are submitted in bounded batches inside one transaction.</p>
+        <p>Submit mapped rows with DB-API executemany batches in one transaction.</p>
+<p>Commit after all rows succeed or roll back on error; always close the
+iterator, cursor, and connection.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3006,7 +3030,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that opens a new database connection.</p>
+                <p>Zero-argument factory for the transaction's connection.</p>
               </div>
             </td>
             <td>
@@ -3022,7 +3046,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The SQL statement executed for each batch of rows.</p>
+                <p>Statement passed to cursor.executemany().</p>
               </div>
             </td>
             <td>
@@ -3038,7 +3062,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Parameters passed to the database query or statement.</p>
+                <p>Optional callable mapping each row to bound parameters.</p>
               </div>
             </td>
             <td>
@@ -3054,7 +3078,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum parameter sets in each executemany() call.</p>
               </div>
             </td>
             <td>
@@ -3080,7 +3104,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of rows submitted to the database.</p>
+                <p>The number of source rows submitted, independent of cursor.rowcount.</p>
               </div>
             </td>
           </tr>
@@ -3120,8 +3144,9 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Insert rows into a SQLite table in batches.</p>
-<p>Rows are submitted in bounded batches inside one SQLite transaction.</p>
+        <p>Insert rows into a SQLite table in bounded batches and one transaction.</p>
+<p>Replace-mode DDL and inserts roll back together; all owned resources
+close on every exit path.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3144,7 +3169,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The SQLite database path or connection target.</p>
+                <p>SQLite path or URI passed to sqlite3.connect().</p>
               </div>
             </td>
             <td>
@@ -3160,7 +3185,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The destination table name.</p>
+                <p>Destination table identifier, validated and quoted as data.</p>
               </div>
             </td>
             <td>
@@ -3176,7 +3201,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>How to handle an existing destination table.</p>
+                <p>Append, fail if present, or transactionally replace the table.</p>
               </div>
             </td>
             <td>
@@ -3192,7 +3217,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The duplicate-key or name conflict policy.</p>
+                <p>Use ordinary INSERT, INSERT OR IGNORE, or INSERT OR REPLACE.</p>
               </div>
             </td>
             <td>
@@ -3208,7 +3233,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The columns or column mapping used by the operation.</p>
+                <p>Optional ordered projection; extra source fields are omitted.</p>
               </div>
             </td>
             <td>
@@ -3224,7 +3249,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The explicit schema used to interpret or write records.</p>
+                <p>Optional mapping from field names to supported SQLite type names.</p>
               </div>
             </td>
             <td>
@@ -3240,7 +3265,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum bindings in each executemany() call.</p>
               </div>
             </td>
             <td>
@@ -3256,7 +3281,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The optional maximum duration in seconds before the operation fails.</p>
+                <p>Seconds sqlite3 waits for a locked database.</p>
               </div>
             </td>
             <td>
@@ -3272,7 +3297,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the SQLite database string should be interpreted as a URI.</p>
+                <p>Interpret database as a SQLite URI when true.</p>
               </div>
             </td>
             <td>
@@ -3298,7 +3323,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of rows written to SQLite.</p>
+                <p>Source records submitted, including records ignored by SQLite conflicts.</p>
               </div>
             </td>
           </tr>
@@ -3332,7 +3357,7 @@ for every skewed or many-to-many input.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Read CSV rows lazily as dictionaries.</p>
+        <p>Return reusable rows that reopen a CSV file and validate its header when iterated.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3355,7 +3380,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>CSV input file opened on each iteration.</p>
               </div>
             </td>
             <td>
@@ -3371,7 +3396,7 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Text encoding used by the CSV reader.</p>
               </div>
             </td>
             <td>
@@ -3387,8 +3412,8 @@ for every skewed or many-to-many input.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional keyword arguments passed to the underlying
-file-format reader.</p>
+                <p>Keyword options forwarded to csv.DictReader, such as
+dialect, delimiter, or quoting.</p>
               </div>
             </td>
             <td>
@@ -3414,7 +3439,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>A lazy Rows pipeline of dictionaries keyed by the unique CSV header.</p>
               </div>
             </td>
           </tr>
@@ -3448,7 +3473,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Read one JSON object per line lazily.</p>
+        <p>Return reusable rows that decode nonblank JSON objects from a file on demand.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3471,7 +3496,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>JSON Lines input file reopened for each iteration.</p>
               </div>
             </td>
             <td>
@@ -3487,7 +3512,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Encoding applied after each physical line passes its byte limit.</p>
               </div>
             </td>
             <td>
@@ -3503,7 +3528,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Maximum encoded bytes per physical record, or None to disable.</p>
+                <p>Encoded-byte limit per line, or None for no limit.</p>
               </div>
             </td>
             <td>
@@ -3529,7 +3554,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy dictionary rows; duplicate keys and non-object records fail when consumed.</p>
               </div>
             </td>
           </tr>
@@ -3560,7 +3585,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create rows from an Arrow table, batch, reader, dataset, or stream.</p>
+        <p>Adapt a PyArrow Table, RecordBatch, or RecordBatchReader to dictionary rows.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3583,7 +3608,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The iterable, async iterable, or data source to read lazily.</p>
+                <p>Reusable Table/RecordBatch or one-shot RecordBatchReader.</p>
               </div>
             </td>
             <td>
@@ -3599,7 +3624,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows converted from each Arrow batch slice.</p>
               </div>
             </td>
             <td>
@@ -3625,7 +3650,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy Rows; a RecordBatchReader may be consumed only once and is closed afterward.</p>
               </div>
             </td>
           </tr>
@@ -3659,7 +3684,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create rows from an object implementing the dataframe interchange protocol.</p>
+        <p>Adapt an object implementing the dataframe interchange protocol through PyArrow.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3682,7 +3707,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The dataframe-like object used as the row source.</p>
+                <p>Object providing <strong>dataframe</strong>(), optionally with an Arrow C stream.</p>
               </div>
             </td>
             <td>
@@ -3698,7 +3723,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows converted from each Arrow batch.</p>
               </div>
             </td>
             <td>
@@ -3714,7 +3739,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether an adapter may copy data when zero-copy conversion is unavailable.</p>
+                <p>Permit interchange conversion to allocate copied buffers.</p>
               </div>
             </td>
             <td>
@@ -3740,7 +3765,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy Rows that perform dataframe-to-Arrow conversion when iterated.</p>
               </div>
             </td>
           </tr>
@@ -3775,7 +3800,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create rows from a Polars DataFrame or LazyFrame.</p>
+        <p>Adapt an eager Polars DataFrame or batch-collected LazyFrame to dictionary rows.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3798,7 +3823,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The dataframe-like object used as the row source.</p>
+                <p>Polars DataFrame or LazyFrame to slice or collect.</p>
               </div>
             </td>
             <td>
@@ -3814,7 +3839,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Rows requested per eager slice or lazy collection batch.</p>
               </div>
             </td>
             <td>
@@ -3830,7 +3855,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether output must preserve the source row order.</p>
+                <p>Preserve LazyFrame row order while collecting batches.</p>
               </div>
             </td>
             <td>
@@ -3846,7 +3871,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The execution engine requested for this pipeline.</p>
+                <p>Polars engine used only for LazyFrame batch collection.</p>
               </div>
             </td>
             <td>
@@ -3872,7 +3897,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy reusable Rows; a LazyFrame is collected again for each iteration.</p>
               </div>
             </td>
           </tr>
@@ -3910,7 +3935,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Read Parquet batches lazily through PyArrow.</p>
+        <p>Build reusable rows from a fresh PyArrow dataset scanner per iteration.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3933,7 +3958,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The iterable, async iterable, or data source to read lazily.</p>
+                <p>PyArrow Dataset or dataset source accepted by pyarrow.dataset().</p>
               </div>
             </td>
             <td>
@@ -3949,7 +3974,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The columns or column mapping used by the operation.</p>
+                <p>Unique projected column names, or None for all columns.</p>
               </div>
             </td>
             <td>
@@ -3965,7 +3990,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An optional dataset filter pushed into the underlying reader.</p>
+                <p>PyArrow dataset expression pushed into the scanner.</p>
               </div>
             </td>
             <td>
@@ -3981,7 +4006,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows requested from each scanner batch.</p>
               </div>
             </td>
             <td>
@@ -3997,7 +4022,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the underlying Arrow operation may use worker threads.</p>
+                <p>Allow the PyArrow scanner to use worker threads.</p>
               </div>
             </td>
             <td>
@@ -4013,7 +4038,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The optional filesystem implementation used to access the data source.</p>
+                <p>Optional PyArrow filesystem for resolving the source.</p>
               </div>
             </td>
             <td>
@@ -4029,7 +4054,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The partitioning scheme used to interpret a dataset.</p>
+                <p>Optional dataset partitioning specification.</p>
               </div>
             </td>
             <td>
@@ -4055,7 +4080,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy dictionary rows with projection and filtering performed by PyArrow.</p>
               </div>
             </td>
           </tr>
@@ -4090,7 +4115,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Run a DB-API query and stream rows in batches.</p>
+        <p>Build a reiterable DB-API query source that owns its connections and cursors.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4113,7 +4138,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that opens a new database connection.</p>
+                <p>Zero-argument factory called once per iteration for a new connection.</p>
               </div>
             </td>
             <td>
@@ -4129,7 +4154,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The SQL query executed for each fresh iteration.</p>
+                <p>Statement executed by each newly opened cursor.</p>
               </div>
             </td>
             <td>
@@ -4145,7 +4170,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Parameters passed to the database query or statement.</p>
+                <p>Optional mapping or positional values passed to cursor.execute().</p>
               </div>
             </td>
             <td>
@@ -4161,7 +4186,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows requested by each cursor.fetchmany() call.</p>
               </div>
             </td>
             <td>
@@ -4187,7 +4212,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy rows that close the cursor and connection on exhaustion, error, or early stop.</p>
               </div>
             </td>
           </tr>
@@ -4224,7 +4249,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Execute a SQLite query lazily and emit rows as dictionaries.</p>
+        <p>Build a reiterable SQLite query source that owns one connection per iteration.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4247,7 +4272,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The SQLite database path or connection target.</p>
+                <p>SQLite path or URI passed to sqlite3.connect().</p>
               </div>
             </td>
             <td>
@@ -4263,7 +4288,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The SQL query executed for each fresh iteration.</p>
+                <p>Statement executed by each newly opened cursor.</p>
               </div>
             </td>
             <td>
@@ -4279,7 +4304,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Parameters passed to the database query or statement.</p>
+                <p>Optional mapping or positional values passed to cursor.execute().</p>
               </div>
             </td>
             <td>
@@ -4295,7 +4320,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of rows processed in each batch.</p>
+                <p>Maximum rows requested by each cursor.fetchmany() call.</p>
               </div>
             </td>
             <td>
@@ -4311,7 +4336,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The optional maximum duration in seconds before the operation fails.</p>
+                <p>Seconds sqlite3 waits for a locked database.</p>
               </div>
             </td>
             <td>
@@ -4327,7 +4352,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the SQLite database string should be interpreted as a URI.</p>
+                <p>Interpret database as a SQLite URI when true.</p>
               </div>
             </td>
             <td>
@@ -4353,7 +4378,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy dictionary rows that close their cursor and connection after iteration.</p>
               </div>
             </td>
           </tr>
@@ -4421,7 +4446,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Count all rows produced by the pipeline.</p>
+        <p>Consume the pipeline and count every emitted row.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -4439,12 +4464,32 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of matching input items.</p>
+                <p>The number of rows remaining after all lazy transformations.</p>
               </div>
             </td>
           </tr>
       </tbody>
     </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Rows.with_engine" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">with_engine</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">with_engine</span><span class="p">(</span><span class="n">engine</span><span class="p">:</span> <span class="n">Engine</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return equivalent lazy Rows requesting auto, Python, or native Flow execution.</p>
 
 
     </div>
@@ -4464,7 +4509,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the first row, a default, or raise EmptyFlowError.</p>
+        <p>Return the first row and close upstream without requesting an unnecessary tail.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -4482,7 +4527,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first row.</p>
+                <p>The first emitted row.</p>
               </div>
             </td>
           </tr>
@@ -4505,7 +4550,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the pipeline is empty and no default is supplied.</p>
+                <p>If the pipeline emits no rows.</p>
               </div>
             </td>
           </tr>
@@ -4530,7 +4575,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the last row, a default, or raise EmptyFlowError.</p>
+        <p>Consume the pipeline and return its final row, raising EmptyFlowError when empty.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -4548,7 +4593,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The last row.</p>
+                <p>The last emitted row.</p>
               </div>
             </td>
           </tr>
@@ -4573,7 +4618,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Keep at most count rows.</p>
+        <p>Return a lazy prefix that stops and closes upstream after at most count rows.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4596,7 +4641,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Nonnegative maximum number of rows to emit.</p>
               </div>
             </td>
             <td>
@@ -4622,7 +4667,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>New Rows preserving encounter order; zero emits nothing.</p>
               </div>
             </td>
           </tr>
@@ -4647,7 +4692,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Skip count rows; alias of drop.</p>
+        <p>Return lazy rows after discarding the first count upstream items.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4670,7 +4715,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Nonnegative number of rows to consume without emitting.</p>
               </div>
             </td>
             <td>
@@ -4696,7 +4741,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>New Rows containing the remaining encounter-ordered rows.</p>
               </div>
             </td>
           </tr>
@@ -4721,7 +4766,7 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Keep the first row for each selected key.</p>
+        <p>Keep the first row for each distinct selected key in encounter order.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4744,7 +4789,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Field, path, index, expression, or callable producing a hashable key.</p>
               </div>
             </td>
             <td>
@@ -4770,7 +4815,7 @@ file-format reader.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy Rows whose later duplicate keys are omitted.</p>
               </div>
             </td>
           </tr>
@@ -4795,9 +4840,9 @@ file-format reader.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Keep rows for which predicate returns true.</p>
-<p>Rows remain lazy; the predicate is evaluated only while the returned pipeline is
-consumed.</p>
+        <p>Keep rows for which predicate returns a truthy result.</p>
+<p>The predicate runs lazily in encounter order, and the parent Rows pipeline remains
+unchanged.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4820,7 +4865,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Callable evaluated once for each upstream row reached.</p>
               </div>
             </td>
             <td>
@@ -4846,7 +4891,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>New lazy Rows containing only matching rows.</p>
               </div>
             </td>
           </tr>
@@ -4874,8 +4919,8 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Filter rows with a predicate and/or field equalities.</p>
-<p>A row must satisfy the optional predicate and every supplied field equality.</p>
+        <p>Require the optional predicate and every named field equality.</p>
+<p>Named fields are compiled once, then selected lazily from each consumed row.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4898,7 +4943,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Optional callable that must return truthy for a row.</p>
               </div>
             </td>
             <td>
@@ -4914,7 +4959,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Field names mapped to values that rows must equal.</p>
+                <p>Top-level or dotted field paths mapped to required values.</p>
               </div>
             </td>
             <td>
@@ -4940,7 +4985,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>New lazy Rows containing rows that satisfy all supplied conditions.</p>
               </div>
             </td>
           </tr>
@@ -4965,7 +5010,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Add or replace fields using selectors and row expressions.</p>
+        <p>Copy each row and add or replace fields evaluated against the original row.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4988,7 +5033,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Names mapped to selectors, expressions, or replacement values.</p>
+                <p>Output field names mapped to selectors or RowExpr values.</p>
               </div>
             </td>
             <td>
@@ -5014,7 +5059,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy dictionary Rows; computed columns do not observe earlier additions.</p>
               </div>
             </td>
           </tr>
@@ -5039,7 +5084,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Rename fields and reject duplicate output names.</p>
+        <p>Rename top-level fields while rejecting collisions in each output record.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5062,7 +5107,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Names mapped to selectors, expressions, or replacement values.</p>
+                <p>Existing field names mapped to nonempty destination names.</p>
               </div>
             </td>
             <td>
@@ -5088,7 +5133,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy copied dictionaries; unmapped fields retain their names and order.</p>
               </div>
             </td>
           </tr>
@@ -5113,7 +5158,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Remove the named fields from each row.</p>
+        <p>Copy each row without the named top-level fields.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5136,7 +5181,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Column names selected by the operation.</p>
+                <p>Field names to omit; absent names are ignored.</p>
               </div>
             </td>
             <td>
@@ -5162,7 +5207,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy dictionary Rows preserving the order of retained fields.</p>
               </div>
             </td>
           </tr>
@@ -5189,7 +5234,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert selected field values with the supplied callables.</p>
+        <p>Convert existing named fields with one callable per field.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5212,7 +5257,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Names mapped to selectors, expressions, or replacement values.</p>
+                <p>Field names mapped to callable value converters.</p>
               </div>
             </td>
             <td>
@@ -5238,7 +5283,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy copied dictionaries; a missing field raises SelectionError when consumed.</p>
               </div>
             </td>
           </tr>
@@ -5263,7 +5308,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Replace None values with constants, selectors, or row expressions.</p>
+        <p>Replace missing or None named fields with constants or RowExpr results.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5286,7 +5331,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Field names mapped to their new names.</p>
+                <p>Field names mapped to literal values or row expressions.</p>
               </div>
             </td>
             <td>
@@ -5312,7 +5357,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy copied dictionaries; non-None existing values are preserved.</p>
               </div>
             </td>
           </tr>
@@ -5339,7 +5384,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Drop rows containing None in selected fields.</p>
+        <p>Drop rows according to None values in selected fields or the whole record.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5362,7 +5407,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Selectors that define projected fields or grouping keys.</p>
+                <p>Fields to inspect; omitted means every field in each record.</p>
               </div>
             </td>
             <td>
@@ -5378,7 +5423,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The join mode or operation policy to apply.</p>
+                <p>"any" drops on one null; "all" requires every inspected value to be null.</p>
               </div>
             </td>
             <td>
@@ -5404,7 +5449,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy Rows; a missing selected field is treated as None.</p>
               </div>
             </td>
           </tr>
@@ -5434,7 +5479,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit one row for each element of a selected nested iterable.</p>
+        <p>Expand a selected iterable into one copied row per element.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5457,7 +5502,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Selector returning a non-string iterable or None.</p>
               </div>
             </td>
             <td>
@@ -5473,7 +5518,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A collector or container factory used for the final values.</p>
+                <p>Output field name; required for non-top-level selectors.</p>
               </div>
             </td>
             <td>
@@ -5489,7 +5534,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether unnesting should retain the original nested field.</p>
+                <p>Emit one row with None when the selected value is None or empty.</p>
               </div>
             </td>
             <td>
@@ -5515,7 +5560,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy flattened dictionary Rows that close upstream on downstream stop.</p>
               </div>
             </td>
           </tr>
@@ -5542,7 +5587,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Expand a nested record into top-level fields.</p>
+        <p>Replace one top-level nested record with its fields.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5565,7 +5610,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The field whose nested values should be expanded.</p>
+                <p>Non-dotted field name containing a supported record-like value.</p>
               </div>
             </td>
             <td>
@@ -5581,7 +5626,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The prefix added to fields expanded from a nested record.</p>
+                <p>Text prepended to every promoted nested field.</p>
               </div>
             </td>
             <td>
@@ -5607,7 +5652,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy copied dictionaries; output-name collisions raise DuplicateKeyError.</p>
               </div>
             </td>
           </tr>
@@ -5636,7 +5681,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert selected columns from wide form to name/value rows.</p>
+        <p>Convert selected top-level fields from wide form into name/value rows.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5659,7 +5704,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Column names selected by the operation.</p>
+                <p>Unique fields expanded in the given order.</p>
               </div>
             </td>
             <td>
@@ -5675,7 +5720,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The output field that stores former column names.</p>
+                <p>Noncolliding output field for each former column name.</p>
               </div>
             </td>
             <td>
@@ -5691,7 +5736,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The output field that stores former column values.</p>
+                <p>Noncolliding output field for each former column value.</p>
               </div>
             </td>
             <td>
@@ -5717,7 +5762,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy Rows emitting len(columns) records per input row.</p>
               </div>
             </td>
           </tr>
@@ -5749,7 +5794,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert long-form rows to columns with an explicit duplicate policy.</p>
+        <p>Materialize long-form rows into encounter-ordered wide records.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5772,7 +5817,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The zero-based item or field position to select.</p>
+                <p>Selector or selector tuple defining each output row and its key fields.</p>
               </div>
             </td>
             <td>
@@ -5788,7 +5833,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The columns or column mapping used by the operation.</p>
+                <p>Selector whose values become dynamic output field names.</p>
               </div>
             </td>
             <td>
@@ -5804,7 +5849,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The values consumed by this operation.</p>
+                <p>Selector producing each pivot cell value.</p>
               </div>
             </td>
             <td>
@@ -5820,7 +5865,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The aggregator used to combine duplicate pivot cells.</p>
+                <p>Duplicate-cell policy: error, first, last, sum, or a reducer callable.</p>
               </div>
             </td>
             <td>
@@ -5836,7 +5881,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value used for pivot cells with no matching input row.</p>
+                <p>Value inserted for missing cells among discovered columns.</p>
               </div>
             </td>
             <td>
@@ -5862,7 +5907,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy pipeline that builds the full pivot only when consumed.</p>
               </div>
             </td>
           </tr>
@@ -5889,7 +5934,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Project fields and computed selectors into new dictionaries.</p>
+        <p>Project positional and named selectors into new dictionaries.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5912,7 +5957,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Selectors that define projected fields or grouping keys.</p>
+                <p>String paths or integer indexes; output names are derived automatically.</p>
               </div>
             </td>
             <td>
@@ -5928,7 +5973,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Names mapped to collectors or expressions.</p>
+                <p>Explicit output names mapped to any supported selector.</p>
               </div>
             </td>
             <td>
@@ -5954,7 +5999,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy projected Rows; duplicate derived or explicit names are rejected immediately.</p>
               </div>
             </td>
           </tr>
@@ -5985,7 +6030,7 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Sort rows by a selector, optionally with a bounded buffer.</p>
+        <p>Sort rows by a selected key, in memory or through bounded external runs.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6008,7 +6053,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Field, path, index, expression, or callable producing the sort key.</p>
               </div>
             </td>
             <td>
@@ -6024,7 +6069,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit descending order when true.</p>
               </div>
             </td>
             <td>
@@ -6040,7 +6085,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>None for full in-memory sort, or positive rows per spilled run.</p>
               </div>
             </td>
             <td>
@@ -6056,7 +6101,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Parent directory for automatically cleaned external-sort files.</p>
               </div>
             </td>
             <td>
@@ -6082,7 +6127,7 @@ consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy stably sorted Rows.</p>
               </div>
             </td>
           </tr>
@@ -6113,9 +6158,9 @@ consumed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Sort rows with bounded in-memory runs and temporary files.</p>
-<p>Sorted runs are written to temporary files and merged lazily, keeping peak in-memory
-rows bounded.</p>
+        <p>Sort rows stably with bounded in-memory runs and temporary files.</p>
+<p>Each run holds at most buffer_size rows; the lazy merge closes upstream and removes
+temporary files after completion, failure, or downstream short-circuit.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6138,7 +6183,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Field, path, index, expression, or callable producing the sort key.</p>
               </div>
             </td>
             <td>
@@ -6154,7 +6199,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit descending order when true.</p>
               </div>
             </td>
             <td>
@@ -6170,7 +6215,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>Positive maximum rows held in each sorted run.</p>
               </div>
             </td>
             <td>
@@ -6186,7 +6231,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Parent directory for automatically cleaned run files.</p>
               </div>
             </td>
             <td>
@@ -6212,7 +6257,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>Lazy externally sorted Rows.</p>
               </div>
             </td>
           </tr>
@@ -6321,7 +6366,7 @@ rows bounded.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create a deferred grouped aggregation by one or more selectors.</p>
+        <p>Describe grouped aggregation by positional and/or explicitly named selectors.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6344,7 +6389,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Selectors that define projected fields or grouping keys.</p>
+                <p>Keys named from field paths or as key_N for other selector types.</p>
               </div>
             </td>
             <td>
@@ -6360,7 +6405,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Names mapped to collectors or expressions.</p>
+                <p>Explicit output key names mapped to supported selectors.</p>
               </div>
             </td>
             <td>
@@ -6386,7 +6431,7 @@ rows bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>GroupedRows configuration; no source rows are read until aggregate() is consumed.</p>
               </div>
             </td>
           </tr>
@@ -6621,7 +6666,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy Rows pipeline containing the joined records.</p>
+                <p>Lazy dictionary Rows that execute the selected in-memory or spilled join when consumed.</p>
               </div>
             </td>
           </tr>
@@ -6755,7 +6800,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
 
     <div class="doc doc-contents ">
 
-        <p>Configure partitioned temporary storage for grouped aggregation.</p>
+        <p>Return grouping configured to aggregate through bounded temporary partitions.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6778,7 +6823,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of spill partitions used for bounded-memory processing.</p>
+                <p>Hash-partition count from 2 through 256.</p>
               </div>
             </td>
             <td>
@@ -6794,7 +6839,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Parent directory for automatically removed spill files.</p>
               </div>
             </td>
             <td>
@@ -6810,7 +6855,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Finite partition, state, match, and output budgets.</p>
+                <p>Partition, group-state, output, and repartition budgets.</p>
               </div>
             </td>
             <td>
@@ -6836,7 +6881,7 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Rows</code> pipeline representing this operation.</p>
+                <p>A new GroupedRows configuration; call aggregate() to obtain a lazy pipeline.</p>
               </div>
             </td>
           </tr>

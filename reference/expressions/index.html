@@ -646,6 +646,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fpstreams.RowExpr.inspect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        inspect
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.RowExpr.map" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -954,6 +965,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fpstreams.RowExpr.inspect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        inspect
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.RowExpr.map" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1158,7 +1180,10 @@
 
 
 
-        <p>A callable expression that can also be compiled by a native executor.</p>
+        <p>Represent an integer expression for Python evaluation and native i64 execution.</p>
+<p>operation, left, right, and value form the tree; kind records whether the result is
+integer or Boolean for planning. Postfix instructions and the Python evaluator are
+populated lazily in per-instance cache fields.</p>
 
 
 
@@ -1198,66 +1223,8 @@
 
     <div class="doc doc-contents ">
 
-        <p>Build an integer expression that always returns value.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>value</code>
-            </td>
-            <td>
-                  <code><span title="int">int</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Expr
-
-
-  
-      dataclass
-   (fpstreams.expressions.scalar.Expr)" href="#fpstreams.Expr">Expr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A composable scalar expression.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Return a constant integer expression after exact-type validation.</p>
+<p>bool and all non-int objects raise TypeError even though bool is an int subclass.</p>
 
 
     </div>
@@ -1277,30 +1244,9 @@
 
     <div class="doc doc-contents ">
 
-        <p>Compile this expression into native executor instructions.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="tuple">tuple</span>[<span title="tuple">tuple</span>[<span title="int">int</span>, <span title="int">int</span>], ...]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Return and cache this tree's postfix instructions for Python or native execution.</p>
+<p>Each pair contains a numeric opcode and an integer operand. Only const opcodes consume
+the operand; other instructions store zero as a placeholder.</p>
 
 
     </div>
@@ -1335,7 +1281,9 @@
 
 
 
-        <p>A callable expression evaluated against one row.</p>
+        <p>Represent a labeled row expression as both a callable and an inspectable IR graph.</p>
+<p>Direct construction wraps the supplied evaluator as an opaque PythonUDF. Expressions
+created by this module retain their specific nodes and compile lazily on first evaluation.</p>
 
 
 
@@ -1361,6 +1309,26 @@
 <div class="doc doc-object doc-function">
 
 
+<h3 id="fpstreams.RowExpr.inspect" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">inspect</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">inspect</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Analyze field use and execution properties without evaluating the expression.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="fpstreams.RowExpr.map" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">map</span>
 
@@ -1371,68 +1339,9 @@
 
     <div class="doc doc-contents ">
 
-        <p>Transform the value produced by this row expression.</p>
-<p>The callable runs when the expression is evaluated for a row, not when the expression is
-created.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>function</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression that applies the callable when evaluated.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Apply a Python callable to this expression's value during row evaluation.</p>
+<p>The callable is stored as a PythonUDF, so structural inspection marks the resulting graph
+opaque and cannot infer its field dependencies.</p>
 
 
     </div>
@@ -1452,66 +1361,9 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert the produced value with target.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>target</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The callable or type used to convert a value.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression that converts the selected value.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Call target with this expression's value during row evaluation.</p>
+<p>target may be a type or any one-argument callable; its normal return value and exceptions
+are preserved.</p>
 
 
     </div>
@@ -1531,66 +1383,8 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Test whether the produced value belongs to values.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>values</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Iterable">Iterable</span>[<span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The values consumed by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A boolean row expression testing membership.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Materialize values as a tuple immediately, then test membership during row evaluation.</p>
+<p>Consuming the iterable at construction makes later evaluations reuse the same choices.</p>
 
 
     </div>
@@ -1610,35 +1404,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Test whether the produced value is None.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A boolean row expression testing for <code>None</code>.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Build an identity test for whether the produced value is None.</p>
 
 
     </div>
@@ -1658,35 +1424,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Test whether the produced value is not None.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A boolean row expression testing for a non-<code>None</code> value.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Build a non-null test by logically inverting this expression's IsNull node.</p>
 
 
     </div>
@@ -1706,66 +1444,9 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Replace a None result with value.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>value</code>
-            </td>
-            <td>
-                  <code><span title="object">object</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression with the fallback value.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Return this expression's value unless it is None, then evaluate the replacement.</p>
+<p>The replacement is coerced to a row expression at construction and remains unevaluated
+for rows whose primary value is non-null.</p>
 
 
     </div>
@@ -1785,66 +1466,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the first non-None result from this expression and fallbacks.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>*fallbacks</code>
-            </td>
-            <td>
-                  <code><span title="object">object</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Fallback expressions checked from left to right.</p>
-              </div>
-            </td>
-            <td>
-                  <code>()</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression returning the first non-<code>None</code> value.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Delegate to coalesce with this expression as the first candidate.</p>
 
 
     </div>
@@ -1864,35 +1486,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert the produced string to lowercase.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression producing lowercase strings.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Call the produced value's lower method when the expression is evaluated.</p>
 
 
     </div>
@@ -1912,35 +1506,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Convert the produced string to uppercase.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression producing uppercase strings.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Call the produced value's upper method when the expression is evaluated.</p>
 
 
     </div>
@@ -1960,35 +1526,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Remove leading and trailing whitespace from the produced string.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A new row expression producing stripped strings.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Call the produced value's strip method when the expression is evaluated.</p>
 
 
     </div>
@@ -2008,66 +1546,7 @@ created.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Test whether value occurs in the produced container.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>value</code>
-            </td>
-            <td>
-                  <code><span title="object">object</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.RowExpr
-
-
-  
-      dataclass
-   (fpstreams.expressions.row.RowExpr)" href="#fpstreams.RowExpr">RowExpr</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A boolean row expression testing containment.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Test whether the supplied literal value belongs to the produced container.</p>
 
 
     </div>

@@ -942,7 +942,7 @@ the input item, and a <code>Downstream</code>. Return <code>False</code> to stop
 
 
 
-        <p>A stateful intermediate operation that can emit zero or more values.</p>
+        <p>Describe a stateful intermediate operation in legacy iterable or push-callback form.</p>
 
 
 
@@ -1006,131 +1006,10 @@ the input item, and a <code>Downstream</code>. Return <code>False</code> to stop
 
     <div class="doc doc-contents ">
 
-        <p>Build a push-based gatherer with optional state, finishing, and combining.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>initializer_or_integrator</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A state initializer, or the integrator when no
-initializer is required.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>integrator</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A callable that consumes one item and may emit downstream values.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>finisher</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A callable that converts accumulated state into the final result.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>combiner</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A callable that combines two partial gatherer states.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>greedy</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Whether the integrator should continue after downstream rejection.</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Gatherer
-
-
-  
-      dataclass
-   (fpstreams.planning.gather.Gatherer)" href="#fpstreams.Gatherer">Gatherer</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A reusable <code>Gatherer</code> implementing the described stateful operation.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Build a push-mode gatherer in stateless or explicitly initialized form.</p>
+<p>Omitting <code>integrator</code> makes the first callable a stateless integrator with <code>None</code>
+state. The finisher defaults to no output. <code>combiner</code> and <code>greedy</code> are retained
+as metadata for state composition; sequential integration still stops on rejection.</p>
 
 
     </div>
@@ -1175,115 +1054,7 @@ initializer is required.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Build a push-based gatherer whose state cannot be combined in parallel.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>initializer_or_integrator</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A state initializer, or the integrator when no
-initializer is required.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>integrator</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A callable that consumes one item and may emit downstream values.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>finisher</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A callable that converts accumulated state into the final result.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>greedy</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Whether the integrator should continue after downstream rejection.</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Gatherer
-
-
-  
-      dataclass
-   (fpstreams.planning.gather.Gatherer)" href="#fpstreams.Gatherer">Gatherer</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A reusable <code>Gatherer</code> implementing the described stateful operation.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Build the push-mode form through <code>of</code> while always storing no state combiner.</p>
 
 
     </div>
@@ -1305,71 +1076,10 @@ initializer is required.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Compose this gatherer with another gatherer without an intermediate collection.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>other</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Gatherer
-
-
-  
-      dataclass
-   (fpstreams.planning.gather.Gatherer)" href="#fpstreams.Gatherer">Gatherer</a>[<span title="fpstreams.planning.gather.R">R</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.planning.gather.RR">RR</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Gatherer
-
-
-  
-      dataclass
-   (fpstreams.planning.gather.Gatherer)" href="#fpstreams.Gatherer">Gatherer</a>[<span title="fpstreams.planning.gather.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.planning.gather.RR">RR</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>A reusable <code>Gatherer</code> implementing the described stateful operation.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Feed this gatherer directly into <code>other</code> through a short-circuiting bridge.</p>
+<p>Both states and proceed flags are retained together. This finisher sends left-finisher
+output through the right integrator before running the right finisher. A composite state
+combiner exists only when both component gatherers provide one.</p>
 
 
     </div>
@@ -1405,7 +1115,7 @@ short-circuited.</p>
 
 
 
-        <p>A short-circuit-aware output channel owned by a Gatherer.</p>
+        <p>Forward gatherer output while making downstream rejection permanent.</p>
 
 
 
@@ -1441,61 +1151,9 @@ short-circuited.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit value and return whether the downstream accepts more output.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>value</code>
-            </td>
-            <td>
-                  <code><span title="fpstreams.planning.gather.R">R</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Offer one value to the callback and latch rejection when it returns <code>False</code>.</p>
+<p>Once rejecting, the channel returns <code>False</code> without invoking the callback. Callback
+results must be actual booleans so short-circuit behavior cannot depend on truthiness.</p>
 
 
     </div>
@@ -1515,30 +1173,7 @@ short-circuited.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return whether the downstream has stopped accepting output.</p>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
+        <p>Return the latched downstream rejection state.</p>
 
 
     </div>

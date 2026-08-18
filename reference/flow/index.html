@@ -2970,7 +2970,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
 
 
 
-        <p>A lazy description of work over an iterable source.</p>
+        <p>A synchronous pipeline that opens its source only when iterated or consumed.</p>
 
 
 
@@ -3024,7 +3024,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A list containing the consumed results in encounter order.</p>
+                <p>All emitted items in encounter order.</p>
               </div>
             </td>
           </tr>
@@ -3067,7 +3067,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p>All emitted items in encounter order as a tuple.</p>
               </div>
             </td>
           </tr>
@@ -3110,7 +3110,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A set containing the distinct resulting values.</p>
+                <p>The distinct emitted items; every item must be hashable.</p>
               </div>
             </td>
           </tr>
@@ -3158,7 +3158,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The columns or column mapping used by the operation.</p>
+                <p>Optional column labels passed to <code>pandas.DataFrame</code>.</p>
               </div>
             </td>
             <td>
@@ -3312,7 +3312,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Destination file, opened in text write mode.</p>
               </div>
             </td>
             <td>
@@ -3328,7 +3328,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The CSV header policy or explicit field names.</p>
+                <p>Optional header row. For mapping items, these names also select and order cells.</p>
               </div>
             </td>
             <td>
@@ -3344,7 +3344,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Encoding used when opening the destination.</p>
               </div>
             </td>
             <td>
@@ -3360,7 +3360,8 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether to neutralize cells that spreadsheet programs may execute.</p>
+                <p>Prefix formula-like string cells so spreadsheet software treats them
+as text.</p>
               </div>
             </td>
             <td>
@@ -3417,7 +3418,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Destination file, replaced with one streamed JSON array.</p>
               </div>
             </td>
             <td>
@@ -3433,7 +3434,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Encoding used when opening the destination.</p>
               </div>
             </td>
             <td>
@@ -3465,7 +3466,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Optional serializer called for objects the JSON encoder cannot handle.</p>
               </div>
             </td>
             <td>
@@ -3511,7 +3512,27 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>An empty dictionary for an empty flow; otherwise <code>count</code> plus numeric <code>sum</code>, <code>min</code>,</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>max</code>, and <code>mean</code> when real values occur. Mixed input also includes</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>numeric_count</code>, and two or more numeric values add sample <code>std</code>.</p>
               </div>
             </td>
           </tr>
@@ -3565,7 +3586,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named aggregators evaluated during the same traversal.</p>
+                <p>Result names mapped to aggregators updated in one traversal.</p>
               </div>
             </td>
             <td>
@@ -3591,7 +3612,7 @@ leading single quote. The method writes the file and returns <code>None</code>.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Finished aggregation values keyed by the supplied argument names.</p>
               </div>
             </td>
           </tr>
@@ -3652,7 +3673,7 @@ and return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector used to reduce input items.</p>
+                <p>One <code>Collector</code> or callable invoked with this flow to produce the result.</p>
               </div>
             </td>
             <td>
@@ -3673,7 +3694,7 @@ and return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named collectors evaluated during the same traversal.</p>
+                <p>Named streaming collectors updated together in one traversal.</p>
               </div>
             </td>
             <td>
@@ -3749,7 +3770,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The string inserted between adjacent string representations.</p>
+                <p>String placed between consecutive <code>str(item)</code> values.</p>
               </div>
             </td>
             <td>
@@ -3823,7 +3844,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Called once for each emitted item; its return value is ignored.</p>
               </div>
             </td>
             <td>
@@ -3876,7 +3897,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called once per item; truthy items enter the first returned list.</p>
               </div>
             </td>
             <td>
@@ -3902,7 +3923,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p><code>(matches, misses)</code>, preserving encounter order within both lists.</p>
               </div>
             </td>
           </tr>
@@ -3941,11 +3962,44 @@ relational join.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="tuple">tuple</span>[<span title="list">list</span>[<span title="typing.Any">Any</span>], <span title="list">list</span>[<span title="Exception">Exception</span>]]</code>
+                  <code><span title="list">list</span>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p><code>(success_values, exceptions)</code>, with <code>Ok</code> and <code>Err</code> payloads unwrapped in their</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="Exception">Exception</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>respective encounter orders.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If any emitted item is neither <code>Ok</code> nor <code>Err</code>.</p>
               </div>
             </td>
           </tr>
@@ -4036,7 +4090,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned only when the flow is empty.</p>
               </div>
             </td>
             <td>
@@ -4133,7 +4187,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned only when the flow is empty.</p>
               </div>
             </td>
             <td>
@@ -4160,6 +4214,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The last item, or <code>default</code> when the flow is empty.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the flow is empty and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -4209,7 +4286,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called in order until its first truthy result.</p>
               </div>
             </td>
             <td>
@@ -4225,7 +4302,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned when no predicate result is truthy.</p>
               </div>
             </td>
             <td>
@@ -4252,6 +4329,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The first matching item, or <code>default</code> when no item matches.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If no item matches and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -4299,7 +4399,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called with each item in order until its first truthy result.</p>
               </div>
             </td>
             <td>
@@ -4325,7 +4425,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The zero-based position of the first truthy predicate result, or <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -4373,7 +4473,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Target compared to each source item with equality.</p>
               </div>
             </td>
             <td>
@@ -4399,7 +4499,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The zero-based position of the first item equal to <code>value</code>, or <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -4447,7 +4547,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The zero-based item or field position to select.</p>
+                <p>Zero-based position; negative values count backward from the end.</p>
               </div>
             </td>
             <td>
@@ -4463,7 +4563,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned when <code>index</code> is outside the flow.</p>
               </div>
             </td>
             <td>
@@ -4490,6 +4590,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The selected item, or <code>default</code> when the index is out of range.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the index is out of range and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -4532,7 +4655,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of matching input items.</p>
+                <p>The total number of emitted items.</p>
               </div>
             </td>
           </tr>
@@ -4580,7 +4703,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first index, numeric value, or additive identity to use.</p>
+                <p>Value added before all emitted items, matching Python's built-in <code>sum</code>.</p>
               </div>
             </td>
             <td>
@@ -4649,7 +4772,30 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The compensated floating-point mean, or <code>None</code> when no items are emitted.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
               </div>
             </td>
           </tr>
@@ -4697,7 +4843,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Delta degrees of freedom used in the variance divisor.</p>
+                <p>Non-negative adjustment in the divisor <code>count - ddof</code>.</p>
               </div>
             </td>
             <td>
@@ -4723,7 +4869,40 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The floating-point variance, or <code>None</code> when <code>count &lt;= ddof</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>ddof</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -4771,7 +4950,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Delta degrees of freedom used in the variance divisor.</p>
+                <p>Non-negative adjustment in the variance divisor <code>count - ddof</code>.</p>
               </div>
             </td>
             <td>
@@ -4797,7 +4976,40 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The square root of the variance, or <code>None</code> when <code>count &lt;= ddof</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>ddof</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -4845,7 +5057,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable whose result is compared instead of the item.</p>
               </div>
             </td>
             <td>
@@ -4919,7 +5131,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable whose result is compared instead of the item.</p>
               </div>
             </td>
             <td>
@@ -4993,7 +5205,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of items to return.</p>
               </div>
             </td>
             <td>
@@ -5009,7 +5221,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable, field name, index, path, or expression used for ranking.</p>
               </div>
             </td>
             <td>
@@ -5035,7 +5247,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A list containing the consumed results in encounter order.</p>
+                <p>Up to <code>count</code> items ordered from largest to smallest selected value.</p>
               </div>
             </td>
           </tr>
@@ -5085,7 +5297,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of items to return.</p>
               </div>
             </td>
             <td>
@@ -5101,7 +5313,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable, field name, index, path, or expression used for ranking.</p>
               </div>
             </td>
             <td>
@@ -5127,7 +5339,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A list containing the consumed results in encounter order.</p>
+                <p>Up to <code>count</code> items ordered from smallest to largest selected value.</p>
               </div>
             </td>
           </tr>
@@ -5175,7 +5387,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable, field name, index, path, or expression used for comparison.</p>
               </div>
             </td>
             <td>
@@ -5201,7 +5413,30 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p><code>(minimum_item, maximum_item)</code> according to the selected values.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the flow emits no items.</p>
               </div>
             </td>
           </tr>
@@ -5249,7 +5484,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Tested in order until one result is truthy; defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -5275,7 +5510,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> when any item satisfies <code>predicate</code>; <code>False</code> for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -5323,7 +5558,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Tested in order until one result is falsey; defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -5349,7 +5584,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> when every item satisfies <code>predicate</code>, including for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -5397,7 +5632,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Tested in order until one result is truthy; defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -5423,7 +5658,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> only when no item satisfies <code>predicate</code>, including for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -5474,7 +5709,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(accumulator, item)</code> from left to right.</p>
               </div>
             </td>
             <td>
@@ -5490,8 +5725,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Starting accumulator; when omitted, the first item becomes the accumulator.</p>
               </div>
             </td>
             <td>
@@ -5518,6 +5752,29 @@ supported.</p>
             <td>
               <div class="doc-md-description">
                 <p>The final left-to-right accumulator.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the flow is empty and <code>initial</code> is omitted.</p>
               </div>
             </td>
           </tr>
@@ -5570,7 +5827,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(item, accumulator)</code> from right to left.</p>
               </div>
             </td>
             <td>
@@ -5586,8 +5843,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Starting accumulator; when omitted, the last item becomes the accumulator.</p>
               </div>
             </td>
             <td>
@@ -5603,7 +5859,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of source items allowed in the right-side buffer.</p>
+                <p>Optional maximum number of source items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -5630,6 +5886,39 @@ supported.</p>
             <td>
               <div class="doc-md-description">
                 <p>The final right-to-left accumulator.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the source contains more than <code>max_items</code> items.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the flow is empty and <code>initial</code> is omitted.</p>
               </div>
             </td>
           </tr>
@@ -5682,7 +5971,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Callable, field name, index, path, or expression selecting each group key.</p>
               </div>
             </td>
             <td>
@@ -5698,7 +5987,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(group_state, item)</code> for items in that group.</p>
               </div>
             </td>
             <td>
@@ -5714,7 +6003,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that creates fresh mutable state.</p>
+                <p>Called once when each distinct group is first encountered.</p>
               </div>
             </td>
             <td>
@@ -5740,7 +6029,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Final accumulator state for each hashable key, in first-key encounter order.</p>
               </div>
             </td>
           </tr>
@@ -5788,7 +6077,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable, field name, index, path, or expression selecting the value to
+count; the item itself is counted when omitted.</p>
               </div>
             </td>
             <td>
@@ -5814,7 +6104,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Occurrence counts keyed by each hashable selected value.</p>
               </div>
             </td>
           </tr>
@@ -5866,7 +6156,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Items emitted by the new pipeline.</p>
+                <p>Positional values to emit in argument order.</p>
               </div>
             </td>
             <td>
@@ -5892,7 +6182,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A reusable flow that emits <code>items</code> in argument order.</p>
               </div>
             </td>
           </tr>
@@ -5944,7 +6234,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The iterable, async iterable, or data source to read lazily.</p>
+                <p>A synchronous iterable opened when the flow is consumed. Iterator instances
+remain one-shot; other iterables can be evaluated repeatedly.</p>
               </div>
             </td>
             <td>
@@ -5970,7 +6261,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A flow that emits each item from <code>source</code> in its iteration order.</p>
               </div>
             </td>
           </tr>
@@ -6017,7 +6308,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A reusable flow that always completes without emitting an item.</p>
               </div>
             </td>
           </tr>
@@ -6069,7 +6360,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>The optional item to emit; <code>None</code> produces an empty flow.</p>
               </div>
             </td>
             <td>
@@ -6095,7 +6386,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A flow containing <code>value</code> once, or no items when <code>value</code> is <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -6163,7 +6454,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called with the previously emitted value to produce the next value.</p>
               </div>
             </td>
             <td>
@@ -6189,7 +6480,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A reusable, infinite flow beginning with <code>seed</code>.</p>
               </div>
             </td>
           </tr>
@@ -6241,7 +6532,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that supplies a value or iterable.</p>
+                <p>Called once for each requested item to produce that item.</p>
               </div>
             </td>
             <td>
@@ -6267,7 +6558,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> over the supplied source or values.</p>
+                <p>A reusable, infinite flow of values returned by <code>supplier</code>.</p>
               </div>
             </td>
           </tr>
@@ -6317,7 +6608,7 @@ the flow.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Receives each source item and returns its replacement value.</p>
               </div>
             </td>
             <td>
@@ -6343,7 +6634,17 @@ the flow.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of mapped values; current plan-level parallel settings, if any, apply to this</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>map.</p>
               </div>
             </td>
           </tr>
@@ -6400,7 +6701,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Receives one source item in a worker and returns its mapped value.</p>
               </div>
             </td>
             <td>
@@ -6416,7 +6717,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of worker threads or processes. None chooses a runtime default.</p>
+                <p>Worker count, or <code>None</code> to use the executor's default.</p>
               </div>
             </td>
             <td>
@@ -6432,7 +6733,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The parallel backend: thread or process.</p>
+                <p>Run callbacks in a <code>thread</code> or spawn-based <code>process</code> pool.</p>
               </div>
             </td>
             <td>
@@ -6448,7 +6749,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether results must preserve source encounter order.</p>
+                <p>Emit in source order when true, otherwise in completion order.</p>
               </div>
             </td>
             <td>
@@ -6464,7 +6765,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of submitted tasks awaiting consumption.</p>
+                <p>Maximum submitted futures retained before the pipeline waits for a result.</p>
               </div>
             </td>
             <td>
@@ -6490,7 +6791,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that submits bounded mapping work when consumed.</p>
               </div>
             </td>
           </tr>
@@ -6567,7 +6868,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of worker threads or processes. None chooses a runtime default.</p>
+                <p>Worker count, or <code>None</code> to use the executor's default.</p>
               </div>
             </td>
             <td>
@@ -6583,7 +6884,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The parallel backend: thread or process.</p>
+                <p>Run callbacks in a <code>thread</code> or spawn-based <code>process</code> pool.</p>
               </div>
             </td>
             <td>
@@ -6599,7 +6900,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether results must preserve source encounter order.</p>
+                <p>Preserve source order for subsequent maps when true.</p>
               </div>
             </td>
             <td>
@@ -6615,7 +6916,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of submitted tasks awaiting consumption.</p>
+                <p>Maximum in-flight results retained by each subsequent map.</p>
               </div>
             </td>
             <td>
@@ -6641,7 +6942,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow sharing this pipeline with parallel defaults for maps appended afterward.</p>
               </div>
             </td>
           </tr>
@@ -6684,7 +6985,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow sharing this pipeline with parallel defaults cleared for later maps.</p>
               </div>
             </td>
           </tr>
@@ -6732,7 +7033,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called for its side effect before each original item is emitted.</p>
               </div>
             </td>
             <td>
@@ -6758,7 +7059,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that emits every original item unchanged after calling <code>function</code>.</p>
               </div>
             </td>
           </tr>
@@ -6808,7 +7109,7 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called for each item; truthy results retain that item.</p>
               </div>
             </td>
             <td>
@@ -6834,7 +7135,7 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing only source items whose predicate result is truthy.</p>
               </div>
             </td>
           </tr>
@@ -6882,7 +7183,7 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called for each item; truthy results drop that item.</p>
               </div>
             </td>
             <td>
@@ -6908,7 +7209,7 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing only source items whose predicate result is falsey.</p>
               </div>
             </td>
           </tr>
@@ -6956,7 +7257,8 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Optional callable, field name, index, path, or expression whose selected
+value is checked for <code>None</code>; without one, each item is checked directly.</p>
               </div>
             </td>
             <td>
@@ -6982,7 +7284,17 @@ requested.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that omits items whose selected value is <code>None</code> while retaining other falsey</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>values.</p>
               </div>
             </td>
           </tr>
@@ -7032,7 +7344,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps each source item to the iterable whose contents are emitted.</p>
               </div>
             </td>
             <td>
@@ -7058,7 +7370,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that lazily emits every mapped iterable in source order.</p>
               </div>
             </td>
           </tr>
@@ -7106,7 +7418,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps each source item to one output value or <code>None</code>.</p>
               </div>
             </td>
             <td>
@@ -7132,7 +7444,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of non-<code>None</code> mapped results; falsey values such as <code>0</code> are retained.</p>
               </div>
             </td>
           </tr>
@@ -7180,7 +7492,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression evaluated for each output.</p>
               </div>
             </td>
             <td>
@@ -7206,7 +7518,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing the value selected from each source item.</p>
               </div>
             </td>
           </tr>
@@ -7249,7 +7561,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing the first occurrence of each distinct value.</p>
               </div>
             </td>
           </tr>
@@ -7292,7 +7604,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>The same lazy de-duplication pipeline produced by <code>unique()</code>.</p>
               </div>
             </td>
           </tr>
@@ -7340,7 +7652,8 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression producing each uniqueness
+key.</p>
               </div>
             </td>
             <td>
@@ -7366,7 +7679,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing the first source item for each distinct selected key.</p>
               </div>
             </td>
           </tr>
@@ -7420,7 +7733,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression producing comparison keys.</p>
               </div>
             </td>
             <td>
@@ -7436,7 +7749,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit items in descending selected-key order when true.</p>
               </div>
             </td>
             <td>
@@ -7452,7 +7765,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>Items per sorted in-memory run; <code>None</code> performs one in-memory sort.</p>
               </div>
             </td>
             <td>
@@ -7468,7 +7781,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Directory for temporary run files when <code>buffer_size</code> is set.</p>
               </div>
             </td>
             <td>
@@ -7494,7 +7807,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that emits every source item ordered by its selected value.</p>
               </div>
             </td>
           </tr>
@@ -7548,7 +7861,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable used to derive each item's comparison key.</p>
               </div>
             </td>
             <td>
@@ -7564,7 +7877,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit items in descending comparison order when true.</p>
               </div>
             </td>
             <td>
@@ -7580,7 +7893,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>Items per sorted in-memory run; <code>None</code> performs one in-memory sort.</p>
               </div>
             </td>
             <td>
@@ -7596,7 +7909,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Directory for temporary run files when <code>buffer_size</code> is set.</p>
               </div>
             </td>
             <td>
@@ -7622,7 +7935,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that globally orders the source by <code>key</code> or by the items themselves.</p>
               </div>
             </td>
           </tr>
@@ -7678,7 +7991,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable used to derive each item's comparison key.</p>
               </div>
             </td>
             <td>
@@ -7694,7 +8007,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit items in descending comparison order when true.</p>
               </div>
             </td>
             <td>
@@ -7710,7 +8023,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>Maximum items sorted in memory for each temporary run.</p>
               </div>
             </td>
             <td>
@@ -7726,7 +8039,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Directory in which temporary sorted runs are created.</p>
               </div>
             </td>
             <td>
@@ -7752,7 +8065,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A globally sorted flow produced by lazily merging bounded temporary runs.</p>
               </div>
             </td>
           </tr>
@@ -7808,7 +8121,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression producing comparison keys.</p>
               </div>
             </td>
             <td>
@@ -7824,7 +8137,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If true, produce values in descending order.</p>
+                <p>Emit items in descending selected-key order when true.</p>
               </div>
             </td>
             <td>
@@ -7840,7 +8153,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items held in an in-memory buffer or batch.</p>
+                <p>Maximum items sorted in memory for each temporary run.</p>
               </div>
             </td>
             <td>
@@ -7856,7 +8169,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The directory used for temporary spill files.</p>
+                <p>Directory in which temporary sorted runs are created.</p>
               </div>
             </td>
             <td>
@@ -7882,7 +8195,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow ordered by the selected value using bounded temporary runs.</p>
               </div>
             </td>
           </tr>
@@ -7930,7 +8243,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested window, chunk, or batch size.</p>
+                <p>Maximum number of consecutive items in each tuple.</p>
               </div>
             </td>
             <td>
@@ -7956,7 +8269,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of non-overlapping tuples, including a final shorter tuple when needed.</p>
               </div>
             </td>
           </tr>
@@ -8033,7 +8346,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum measured size allowed in one batch.</p>
+                <p>Maximum sum of item sizes in a normal batch.</p>
               </div>
             </td>
             <td>
@@ -8049,7 +8362,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items emitted in one batch.</p>
+                <p>Optional maximum item count per batch.</p>
               </div>
             </td>
             <td>
@@ -8065,7 +8378,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that returns the measured size of one item.</p>
+                <p>Returns a non-negative integer size for each item; defaults to <code>len</code>.</p>
               </div>
             </td>
             <td>
@@ -8081,7 +8394,8 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether invalid or empty input should raise instead of returning a fallback.</p>
+                <p>Raise when one item exceeds <code>max_size</code>; when false, emit it in an oversized
+singleton batch.</p>
               </div>
             </td>
             <td>
@@ -8107,7 +8421,17 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of non-empty tuples packed without exceeding either configured limit, except</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.flow.T">T</span>, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>for non-strict oversized singleton items.</p>
               </div>
             </td>
           </tr>
@@ -8155,7 +8479,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested window, chunk, or batch size.</p>
+                <p>Number of items in each full window.</p>
               </div>
             </td>
             <td>
@@ -8171,7 +8495,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The distance between consecutive windows or numeric increments.</p>
+                <p>Number of source items consumed between successive windows.</p>
               </div>
             </td>
             <td>
@@ -8197,7 +8521,17 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of full sliding windows; a non-empty source shorter than <code>size</code> produces one</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.flow.T">T</span>, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>partial window, but no trailing partial window is emitted otherwise.</p>
               </div>
             </td>
           </tr>
@@ -8270,7 +8604,8 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional selector for run identity; adjacent items themselves are compared when
+omitted.</p>
               </div>
             </td>
             <td>
@@ -8296,7 +8631,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of non-empty tuples, one for each contiguous run of equal keys.</p>
               </div>
             </td>
           </tr>
@@ -8339,7 +8674,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of overlapping <code>(previous, current)</code> pairs; fewer than two items emit nothing.</p>
               </div>
             </td>
           </tr>
@@ -8387,7 +8722,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(previous, current)</code> for each adjacent pair.</p>
               </div>
             </td>
             <td>
@@ -8413,7 +8748,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing one mapped result per adjacent source pair.</p>
               </div>
             </td>
           </tr>
@@ -8461,7 +8796,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first index, numeric value, or additive identity to use.</p>
+                <p>Integer index paired with the first source item.</p>
               </div>
             </td>
             <td>
@@ -8487,7 +8822,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of <code>(index, item)</code> pairs with consecutive integer indices.</p>
               </div>
             </td>
           </tr>
@@ -8537,7 +8872,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Synchronous iterable providing the right-hand item in each pair.</p>
               </div>
             </td>
             <td>
@@ -8553,7 +8888,8 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether invalid or empty input should raise instead of returning a fallback.</p>
+                <p>Raise <code>ValueError</code> during consumption when the two inputs have different
+lengths.</p>
               </div>
             </td>
             <td>
@@ -8579,7 +8915,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of pairs ending with the shorter input unless <code>strict</code> is true.</p>
               </div>
             </td>
           </tr>
@@ -8629,7 +8965,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Synchronous iterable providing right-hand values.</p>
               </div>
             </td>
             <td>
@@ -8645,7 +8981,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value used when one side of a longest zip is exhausted.</p>
+                <p>Substitute used on whichever input is exhausted first.</p>
               </div>
             </td>
             <td>
@@ -8671,7 +9007,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of pairs whose length matches the longer input.</p>
               </div>
             </td>
           </tr>
@@ -8719,7 +9055,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The string inserted between adjacent string representations.</p>
+                <p>Item emitted once between each pair of adjacent source items.</p>
               </div>
             </td>
             <td>
@@ -8745,7 +9081,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow with <code>separator</code> between source items and never at either boundary.</p>
               </div>
             </td>
           </tr>
@@ -8793,7 +9129,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional sources combined with this pipeline.</p>
+                <p>Synchronous iterables opened and emitted after this flow, in argument order.</p>
               </div>
             </td>
             <td>
@@ -8819,7 +9155,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that drains this source and then each additional iterable in order.</p>
               </div>
             </td>
           </tr>
@@ -8846,7 +9182,7 @@ items bounded.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit the Cartesian product with a bounded or reiterable right side.</p>
+        <p>Buffer another iterable once and emit a left-major Cartesian product.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -8869,7 +9205,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Synchronous iterable buffered as the right side after the first left item.</p>
               </div>
             </td>
             <td>
@@ -8885,7 +9221,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum right-side size allowed when buffering is required.</p>
+                <p>Optional maximum number of right-side items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -8911,7 +9247,30 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of <code>(left, right)</code> pairs with every right item repeated for each left item.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>During consumption if <code>other</code> contains more than <code>max_right</code> items.</p>
               </div>
             </td>
           </tr>
@@ -8936,7 +9295,7 @@ items bounded.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit each left-to-right accumulator state.</p>
+        <p>Emit each left-to-right accumulator state after consuming one item.</p>
 <p>Unlike <code>reduce</code>, <code>scan</code> emits every intermediate accumulator state.</p>
 
 
@@ -8960,8 +9319,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Accumulator passed to the first callback; it is not emitted by itself.</p>
               </div>
             </td>
             <td>
@@ -8977,7 +9335,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(state, item)</code> to produce each next state.</p>
               </div>
             </td>
             <td>
@@ -9003,7 +9361,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow with one accumulated state for every source item.</p>
               </div>
             </td>
           </tr>
@@ -9033,7 +9391,7 @@ supported.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit accumulator states while combining items from right to left.</p>
+        <p>Buffer the source, accumulate from right to left, and emit states in source order.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -9056,8 +9414,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Accumulator passed to the rightmost callback; it is not emitted by itself.</p>
               </div>
             </td>
             <td>
@@ -9073,7 +9430,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(item, state)</code> from the rightmost item to the leftmost.</p>
               </div>
             </td>
             <td>
@@ -9089,7 +9446,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of source items allowed in the right-side buffer.</p>
+                <p>Optional maximum number of source items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -9115,7 +9472,30 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow with one right-fold state per source item, ordered like the original items.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>During consumption if the source exceeds <code>max_items</code>.</p>
               </div>
             </td>
           </tr>
@@ -9195,7 +9575,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of values emitted by <code>gatherer</code> while it integrates and finishes the source.</p>
               </div>
             </td>
           </tr>
@@ -9246,7 +9626,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that creates fresh mutable state.</p>
+                <p>Called once per evaluation to create the initial accumulator.</p>
               </div>
             </td>
             <td>
@@ -9262,7 +9642,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Called as <code>function(state, item)</code> and returns the replacement accumulator.</p>
               </div>
             </td>
             <td>
@@ -9288,7 +9668,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow that emits exactly one final accumulator, including for an empty source.</p>
               </div>
             </td>
           </tr>
@@ -9336,7 +9716,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Values supplied to this operation in encounter order.</p>
+                <p>Items to emit before the first source item, in argument order.</p>
               </div>
             </td>
             <td>
@@ -9362,7 +9742,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing <code>values</code> followed by every source item.</p>
               </div>
             </td>
           </tr>
@@ -9410,7 +9790,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Values supplied to this operation in encounter order.</p>
+                <p>Items to emit after the source completes, in argument order.</p>
               </div>
             </td>
             <td>
@@ -9436,7 +9816,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing every source item followed by <code>values</code>.</p>
               </div>
             </td>
           </tr>
@@ -9484,7 +9864,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps the first item; it is never called for an empty source.</p>
               </div>
             </td>
             <td>
@@ -9510,7 +9890,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow with only its first item replaced by <code>function(first)</code>.</p>
               </div>
             </td>
           </tr>
@@ -9558,7 +9938,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps the final item; it is never called for an empty source.</p>
               </div>
             </td>
             <td>
@@ -9584,7 +9964,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow with only its final item replaced by <code>function(last)</code>.</p>
               </div>
             </td>
           </tr>
@@ -9635,7 +10015,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable deciding whether two adjacent items should be combined.</p>
+                <p>Called on neighboring original items to decide whether a run continues.</p>
               </div>
             </td>
             <td>
@@ -9651,7 +10031,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that merges two downstream results.</p>
+                <p>Combines the current run aggregate with the next item.</p>
               </div>
             </td>
             <td>
@@ -9677,7 +10057,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing one merged aggregate for each contiguous collapsible run.</p>
               </div>
             </td>
           </tr>
@@ -9725,7 +10105,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Maps one source item and may raise an <code>Exception</code>.</p>
               </div>
             </td>
             <td>
@@ -9751,7 +10131,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow of <code>Ok</code> mapped values and <code>Err</code> objects for raised exceptions.</p>
               </div>
             </td>
           </tr>
@@ -9826,7 +10206,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>An equivalent lazy flow whose plan requests <code>engine</code> during execution.</p>
               </div>
             </td>
           </tr>
@@ -9855,6 +10235,37 @@ supported.</p>
 
         <p>Describe engine selection, stages, and fused operations without executing.</p>
 <p>This inspection method does not consume or execute the source.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>terminal</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.planning.native.TerminalName">TerminalName</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Terminal operation to include when validating and selecting the engine.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;iterate&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -9963,7 +10374,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of leading items to emit.</p>
               </div>
             </td>
             <td>
@@ -9989,7 +10400,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing only the first <code>count</code> source items.</p>
               </div>
             </td>
           </tr>
@@ -10060,7 +10471,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of leading items to emit.</p>
               </div>
             </td>
             <td>
@@ -10086,7 +10497,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>The same bounded pipeline produced by <code>take(count)</code>.</p>
               </div>
             </td>
           </tr>
@@ -10134,7 +10545,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Number of leading items to consume without emitting.</p>
               </div>
             </td>
             <td>
@@ -10160,7 +10571,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow containing every source item after the first <code>count</code>.</p>
               </div>
             </td>
           </tr>
@@ -10231,7 +10642,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Number of leading items to consume without emitting.</p>
               </div>
             </td>
             <td>
@@ -10257,7 +10668,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>The same suffix pipeline produced by <code>drop(count)</code>.</p>
               </div>
             </td>
           </tr>
@@ -10305,7 +10716,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called on leading items until its first falsey result.</p>
               </div>
             </td>
             <td>
@@ -10331,7 +10742,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow ending before the first source item whose predicate result is falsey.</p>
               </div>
             </td>
           </tr>
@@ -10381,7 +10792,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called on leading items through its first falsey result.</p>
               </div>
             </td>
             <td>
@@ -10407,7 +10818,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow ending after emitting the first item whose predicate result is falsey.</p>
               </div>
             </td>
           </tr>
@@ -10455,7 +10866,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Called only while leading items produce truthy results.</p>
               </div>
             </td>
             <td>
@@ -10481,7 +10892,17 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>Flow</code> representing this operation.</p>
+                <p>A flow beginning with the first item whose predicate result is falsey; later items are</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>emitted without further predicate calls.</p>
               </div>
             </td>
           </tr>

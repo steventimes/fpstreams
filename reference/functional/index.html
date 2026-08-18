@@ -794,7 +794,7 @@ partial application, and retrying asynchronous work.</p>
 
     <div class="doc doc-contents first">
 
-        <p>Small functional helpers that are independent of pipeline execution.</p>
+        <p>Function composition, staged argument binding, and asynchronous retries.</p>
 
 
 
@@ -829,8 +829,9 @@ partial application, and retrying asynchronous work.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Pass value through functions from left to right.</p>
-<p>The first callable receives <code>value</code>; each later callable receives the previous result.</p>
+        <p>Pass a value through a left-to-right sequence of callables.</p>
+<p>Each callable receives the preceding callable's return value. With no callables, the
+original value is returned unchanged.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -853,7 +854,7 @@ partial application, and retrying asynchronous work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>The first callable's input.</p>
               </div>
             </td>
             <td>
@@ -869,7 +870,7 @@ partial application, and retrying asynchronous work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Callables applied from left to right.</p>
+                <p>Unary callables to invoke in order.</p>
               </div>
             </td>
             <td>
@@ -895,7 +896,7 @@ partial application, and retrying asynchronous work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The result returned by the final callable, or <code>value</code> when no callables are supplied.</p>
+                <p>The final callable's return value, or <code>value</code> when <code>functions</code> is empty.</p>
               </div>
             </td>
           </tr>
@@ -920,9 +921,10 @@ partial application, and retrying asynchronous work.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return a callable that accepts the original arguments in stages.</p>
-<p>Required parameters are detected from <code>inspect.signature</code>, so defaults, builtins, and
-callable objects are supported.</p>
+        <p>Wrap a callable so its arguments can be supplied across multiple calls.</p>
+<p>The wrapped callable executes as soon as every non-variadic parameter without a default
+has been bound. Arguments may still be supplied all at once, and invalid or duplicate
+arguments raise the same binding errors produced by :func:<code>inspect.signature</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -945,7 +947,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>A callable whose signature can be inspected.</p>
               </div>
             </td>
             <td>
@@ -971,7 +973,17 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable implementing the described behavior.</p>
+                <p>A metadata-preserving callable that either executes <code>function</code> or returns another</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>argument-accepting stage.</p>
               </div>
             </td>
           </tr>
@@ -1005,8 +1017,10 @@ callable objects are supported.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Retry an async function with configurable delay and backoff.</p>
-<p>Only the configured exception types are retried; other exceptions propagate immediately.</p>
+        <p>Decorate an async callable with bounded retries and exponential delay.</p>
+<p><code>attempts</code> includes the initial call. Only <code>exceptions</code> are retried; all other exceptions
+propagate immediately. Before each retry, the current delay is optionally increased by a
+random value of up to ten percent, then multiplied by <code>backoff</code> for the next retry.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1029,7 +1043,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of calls, including the first attempt.</p>
+                <p>Maximum calls, including the initial call; must be at least one.</p>
               </div>
             </td>
             <td>
@@ -1045,7 +1059,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The multiplier applied to the delay after each failed attempt.</p>
+                <p>Non-negative multiplier applied after each retry delay.</p>
               </div>
             </td>
             <td>
@@ -1061,7 +1075,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Random delay added to each retry interval.</p>
+                <p>Whether to add up to ten percent random jitter to nonzero delays.</p>
               </div>
             </td>
             <td>
@@ -1077,7 +1091,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The exception type or tuple of types that should trigger a retry.</p>
+                <p>Exception classes that trigger another attempt.</p>
               </div>
             </td>
             <td>
@@ -1093,7 +1107,7 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial delay in seconds before retrying.</p>
+                <p>Non-negative seconds to wait before the first retry.</p>
               </div>
             </td>
             <td>
@@ -1119,7 +1133,30 @@ callable objects are supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable implementing the described behavior.</p>
+                <p>A decorator whose wrapper retries the asynchronous callable under this policy.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>attempts</code> is less than one or a delay parameter is negative.</p>
               </div>
             </td>
           </tr>

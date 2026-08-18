@@ -764,6 +764,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.explain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        explain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.AsyncFlow.of" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1954,6 +1965,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.explain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        explain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.AsyncFlow.of" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2662,7 +2684,7 @@ inner source. The last inner source can finish after the outer source ends.</p>
 
 
 
-        <p>A lazy pipeline over synchronous or asynchronous iterable sources.</p>
+        <p>An async pipeline that opens its sync or async source when consumption begins.</p>
 
 
 
@@ -2720,7 +2742,7 @@ inner source. The last inner source can finish after the outer source ends.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A list containing the consumed results in encounter order.</p>
+                <p>All emitted items in encounter order.</p>
               </div>
             </td>
           </tr>
@@ -2767,7 +2789,7 @@ inner source. The last inner source can finish after the outer source ends.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p>All emitted items in encounter order as a tuple.</p>
               </div>
             </td>
           </tr>
@@ -2814,7 +2836,7 @@ inner source. The last inner source can finish after the outer source ends.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A set containing the distinct resulting values.</p>
+                <p>The distinct emitted items; every item must be hashable.</p>
               </div>
             </td>
           </tr>
@@ -2868,7 +2890,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The string inserted between adjacent string representations.</p>
+                <p>String placed between consecutive <code>str(item)</code> values.</p>
               </div>
             </td>
             <td>
@@ -2948,7 +2970,8 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved once per item; truthy items enter the first
+returned list.</p>
               </div>
             </td>
             <td>
@@ -2974,7 +2997,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p><code>(matches, misses)</code>, preserving encounter order within both lists.</p>
               </div>
             </td>
           </tr>
@@ -3017,11 +3040,44 @@ relational join.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="tuple">tuple</span>[<span title="list">list</span>[<span title="typing.Any">Any</span>], <span title="list">list</span>[<span title="Exception">Exception</span>]]</code>
+                  <code><span title="list">list</span>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A tuple containing the resulting values.</p>
+                <p><code>(success_values, exceptions)</code>, with <code>Ok</code> and <code>Err</code> payloads unwrapped in their</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="Exception">Exception</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>respective encounter orders.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If any emitted item is neither <code>Ok</code> nor <code>Err</code>.</p>
               </div>
             </td>
           </tr>
@@ -3073,7 +3129,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned only when the async flow is empty.</p>
               </div>
             </td>
             <td>
@@ -3174,7 +3230,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned only when the async flow is empty.</p>
               </div>
             </td>
             <td>
@@ -3201,6 +3257,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The last item, or <code>default</code> when the flow is empty.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the async flow is empty and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -3255,7 +3334,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved in order until its first truthy result.</p>
               </div>
             </td>
             <td>
@@ -3271,7 +3350,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned when no resolved predicate result is truthy.</p>
               </div>
             </td>
             <td>
@@ -3298,6 +3377,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The first matching item, or <code>default</code> when no item matches.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If no item matches and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -3351,7 +3453,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved in order until its first truthy result.</p>
               </div>
             </td>
             <td>
@@ -3377,7 +3479,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The zero-based position of the first truthy resolved predicate result, or <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -3429,7 +3531,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value consumed by this operation.</p>
+                <p>Target compared to each source item with equality.</p>
               </div>
             </td>
             <td>
@@ -3455,7 +3557,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The zero-based position of the first item equal to <code>value</code>, or <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -3507,7 +3609,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The zero-based item or field position to select.</p>
+                <p>Zero-based position; negative values count backward from the end.</p>
               </div>
             </td>
             <td>
@@ -3523,7 +3625,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value returned when no matching item is available.</p>
+                <p>Returned when <code>index</code> is outside the async flow.</p>
               </div>
             </td>
             <td>
@@ -3550,6 +3652,29 @@ relational join.</p>
             <td>
               <div class="doc-md-description">
                 <p>The selected item, or <code>default</code> when the index is out of range.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the index is out of range and no default is supplied.</p>
               </div>
             </td>
           </tr>
@@ -3596,7 +3721,7 @@ relational join.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The number of matching input items.</p>
+                <p>The total number of emitted items.</p>
               </div>
             </td>
           </tr>
@@ -3661,7 +3786,8 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The collector used to reduce input items.</p>
+                <p>A streaming <code>Collector</code>, or a sync or async callable that receives a list
+containing the entire consumed flow.</p>
               </div>
             </td>
             <td>
@@ -3682,7 +3808,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named collectors evaluated during the same traversal.</p>
+                <p>Named streaming collectors updated in one async traversal.</p>
               </div>
             </td>
             <td>
@@ -3766,7 +3892,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named aggregators evaluated during the same traversal.</p>
+                <p>Result names mapped to aggregators updated in one async traversal.</p>
               </div>
             </td>
             <td>
@@ -3792,7 +3918,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Finished aggregation values keyed by the supplied argument names.</p>
               </div>
             </td>
           </tr>
@@ -3839,7 +3965,30 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The compensated floating-point mean, or <code>None</code> when no items are emitted.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
               </div>
             </td>
           </tr>
@@ -3891,7 +4040,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Delta degrees of freedom used in the variance divisor.</p>
+                <p>Non-negative adjustment in the divisor <code>count - ddof</code>.</p>
               </div>
             </td>
             <td>
@@ -3917,7 +4066,40 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The floating-point variance, or <code>None</code> when <code>count &lt;= ddof</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>ddof</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -3969,7 +4151,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Delta degrees of freedom used in the variance divisor.</p>
+                <p>Non-negative adjustment in the variance divisor <code>count - ddof</code>.</p>
               </div>
             </td>
             <td>
@@ -3995,7 +4177,40 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The matching or computed value, or <code>None</code> when unavailable.</p>
+                <p>The square root of the variance, or <code>None</code> when <code>count &lt;= ddof</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an emitted item is not a real number.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>ddof</code> is negative.</p>
               </div>
             </td>
           </tr>
@@ -4050,7 +4265,8 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(accumulator, item)</code> from left to
+right.</p>
               </div>
             </td>
             <td>
@@ -4066,8 +4282,7 @@ return a dictionary.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Starting accumulator; when omitted, the first item becomes the accumulator.</p>
               </div>
             </td>
             <td>
@@ -4094,6 +4309,29 @@ supported.</p>
             <td>
               <div class="doc-md-description">
                 <p>The final left-to-right accumulator.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the async flow is empty and <code>initial</code> is omitted.</p>
               </div>
             </td>
           </tr>
@@ -4150,7 +4388,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(item, accumulator)</code> from right
+to left.</p>
               </div>
             </td>
             <td>
@@ -4166,8 +4405,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Starting accumulator; when omitted, the last item becomes the accumulator.</p>
               </div>
             </td>
             <td>
@@ -4183,7 +4421,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of source items allowed in the right-side buffer.</p>
+                <p>Optional maximum number of source items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -4210,6 +4448,39 @@ supported.</p>
             <td>
               <div class="doc-md-description">
                 <p>The final right-to-left accumulator.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the source contains more than <code>max_items</code> items.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.EmptyFlowError">EmptyFlowError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the async flow is empty and <code>initial</code> is omitted.</p>
               </div>
             </td>
           </tr>
@@ -4266,7 +4537,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Callable, field name, index, path, or expression selecting each group key; callable
+results may be awaitable.</p>
               </div>
             </td>
             <td>
@@ -4282,7 +4554,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(group_state, item)</code>.</p>
               </div>
             </td>
             <td>
@@ -4298,7 +4570,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that creates fresh mutable state.</p>
+                <p>Sync or async callable invoked when each distinct group is first seen.</p>
               </div>
             </td>
             <td>
@@ -4324,7 +4596,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Final resolved accumulator for each hashable key, in first-key encounter order.</p>
               </div>
             </td>
           </tr>
@@ -4376,7 +4648,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional callable, field name, index, path, or expression selecting the value to
+count; the item itself is counted when omitted.</p>
               </div>
             </td>
             <td>
@@ -4402,7 +4675,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A dictionary containing the computed keys and values.</p>
+                <p>Occurrence counts keyed by each hashable resolved selected value.</p>
               </div>
             </td>
           </tr>
@@ -4456,7 +4729,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async predicate resolved in order until one result is truthy;
+defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -4482,7 +4756,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> when any item satisfies <code>predicate</code>; <code>False</code> for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -4536,7 +4810,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async predicate resolved in order until one result is falsey;
+defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -4562,7 +4837,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> when every item satisfies <code>predicate</code>, including for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -4616,7 +4891,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async predicate resolved in order until one result is truthy;
+defaults to <code>bool</code>.</p>
               </div>
             </td>
             <td>
@@ -4642,7 +4918,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether the condition described above is true.</p>
+                <p><code>True</code> only when no item satisfies <code>predicate</code>, including for an empty flow.</p>
               </div>
             </td>
           </tr>
@@ -4694,11 +4970,111 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Sync or async callable resolved once for every emitted item; return values are
+ignored.</p>
               </div>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncFlow.explain" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">explain</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">explain</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">terminal</span><span class="p">:</span> <span class="n">AsyncTerminalName</span> <span class="o">=</span> <span class="s2">&quot;iterate&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncPlanExplanation</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Describe stream facts and terminal completion risks without consuming the source.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>terminal</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.planning.semantics.AsyncTerminalName">AsyncTerminalName</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Async terminal whose completion requirements should be analyzed.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;iterate&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.planning.explain.AsyncPlanExplanation">AsyncPlanExplanation</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A lazy explanation view over the current plan and selected terminal.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>terminal</code> is not a supported async terminal name.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -4749,7 +5125,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Items emitted by the new pipeline.</p>
+                <p>Positional values to emit in argument order.</p>
               </div>
             </td>
             <td>
@@ -4775,7 +5151,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>A reusable async flow that emits <code>items</code> in argument order.</p>
               </div>
             </td>
           </tr>
@@ -4827,7 +5203,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The iterable, async iterable, or data source to read lazily.</p>
+                <p>Synchronous iterable adapted to async iteration when consumed.</p>
               </div>
             </td>
             <td>
@@ -4853,7 +5229,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>An async flow that emits each item from <code>source</code>; iterator instances are one-shot.</p>
               </div>
             </td>
           </tr>
@@ -4905,7 +5281,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The iterable, async iterable, or data source to read lazily.</p>
+                <p>Asynchronous iterable opened when consumption begins.</p>
               </div>
             </td>
             <td>
@@ -4931,7 +5307,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>An async flow over <code>source</code>; async iterator instances are one-shot.</p>
               </div>
             </td>
           </tr>
@@ -4985,7 +5361,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The filesystem path to read from or write to.</p>
+                <p>Text file opened only when the returned flow is consumed.</p>
               </div>
             </td>
             <td>
@@ -5001,7 +5377,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The text encoding used to open the file.</p>
+                <p>Encoding used by <code>aiofiles.open</code>.</p>
               </div>
             </td>
             <td>
@@ -5027,7 +5403,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>A reusable async flow of lines with trailing CR and LF characters removed.</p>
               </div>
             </td>
           </tr>
@@ -5079,7 +5455,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The duration in seconds used by the timing operation.</p>
+                <p>Delay before the first integer and between later integers.</p>
               </div>
             </td>
             <td>
@@ -5105,7 +5481,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>A reusable, infinite flow emitting <code>0, 1, 2, ...</code> at the requested interval.</p>
               </div>
             </td>
           </tr>
@@ -5167,7 +5543,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async callable that returns page items and the next cursor.</p>
+                <p>Sync or async callable receiving the current cursor and returning
+<code>(page, next_cursor)</code>; each page may be sync or async iterable.</p>
               </div>
             </td>
             <td>
@@ -5183,7 +5560,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first index, numeric value, or additive identity to use.</p>
+                <p>Cursor passed to the first <code>fetch_page</code> call.</p>
               </div>
             </td>
             <td>
@@ -5209,7 +5586,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code>.</p>
+                <p>A reusable async flow that flattens each page and stops after a <code>None</code> next cursor.</p>
               </div>
             </td>
           </tr>
@@ -5265,7 +5642,7 @@ finish.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper called once for each source item.</p>
               </div>
             </td>
             <td>
@@ -5281,7 +5658,7 @@ finish.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of operations or inner sources active at once.</p>
+                <p>Maximum mapper calls in flight.</p>
               </div>
             </td>
             <td>
@@ -5297,7 +5674,7 @@ finish.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether results must preserve source encounter order.</p>
+                <p>Emit in source order when true, otherwise in task-completion order.</p>
               </div>
             </td>
             <td>
@@ -5313,7 +5690,7 @@ finish.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The optional maximum duration in seconds before the operation fails.</p>
+                <p>Optional per-item deadline covering mapper invocation and awaiting its result.</p>
               </div>
             </td>
             <td>
@@ -5339,7 +5716,7 @@ finish.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of mapped values with bounded work and cleanup on early exit.</p>
               </div>
             </td>
           </tr>
@@ -5414,7 +5791,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper called once per item; awaitable results are resolved.</p>
               </div>
             </td>
             <td>
@@ -5440,7 +5817,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of mapped values in source order, with one mapper call in flight.</p>
               </div>
             </td>
           </tr>
@@ -5491,7 +5868,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved for each item; truthy results retain it.</p>
               </div>
             </td>
             <td>
@@ -5517,7 +5894,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing only items whose resolved predicate result is truthy.</p>
               </div>
             </td>
           </tr>
@@ -5568,7 +5945,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved for each item; truthy results retain it.</p>
               </div>
             </td>
             <td>
@@ -5594,7 +5971,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>The same ordered async filtering pipeline produced by <code>filter(predicate)</code>.</p>
               </div>
             </td>
           </tr>
@@ -5644,7 +6021,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved for each item; truthy results drop it.</p>
               </div>
             </td>
             <td>
@@ -5670,7 +6047,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing only items whose resolved predicate result is falsey.</p>
               </div>
             </td>
           </tr>
@@ -5718,7 +6095,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The side-effecting callable invoked for each matching item.</p>
+                <p>Sync or async side effect resolved before the original item is emitted.</p>
               </div>
             </td>
             <td>
@@ -5744,7 +6121,7 @@ flow is consumed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that passes every item through unchanged after running <code>action</code>.</p>
               </div>
             </td>
           </tr>
@@ -5801,7 +6178,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper returning a sync or async iterable for each item.</p>
               </div>
             </td>
             <td>
@@ -5827,7 +6204,17 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that drains each mapped iterable in source order before mapping the next</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>item.</p>
               </div>
             </td>
           </tr>
@@ -5877,7 +6264,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional sources combined with this pipeline.</p>
+                <p>Sync or async sources to interleave with this flow.</p>
               </div>
             </td>
             <td>
@@ -5903,7 +6290,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that emits each source's next item as its pull completes.</p>
               </div>
             </td>
           </tr>
@@ -5953,7 +6340,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional sources combined with this pipeline.</p>
+                <p>Sync or async sources whose latest values join this flow's latest value.</p>
               </div>
             </td>
             <td>
@@ -5979,7 +6366,17 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>A flow of latest-value tuples in source argument order. Emission starts only after every</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>source has produced once; completed sources retain their final value.</p>
               </div>
             </td>
           </tr>
@@ -6036,7 +6433,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper returning a sync or async inner source.</p>
               </div>
             </td>
             <td>
@@ -6052,7 +6449,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of operations or inner sources active at once.</p>
+                <p>Shared maximum for inner sources being opened or actively consumed.</p>
               </div>
             </td>
             <td>
@@ -6078,7 +6475,7 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow interleaving inner items in completion order under the concurrency cap.</p>
               </div>
             </td>
           </tr>
@@ -6161,7 +6558,7 @@ closed. After the outer source completes, the latest inner source may finish nor
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> that emits items from the most recent inner source.</p>
+                <p>An async flow that emits only from the most recently mapped inner source.</p>
               </div>
             </td>
           </tr>
@@ -6260,7 +6657,7 @@ and cancellation during the delay still closes the source.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> with delayed consumption.</p>
+                <p>An async flow that waits once before its first upstream pull, then forwards normally.</p>
               </div>
             </td>
           </tr>
@@ -6334,7 +6731,7 @@ preserved.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of emissions allowed in one window.</p>
+                <p>Maximum emissions permitted in each rolling <code>per</code>-second window.</p>
               </div>
             </td>
             <td>
@@ -6376,7 +6773,7 @@ preserved.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> with bounded emission rate.</p>
+                <p>An async flow that delays, but never drops, items to enforce the rolling rate limit.</p>
               </div>
             </td>
           </tr>
@@ -6485,7 +6882,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> with evenly spaced emissions.</p>
+                <p>An async flow that emits the first item immediately and delays later items as needed.</p>
               </div>
             </td>
           </tr>
@@ -6556,7 +6953,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The duration in seconds used by the timing operation.</p>
+                <p>Maximum wait for each individual upstream <code>anext</code> call.</p>
               </div>
             </td>
             <td>
@@ -6582,7 +6979,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that raises <code>TimeoutError</code> and cancels an overdue item pull.</p>
               </div>
             </td>
           </tr>
@@ -6630,7 +7027,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The duration in seconds used by the timing operation.</p>
+                <p>Quiet interval required before the latest pending item is emitted.</p>
               </div>
             </td>
             <td>
@@ -6656,7 +7053,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that drops superseded pending items and flushes the latest item when the</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>source completes.</p>
               </div>
             </td>
           </tr>
@@ -6706,7 +7113,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items emitted in one batch.</p>
+                <p>Item count that flushes the current batch immediately.</p>
               </div>
             </td>
             <td>
@@ -6722,7 +7129,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The duration in seconds used by the timing operation.</p>
+                <p>Maximum time from a batch's first item until that batch is flushed.</p>
               </div>
             </td>
             <td>
@@ -6748,7 +7155,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of non-empty tuples flushed by count, timeout, or source completion.</p>
               </div>
             </td>
           </tr>
@@ -6798,7 +7205,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper returning one output value or <code>None</code>.</p>
               </div>
             </td>
             <td>
@@ -6824,7 +7231,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of non-<code>None</code> mapped results; falsey values such as <code>0</code> are retained.</p>
               </div>
             </td>
           </tr>
@@ -6872,7 +7279,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression evaluated for each output.</p>
               </div>
             </td>
             <td>
@@ -6898,7 +7305,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing the value selected from each source item.</p>
               </div>
             </td>
           </tr>
@@ -6923,7 +7330,7 @@ the requested interval, using the event loop's monotonic clock.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Drop None values, optionally selected from each item.</p>
+        <p>Drop items whose own or selected value is falsey.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6946,7 +7353,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Optional callable, field name, index, path, or expression whose truth value
+determines whether the original item is retained.</p>
               </div>
             </td>
             <td>
@@ -6972,7 +7380,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow retaining only items with truthy selected values; without a selector,</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>falsey items such as <code>None</code>, <code>0</code>, and empty containers are omitted.</p>
               </div>
             </td>
           </tr>
@@ -6997,7 +7415,7 @@ the requested interval, using the event loop's monotonic clock.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Drop None values, optionally selected from each item.</p>
+        <p>Drop only items equal to <code>None</code>, retaining every other falsey value.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -7015,7 +7433,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing every non-<code>None</code> source item.</p>
               </div>
             </td>
           </tr>
@@ -7040,7 +7458,7 @@ the requested interval, using the event loop's monotonic clock.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Keep the first occurrence of each hashable value.</p>
+        <p>Keep the first occurrence of each value in source order.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -7058,7 +7476,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing the first occurrence of each distinct value; unhashable values</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>are compared by equality.</p>
               </div>
             </td>
           </tr>
@@ -7106,7 +7534,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable, field name, index, path, or expression used to select a value.</p>
+                <p>Callable, field name, index, path, or expression producing each uniqueness
+key; callable results may be awaitable.</p>
               </div>
             </td>
             <td>
@@ -7132,7 +7561,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing the first item for each distinct resolved selected key.</p>
               </div>
             </td>
           </tr>
@@ -7182,7 +7611,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper that may raise an <code>Exception</code>.</p>
               </div>
             </td>
             <td>
@@ -7208,7 +7637,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of <code>Ok</code> mapped values and <code>Err</code> objects for raised exceptions.</p>
               </div>
             </td>
           </tr>
@@ -7256,7 +7685,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Maximum number of leading items to emit.</p>
               </div>
             </td>
             <td>
@@ -7282,7 +7711,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing only the first <code>count</code> items, with upstream work cancelled</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>and closed after the limit.</p>
               </div>
             </td>
           </tr>
@@ -7353,7 +7792,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested number of items.</p>
+                <p>Number of leading source items to consume without emitting.</p>
               </div>
             </td>
             <td>
@@ -7379,7 +7818,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing every source item after the first <code>count</code>.</p>
               </div>
             </td>
           </tr>
@@ -7452,7 +7891,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved on leading items until its first falsey
+result.</p>
               </div>
             </td>
             <td>
@@ -7478,7 +7918,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow ending before the first item whose resolved predicate is falsey.</p>
               </div>
             </td>
           </tr>
@@ -7528,7 +7968,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved on leading items through its first falsey
+result.</p>
               </div>
             </td>
             <td>
@@ -7554,7 +7995,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow ending after emitting the first item whose resolved predicate is falsey.</p>
               </div>
             </td>
           </tr>
@@ -7604,7 +8045,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that decides whether an item matches.</p>
+                <p>Sync or async callable resolved only while leading items are truthy.</p>
               </div>
             </td>
             <td>
@@ -7630,7 +8071,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow beginning with the first falsey-predicate item; later items are emitted</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>without further predicate calls.</p>
               </div>
             </td>
           </tr>
@@ -7678,7 +8129,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested window, chunk, or batch size.</p>
+                <p>Maximum number of consecutive items in each tuple.</p>
               </div>
             </td>
             <td>
@@ -7704,7 +8155,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of non-overlapping tuples, including a final shorter tuple when needed.</p>
               </div>
             </td>
           </tr>
@@ -7777,7 +8228,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The requested window, chunk, or batch size.</p>
+                <p>Number of items in each full window.</p>
               </div>
             </td>
             <td>
@@ -7793,7 +8244,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The distance between consecutive windows or numeric increments.</p>
+                <p>Number of source items consumed between successive windows.</p>
               </div>
             </td>
             <td>
@@ -7819,7 +8270,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>A flow of full sliding windows; a non-empty source shorter than <code>size</code> produces one</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>partial window, but no trailing partial window is emitted otherwise.</p>
               </div>
             </td>
           </tr>
@@ -7885,7 +8346,17 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of overlapping <code>(previous, current)</code> pairs; fewer than two items emit</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, <span title="fpstreams.streams.async_flow.T">T</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>nothing.</p>
               </div>
             </td>
           </tr>
@@ -7935,7 +8406,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper called as <code>function(previous, current)</code>.</p>
               </div>
             </td>
             <td>
@@ -7961,7 +8432,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing one resolved mapped result per adjacent pair.</p>
               </div>
             </td>
           </tr>
@@ -8011,7 +8482,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable or selector used to derive a key.</p>
+                <p>Optional selector for run identity; adjacent items themselves are compared when
+omitted. Callable results may be awaitable.</p>
               </div>
             </td>
             <td>
@@ -8037,7 +8509,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of non-empty tuples, one for each contiguous run of equal resolved keys.</p>
               </div>
             </td>
           </tr>
@@ -8085,7 +8557,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The first index, numeric value, or additive identity to use.</p>
+                <p>Integer-compatible index paired with the first source item.</p>
               </div>
             </td>
             <td>
@@ -8111,7 +8583,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of <code>(index, item)</code> pairs with consecutive integer indices.</p>
               </div>
             </td>
           </tr>
@@ -8163,7 +8635,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Sync or async source providing the right-hand item in each pair.</p>
               </div>
             </td>
             <td>
@@ -8179,7 +8651,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether invalid or empty input should raise instead of returning a fallback.</p>
+                <p>Raise <code>ValueError</code> during consumption when the two sources have different
+lengths.</p>
               </div>
             </td>
             <td>
@@ -8205,7 +8678,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of pairs ending with the shorter source unless <code>strict</code> is true.</p>
               </div>
             </td>
           </tr>
@@ -8257,7 +8730,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Sync or async source providing right-hand values.</p>
               </div>
             </td>
             <td>
@@ -8273,7 +8746,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The value used when one side of a longest zip is exhausted.</p>
+                <p>Substitute used on whichever source is exhausted first.</p>
               </div>
             </td>
             <td>
@@ -8299,7 +8772,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of pairs whose length matches the longer source.</p>
               </div>
             </td>
           </tr>
@@ -8347,7 +8820,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The string inserted between adjacent string representations.</p>
+                <p>Item emitted once between each pair of adjacent source items.</p>
               </div>
             </td>
             <td>
@@ -8373,7 +8846,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow with <code>separator</code> between source items and never at either boundary.</p>
               </div>
             </td>
           </tr>
@@ -8423,7 +8896,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Additional sources combined with this pipeline.</p>
+                <p>Sync or async sources opened and drained after this flow, in argument order.</p>
               </div>
             </td>
             <td>
@@ -8449,7 +8922,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow that drains this source and then each additional source in order.</p>
               </div>
             </td>
           </tr>
@@ -8478,7 +8951,7 @@ the requested interval, using the event loop's monotonic clock.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit the Cartesian product with a bounded or reiterable right side.</p>
+        <p>Buffer another source once and emit a left-major Cartesian product.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -8501,7 +8974,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The other iterable, flow, value, or fallback used by the operation.</p>
+                <p>Sync or async source buffered after the first left item arrives.</p>
               </div>
             </td>
             <td>
@@ -8517,7 +8990,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum right-side size allowed when buffering is required.</p>
+                <p>Optional maximum number of right-side items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -8543,7 +9016,40 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of <code>(left, right)</code> pairs with every right item repeated for each left</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, <span title="fpstreams.streams.async_flow.U">U</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>item.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>During consumption if <code>other</code> contains more than <code>max_right</code> items.</p>
               </div>
             </td>
           </tr>
@@ -8570,7 +9076,7 @@ the requested interval, using the event loop's monotonic clock.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit each left-to-right accumulator state.</p>
+        <p>Emit each resolved left-to-right accumulator state after consuming one item.</p>
 <p>Unlike <code>reduce</code>, <code>scan</code> emits every intermediate accumulator state.</p>
 
 
@@ -8594,8 +9100,7 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Accumulator passed to the first callback; it is not emitted by itself.</p>
               </div>
             </td>
             <td>
@@ -8611,7 +9116,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(state, item)</code>.</p>
               </div>
             </td>
             <td>
@@ -8637,7 +9142,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow with one accumulated state for every source item.</p>
               </div>
             </td>
           </tr>
@@ -8667,7 +9172,7 @@ supported.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Emit accumulator states while combining items from right to left.</p>
+        <p>Buffer the source, fold right, and emit resolved states in source order.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -8690,8 +9195,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The initial accumulator value. When omitted, the first item is used where
-supported.</p>
+                <p>Accumulator passed to the rightmost callback; it is not emitted by itself.</p>
               </div>
             </td>
             <td>
@@ -8707,7 +9211,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(item, state)</code> from right to
+left.</p>
               </div>
             </td>
             <td>
@@ -8723,7 +9228,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of source items allowed in the right-side buffer.</p>
+                <p>Optional maximum number of source items that may be buffered.</p>
               </div>
             </td>
             <td>
@@ -8749,7 +9254,30 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow with one right-fold state per source item, ordered like the source.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="fpstreams.errors.BufferLimitError">BufferLimitError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>During consumption if the source exceeds <code>max_items</code>.</p>
               </div>
             </td>
           </tr>
@@ -8797,7 +9325,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Values supplied to this operation in encounter order.</p>
+                <p>Items emitted before the first source item, in argument order.</p>
               </div>
             </td>
             <td>
@@ -8823,7 +9351,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing <code>values</code> followed by every source item.</p>
               </div>
             </td>
           </tr>
@@ -8871,7 +9399,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Values supplied to this operation in encounter order.</p>
+                <p>Items emitted after the source completes, in argument order.</p>
               </div>
             </td>
             <td>
@@ -8897,7 +9425,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing every source item followed by <code>values</code>.</p>
               </div>
             </td>
           </tr>
@@ -8947,7 +9475,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper for the first item; never called for an empty source.</p>
               </div>
             </td>
             <td>
@@ -8973,7 +9501,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow with only its first item replaced by the resolved mapped value.</p>
               </div>
             </td>
           </tr>
@@ -9023,7 +9551,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async mapper for the final item; never called for an empty source.</p>
               </div>
             </td>
             <td>
@@ -9049,7 +9577,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow with only its final item replaced by the resolved mapped value.</p>
               </div>
             </td>
           </tr>
@@ -9100,7 +9628,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable deciding whether two adjacent items should be combined.</p>
+                <p>Sync or async predicate called on neighboring original items.</p>
               </div>
             </td>
             <td>
@@ -9116,7 +9644,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that merges two downstream results.</p>
+                <p>Sync or async callback combining the current run aggregate with the next item.</p>
               </div>
             </td>
             <td>
@@ -9142,7 +9670,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow containing one resolved aggregate per contiguous collapsible run.</p>
               </div>
             </td>
           </tr>
@@ -9170,7 +9698,7 @@ supported.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Apply a Gatherer-compatible stateful fold.</p>
+        <p>Reduce the whole source and emit one resolved accumulator.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -9193,7 +9721,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A zero-argument callable that creates fresh mutable state.</p>
+                <p>Sync or async callable invoked once per evaluation for initial state.</p>
               </div>
             </td>
             <td>
@@ -9209,7 +9737,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The callable applied by this operation.</p>
+                <p>Sync or async callback invoked as <code>function(state, item)</code>.</p>
               </div>
             </td>
             <td>
@@ -9235,7 +9763,17 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow emitting exactly one final state, including the initializer for an empty</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>source.</p>
               </div>
             </td>
           </tr>
@@ -9291,7 +9829,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum measured size allowed in one batch.</p>
+                <p>Maximum sum of resolved item sizes in a normal batch.</p>
               </div>
             </td>
             <td>
@@ -9307,7 +9845,7 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The maximum number of items emitted in one batch.</p>
+                <p>Optional maximum item count per batch.</p>
               </div>
             </td>
             <td>
@@ -9323,7 +9861,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A callable that returns the measured size of one item.</p>
+                <p>Sync or async callable returning a non-negative integer size; defaults to
+<code>len</code>.</p>
               </div>
             </td>
             <td>
@@ -9339,7 +9878,8 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Whether invalid or empty input should raise instead of returning a fallback.</p>
+                <p>Raise when one item exceeds <code>max_size</code>; when false, emit it in an oversized
+singleton batch.</p>
               </div>
             </td>
             <td>
@@ -9365,7 +9905,17 @@ supported.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A new lazy <code>AsyncFlow</code> representing this operation.</p>
+                <p>An async flow of non-empty tuples packed within both limits, except for non-strict</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>oversized singleton items.</p>
               </div>
             </td>
           </tr>
