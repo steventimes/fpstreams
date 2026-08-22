@@ -1330,15 +1330,15 @@ machines used by named and grouped aggregation.</p>
 
     <div class="doc doc-contents first">
             <p class="doc doc-class-bases">
-              Bases: <code><span title="typing.Generic">Generic</span>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="fpstreams.collecting.collector.S">S</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code></p>
+              Bases: <code><span title="typing.Generic">Generic</span>[<span title="fpstreams.collecting._collector_base.T">T</span>, <span title="fpstreams.collecting._collector_base.S">S</span>, <span title="fpstreams.collecting._collector_base.R">R</span>]</code></p>
 
 
 
         <p>Describe an immutable streaming reduction from input items to a result.</p>
-<p><code>initializer</code> creates independent state, <code>step</code> consumes one item, and <code>finish</code> converts
-final state to the public result. An optional <code>combine</code> merges partial states. <code>done</code>
-enables source short-circuiting, and <code>native</code> carries planner metadata without affecting
-Python execution.</p>
+<p><code>initializer</code> creates independent state, <code>step</code> consumes one item, and
+<code>finish</code> converts final state to the public result. An optional <code>combine</code>
+merges partial states. <code>done</code> enables source short-circuiting, and <code>native</code>
+carries planner metadata without changing Python execution.</p>
 
 
 
@@ -1446,7 +1446,7 @@ Python execution.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1498,7 +1498,7 @@ Python execution.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="set">set</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="set">set</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="set">set</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="set">set</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1550,7 +1550,7 @@ Python execution.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="tuple">tuple</span>[<span title="fpstreams.collecting.collector.T">T</span>, ...]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="tuple">tuple</span>[<span title="fpstreams.collecting.collector.T">T</span>, ...]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1636,7 +1636,7 @@ Python execution.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="list">list</span>[<span title="str">str</span>], <span title="str">str</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="list">list</span>[<span title="str">str</span>], <span title="str">str</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1718,7 +1718,7 @@ for each group; omitting it collects group members into lists.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>] | None</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1749,7 +1749,7 @@ for each group; omitting it collects group members into lists.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>], <span title="dict">dict</span>[<span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span> | <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>], <span title="dict">dict</span>[<span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span> | <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1831,7 +1831,7 @@ partition members into lists.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>] | None</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1862,7 +1862,7 @@ partition members into lists.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="bool">bool</span>, <span title="typing.Any">Any</span>], <span title="dict">dict</span>[<span title="bool">bool</span>, <span title="fpstreams.collecting.collector.R">R</span> | <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="bool">bool</span>, <span title="typing.Any">Any</span>], <span title="dict">dict</span>[<span title="bool">bool</span>, <span title="fpstreams.collecting.collector.R">R</span> | <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1941,7 +1941,7 @@ completion, but does not carry downstream native metadata or reducer-law type.</
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.U">U</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.U">U</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.U">U</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.U">U</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1972,7 +1972,7 @@ completion, but does not carry downstream native metadata or reducer-law type.</
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2051,7 +2051,7 @@ and early completion are preserved; native metadata and reducer-law type are not
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2082,7 +2082,7 @@ and early completion are preserved; native metadata and reducer-law type are not
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2163,7 +2163,7 @@ type are not.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.U">U</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.U">U</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.U">U</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.U">U</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2194,7 +2194,7 @@ type are not.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2257,7 +2257,7 @@ type are not.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2304,7 +2304,7 @@ type are not.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.U">U</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.U">U</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2392,7 +2392,7 @@ results in left-to-right order. Callable downstreams buffer their respective ite
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.R">R</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.R">R</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2413,7 +2413,7 @@ results in left-to-right order. Callable downstreams buffer their respective ite
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.U">U</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.U">U</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.U">U</span>] | <span title="collections.abc.Callable">Callable</span>[[<span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.collecting.collector.T">T</span>]], <span title="fpstreams.collecting.collector.U">U</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2460,7 +2460,7 @@ results in left-to-right order. Callable downstreams buffer their respective ite
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="fpstreams.collecting.collector._TeeState">_TeeState</span>, <span title="fpstreams.collecting.collector.V">V</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="fpstreams.collecting.collector._TeeState">_TeeState</span>, <span title="fpstreams.collecting.collector.V">V</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2535,7 +2535,7 @@ results in left-to-right order. Callable downstreams buffer their respective ite
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="int">int</span>, <span title="int">int</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="int">int</span>, <span title="int">int</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2620,7 +2620,7 @@ results in left-to-right order. Callable downstreams buffer their respective ite
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2707,7 +2707,7 @@ finishing, and partial <code>(sum, count)</code> states can be combined componen
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, <span title="int">int</span>], <span title="float">float</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, <span title="int">int</span>], <span title="float">float</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2795,7 +2795,7 @@ already zero. The returned statistics object is the final mutable state.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="fpstreams.collecting.collector.SummaryStatistics">SummaryStatistics</span>, <span title="fpstreams.collecting.collector.SummaryStatistics">SummaryStatistics</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="fpstreams.collecting.collector.SummaryStatistics">SummaryStatistics</span>, <span title="fpstreams.collecting.collector.SummaryStatistics">SummaryStatistics</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2849,7 +2849,7 @@ as a completed result.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2902,7 +2902,7 @@ as a completed result.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2986,7 +2986,7 @@ as a completed result.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3094,7 +3094,7 @@ oldest; a zero count retains nothing.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="collections.deque">deque</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="collections.deque">deque</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3171,7 +3171,7 @@ collection early so finishing can raise without pulling a third.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="list">list</span>[<span title="fpstreams.collecting.collector.T">T</span>], <span title="fpstreams.collecting.collector.T">T</span> | None]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3319,7 +3319,7 @@ it. Selector errors and unhashable keys propagate.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="fpstreams.collecting.collector.K">K</span>, <span title="fpstreams.collecting.collector.V">V</span>], <span title="dict">dict</span>[<span title="fpstreams.collecting.collector.K">K</span>, <span title="fpstreams.collecting.collector.V">V</span>]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="dict">dict</span>[<span title="fpstreams.collecting.collector.K">K</span>, <span title="fpstreams.collecting.collector.V">V</span>], <span title="dict">dict</span>[<span title="fpstreams.collecting.collector.K">K</span>, <span title="fpstreams.collecting.collector.V">V</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3409,7 +3409,7 @@ entry per input row.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>], <span title="fpstreams.collecting.collector._ColumnsState">_ColumnsState</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="list">list</span>[<span title="typing.Any">Any</span>]]]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>], <span title="fpstreams.collecting.collector._ColumnsState">_ColumnsState</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="list">list</span>[<span title="typing.Any">Any</span>]]]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -3509,11 +3509,11 @@ record field; expression and callable selectors are also accepted.</p>
 
   
       dataclass
-   (fpstreams.collecting.collector.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code></p>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code></p>
 
 
 
-        <p>A collector accepted by named aggregate terminals and optional native fusion.</p>
+        <p>A collector accepted by named aggregate terminals and native fusion.</p>
 
 
 
