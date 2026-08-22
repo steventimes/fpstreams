@@ -1,6 +1,6 @@
 # fpstreams
 
-[![Tests](https://github.com/steventimes/fpstreams/actions/workflows/test.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions/workflows/test.yml)
+[![CI](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/fpstreams.svg)](https://pypi.org/project/fpstreams/)
 [![Python](https://img.shields.io/pypi/pyversions/fpstreams.svg)](https://pypi.org/project/fpstreams/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -12,20 +12,25 @@ asynchronous concurrency, record-oriented transforms, and optional Rust executio
 
 ## What is in v2
 
-- `Flow[T]`: lazy, reiterable or one-shot synchronous pipelines.
+- `Flow[T]`: the primary synchronous entry point for lazy value and record
+  pipelines, including retained tabular sources.
 - `AsyncFlow[T]`: asynchronous transforms with bounded concurrency, ordering,
   timeouts, merging, debouncing, and cancellation-safe cleanup.
-- `Rows[T]`: expressions, joins, grouping, reshape operations, CSV/JSONL/SQL,
-  Arrow, Parquet, pandas, and Polars interoperability.
+- `Rows[T]`: an explicit relational and compatibility view for expressions,
+  joins, grouping, reshape operations, and record-oriented data I/O.
 - `Pairs[K, V]`: key/value transforms and per-key collection or aggregation.
 - `Collector` and `Aggregator`: single-pass reductions, including named
   multi-aggregation.
 - `Option` and `Result`: typed value and error containers.
-- Automatic execution planning: fused Python loops, native Rust kernels for
-  supported numeric plans, and hybrid execution when only part of a plan is native.
+- Automatic execution planning: fused Python loops, Arrow-native prefixes,
+  native Rust kernels for supported scalar plans and guarded relational
+  subpaths, and hybrid execution when only part of a plan is native.
 - Configured memory and output limits for external sort and partitioned joins/grouping.
 
-Python 3.11 or newer is required.
+Python 3.11 or newer is required. Release testing covers standard CPython 3.11
+through 3.14. Free-threaded CPython 3.14t is exercised by an experimental,
+non-blocking source-build workflow; it is not currently a release-wheel target,
+and unsupported fast paths fall back conservatively.
 
 ## Installation
 
@@ -84,10 +89,13 @@ All named aggregations share one traversal of the source.
 
 ### Record pipelines
 
-`Rows` accepts dictionaries, dataclasses, named tuples, and objects with attributes.
+`flow()` is the main synchronous entry point for both values and records. Record
+operations with no conflicting Flow meaning, such as `with_columns()` and
+`group_by()`, enter a `Rows` view automatically. Records can be dictionaries,
+dataclasses, named tuples, or objects with attributes.
 
 ~~~python
-from fpstreams import agg, col, rows
+from fpstreams import agg, col, flow
 
 orders = [
     {"region": "eu", "status": "paid", "price": 12, "quantity": 2},
@@ -97,8 +105,8 @@ orders = [
 ]
 
 revenue = (
-    rows(orders)
-    .where(col("status") == "paid")
+    flow(orders)
+    .filter(col("status") == "paid")
     .with_columns(revenue=col("price") * col("quantity"))
     .group_by("region")
     .aggregate(
@@ -115,15 +123,34 @@ assert revenue == [
 ]
 ~~~
 
-`Rows` also reads and writes Arrow, Parquet, pandas, Polars, SQLite, and
-DB-API sources:
+Four relation-building names already have general Flow meanings. Call `.rows()`
+first when you intend these relational versions:
+
+| Flow call | Flow meaning | Explicit Rows call | Rows meaning |
+| --- | --- | --- | --- |
+| `drop(count)` | Skip leading items | `rows().drop(*columns)` | Remove record fields |
+| `join(separator)` | Join string representations | `rows().join(other, ...)` | Relational join |
+| `aggregate(...)` | Execute and return a dictionary | `rows().aggregate(...)` | Build a lazy one-row relation |
+| `where(predicate)` | Alias of `filter` | `rows().where(predicate, **equalities)` | Filter records, including field equalities |
+
+Flow also keeps its own output methods. Enter `.rows()` before same-named
+methods when you need Rows-specific options, for example
+`to_csv(fieldnames=...)` or `to_pandas(batch_size=..., schema=...)`.
+
+`flow(source)` automatically retains concrete PyArrow tables, batches and
+readers, pandas DataFrames, Polars frames, and standard
+`__arrow_c_stream__`/`__dataframe__` providers. Arrow takes priority when a
+custom object implements both protocols, and a pandas index is not emitted as a
+record column. Explicit Flow factories cover Arrow, dataframe, Polars, typed
+CSV, and Parquet inputs. The `rows` namespace continues to provide compatibility
+CSV, JSONL, SQLite, DB-API, and record-oriented output methods:
 
 ~~~python
-from fpstreams import col, rows
+from fpstreams import col, flow
 
 active = (
-    rows.from_parquet("accounts.parquet", columns=["id", "status", "balance"])
-    .where(col("status") == "active")
+    flow.from_parquet("accounts.parquet", columns=["id", "status", "balance"])
+    .filter(col("status") == "active")
     .select("id", "balance")
 )
 
@@ -180,8 +207,10 @@ assert totals == {
 
 ## Execution engines
 
-The default `auto` engine chooses between Python, native Rust, and hybrid execution.
-Pass the terminal you intend to call to `explain()` so its answer matches execution:
+The default `auto` engine chooses among Python, native Rust, Arrow-native
+prefixes, and hybrid execution. Relational plans may also use guarded native
+subpaths while retaining their canonical Python fallback. Pass the terminal you
+intend to call to `explain()` so its answer matches execution:
 
 ~~~python
 from fpstreams import flow, item
@@ -205,8 +234,11 @@ python_result = pipeline.with_engine("python").to_list()
 native_result = pipeline.with_engine("native").to_list()
 ~~~
 
-A forced native plan raises `NativeUnsupportedError` if its types or operations
-cannot run natively. `auto` falls back safely.
+A forced native plan raises `NativeUnsupportedError` if its complete types or
+operations cannot run natively. In particular, the presence of an internal
+native relational specialization does not make the complete relation eligible
+for `with_engine("native")`. An unsupported forced relational plan fails before
+claiming its one-shot sources; `auto` selects a legal fallback path.
 
 For an unchanged list or tuple, automatic `list`, `sum`, and `count` terminals
 stay in Python instead of scanning and copying the container into Rust. Numeric
@@ -245,6 +277,11 @@ intentional.
 - Reiterable inputs such as lists can execute more than once.
 - Iterators and async iterators are one-shot and raise `FlowConsumedError` on a
   second execution.
+- Ordinary generators are not opened or sampled when `flow()` is constructed.
+- Generic `__dataframe__` conversion and Polars LazyFrame collection remain
+  deferred until execution. A custom `__arrow_c_stream__` provider is imported
+  once during construction and treated as one-shot; a PyArrow
+  `RecordBatchReader` is also one-shot.
 - `flow.defer(factory)` opens a fresh source for every execution.
 - Terminal operations close owned iterators, database cursors, temporary files,
   and asynchronous tasks, including on errors and early termination.
@@ -253,7 +290,9 @@ intentional.
 
 `Stream` remains an alias of `Flow`, `AsyncStream` remains an alias of
 `AsyncFlow`, and `ParallelStream` remains an alias of `Flow` to ease imports.
-New v2 code should use `flow`, `aflow`, `rows`, and `pairs` directly.
+New synchronous code should start with `flow`; use `.rows()` or the `rows`
+factory namespace when an explicit relational view or record-specific adapter
+is required. Use `aflow` and `pairs` for their respective domains.
 
 v2 breaks parts of the v1 API. The standalone `core` and `ParallelStream`
 implementations are gone. `ParallelStream` remains an alias, and `Flow.parallel()`
@@ -268,8 +307,8 @@ uv sync --extra arrow --extra data --extra polars \
 
 uv run pytest --cov=src/fpstreams --cov-branch --cov-report=term-missing --cov-report=json
 uv run python tools/check_coverage.py coverage.json
-uv run ruff check .
-uv run ruff format --check .
+uv run ruff check src tests tools benchmark.py
+uv run ruff format --check src tests tools benchmark.py
 uv run mypy src/fpstreams
 cargo test --manifest-path rust/Cargo.toml
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
@@ -278,6 +317,8 @@ uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 The source tree is organized by domain under `src/fpstreams/`: `streams`,
 `planning`, `execution`, `collecting`, `tabular`, `expressions`, and `primitives`.
 Small top-level modules are compatibility facades, not duplicate implementations.
+The [Chinese code-reading guide](CODE_READING_GUIDE.zh-CN.md) follows complete
+sync, relational, spill, native, and async execution paths through those domains.
 
 ## License
 

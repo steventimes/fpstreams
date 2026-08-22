@@ -9,20 +9,25 @@ import json
 import math
 import operator
 import os
+import sys
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from numbers import Real
 from typing import Any, Generic, TypeVar, cast
 
+from ..collecting.aggregate_program import (
+    NativeAggregateField,
+    NativeAggregateMask,
+    compile_aggregations,
+)
 from ..collecting.aggregation import (
     Aggregator,
     finish_native_aggregations,
-    native_aggregation_items,
-    native_first_only,
     prepare_aggregations,
-    run_aggregations,
 )
 from ..collecting.collector import Collector, prepare_collectors, run_collectors
+from ..collecting.program import run_collector_program
 from ..collecting.statistics import (
     OnlineStatistics,
     StatisticsSnapshot,
@@ -36,25 +41,292 @@ from ..execution import (
     exact_count,
     execute,
     try_native_aggregate,
+    try_native_materialize,
     try_native_statistics,
     try_native_terminal,
 )
+from ..execution.physical import execute_physical, operations_from_physical_nodes
+from ..execution.sync import open_operations
+from ..execution.sync_ops import close_iterators
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.selectors import Selector, compile_selector
 from ..io_safety import spreadsheet_safe_cell
-from ..planning.sync import Plan
+from ..physical.plan import BackendPayload, PhysicalPlan, SortPhysicalNode, SortStrategy
+from ..planning.compiler import compile_query
+from ..planning.logical import Pipeline, Query, linear_pipeline
+from ..planning.native import TerminalName
+from ..planning.sync import FilterOp, MapOp
 from ..primitives.result import Err, Ok
+from ..runtime.query import QueryRuntime
 
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
 _MISSING = object()
+_MINMAX_NATIVE_MASK = NativeAggregateMask(
+    frozenset({NativeAggregateField.MINIMUM, NativeAggregateField.MAXIMUM})
+).bits
+_SCALAR_FUSION_MIN_ROWS = 4_096
+
+
+def _sum_python_pipeline(pipeline: Pipeline, start: Any) -> Any:
+    """Reduce a Python iterator chain in CPython's C loop under query-scoped ownership."""
+    with open_operations(pipeline.source.open(), pipeline.operations) as iterator:
+        return builtins.sum(iterator, start)
+
+
+def _minmax_python_values(iterator: Iterator[Any]) -> tuple[Any, Any]:
+    """Compare keyless values directly while their caller retains iterator ownership."""
+    try:
+        minimum = maximum = next(iterator)
+    except StopIteration:
+        raise EmptyFlowError("minmax() requires at least one item") from None
+    for item in iterator:
+        if item < minimum:
+            minimum = item
+        if item > maximum:
+            maximum = item
+    return minimum, maximum
+
+
+@contextmanager
+def _open_terminal_values(
+    physical: PhysicalPlan, pipeline: Pipeline | None
+) -> Generator[Iterator[Any], None, None]:
+    """Open the one iterator selected by a terminal's already-compiled plan.
+
+    A linear query can enter the compatibility Python loop after its scalar native
+    attempt declines. A relational query has no equivalent linear view: it must
+    execute the recursive physical root so joins and aggregates are not bypassed.
+    """
+    payload = physical.backend_payload
+    if physical.root is not None or (
+        isinstance(payload, BackendPayload) and payload.arrow_prefix is not None
+    ):
+        iterator = execute_physical(physical)
+    else:
+        if pipeline is None:
+            raise RuntimeError("linear terminal plan is missing its canonical pipeline")
+        iterator = execute(pipeline, auto_native=False)
+    try:
+        yield iterator
+    finally:
+        close = getattr(iterator, "close", None)
+        if callable(close):
+            close()
+
+
+def _try_direct_python_materialize(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+    target: str,
+) -> tuple[bool, Any | None]:
+    """Drain a proven exact-container Python map/filter plan without generator forwarding."""
+    from ..runtime.failpoints import has_active_failpoints
+
+    payload = physical.backend_payload
+    python_selected = payload is None or (
+        isinstance(payload, BackendPayload)
+        and payload.arrow_prefix is None
+        and payload.native_decision is not None
+        and payload.native_decision.engine == "python"
+    )
+    if (
+        physical.root is not None
+        or pipeline is None
+        or has_active_failpoints()
+        or not python_selected
+        or type(pipeline.source.native_data) not in (list, tuple, range)
+    ):
+        return False, None
+
+    scalar_loop = _direct_python_scalar_loop(physical, pipeline)
+    if scalar_loop is not None:
+        with _open_direct_python_scalar_values(pipeline, scalar_loop) as iterator:
+            return True, _materialize_python_values(iterator, target)
+
+    operations = operations_from_physical_nodes(physical.nodes)
+    if not operations or not all(
+        isinstance(operation, (MapOp, FilterOp)) for operation in operations
+    ):
+        return False, None
+
+    with (
+        QueryRuntime() as runtime,
+        open_operations(
+            pipeline.source.open(),
+            operations,
+            runtime=runtime,
+        ) as iterator,
+    ):
+        return True, _materialize_python_values(iterator, target)
+
+
+def _materialize_python_values(iterator: Iterator[Any], target: str) -> Any:
+    """Build the requested internal terminal container from one owned iterator."""
+    if target == "list":
+        return list(iterator)
+    if target == "tuple":
+        return tuple(iterator)
+    if target == "set":
+        return set(iterator)
+    raise RuntimeError(f"unknown materialization target {target!r}")
+
+
+def _direct_python_scalar_loop(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+) -> Callable[[Iterator[Any]], Iterator[Any]] | None:
+    """Return a bounded scalar loop only for an explicit Python container query."""
+    from ..runtime.failpoints import has_active_failpoints
+
+    if (
+        physical.root is not None
+        or pipeline is None
+        or pipeline.engine != "python"
+        or has_active_failpoints()
+        or type(pipeline.source.native_data) not in (list, tuple, range)
+        or pipeline.source.capabilities.exact_size is None
+        or pipeline.source.capabilities.exact_size < _SCALAR_FUSION_MIN_ROWS
+    ):
+        return None
+    from ..execution._scalar_fusion import compile_scalar_fusion
+
+    return compile_scalar_fusion(physical.nodes)
+
+
+@contextmanager
+def _open_direct_python_scalar_values(
+    pipeline: Pipeline,
+    scalar_loop: Callable[[Iterator[Any]], Iterator[Any]],
+) -> Generator[Iterator[Any], None, None]:
+    """Open and close the exact-container source around one generated scalar loop."""
+    with QueryRuntime():
+        source_iterator = pipeline.source.open()
+        iterator = scalar_loop(source_iterator)
+        try:
+            yield iterator
+        finally:
+            close_iterators((iterator, source_iterator))
+
+
+def _try_direct_python_scalar_sum(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+    start: Any,
+) -> tuple[bool, Any | None]:
+    """Reduce one large closed scalar Python plan without per-stage callbacks."""
+    scalar_loop = _direct_python_scalar_loop(physical, pipeline)
+    if scalar_loop is None or pipeline is None:
+        return False, None
+    with _open_direct_python_scalar_values(pipeline, scalar_loop) as iterator:
+        return True, builtins.sum(iterator, start)
+
+
+def _try_direct_arrow_list(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+) -> tuple[bool, list[Any] | None]:
+    """Collect a replayable identity Arrow source without per-row generator forwarding."""
+    from ..runtime.failpoints import has_active_failpoints, hit
+
+    if (
+        physical.root is not None
+        or pipeline is None
+        or pipeline.engine != "auto"
+        or pipeline.parallel is not None
+        or pipeline.operations
+        or has_active_failpoints()
+    ):
+        return False, None
+
+    from ..planning.arrow_source import ArrowBatchSource
+    from ..tabular import arrow as arrow_adapter
+
+    descriptor = pipeline.source.native_data
+    if not isinstance(descriptor, ArrowBatchSource) or descriptor.kind not in {
+        "table",
+        "record_batch",
+    }:
+        return False, None
+
+    pipeline.source.open_native(ArrowBatchSource)
+    hit("source.open.after")
+    batches = descriptor.open_batches()
+    result: list[Any] = []
+    try:
+        for batch in batches:
+            result.extend(arrow_adapter.batch_to_rows(batch))
+    finally:
+        arrow_adapter._close(batches)
+    return True, result
+
+
+def _try_direct_arrow_sort_list(
+    physical: PhysicalPlan,
+) -> tuple[bool, list[Any] | None]:
+    """Collect a selected stable Arrow sort without forwarding converted rows."""
+    if (
+        len(physical.nodes) != 1
+        or not isinstance(node := physical.nodes[0], SortPhysicalNode)
+        or node.strategy is not SortStrategy.ARROW_STABLE
+    ):
+        return False, None
+    from ..execution.arrow import materialize_retained_arrow_stable_sort
+
+    result = materialize_retained_arrow_stable_sort(physical)
+    return result is not None, result
 
 
 class FlowTerminalsMixin(Generic[T]):
     """Terminal and reduction methods mixed into the public Flow class."""
 
-    _plan: Plan
+    @property
+    def _pipeline(self) -> Pipeline:
+        """Return the canonical unopened linear view for backend selection."""
+        raise NotImplementedError
+
+    def _query(self, name: str, *arguments: Any, **options: Any) -> Query:
+        """Describe one terminal request without consuming the stream."""
+        raise NotImplementedError
+
+    def _physical_query(self, name: str, *arguments: Any, **options: Any) -> PhysicalPlan:
+        """Compile one terminal request once into its physical compatibility plan."""
+        return compile_query(self._query(name, *arguments, **options))
+
+    def _terminal_context(
+        self, name: str, *arguments: Any, **options: Any
+    ) -> tuple[PhysicalPlan, Pipeline | None]:
+        """Compile once and return a linear view only when the physical plan is linear."""
+        query = self._query(name, *arguments, **options)
+        physical = compile_query(query)
+        if physical.root is not None:
+            return physical, None
+        return physical, linear_pipeline(query.logical)
+
+    @staticmethod
+    def _native_decision(physical: PhysicalPlan) -> Any:
+        """Extract the compiler's native decision without allowing a reselection."""
+        payload = physical.backend_payload
+        if not isinstance(payload, BackendPayload):
+            return None
+        return payload.native_decision
+
+    def _try_native_materialize(
+        self, physical: PhysicalPlan, pipeline: Pipeline | None, target: str
+    ) -> tuple[bool, Any | None]:
+        """Use the compiler's complete native decision only when no other route owns it."""
+        payload = physical.backend_payload
+        if (
+            physical.root is not None
+            or pipeline is None
+            or not isinstance(payload, BackendPayload)
+            or payload.arrow_prefix is not None
+            or payload.native_decision is None
+            or payload.native_decision.engine != "native"
+        ):
+            return False, None
+        return try_native_materialize(pipeline, target, payload.native_decision)
 
     def __iter__(self) -> Iterator[T]:
         """Yield items from the concrete Flow implementation."""
@@ -82,7 +354,34 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             All emitted items in encounter order.
         """
-        return list(execute(self._plan))
+        physical, pipeline = self._terminal_context("list")
+        if physical.root is not None:
+            from ..execution.relational import (
+                try_direct_group_list,
+                try_native_record_join,
+                try_retained_arrow_unique_join,
+            )
+
+            arrow_records = try_retained_arrow_unique_join(physical)
+            if arrow_records is not None:
+                return cast(list[T], arrow_records)
+            native_records = try_native_record_join(physical)
+            if native_records is not None:
+                return cast(list[T], native_records)
+            direct_groups, physical = try_direct_group_list(physical)
+            if direct_groups is not None:
+                return cast(list[T], direct_groups)
+        handled, value = _try_direct_arrow_sort_list(physical)
+        if handled:
+            return cast(list[T], value)
+        handled, value = _try_direct_arrow_list(physical, pipeline)
+        if handled:
+            return cast(list[T], value)
+        handled, value = self._try_native_materialize(physical, pipeline, "list")
+        if handled:
+            return cast(list[T], value)
+        handled, value = _try_direct_python_materialize(physical, pipeline, "list")
+        return cast(list[T], value) if handled else list(execute_physical(physical))
 
     def to_tuple(self) -> tuple[T, ...]:
         """Execute the pipeline and collect its items in a tuple.
@@ -90,7 +389,12 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             All emitted items in encounter order as a tuple.
         """
-        return tuple(execute(self._plan))
+        physical, pipeline = self._terminal_context("tuple")
+        handled, value = self._try_native_materialize(physical, pipeline, "tuple")
+        if handled:
+            return cast(tuple[T, ...], value)
+        handled, value = _try_direct_python_materialize(physical, pipeline, "tuple")
+        return cast(tuple[T, ...], value) if handled else tuple(execute_physical(physical))
 
     def to_set(self) -> set[T]:
         """Execute the pipeline and collect distinct hashable items.
@@ -98,7 +402,12 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The distinct emitted items; every item must be hashable.
         """
-        return set(execute(self._plan))
+        physical, pipeline = self._terminal_context("set")
+        handled, value = self._try_native_materialize(physical, pipeline, "set")
+        if handled:
+            return cast(set[T], value)
+        handled, value = _try_direct_python_materialize(physical, pipeline, "set")
+        return cast(set[T], value) if handled else set(execute_physical(physical))
 
     def to_pandas(self, columns: Iterable[str] | None = None) -> Any:
         """Execute the pipeline and build a pandas DataFrame.
@@ -287,19 +596,80 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             Finished aggregation values keyed by the supplied argument names.
         """
+        physical, pipeline = self._terminal_context("aggregate", **aggregations)
         items = prepare_aggregations(aggregations)
-        first_name = native_first_only(items)
-        if first_name is not None:
-            native, result = try_native_terminal(self._plan, "first")
+        program = compile_aggregations(items)
+        if physical.root is not None:
+            # CollectorProgram owns and closes this iterator, including when all
+            # collectors finish before the relational source is exhausted.
+            return run_collector_program(execute_physical(physical), program.collectors)
+        if pipeline is None:
+            raise RuntimeError("linear aggregate plan is missing its canonical pipeline")
+        native_decision = self._native_decision(physical)
+        mask = program.native_mask
+        terminal: TerminalName | None = None if mask is None else mask.scalar_terminal
+        if (
+            terminal is None
+            and mask is not None
+            and mask.total_only
+            and sys.version_info >= (3, 12)
+            and native_decision is not None
+            and native_decision.program is not None
+            and native_decision.program.kind == "f64"
+        ):
+            # The f64 scalar sum and aggregate total share the compensated
+            # algorithm on Python 3.12+, while the scalar loop avoids the mask
+            # branch. Integer totals must stay on i128 masked accumulation.
+            terminal = "sum"
+        if terminal == "count" and (known_size := exact_count(pipeline)) is not None:
+            return {name: known_size for name, _aggregation in items}
+        if terminal is not None:
+            native, result = try_native_terminal(pipeline, terminal, decision=native_decision)
             if native:
-                return {first_name: result}
-        if native_aggregation_items(items):
-            native, snapshot = try_native_aggregate(self._plan)
+                # A one-field mask can only contain repetitions of the matching
+                # native aggregation kind, so one scalar result projects to all
+                # requested names without another traversal.
+                return {name: result for name, _aggregation in items}
+            return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
+        if mask is not None and mask.statistics_only:
+            native, statistics = try_native_statistics(pipeline, decision=native_decision)
+            if native:
+                if statistics is None:
+                    raise RuntimeError("native statistics result is missing")
+                count, mean, squared_deviations = statistics
+                return finish_native_aggregations(
+                    items,
+                    (
+                        count,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        mean,
+                        squared_deviations,
+                    ),
+                )
+            # A rejected or failed statistics attempt may already have touched
+            # conversion protocols. Enter the canonical Python collector once;
+            # trying the aggregate ABI as well could observe user state twice.
+            return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
+        if mask is not None:
+            masked_bits: int | None = mask.bits
+            if (
+                native_decision is not None
+                and native_decision.program is not None
+                and not mask.prefers_masked_kernel(native_decision.program.kind)
+            ):
+                masked_bits = None
+            native, snapshot = try_native_aggregate(
+                pipeline, decision=native_decision, mask=masked_bits
+            )
             if native:
                 if snapshot is None:
                     raise RuntimeError("native aggregate result is missing")
                 return finish_native_aggregations(items, snapshot)
-        return run_aggregations(self, items)
+        return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
 
     summarize = aggregate
 
@@ -408,14 +778,18 @@ class FlowTerminalsMixin(Generic[T]):
         Raises:
             EmptyFlowError: If the flow is empty and no default is supplied.
         """
-        native, result = try_native_terminal(self._plan, "first")
-        if native:
-            if result is not None:
-                return cast(T, result)
-            if default is _MISSING:
-                raise EmptyFlowError("first() requires at least one item")
-            return default
-        with self._open() as iterator:
+        physical, pipeline = self._terminal_context("first", default)
+        if pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "first", decision=self._native_decision(physical)
+            )
+            if native:
+                if result is not None:
+                    return cast(T, result)
+                if default is _MISSING:
+                    raise EmptyFlowError("first() requires at least one item")
+                return default
+        with _open_terminal_values(physical, pipeline) as iterator:
             try:
                 return next(iterator)
             except StopIteration:
@@ -435,16 +809,21 @@ class FlowTerminalsMixin(Generic[T]):
         Raises:
             EmptyFlowError: If the flow is empty and no default is supplied.
         """
-        native, result = try_native_terminal(self._plan, "last")
-        if native:
-            if result is not None:
-                return cast(T, result)
-            if default is _MISSING:
-                raise EmptyFlowError("last() requires at least one item")
-            return default
+        physical, pipeline = self._terminal_context("last", default)
+        if pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "last", decision=self._native_decision(physical)
+            )
+            if native:
+                if result is not None:
+                    return cast(T, result)
+                if default is _MISSING:
+                    raise EmptyFlowError("last() requires at least one item")
+                return default
         found = default
-        for item in self:
-            found = item
+        with _open_terminal_values(physical, pipeline) as iterator:
+            for item in iterator:
+                found = item
         if found is _MISSING:
             raise EmptyFlowError("last() requires at least one item")
         return found
@@ -543,13 +922,25 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The total number of emitted items.
         """
-        known_size = exact_count(self._plan)
-        if known_size is not None:
-            return known_size
-        native, result = try_native_terminal(self._plan, "count")
-        if native:
-            return cast(int, result)
-        return builtins.sum(1 for _ in self)
+        physical, pipeline = self._terminal_context("count")
+        if pipeline is not None:
+            known_size = exact_count(pipeline)
+            if known_size is not None:
+                return known_size
+            native, result = try_native_terminal(
+                pipeline, "count", decision=self._native_decision(physical)
+            )
+            if native:
+                return cast(int, result)
+            payload = physical.backend_payload
+            if isinstance(payload, BackendPayload) and payload.arrow_prefix is not None:
+                from ..execution.arrow import try_arrow_count
+
+                handled, result = try_arrow_count(pipeline, prefix=payload.arrow_prefix)
+                if handled:
+                    return result
+        with _open_terminal_values(physical, pipeline) as iterator:
+            return builtins.sum(1 for _ in iterator)
 
     def sum(self, start: Any = 0) -> Any:
         """Add all items, starting with start.
@@ -560,21 +951,37 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The total of `start` and all emitted items.
         """
-        if type(start) is int and start == 0:
-            native, result = try_native_terminal(self._plan, "sum")
+        physical, pipeline = self._terminal_context("sum", start)
+        if pipeline is not None and type(start) is int and start == 0:
+            native, result = try_native_terminal(
+                pipeline, "sum", decision=self._native_decision(physical)
+            )
             if native:
                 return result
-        return builtins.sum(cast(Iterable[Any], self), start)
+        # Consuming the selected iterator directly avoids two generator forwarding layers.
+        # open_operations retains source ownership and automatically restores the precise
+        # pull/callback boundaries whenever a failpoint is active.
+        if pipeline is not None:
+            handled, result = _try_direct_python_scalar_sum(physical, pipeline, start)
+            if handled:
+                return result
+            return _sum_python_pipeline(pipeline, start)
+        with _open_terminal_values(physical, pipeline) as iterator:
+            return builtins.sum(iterator, start)
 
     def _statistics_snapshot(self) -> StatisticsSnapshot:
         """Compute one-pass numeric statistics, using the native terminal when supported."""
-        native, snapshot = try_native_statistics(self._plan)
-        if native:
-            if snapshot is None:
-                raise RuntimeError("native statistics result is missing")
-            return snapshot
+        physical, pipeline = self._terminal_context("statistics")
+        if pipeline is not None:
+            native, snapshot = try_native_statistics(
+                pipeline, decision=self._native_decision(physical)
+            )
+            if native:
+                if snapshot is None:
+                    raise RuntimeError("native statistics result is missing")
+                return snapshot
         statistics = OnlineStatistics()
-        with self._open() as iterator:
+        with _open_terminal_values(physical, pipeline) as iterator:
             for item in iterator:
                 statistics.accept(item)
         return statistics.snapshot()
@@ -633,14 +1040,18 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The smallest item according to `key`.
         """
-        if key is None:
-            native, result = try_native_terminal(self._plan, "min")
+        physical, pipeline = self._terminal_context("min", key=key)
+        if key is None and pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "min", decision=self._native_decision(physical)
+            )
             if native:
                 if result is None:
                     raise EmptyFlowError("min() requires at least one item")
                 return cast(T, result)
         try:
-            return cast(T, builtins.min(cast(Iterable[Any], self), key=key))
+            with _open_terminal_values(physical, pipeline) as iterator:
+                return cast(T, builtins.min(iterator, key=key))
         except ValueError:
             raise EmptyFlowError("min() requires at least one item") from None
 
@@ -653,14 +1064,18 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             The largest item according to `key`.
         """
-        if key is None:
-            native, result = try_native_terminal(self._plan, "max")
+        physical, pipeline = self._terminal_context("max", key=key)
+        if key is None and pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "max", decision=self._native_decision(physical)
+            )
             if native:
                 if result is None:
                     raise EmptyFlowError("max() requires at least one item")
                 return cast(T, result)
         try:
-            return cast(T, builtins.max(cast(Iterable[Any], self), key=key))
+            with _open_terminal_values(physical, pipeline) as iterator:
+                return cast(T, builtins.max(iterator, key=key))
         except ValueError:
             raise EmptyFlowError("max() requires at least one item") from None
 
@@ -712,24 +1127,46 @@ class FlowTerminalsMixin(Generic[T]):
         Raises:
             EmptyFlowError: If the flow emits no items.
         """
-        select: Callable[[T], Any] = (
-            (lambda item: item) if key is None else cast(Callable[[T], Any], compile_selector(key))
-        )
-        with self._open() as iterator:
-            try:
-                minimum = maximum = next(iterator)
-            except StopIteration:
-                raise EmptyFlowError("minmax() requires at least one item") from None
-            minimum_key = maximum_key = select(minimum)
-            for item in iterator:
-                item_key = select(item)
-                if item_key < minimum_key:
-                    minimum = item
-                    minimum_key = item_key
-                if item_key > maximum_key:
-                    maximum = item
-                    maximum_key = item_key
-        return minimum, maximum
+        if key is not None:
+            select = cast(Callable[[T], Any], compile_selector(key))
+            with self._open() as iterator:
+                try:
+                    minimum = maximum = next(iterator)
+                except StopIteration:
+                    raise EmptyFlowError("minmax() requires at least one item") from None
+                minimum_key = maximum_key = select(minimum)
+                for item in iterator:
+                    item_key = select(item)
+                    if item_key < minimum_key:
+                        minimum = item
+                        minimum_key = item_key
+                    if item_key > maximum_key:
+                        maximum = item
+                        maximum_key = item_key
+            return minimum, maximum
+
+        physical, pipeline = self._terminal_context("minmax")
+        if pipeline is not None:
+            from ..runtime.failpoints import has_active_failpoints
+
+            if pipeline.engine != "auto" or not has_active_failpoints():
+                native, snapshot = try_native_aggregate(
+                    pipeline,
+                    decision=self._native_decision(physical),
+                    mask=_MINMAX_NATIVE_MASK,
+                )
+                if native:
+                    if snapshot is None:
+                        raise RuntimeError("native aggregate result is missing")
+                    minimum, maximum = snapshot[2], snapshot[3]
+                    if minimum is None:
+                        raise EmptyFlowError("minmax() requires at least one item")
+                    return cast(tuple[T, T], (minimum, maximum))
+            with open_operations(pipeline.source.open(), pipeline.operations) as iterator:
+                return cast(tuple[T, T], _minmax_python_values(iterator))
+
+        with _open_terminal_values(physical, pipeline) as iterator:
+            return cast(tuple[T, T], _minmax_python_values(iterator))
 
     def any(self, predicate: Callable[[T], bool] = bool) -> bool:
         """Return whether at least one item satisfies predicate.
@@ -740,16 +1177,19 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             `True` when any item satisfies `predicate`; `False` for an empty flow.
         """
-        if predicate is bool:
-            native, result = try_native_terminal(self._plan, "any")
+        physical, pipeline = self._terminal_context("any", predicate)
+        if predicate is bool and pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "any", decision=self._native_decision(physical)
+            )
             if native:
                 return bool(result)
-        elif isinstance(predicate, (Expr, FExpr)):
+        elif pipeline is not None and isinstance(predicate, (Expr, FExpr)):
             filtered = self.filter(cast(Callable[[T], Any], predicate))
-            native, result = try_native_terminal(filtered._plan, "first")
+            native, result = try_native_terminal(filtered._pipeline, "first")
             if native:
                 return result is not None
-        with self._open() as iterator:
+        with _open_terminal_values(physical, pipeline) as iterator:
             return builtins.any(predicate(item) for item in iterator)
 
     def all(self, predicate: Callable[[T], bool] = bool) -> bool:
@@ -761,16 +1201,19 @@ class FlowTerminalsMixin(Generic[T]):
         Returns:
             `True` when every item satisfies `predicate`, including for an empty flow.
         """
-        if predicate is bool:
-            native, result = try_native_terminal(self._plan, "all")
+        physical, pipeline = self._terminal_context("all", predicate)
+        if predicate is bool and pipeline is not None:
+            native, result = try_native_terminal(
+                pipeline, "all", decision=self._native_decision(physical)
+            )
             if native:
                 return bool(result)
-        elif isinstance(predicate, (Expr, FExpr)):
+        elif pipeline is not None and isinstance(predicate, (Expr, FExpr)):
             rejected = self.reject(cast(Callable[[T], Any], predicate))
-            native, result = try_native_terminal(rejected._plan, "first")
+            native, result = try_native_terminal(rejected._pipeline, "first")
             if native:
                 return result is None
-        with self._open() as iterator:
+        with _open_terminal_values(physical, pipeline) as iterator:
             return builtins.all(predicate(item) for item in iterator)
 
     def none(self, predicate: Callable[[T], bool] = bool) -> bool:

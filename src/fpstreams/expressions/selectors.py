@@ -3,11 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from types import FunctionType
 from typing import Any, TypeAlias
 
 from ..errors import SelectionError
 
 Selector: TypeAlias = Callable[[Any], Any] | str | int
+_DIRECT_FIELD_TOKEN = object()
+_DIRECT_FIELD_ATTRIBUTE = "__fpstreams_direct_field_v1__"
+
+
+def _direct_field(selector: Callable[[Any], Any] | None) -> str | None:
+    """Return the direct exact-string field carried by one generated selector."""
+    if type(selector) is not FunctionType:
+        return None
+    metadata = getattr(selector, _DIRECT_FIELD_ATTRIBUTE, None)
+    if (
+        type(metadata) is tuple
+        and len(metadata) == 2
+        and metadata[0] is _DIRECT_FIELD_TOKEN
+        and type(metadata[1]) is str
+    ):
+        return metadata[1]
+    return None
 
 
 def compile_selector(selector: Selector) -> Callable[[Any], Any]:
@@ -40,6 +58,23 @@ def compile_selector(selector: Selector) -> Callable[[Any], Any]:
 
     parts = selector.split(".")
 
+    if len(parts) == 1:
+
+        def select_field(value: Any) -> Any:
+            """Read one field with a fast exact-dict path and full protocol fallback."""
+            try:
+                if type(value) is dict:
+                    return value[selector]
+                return value[selector] if isinstance(value, Mapping) else getattr(value, selector)
+            except (AttributeError, KeyError, TypeError) as error:
+                raise SelectionError(
+                    f"Could not resolve selector {selector!r}; failed at {selector!r}"
+                ) from error
+
+        if type(selector) is str:
+            setattr(select_field, _DIRECT_FIELD_ATTRIBUTE, (_DIRECT_FIELD_TOKEN, selector))
+        return select_field
+
     def select_path(value: Any) -> Any:
         """Walk the captured dotted path through mapping keys or object attributes.
 
@@ -49,7 +84,12 @@ def compile_selector(selector: Selector) -> Callable[[Any], Any]:
         current = value
         for part in parts:
             try:
-                current = current[part] if isinstance(current, Mapping) else getattr(current, part)
+                if type(current) is dict:
+                    current = current[part]
+                else:
+                    current = (
+                        current[part] if isinstance(current, Mapping) else getattr(current, part)
+                    )
             except (AttributeError, KeyError, TypeError) as error:
                 raise SelectionError(
                     f"Could not resolve selector {selector!r}; failed at {part!r}"

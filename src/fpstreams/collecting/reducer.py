@@ -8,8 +8,7 @@ from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 
 from ..planning.semantics import StateProfile
-from .aggregation import Aggregator
-from .collector import Collector, _identity, _never_done
+from ._collector_base import Aggregator, Collector, _identity, _never_done
 
 T = TypeVar("T")
 S = TypeVar("S")
@@ -87,6 +86,7 @@ class Reducer(Collector[T, S, R], Generic[T, S, R]):
     """
 
     __slots__ = ("laws",)
+    laws: ReducerLaws
 
     def __init__(
         self,
@@ -105,6 +105,7 @@ class Reducer(Collector[T, S, R], Generic[T, S, R]):
         if not isinstance(laws, ReducerLaws):
             raise TypeError("laws must be a ReducerLaws")
         super().__init__(initializer, step, finish, merge, done, native)
+        self.laws: ReducerLaws
         object.__setattr__(self, "laws", laws)
 
     def reduce(self, values: Iterable[T]) -> R:
@@ -116,6 +117,7 @@ class ReducerAggregator(Aggregator):
     """A named aggregator whose partial states may be merged under declared laws."""
 
     __slots__ = ("laws",)
+    laws: ReducerLaws
 
     def __init__(
         self,
@@ -134,6 +136,7 @@ class ReducerAggregator(Aggregator):
         if not isinstance(laws, ReducerLaws):
             raise TypeError("laws must be a ReducerLaws")
         super().__init__(initializer, step, finish, merge, done, native)
+        self.laws: ReducerLaws
         object.__setattr__(self, "laws", laws)
 
 

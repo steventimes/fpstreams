@@ -21,7 +21,9 @@ from itertools import dropwhile, islice, pairwise, takewhile, zip_longest
 from multiprocessing import get_context
 from typing import Any
 
-from ..errors import BufferLimitError
+from .. import _native
+from ..errors import BufferLimitError, SelectionError
+from ..expressions.selectors import _direct_field
 from ..planning.gather import Downstream
 from ..planning.sync import (
     AppendOp,
@@ -56,6 +58,7 @@ from ..planning.sync import (
     ZipLongestOp,
     ZipOp,
 )
+from ..runtime.query import QueryRuntime
 from .sorting import external_sort
 
 
@@ -477,15 +480,30 @@ def _enumerate(iterator: Iterator[Any], operation: EnumerateOp) -> Iterator[Any]
     return enumerate(iterator, operation.start)
 
 
-def _sort(iterator: Iterator[Any], operation: SortOp) -> Iterator[Any]:
+def _sort(
+    iterator: Iterator[Any],
+    operation: SortOp,
+    *,
+    runtime: QueryRuntime | None = None,
+) -> Iterator[Any]:
     """Select in-memory sorted or bounded external sorting.
 
     A missing buffer_size materializes directly with built-in sorted; otherwise
     external_sort spills sorted runs under the configured temporary directory.
     """
-    if operation.buffer_size is None:
+    if operation.buffer_size is not None:
+        return external_sort(iterator, operation, runtime=runtime)
+    field = _direct_field(operation.key)
+    exact_dict_rows = getattr(_native, "all_exact_dict_rows_v1", None)
+    direct_dict_field_key = getattr(_native, "direct_dict_field_key_v1", None)
+    if field is None or exact_dict_rows is None or direct_dict_field_key is None:
         return iter(sorted(iterator, key=operation.key, reverse=operation.reverse))
-    return external_sort(iterator, operation)
+    values = list(iterator)
+    if not exact_dict_rows(values):
+        values.sort(key=operation.key, reverse=operation.reverse)
+        return iter(values)
+    values.sort(key=direct_dict_field_key(field, SelectionError), reverse=operation.reverse)
+    return iter(values)
 
 
 OperationHandler = Callable[..., Iterator[Any]]
@@ -524,7 +542,12 @@ OPERATION_HANDLERS: dict[type[object], OperationHandler] = {
 SUPPORTED_OPERATION_TYPES: tuple[type[object], ...] = tuple(OPERATION_HANDLERS)
 
 
-def apply_operation(iterator: Iterator[Any], operation: Operation) -> Iterator[Any]:
+def apply_operation(
+    iterator: Iterator[Any],
+    operation: Operation,
+    *,
+    runtime: QueryRuntime | None = None,
+) -> Iterator[Any]:
     """Construct the iterator layer registered for the operation's exact type.
 
     Unknown subclasses are rejected instead of implicitly reusing a base handler.
@@ -532,4 +555,6 @@ def apply_operation(iterator: Iterator[Any], operation: Operation) -> Iterator[A
     handler = OPERATION_HANDLERS.get(type(operation))
     if handler is None:
         raise TypeError(f"unsupported synchronous operation: {type(operation).__name__}")
+    if type(operation) is SortOp:
+        return _sort(iterator, operation, runtime=runtime)
     return handler(iterator, operation)

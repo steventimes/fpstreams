@@ -7,12 +7,13 @@ from typing import Any, Literal, cast
 
 from ..errors import NativeUnsupportedError
 from ..expressions.scalar import Expr, FExpr
+from .logical import Pipeline
 from .sync import (
     DropOp,
     DropWhileOp,
     FilterOp,
     MapOp,
-    Plan,
+    Operation,
     SortOp,
     TakeOp,
     TakeWhileInclusiveOp,
@@ -21,10 +22,6 @@ from .sync import (
     ZipOp,
 )
 
-NativeInstruction = tuple[int, int]
-NativeStage = tuple[int, tuple[NativeInstruction, ...]]
-FloatNativeInstruction = tuple[int, float]
-FloatNativeStage = tuple[int, tuple[FloatNativeInstruction, ...]]
 NativeKind = Literal["i64", "f64"]
 TerminalName = Literal[
     "iterate",
@@ -35,6 +32,7 @@ TerminalName = Literal[
     "aggregate",
     "min",
     "max",
+    "minmax",
     "first",
     "last",
     "any",
@@ -47,6 +45,8 @@ _AUTO_THRESHOLD = 8
 _COPY_SHORT_CIRCUIT_LIMIT = 1_024
 _COPY_SHORT_CIRCUIT_RATIO = 64
 _EXTENSION_CAPABILITY_CACHE: dict[NativeKind, tuple[object, bool]] = {}
+_PROBE_CAPABILITY_CACHE: dict[NativeKind, tuple[object, bool]] = {}
+_exact_container_capability_cache: tuple[object, bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +82,7 @@ _TERMINALS = frozenset(
         "aggregate",
         "min",
         "max",
+        "minmax",
         "first",
         "last",
         "any",
@@ -99,18 +100,32 @@ def validate_terminal(terminal: str) -> TerminalName:
 
 def _terminal_metadata(
     decision: EngineDecision,
-    plan: Plan,
+    plan: Pipeline,
     terminal: TerminalName,
 ) -> EngineDecision:
     """Attach source scanning, copying, materialization, and complexity metadata to a decision."""
     source = plan.source.native_data
     crosses_native_boundary = decision.engine in {"native", "hybrid"}
     container_source = isinstance(source, (list, tuple))
+    probe_path = (
+        decision.engine == "native"
+        and decision.program is not None
+        and type(source) in (list, tuple)
+        and terminal in {"first", "any", "all"}
+        and _container_probe_available(decision.program.kind)
+    )
+    reason = (
+        f"{decision.reason}; bounded probe; only undecided fallback bulk-copies"
+        if probe_path
+        else decision.reason
+    )
     return EngineDecision(
         decision.engine,
-        decision.reason,
+        reason,
         decision.program,
         decision.native_operation_count,
+        # These are worst-case flags: an undecided bounded probe restarts the
+        # legacy bulk adapter, which scans and copies the whole container.
         scans_source=crosses_native_boundary and container_source,
         copies_source=crosses_native_boundary and container_source,
         materializes=terminal == "list" or decision.engine == "hybrid",
@@ -124,7 +139,7 @@ def _terminal_metadata(
     )
 
 
-def exact_count(plan: Plan) -> int | None:
+def exact_count(plan: Pipeline) -> int | None:
     """Return the unopened exact size only for an operation-free, reiterable source."""
     capabilities = plan.source.capabilities
     if plan.operations or not capabilities.reiterable:
@@ -141,20 +156,6 @@ def _valid_source(source: object) -> bool:
     return isinstance(source, (list, tuple))
 
 
-def _f64_preserves_filter_type(plan: Plan, source: object) -> bool:
-    """Require predicate-only f64 plans to start from homogeneous Python floats."""
-    for operation in plan.operations:
-        if isinstance(operation, MapOp) and isinstance(operation.function, FExpr):
-            return True
-        if isinstance(operation, (FilterOp, TakeWhileOp, DropWhileOp)) and isinstance(
-            operation.predicate, FExpr
-        ):
-            return isinstance(source, (list, tuple)) and all(
-                type(value) is float for value in source
-            )
-    return True
-
-
 def _expression(operation: object) -> Expr | FExpr | None:
     """Extract a native scalar expression from supported map and predicate nodes."""
     if isinstance(operation, MapOp):
@@ -164,13 +165,22 @@ def _expression(operation: object) -> Expr | FExpr | None:
     return None
 
 
-def _compile(plan: Plan) -> tuple[NativeProgram | None, str]:
-    # One fused instruction stream cannot switch between i64 item and f64 fitem expressions.
-    """Compile every operation into one typed native instruction stream.
+def _f64_range_starts_with_map(plan: Pipeline) -> bool:
+    """Keep integer range values in Python until an fitem map changes representation.
 
-    The compiler rejects mixed expression kinds, opaque callables, unsupported operations,
-    nonnumeric map results, f64 distinct stages, and sources that cannot cross the Rust boundary.
+    Native f64 range kernels expose every input as a float.  A predicate does
+    not transform surviving Python values, so predicate-first range plans would
+    otherwise return floats where canonical execution returns integers.  This
+    is a structural O(operations) check and never opens or scans source data.
     """
+    for operation in plan.operations:
+        if isinstance(_expression(operation), FExpr):
+            return isinstance(operation, MapOp)
+    return True
+
+
+def _native_kind(plan: Pipeline) -> tuple[NativeKind | None, str | None]:
+    """Choose one numeric representation or reject a mixed expression pipeline."""
     expression_kinds = {
         "i64" if isinstance(expression, Expr) else "f64"
         for operation in plan.operations
@@ -178,124 +188,162 @@ def _compile(plan: Plan) -> tuple[NativeProgram | None, str]:
     }
     if len(expression_kinds) > 1:
         return None, "a native pipeline cannot mix item and fitem expressions"
-    kind: NativeKind = "f64" if expression_kinds == {"f64"} else "i64"
-    stages: list[NativeStage | FloatNativeStage] = []
+    return ("f64" if expression_kinds == {"f64"} else "i64"), None
+
+
+def _compile_stage(operation: Operation, kind: NativeKind) -> tuple[Any | None, str | None]:
+    """Translate one supported logical operation into a typed native opcode stage."""
+    if isinstance(operation, MapOp) and isinstance(operation.function, (Expr, FExpr)):
+        if operation.function.kind not in ("int", "float"):
+            return None, "native map expressions must produce numeric values"
+        return (0, operation.function.native_instructions()), None
+    if isinstance(operation, FilterOp) and isinstance(operation.predicate, (Expr, FExpr)):
+        return (
+            2 if operation.negate else 1,
+            operation.predicate.native_instructions(),
+        ), None
+    if isinstance(operation, (TakeOp, DropOp)):
+        count = float(operation.count) if kind == "f64" else operation.count
+        return (3 if isinstance(operation, TakeOp) else 4, ((1, count),)), None
+    if isinstance(operation, UniqueOp) and operation.key is None:
+        if kind == "f64":
+            return None, "f64 distinct is not native-compilable"
+        return (5, ()), None
+    if isinstance(operation, TakeWhileOp) and isinstance(operation.predicate, (Expr, FExpr)):
+        return (6, operation.predicate.native_instructions()), None
+    if isinstance(operation, TakeWhileInclusiveOp) and isinstance(
+        operation.predicate, (Expr, FExpr)
+    ):
+        return (8, operation.predicate.native_instructions()), None
+    if isinstance(operation, DropWhileOp) and isinstance(operation.predicate, (Expr, FExpr)):
+        return (7, operation.predicate.native_instructions()), None
+    return None, f"operation {operation.name!r} is not native-compilable"
+
+
+def _compile(plan: Pipeline) -> tuple[NativeProgram | None, str]:
+    """Compile every operation into one typed native instruction stream.
+
+    The compiler rejects mixed expression kinds, opaque callables, unsupported operations,
+    nonnumeric map results, f64 distinct stages, and sources that cannot cross the Rust boundary.
+    """
+    # One fused instruction stream cannot switch between i64 item and f64 fitem expressions.
+    kind, reason = _native_kind(plan)
+    if kind is None:
+        assert reason is not None
+        return None, reason
+
+    stages: list[Any] = []
     for operation in plan.operations:
-        if isinstance(operation, MapOp) and isinstance(operation.function, (Expr, FExpr)):
-            if operation.function.kind not in ("int", "float"):
-                return None, "native map expressions must produce numeric values"
-            stages.append((0, operation.function.native_instructions()))
-        elif isinstance(operation, FilterOp) and isinstance(operation.predicate, (Expr, FExpr)):
-            stages.append(
-                (
-                    2 if operation.negate else 1,
-                    operation.predicate.native_instructions(),
-                )
-            )
-        elif isinstance(operation, TakeOp):
-            count = float(operation.count) if kind == "f64" else operation.count
-            stages.append((3, ((1, count),)))
-        elif isinstance(operation, DropOp):
-            count = float(operation.count) if kind == "f64" else operation.count
-            stages.append((4, ((1, count),)))
-        elif isinstance(operation, UniqueOp) and operation.key is None:
-            if kind == "f64":
-                return None, "f64 distinct is not native-compilable"
-            stages.append((5, ()))
-        elif isinstance(operation, TakeWhileOp) and isinstance(operation.predicate, (Expr, FExpr)):
-            stages.append((6, operation.predicate.native_instructions()))
-        elif isinstance(operation, TakeWhileInclusiveOp) and isinstance(
-            operation.predicate, (Expr, FExpr)
-        ):
-            stages.append((8, operation.predicate.native_instructions()))
-        elif isinstance(operation, DropWhileOp) and isinstance(operation.predicate, (Expr, FExpr)):
-            stages.append((7, operation.predicate.native_instructions()))
-        else:
-            return None, f"operation {operation.name!r} is not native-compilable"
+        stage, reason = _compile_stage(operation, kind)
+        if stage is None:
+            assert reason is not None
+            return None, reason
+        stages.append(stage)
 
     if not stages:
         return None, "pipeline has no native-compilable operations"
     source = plan.source.native_data
     if not _valid_source(source):
         return None, f"source is not a {kind} range, list, or tuple"
-    if kind == "f64" and not _f64_preserves_filter_type(plan, source):
+    if kind == "f64" and isinstance(source, range) and not _f64_range_starts_with_map(plan):
         return (
             None,
-            "fitem predicate-only pipelines require a float source or a preceding fitem map",
+            "fitem predicate-only range is not a float source; it requires a preceding fitem map",
         )
+    if isinstance(source, (list, tuple)) and not _exact_container_extraction_available():
+        return None, "native extension lacks exact numeric container extraction"
     return (
         NativeProgram(source, tuple(stages), kind),
         f"all operations compile to the fused {kind} kernel",
     )
 
 
-def _longest_native_prefix(plan: Plan) -> tuple[NativeProgram | None, int]:
+@dataclass(frozen=True, slots=True)
+class _NativePrefixState:
+    """Track representation constraints while extending one legal native prefix."""
+
+    expression_kind: NativeKind | None = None
+    has_f64_map: bool = False
+    has_unique: bool = False
+
+
+_NATIVE_PREFIX_OPERATIONS = (
+    MapOp,
+    FilterOp,
+    TakeOp,
+    DropOp,
+    UniqueOp,
+    TakeWhileOp,
+    TakeWhileInclusiveOp,
+    DropWhileOp,
+)
+_NATIVE_PREDICATE_OPERATIONS = (
+    FilterOp,
+    TakeWhileOp,
+    TakeWhileInclusiveOp,
+    DropWhileOp,
+)
+
+
+def _extend_native_prefix(
+    state: _NativePrefixState,
+    operation: Operation,
+    source: object,
+) -> _NativePrefixState | None:
+    """Return updated prefix constraints, or None at the first illegal operation."""
+    expression = _expression(operation)
+    if isinstance(operation, MapOp) and expression is None:
+        return None
+    if isinstance(operation, _NATIVE_PREDICATE_OPERATIONS) and expression is None:
+        return None
+    if not isinstance(operation, _NATIVE_PREFIX_OPERATIONS):
+        return None
+
+    operation_kind: NativeKind | None = None
+    if isinstance(expression, Expr):
+        operation_kind = "i64"
+    elif isinstance(expression, FExpr):
+        operation_kind = "f64"
+
+    expression_kind = state.expression_kind
+    has_f64_map = state.has_f64_map
+    has_unique = state.has_unique
+    if operation_kind is not None:
+        if expression_kind is not None and expression_kind != operation_kind:
+            return None
+        if operation_kind == "f64":
+            if has_unique:
+                return None
+            if isinstance(source, range) and not isinstance(operation, MapOp) and not has_f64_map:
+                return None
+            has_f64_map = has_f64_map or isinstance(operation, MapOp)
+        expression_kind = operation_kind
+
+    if isinstance(operation, UniqueOp):
+        if operation.key is not None or expression_kind == "f64":
+            return None
+        has_unique = True
+    return _NativePrefixState(expression_kind, has_f64_map, has_unique)
+
+
+def _longest_native_prefix(plan: Pipeline) -> tuple[NativeProgram | None, int]:
     """Compile the longest leading stage sequence that obeys one native numeric representation."""
     source = plan.source.native_data
     if not _valid_source(source):
         return None, 0
 
-    expression_kind: NativeKind | None = None
-    has_f64_map = False
-    has_unique = False
+    state = _NativePrefixState()
     prefix_length = 0
     for position, operation in enumerate(plan.operations, 1):
-        expression = _expression(operation)
-        if isinstance(operation, MapOp) and expression is None:
+        next_state = _extend_native_prefix(state, operation, source)
+        if next_state is None:
             break
-        if isinstance(operation, (FilterOp, TakeWhileOp, TakeWhileInclusiveOp, DropWhileOp)) and (
-            expression is None
-        ):
-            break
-        if not isinstance(
-            operation,
-            (
-                MapOp,
-                FilterOp,
-                TakeOp,
-                DropOp,
-                UniqueOp,
-                TakeWhileOp,
-                TakeWhileInclusiveOp,
-                DropWhileOp,
-            ),
-        ):
-            break
-
-        operation_kind: NativeKind | None = None
-        if isinstance(expression, Expr):
-            operation_kind = "i64"
-        elif isinstance(expression, FExpr):
-            operation_kind = "f64"
-
-        if operation_kind is not None:
-            if expression_kind is not None and expression_kind != operation_kind:
-                break
-            if operation_kind == "f64":
-                if has_unique:
-                    break
-                if (
-                    not isinstance(operation, MapOp)
-                    and not has_f64_map
-                    and not (
-                        isinstance(source, (list, tuple))
-                        and all(type(value) is float for value in source)
-                    )
-                ):
-                    break
-                if isinstance(operation, MapOp):
-                    has_f64_map = True
-            expression_kind = operation_kind
-
-        if isinstance(operation, UniqueOp):
-            if operation.key is not None or expression_kind == "f64":
-                break
-            has_unique = True
+        state = next_state
         prefix_length = position
 
     if prefix_length == 0:
         return None, 0
-    prefix = Plan(
+    prefix = Pipeline(
         plan.source,
         plan.operations[:prefix_length],
         plan.engine,
@@ -349,7 +397,48 @@ def _extension_available(kind: NativeKind) -> bool:
     return available
 
 
-def _copy_would_dominate_short_circuit(plan: Plan) -> bool:
+def _exact_container_extraction_available() -> bool:
+    """Require an explicit current-wheel promise before passing containers to Rust.
+
+    Older extension builds use PyO3 ``Vec`` arguments and may call ``__index__``
+    or ``__float__`` while parsing them.  The positive marker prevents a new
+    planner paired with such a wheel from invoking user conversion protocols.
+    """
+    global _exact_container_capability_cache
+    try:
+        from .. import _native
+    except ImportError:
+        return False
+    cached = _exact_container_capability_cache
+    if cached is not None and cached[0] is _native:
+        return cached[1]
+    marker = getattr(_native, "exact_container_extraction_v1", None)
+    available = callable(marker) and marker() is True
+    _exact_container_capability_cache = (_native, available)
+    return available
+
+
+def _container_probe_available(kind: NativeKind) -> bool:
+    """Return whether this extension can inspect a bounded container prefix.
+
+    Bulk adapters snapshot an entire exact Python container into a Rust vector
+    before computing. Keeping this capability separate lets short-circuit
+    terminals avoid that copy and preserves compatibility with wheels released
+    before the bounded probe API existed.
+    """
+    try:
+        from .. import _native
+    except ImportError:
+        return False
+    cached = _PROBE_CAPABILITY_CACHE.get(kind)
+    if cached is not None and cached[0] is _native:
+        return cached[1]
+    available = hasattr(_native, f"terminal_{kind}_probe")
+    _PROBE_CAPABILITY_CACHE[kind] = (_native, available)
+    return available
+
+
+def _copy_would_dominate_short_circuit(plan: Pipeline) -> bool:
     """Detect a tiny ``take`` bound whose output does not justify copying a large container."""
     source = plan.source.native_data
     size = plan.source.capabilities.exact_size
@@ -365,7 +454,7 @@ def _copy_would_dominate_short_circuit(plan: Plan) -> bool:
     )
 
 
-def select_engine(plan: Plan) -> EngineDecision:
+def select_engine(plan: Pipeline) -> EngineDecision:
     """Select Python or native execution for a fully compilable operation pipeline.
 
     Forced native mode raises on compilation or extension failure. Automatic mode also applies
@@ -399,8 +488,8 @@ def select_engine(plan: Plan) -> EngineDecision:
     return EngineDecision("native", reason, program, len(plan.operations))
 
 
-def _identity_program(plan: Plan) -> tuple[NativeProgram | None, str]:
-    """Build an operation-free native program for an i64 range or homogeneous numeric container."""
+def _identity_program(plan: Pipeline) -> tuple[NativeProgram | None, str]:
+    """Build an operation-free native program without scanning a numeric container."""
     source = plan.source.native_data
     if isinstance(source, range):
         if not _valid_source(source):
@@ -411,20 +500,34 @@ def _identity_program(plan: Plan) -> tuple[NativeProgram | None, str]:
         )
     if not isinstance(source, (list, tuple)):
         return None, "identity native terminals require a range, list, or tuple"
-    if not source or all(type(value) is int and _I64_MIN <= value <= _I64_MAX for value in source):
+    if not _exact_container_extraction_available():
+        return None, "native extension lacks exact numeric container extraction"
+    # A short-circuit terminal only needs the first element to choose a numeric
+    # kernel. The bounded native probe validates further elements only if it has
+    # to reach them, so a bad tail cannot reject an already-determined result.
+    if not source:
         return (
             NativeProgram(source, (), "i64"),
-            "homogeneous i64 sequence can use native terminals",
+            "empty sequence can use native terminals",
         )
-    if all(type(value) is float for value in source):
+    # Rust validates the remaining elements as it copies for full-scan
+    # terminals, while bounded probes validate only the reachable prefix.  The
+    # first exact item is therefore sufficient to choose a representation.
+    first = source[0]
+    if type(first) is int and _I64_MIN <= first <= _I64_MAX:
+        return (
+            NativeProgram(source, (), "i64"),
+            "identity terminal selects the first i64 value without a source scan",
+        )
+    if type(first) is float:
         return (
             NativeProgram(source, (), "f64"),
-            "homogeneous float sequence can use native terminals",
+            "identity terminal selects the first float value without a source scan",
         )
-    return None, "identity native terminals require homogeneous i64 integers or floats"
+    return None, "identity native terminals require i64 integers or floats"
 
 
-def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision:
+def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDecision:
     """Select an engine for a terminal, including operation-free native identity kernels.
 
     Automatic list/tuple terminals stay in Python to avoid a type scan and Rust copy; ranges can
@@ -432,10 +535,39 @@ def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision
     """
     terminal = validate_terminal(terminal)
     if plan.operations:
-        return _terminal_metadata(select_engine(plan), plan, terminal)
+        source = plan.source.native_data
+        if plan.engine == "auto" and terminal == "minmax" and type(source) in (list, tuple):
+            return _terminal_metadata(
+                EngineDecision(
+                    "python",
+                    "automatic minmax preserves exact container representative identity",
+                ),
+                plan,
+                terminal,
+            )
+        decision = select_engine(plan)
+        if (
+            plan.engine == "auto"
+            and terminal in {"first", "any", "all"}
+            and type(source) in (list, tuple)
+            and decision.engine == "native"
+            and decision.program is not None
+            and not _container_probe_available(decision.program.kind)
+        ):
+            return _terminal_metadata(
+                EngineDecision(
+                    "python",
+                    "native extension lacks bounded container short-circuit probes",
+                ),
+                plan,
+                terminal,
+            )
+        return _terminal_metadata(decision, plan, terminal)
     if plan.engine == "python":
         return _terminal_metadata(
-            EngineDecision("python", "python engine explicitly requested"), plan, terminal
+            EngineDecision("python", "python engine explicitly requested"),
+            plan,
+            terminal,
         )
     source = plan.source.native_data
     if plan.engine == "auto" and isinstance(source, (list, tuple)):
@@ -456,7 +588,9 @@ def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision
         if plan.engine == "native":
             raise NativeUnsupportedError("native extension is not installed")
         return _terminal_metadata(
-            EngineDecision("python", "native extension is not installed"), plan, terminal
+            EngineDecision("python", "native extension is not installed"),
+            plan,
+            terminal,
         )
     if plan.engine == "auto":
         size = plan.source.capabilities.exact_size
@@ -472,7 +606,7 @@ def select_terminal_engine(plan: Plan, terminal: TerminalName) -> EngineDecision
     return _terminal_metadata(EngineDecision("native", reason, program), plan, terminal)
 
 
-def select_materializing_engine(plan: Plan) -> EngineDecision:
+def select_materializing_engine(plan: Pipeline) -> EngineDecision:
     """Select full native or safe hybrid execution for a terminal that consumes all output.
 
     Hybrid mode is considered only after automatic full-plan compilation fails. It requires an

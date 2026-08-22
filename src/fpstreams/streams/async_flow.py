@@ -8,12 +8,11 @@ import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any, Generic, TypeVar, cast
 
-from ..execution.async_ import _execute
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.async_ import (
+    AsyncLogicalPlan,
+    AsyncOperation,
     _Append,
-    _AsyncOperation,
-    _AsyncPlan,
     _AsyncSource,
     _BatchBySize,
     _BufferTimeout,
@@ -80,17 +79,17 @@ def _default_item_size(value: Any) -> int:
 class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
     """An async pipeline that opens its sync or async source when consumption begins."""
 
-    __slots__ = ("_plan",)
+    __slots__ = ("_logical_plan",)
 
     def __init__(self, source: AsyncIterable[T] | Iterable[T]) -> None:
         """Own a sync or async iterable, preserving one-shot iterator consumption semantics."""
-        self._plan: _AsyncPlan[T] = _AsyncPlan(_AsyncSource.from_value(source))
+        self._logical_plan: AsyncLogicalPlan[T] = AsyncLogicalPlan(_AsyncSource.from_value(source))
 
     @staticmethod
-    def _from_plan(plan: _AsyncPlan[R]) -> AsyncFlow[R]:
+    def _from_logical(plan: AsyncLogicalPlan[R]) -> AsyncFlow[R]:
         """Construct an `AsyncFlow` around an existing immutable plan without rewrapping it."""
         instance: AsyncFlow[R] = object.__new__(AsyncFlow)
-        instance._plan = plan
+        instance._logical_plan = plan
         return instance
 
     def explain(self, terminal: AsyncTerminalName = "iterate") -> AsyncPlanExplanation:
@@ -117,7 +116,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             "all",
         }:
             raise ValueError(f"unknown async terminal: {terminal!r}")
-        return AsyncPlanExplanation(self._plan, terminal)
+        return AsyncPlanExplanation(self._logical_plan, terminal)
 
     @staticmethod
     def of(*items: R) -> AsyncFlow[R]:
@@ -177,7 +176,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 async for line in file:
                     yield line.rstrip("\r\n")
 
-        return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(lines)))
+        return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(lines)))
 
     @staticmethod
     def interval(seconds: float) -> AsyncFlow[int]:
@@ -200,8 +199,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 yield current
                 current += 1
 
-        return AsyncFlow._from_plan(
-            _AsyncPlan(
+        return AsyncFlow._from_logical(
+            AsyncLogicalPlan(
                 _AsyncSource.defer(
                     ticks,
                     facts=StreamFacts(
@@ -250,15 +249,30 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                     return
                 cursor = next_cursor
 
-        return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(items)))
+        return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(items)))
 
     def __aiter__(self) -> AsyncIterator[T]:
         """Execute the stored async plan and return its managed output iterator."""
-        return cast(AsyncIterator[T], _execute(self._plan))
+        from ..execution.async_scheduler import execute_async_physical
+        from ..physical.async_plan import compile_async_query
 
-    def _append(self, operation: _AsyncOperation) -> AsyncFlow[Any]:
+        physical = compile_async_query(self._query("iterate"))
+        return cast(AsyncIterator[T], execute_async_physical(physical))
+
+    def _query(self, terminal: AsyncTerminalName) -> Any:
+        """Pair the immutable logical plan with one validated async terminal name."""
+        from ..physical.async_plan import AsyncQuery
+
+        return AsyncQuery(self._logical_plan, terminal)
+
+    def _append(self, operation: AsyncOperation) -> AsyncFlow[Any]:
         """Return a new AsyncFlow whose immutable plan includes `operation`."""
-        return self._from_plan(_AsyncPlan(self._plan.source, (*self._plan.operations, operation)))
+        return self._from_logical(
+            AsyncLogicalPlan(
+                self._logical_plan.source,
+                (*self._logical_plan.operations, operation),
+            )
+        )
 
     def map_async(
         self,
@@ -1129,7 +1143,7 @@ class _AsyncFlowFactory:
         Returns:
             A reusable async flow that invokes `factory` separately for each evaluation.
         """
-        return AsyncFlow._from_plan(_AsyncPlan(_AsyncSource.defer(factory)))
+        return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(factory)))
 
     def from_file(self, path: str | os.PathLike[str], *, encoding: str = "utf-8") -> AsyncFlow[str]:
         """Read a text file asynchronously and emit its lines.

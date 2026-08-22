@@ -385,7 +385,7 @@ class _Collapse:
     merger: Callable[[Any, Any], Any]
 
 
-_AsyncOperation = (
+AsyncOperation = (
     _MapAsync
     | _Filter
     | _Tap
@@ -428,8 +428,8 @@ _AsyncOperation = (
 
 
 @dataclass(frozen=True, slots=True)
-class _AsyncPlan(Generic[T]):
+class AsyncLogicalPlan(Generic[T]):
     """Bind an async source to an immutable sequence of asynchronous operation nodes."""
 
     source: _AsyncSource[Any]
-    operations: tuple[_AsyncOperation, ...] = ()
+    operations: tuple[AsyncOperation, ...] = ()

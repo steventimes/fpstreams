@@ -13,10 +13,19 @@ from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 from ..errors import DuplicateKeyError
-from ..planning.arrow_source import ArrowBatchSource, batch_to_rows
+from ..planning.arrow_source import (
+    ArrowBatchSource,
+    ArrowScanRequest,
+    RangePredicate,
+)
+from ..planning.arrow_source import batch_to_rows as batch_to_rows
+from ..planning.semantics import facts_from_capabilities
 from ..planning.source import Source, SourceCapabilities
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
+_CSV_PROJECTION_PROBE_BYTES = 64 * 1024
+_MAX_PARQUET_PRUNING_PROBE_ROW_GROUPS = 512
+_MAX_PARQUET_PRUNING_PROBE_FRAGMENTS = 512
 
 
 def _arrow_modules() -> tuple[Any, Any, Any]:
@@ -51,6 +60,42 @@ def _close(resource: Any) -> None:
     if callable(close):
         with suppress(Exception):
             close()
+
+
+class _OwnedReaderRows(Iterator[dict[str, Any]]):
+    """Close a one-shot Arrow reader even when its row generator never starts."""
+
+    __slots__ = ("_closed", "_iterator", "_reader")
+
+    def __init__(self, iterator: Iterator[dict[str, Any]], reader: Any) -> None:
+        self._iterator = iterator
+        self._reader = reader
+        self._closed = False
+
+    def __iter__(self) -> _OwnedReaderRows:
+        return self
+
+    def __next__(self) -> dict[str, Any]:
+        return next(self._iterator)
+
+    def close(self) -> None:
+        """Release both layers idempotently, including before the first ``next``."""
+        if self._closed:
+            return
+        self._closed = True
+        _close(self._iterator)
+        _close(self._reader)
+
+
+def _bounded_batches(source: Iterable[Any], size: int) -> Iterator[Any]:
+    """Slice an Arrow batch stream to the configured row bound and own its iterator."""
+    iterator = iter(source)
+    try:
+        for batch in iterator:
+            for offset in range(0, batch.num_rows, size):
+                yield batch.slice(offset, size)
+    finally:
+        _close(iterator)
 
 
 def _column_names(names: Iterable[str], *, operation: str) -> tuple[str, ...]:
@@ -187,36 +232,215 @@ def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, A
     """Build a row Source retaining its Arrow batch opener for planning."""
     pa, _dataset, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
+    if not isinstance(source, (pa.Table, pa.RecordBatch, pa.RecordBatchReader)):
+        if not callable(getattr(source, "__arrow_c_stream__", None)):
+            raise TypeError(
+                "from_arrow() expects a pyarrow Table, RecordBatch, RecordBatchReader, "
+                "or __arrow_c_stream__ provider"
+            )
+        source = pa.RecordBatchReader.from_stream(source)
     if isinstance(source, pa.Table):
+        _schema_names(source.schema)
         descriptor = ArrowBatchSource(
-            lambda: iter(source.to_batches(max_chunksize=size)), "table", size, source.schema
+            lambda: iter(source.to_batches(max_chunksize=size)),
+            "table",
+            size,
+            source.schema,
+            materialized_data=source,
         )
         exact = source.num_rows
     elif isinstance(source, pa.RecordBatch):
         _schema_names(source.schema)
-        descriptor = ArrowBatchSource(lambda: iter((source,)), "record_batch", size, source.schema)
+        descriptor = ArrowBatchSource(
+            lambda: _bounded_batches((source,), size),
+            "record_batch",
+            size,
+            source.schema,
+            materialized_data=source,
+        )
         exact = source.num_rows
     elif isinstance(source, pa.RecordBatchReader):
-        _schema_names(source.schema)
-        descriptor = ArrowBatchSource(lambda: iter(source), "reader", size, source.schema, False)
+        try:
+            _schema_names(source.schema)
+        except BaseException:
+            _close(source)
+            raise
+        descriptor = ArrowBatchSource(
+            lambda: _bounded_batches(source, size),
+            "reader",
+            size,
+            source.schema,
+            False,
+        )
         exact = None
-    else:
-        raise TypeError("from_arrow() expects a pyarrow Table, RecordBatch, or RecordBatchReader")
+    else:  # pragma: no cover - the protocol normalization above closes the type union.
+        raise AssertionError("unreachable Arrow source type")
 
     def rows() -> Iterator[dict[str, Any]]:
         """Open planned Arrow batches, convert them to rows, and close one-shot readers."""
+        from ..runtime.failpoints import has_active_failpoints, hit
+
+        instrumented = has_active_failpoints()
         batches = descriptor.open_batches()
         try:
+            if instrumented:
+                hit("arrow.reader.after")
             for batch in batches:
-                yield from batch_to_rows(batch)
+                for row in batch_to_rows(batch):
+                    if instrumented:
+                        hit("arrow.batch.after")
+                    yield row
         finally:
             _close(batches)
             if descriptor.kind == "reader":
                 _close(source)
 
+    def open_rows() -> Iterator[dict[str, Any]]:
+        """Wrap one-shot readers so close-before-first-pull still owns the native handle."""
+        iterator = rows()
+        return _OwnedReaderRows(iterator, source) if descriptor.kind == "reader" else iterator
+
     return Source(
-        rows, SourceCapabilities(descriptor.reiterable, exact, True), native_data=descriptor
+        open_rows,
+        SourceCapabilities(descriptor.reiterable, exact, True),
+        native_data=descriptor,
     )
+
+
+def _deferred_arrow_source(
+    rows: Callable[[], Iterator[dict[str, Any]]],
+    descriptor: ArrowBatchSource,
+) -> Source[dict[str, Any]]:
+    """Retain a reusable columnar opener beside a canonical deferred row opener."""
+    capabilities = SourceCapabilities(reiterable=True, exact_size=None, ordered=True)
+    return Source(
+        rows,
+        capabilities,
+        native_data=descriptor,
+        facts=facts_from_capabilities(
+            reiterable=True,
+            exact_size=None,
+            ordered=True,
+            reopenable=True,
+        ),
+    )
+
+
+def csv_source(
+    path: str | os.PathLike[str],
+    *,
+    batch_size: int = 65_536,
+    read_options: Any = None,
+    parse_options: Any = None,
+    convert_options: Any = None,
+    memory_pool: Any = None,
+) -> Source[dict[str, Any]]:
+    """Build a reusable typed CSV stream backed by PyArrow's incremental reader."""
+    _pa, _dataset, _parquet = _arrow_modules()
+    csv_module = cast(Any, import_module("pyarrow.csv"))
+    size = _positive_size(batch_size)
+
+    def open_reader(
+        options: Any,
+        *,
+        input_read_options: Any = read_options,
+    ) -> tuple[Any, Any]:
+        """Open one owned stream/reader pair and validate its output field names."""
+        input_stream = _pa.input_stream(path, compression="detect")
+        reader = None
+        try:
+            reader = csv_module.open_csv(
+                input_stream,
+                read_options=input_read_options,
+                parse_options=parse_options,
+                convert_options=options,
+                memory_pool=memory_pool,
+            )
+            _schema_names(reader.schema)
+        except BaseException:
+            _close(reader)
+            _close(input_stream)
+            raise
+        return reader, input_stream
+
+    def stream(options: Any) -> Iterator[Any]:
+        """Own one incremental reader and bound every emitted batch by row count."""
+        reader, input_stream = open_reader(options)
+        try:
+            yield from _bounded_batches(reader, size)
+        finally:
+            _close(reader)
+            _close(input_stream)
+
+    def batches() -> Iterator[Any]:
+        """Read the complete caller-visible CSV schema."""
+        yield from stream(convert_options)
+
+    def projected_batches(requested: tuple[str, ...]) -> Iterator[Any]:
+        """Reopen a default CSV reader with only proven-present query fields."""
+        if not requested:
+            yield from batches()
+            return
+        if read_options is None and parse_options is None and convert_options is None:
+            try:
+                probe, input_stream = open_reader(
+                    None,
+                    input_read_options=csv_module.ReadOptions(
+                        block_size=_CSV_PROJECTION_PROBE_BYTES
+                    ),
+                )
+            except (TypeError, ValueError):
+                # A header/record may straddle the bounded probe, or its partial view may expose
+                # a schema-validation error before a later parse error. Reopen with Arrow's
+                # established default so both successful inference and public errors remain
+                # identical to the pre-optimization path. Allocation and non-validation errors
+                # deliberately propagate instead of being mistaken for a speculative decline.
+                probe, input_stream = open_reader(None)
+        else:
+            probe, input_stream = open_reader(None)
+        try:
+            available = set(probe.schema.names)
+        finally:
+            _close(probe)
+            _close(input_stream)
+        if any(name not in available for name in requested):
+            # Preserve lazy Rows selection semantics for missing fields: header-only inputs
+            # remain empty, while nonempty inputs fail through the canonical selector path.
+            yield from batches()
+            return
+        options = csv_module.ConvertOptions(include_columns=list(requested))
+        yield from stream(options)
+
+    def records() -> Iterator[dict[str, Any]]:
+        iterator = batches()
+        try:
+            for batch in iterator:
+                yield from batch_to_rows(batch)
+        finally:
+            _close(iterator)
+
+    def byte_size() -> int | None:
+        """Return cheap local-file evidence without changing an eventual open failure."""
+        if type(path) is not str and not isinstance(path, Path):
+            return None
+        try:
+            size_bytes = os.stat(path).st_size
+        except (OSError, TypeError, ValueError):
+            return None
+        return size_bytes if type(size_bytes) is int and size_bytes >= 0 else None
+
+    descriptor = ArrowBatchSource(
+        batches,
+        "csv",
+        size,
+        # ParseOptions is mutable.  Supplying one disables the two-open projection route so a
+        # callback installed after construction can never observe the same invalid row twice.
+        projection_opener=(
+            projected_batches if convert_options is None and parse_options is None else None
+        ),
+        byte_size_opener=byte_size,
+    )
+    return _deferred_arrow_source(records, descriptor)
 
 
 def parquet_row_factory(
@@ -230,21 +454,299 @@ def parquet_row_factory(
     partitioning: Any = None,
 ) -> Callable[[], Iterator[dict[str, Any]]]:
     """Build a reusable Parquet scanner opener with projection and filter pushdown."""
+    (
+        batches,
+        _size,
+        _projected_batches,
+        _requested_batches,
+        _count_rows,
+    ) = _parquet_batch_factory(
+        source,
+        columns=columns,
+        filter=filter,
+        batch_size=batch_size,
+        use_threads=use_threads,
+        filesystem=filesystem,
+        partitioning=partitioning,
+    )
+
+    def records() -> Iterator[dict[str, Any]]:
+        """Convert fresh scanner batches through the canonical Arrow row boundary."""
+        iterator = batches()
+        try:
+            for batch in iterator:
+                yield from batch_to_rows(batch)
+        finally:
+            _close(iterator)
+
+    return records
+
+
+def _parquet_equality_expression(
+    pa: Any,
+    dataset_module: Any,
+    dataset: Any,
+    available: set[str],
+    equality: tuple[str, object],
+) -> Any | None:
+    """Build an Arrow equality only for a caller-visible field with an exact scalar type."""
+    field_name, value = equality
+    if field_name not in available:
+        return None
+    arrow_type = dataset.schema.field(field_name).type
+    value_type = type(value)
+    compatible = (
+        (value_type is int and pa.types.is_int64(arrow_type))
+        or (value_type is bool and pa.types.is_boolean(arrow_type))
+        or (
+            value_type is str
+            and (pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type))
+        )
+        or (
+            value_type is bytes
+            and (pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type))
+        )
+    )
+    return dataset_module.field(field_name) == value if compatible else None
+
+
+def _parquet_range_expression(
+    pa: Any,
+    dataset_module: Any,
+    dataset: Any,
+    available: set[str],
+    predicate: RangePredicate,
+) -> Any | None:
+    """Build a null-preserving scanner superset for one exact int64 range."""
+    field_name, operator, value = predicate
+    if (
+        type(field_name) is not str
+        or "." in field_name
+        or operator not in {"<", "<=", ">", ">="}
+        or type(value) is not int
+        or not -(1 << 63) <= value < (1 << 63)
+        or field_name not in available
+        or not pa.types.is_int64(dataset.schema.field(field_name).type)
+    ):
+        return None
+    field = dataset_module.field(field_name)
+    match operator:
+        case "<":
+            comparison = field < value
+        case "<=":
+            comparison = field <= value
+        case ">":
+            comparison = field > value
+        case ">=":
+            comparison = field >= value
+        case _:
+            return None
+    return field.is_null() | comparison
+
+
+def _parquet_first_predicate_can_prune(
+    dataset: Any,
+    predicate: Any,
+    dataset_module: Any,
+    iterator: Iterator[Any],
+    *,
+    single_fragment: bool,
+) -> bool:
+    """Probe only metadata needed to preserve a first-match query's source order."""
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return False
+    if not isinstance(first, dataset_module.ParquetFileFragment):
+        return False
+    first_row_groups = first.num_row_groups
+    if (
+        type(first_row_groups) is not int
+        or first_row_groups <= 0
+        or first_row_groups > _MAX_PARQUET_PRUNING_PROBE_ROW_GROUPS
+    ):
+        return False
+    kept_first = len(first.split_by_row_group(predicate, schema=dataset.schema))
+    return kept_first == 0 or (single_fragment and kept_first < first_row_groups)
+
+
+def _parquet_predicate_can_prune(
+    dataset: Any,
+    predicate: Any,
+    dataset_module: Any,
+    *,
+    probe_statistics: bool,
+    first_only: bool = False,
+    single_fragment: bool = False,
+) -> bool:
+    """Ask Arrow whether bounded local row-group statistics can exclude any data."""
+    if not probe_statistics:
+        return not first_only
+    fragments: list[Any] = []
+    total = 0
+    try:
+        iterator = iter(dataset.get_fragments())
+        if first_only:
+            return _parquet_first_predicate_can_prune(
+                dataset,
+                predicate,
+                dataset_module,
+                iterator,
+                single_fragment=single_fragment,
+            )
+        for fragment in iterator:
+            if len(fragments) >= _MAX_PARQUET_PRUNING_PROBE_FRAGMENTS:
+                return False
+            if not isinstance(fragment, dataset_module.ParquetFileFragment):
+                return False
+            row_groups = fragment.num_row_groups
+            if type(row_groups) is not int or row_groups < 0:
+                return False
+            total += row_groups
+            if total > _MAX_PARQUET_PRUNING_PROBE_ROW_GROUPS:
+                return False
+            fragments.append(fragment)
+        if total == 0:
+            return False
+        kept = sum(
+            len(fragment.split_by_row_group(predicate, schema=dataset.schema))
+            for fragment in fragments
+        )
+    except MemoryError:
+        raise
+    except Exception:
+        # A failed speculative metadata probe must not turn an otherwise valid residual filter
+        # into a scanner error. Unknown local layouts simply keep the canonical unfiltered scan.
+        return False
+    return kept < total
+
+
+def _parquet_batch_factory(
+    source: Any,
+    *,
+    columns: Iterable[str] | None = None,
+    filter: Any = None,
+    batch_size: int = 65_536,
+    use_threads: bool = True,
+    filesystem: Any = None,
+    partitioning: Any = None,
+) -> tuple[
+    Callable[[], Iterator[Any]],
+    int,
+    Callable[[tuple[str, ...]], Iterator[Any]],
+    Callable[[ArrowScanRequest], Iterator[Any]],
+    Callable[[], int | None],
+]:
+    """Build Parquet batch and metadata-count openers with a row bound."""
     _pa, dataset_module, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
     projected = None if columns is None else list(_column_names(columns, operation="Parquet scan"))
+    adaptive_pruning = filesystem is None and (
+        (type(source) is str and "://" not in source) or isinstance(source, Path)
+    )
 
-    def records() -> Iterator[dict[str, Any]]:
-        """Create a fresh dataset scanner and yield projected batches as dictionaries."""
+    def open_dataset() -> Any:
+        """Create or reuse the dataset object without opening a scanner eagerly."""
         if isinstance(source, dataset_module.Dataset):
-            dataset = source
-        else:
-            options: dict[str, Any] = {"format": "parquet"}
-            if filesystem is not None:
-                options["filesystem"] = filesystem
-            if partitioning is not None:
-                options["partitioning"] = partitioning
-            dataset = dataset_module.dataset(source, **options)
+            return source
+        options: dict[str, Any] = {"format": "parquet"}
+        if filesystem is not None:
+            options["filesystem"] = filesystem
+        if partitioning is not None:
+            options["partitioning"] = partitioning
+        return dataset_module.dataset(source, **options)
+
+    def scan(
+        requested: tuple[str, ...] | None,
+        equality: tuple[str, object] | None = None,
+        range_predicate: RangePredicate | None = None,
+        *,
+        first_only: bool = False,
+    ) -> Iterator[Any]:
+        """Yield batches, narrowing only within the caller-visible source schema."""
+        dataset = open_dataset()
+        scan_columns = projected
+        scan_filter = filter
+        dataset_names = set(_schema_names(dataset.schema))
+        available = set(projected) if projected is not None else dataset_names
+        base_projection_is_proven = projected is None or all(
+            name in dataset_names for name in projected
+        )
+        requested_is_proven = base_projection_is_proven and (
+            requested is None or all(name in available for name in requested)
+        )
+        # A missing query field must retain the canonical row-wise error timing.  Reading
+        # the original column set lets an empty source remain empty and a nonempty source
+        # fail through the normal selector instead of raising eagerly in the scanner.
+        # Likewise, an invalid public columns= request must still reach the base scanner;
+        # a narrower downstream select cannot be allowed to hide its schema error.
+        if requested is not None and requested_is_proven:
+            scan_columns = list(requested)
+        if (
+            filter is None
+            and requested_is_proven
+            and (equality is not None or range_predicate is not None)
+        ):
+            candidate = (
+                _parquet_equality_expression(_pa, dataset_module, dataset, available, equality)
+                if equality is not None
+                else _parquet_range_expression(
+                    _pa,
+                    dataset_module,
+                    dataset,
+                    available,
+                    cast(RangePredicate, range_predicate),
+                )
+            )
+            if candidate is not None and _parquet_predicate_can_prune(
+                dataset,
+                candidate,
+                dataset_module,
+                probe_statistics=adaptive_pruning,
+                first_only=first_only,
+                single_fragment=adaptive_pruning and Path(source).is_file(),
+            ):
+                scan_filter = candidate
+        scanner_options: dict[str, Any] = {
+            "columns": scan_columns,
+            "filter": scan_filter,
+            "batch_size": size,
+            "use_threads": use_threads,
+        }
+        if first_only:
+            scanner_options["batch_readahead"] = 0
+            scanner_options["fragment_readahead"] = 0
+        scanner = dataset.scanner(
+            **scanner_options,
+        )
+        _schema_names(scanner.projected_schema)
+        iterator = iter(scanner.to_batches())
+        try:
+            yield from iterator
+        finally:
+            _close(iterator)
+
+    def batches() -> Iterator[Any]:
+        """Create a fresh scanner using the public source projection."""
+        yield from scan(None)
+
+    def projected_batches(requested: tuple[str, ...]) -> Iterator[Any]:
+        """Create a fresh scanner containing only fields required by a closed query."""
+        yield from scan(requested)
+
+    def requested_batches(request: ArrowScanRequest) -> Iterator[Any]:
+        """Create a scanner from schema-guarded projection and comparison hints."""
+        yield from scan(
+            request.columns,
+            request.equality,
+            request.range_predicate,
+            first_only=request.first_only,
+        )
+
+    def count_rows() -> int | None:
+        """Count the public scan through Arrow's metadata-aware scanner terminal."""
+        dataset = open_dataset()
+        _schema_names(dataset.schema)
         scanner = dataset.scanner(
             columns=projected,
             filter=filter,
@@ -252,10 +754,53 @@ def parquet_row_factory(
             use_threads=use_threads,
         )
         _schema_names(scanner.projected_schema)
-        for batch in scanner.to_batches():
-            yield from batch.to_pylist()
+        count = getattr(scanner, "count_rows", None)
+        if not callable(count):
+            return None
+        result = count()
+        return result if type(result) is int and result >= 0 else None
 
-    return records
+    return batches, size, projected_batches, requested_batches, count_rows
+
+
+def parquet_source(
+    source: Any,
+    *,
+    columns: Iterable[str] | None = None,
+    filter: Any = None,
+    batch_size: int = 65_536,
+    use_threads: bool = True,
+    filesystem: Any = None,
+    partitioning: Any = None,
+) -> Source[dict[str, Any]]:
+    """Retain Parquet scanner batches so relational projections stay columnar."""
+    batches, size, projected_batches, requested_batches, count_rows = _parquet_batch_factory(
+        source,
+        columns=columns,
+        filter=filter,
+        batch_size=batch_size,
+        use_threads=use_threads,
+        filesystem=filesystem,
+        partitioning=partitioning,
+    )
+
+    def records() -> Iterator[dict[str, Any]]:
+        iterator = batches()
+        try:
+            for batch in iterator:
+                yield from batch_to_rows(batch)
+        finally:
+            _close(iterator)
+
+    descriptor = ArrowBatchSource(
+        batches,
+        "parquet",
+        size,
+        projection_opener=projected_batches,
+        request_opener=requested_batches if filter is None else None,
+        count_opener=count_rows,
+    )
+    return _deferred_arrow_source(records, descriptor)
 
 
 def table_from_rows(

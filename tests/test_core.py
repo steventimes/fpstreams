@@ -565,11 +565,35 @@ def test_async_operation_dispatch_covers_every_planned_operation() -> None:
         ASYNC_OPERATION_HANDLERS,
         SUPPORTED_ASYNC_OPERATION_TYPES,
     )
-    from fpstreams.planning.async_ import _AsyncOperation
+    from fpstreams.planning.async_ import (
+        AsyncOperation,
+        _BufferTimeout,
+        _CombineLatest,
+        _Debounce,
+        _Delay,
+        _MapAsync,
+        _Merge,
+        _MergeMap,
+        _SwitchMap,
+        _Throttle,
+        _Timeout,
+    )
 
     assert len(SUPPORTED_ASYNC_OPERATION_TYPES) == len(set(SUPPORTED_ASYNC_OPERATION_TYPES))
     assert tuple(ASYNC_OPERATION_HANDLERS) == SUPPORTED_ASYNC_OPERATION_TYPES
-    assert set(SUPPORTED_ASYNC_OPERATION_TYPES) == set(get_args(_AsyncOperation))
+    specialized = {
+        _MapAsync,
+        _Merge,
+        _MergeMap,
+        _SwitchMap,
+        _CombineLatest,
+        _Timeout,
+        _Debounce,
+        _BufferTimeout,
+        _Delay,
+        _Throttle,
+    }
+    assert set(SUPPORTED_ASYNC_OPERATION_TYPES) == set(get_args(AsyncOperation)) - specialized
 
 
 @pytest.mark.asyncio
@@ -592,21 +616,18 @@ async def test_async_operation_dispatch_applies_take_operation() -> None:
 @pytest.mark.asyncio
 async def test_async_operation_dispatch_rejects_unknown_types() -> None:
     from fpstreams.execution.async_ops import apply_async_operation
-    from fpstreams.planning.async_ import _AsyncOperation
+    from fpstreams.planning.async_ import AsyncOperation
 
     async def source():
         if False:
             yield None
 
     with pytest.raises(TypeError, match="unsupported asynchronous operation: object"):
-        apply_async_operation(source(), cast(_AsyncOperation, object()))
+        apply_async_operation(source(), cast(AsyncOperation, object()))
 
 
 @pytest.mark.asyncio
 async def test_async_stateless_dispatch_preserves_callable_order() -> None:
-    from fpstreams.execution.async_ops import apply_async_operation
-    from fpstreams.planning.async_ import _Filter, _MapAsync, _Tap
-
     events: list[tuple[str, int]] = []
 
     async def source():
@@ -624,11 +645,7 @@ async def test_async_stateless_dispatch_preserves_callable_order() -> None:
         events.append(("filter", value))
         return value % 2 == 1
 
-    iterator = apply_async_operation(
-        source(), _MapAsync(mapped, concurrency=1, ordered=True, timeout=None)
-    )
-    iterator = apply_async_operation(iterator, _Tap(tapped))
-    iterator = apply_async_operation(iterator, _Filter(accepted))
+    iterator = aflow(source()).map_async(mapped, concurrency=1).tap(tapped).filter(accepted)
 
     assert [item async for item in iterator] == [11, 13]
     assert events == [
@@ -656,16 +673,19 @@ PINNED_ACTION = re.compile(
 )
 
 
-def test_sha256_manifest_is_sorted_and_excludes_itself(tmp_path: Path) -> None:
-    (tmp_path / "b.whl").write_bytes(b"wheel-b")
-    (tmp_path / "a.tar.gz").write_bytes(b"source-a")
+def test_sha256_manifest_is_sorted_verifiable_and_excludes_metadata(tmp_path: Path) -> None:
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    (packages / ".gitignore").write_text("*", encoding="utf-8")
+    (packages / "b.whl").write_bytes(b"wheel-b")
+    (packages / "a.tar.gz").write_bytes(b"source-a")
     manifest = tmp_path / "SHA256SUMS"
 
     result = subprocess.run(
         [
             sys.executable,
             str(ROOT / "tools" / "write_sha256_manifest.py"),
-            str(tmp_path),
+            str(packages),
             str(manifest),
         ],
         check=False,
@@ -675,9 +695,17 @@ def test_sha256_manifest_is_sorted_and_excludes_itself(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert manifest.read_text(encoding="utf-8") == (
-        f"{hashlib.sha256(b'source-a').hexdigest()}  a.tar.gz\n"
-        f"{hashlib.sha256(b'wheel-b').hexdigest()}  b.whl\n"
+        f"{hashlib.sha256(b'source-a').hexdigest()}  packages/a.tar.gz\n"
+        f"{hashlib.sha256(b'wheel-b').hexdigest()}  packages/b.whl\n"
     )
+    verified = subprocess.run(
+        ["sha256sum", "--check", manifest.name],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert verified.returncode == 0, verified.stderr
 
 
 def test_release_smoke_checks_native_and_python_backends() -> None:

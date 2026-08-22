@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Any, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from ..collecting.aggregation import (
     Aggregator,
@@ -14,7 +14,9 @@ from ..collecting.aggregation import (
 )
 from ..collecting.collector import Collector
 from ..errors import DuplicateKeyError
-from .flow import Flow
+
+if TYPE_CHECKING:
+    from .flow import Flow
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -318,6 +320,11 @@ class Pairs(Generic[K, V]):
             Each hashable key mapped to a dictionary of its named finished aggregation values.
         """
         items = prepare_aggregations(aggregations)
+        from ..execution.relational import try_native_pair_sum
+
+        native = try_native_pair_sum(self._flow._logical_plan, items)
+        if native is not None:
+            return cast(dict[K, dict[str, Any]], native)
         states_by_key: dict[K, dict[str, Any]] = {}
         iterator = iter(self)
         try:
@@ -349,5 +356,9 @@ def pairs(source: Mapping[K, V] | Iterable[tuple[K, V]]) -> Pairs[K, V]:
     Returns:
         A lazy pair pipeline over the mapping entries or supplied tuples.
     """
+    # Flow exposes ``Flow.pairs`` in the other direction. Delaying this runtime
+    # import avoids partially initialized modules while preserving precise types.
+    from .flow import Flow
+
     values = source.items() if isinstance(source, Mapping) else source
     return Pairs(Flow.from_iterable(cast(Iterable[tuple[K, V]], values)))

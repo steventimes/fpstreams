@@ -32,7 +32,14 @@ class Source(Generic[T]):
     iteration.
     """
 
-    __slots__ = ("_claimed", "_factory", "_lock", "capabilities", "facts", "native_data")
+    __slots__ = (
+        "_claimed",
+        "_factory",
+        "_lock",
+        "capabilities",
+        "facts",
+        "native_data",
+    )
 
     def __init__(
         self,
@@ -98,8 +105,18 @@ class Source(Generic[T]):
 
     def open(self) -> Iterator[T]:
         """Claim the source when necessary, then create its Python iterator."""
+        from ..runtime.failpoints import hit
+
         self._claim()
-        return self._factory()
+        iterator = self._factory()
+        try:
+            hit("source.open.after")
+        except BaseException:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+            raise
+        return iterator
 
     def _claim(self) -> None:
         """Atomically reject a second evaluation of a non-reiterable source."""

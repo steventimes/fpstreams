@@ -317,30 +317,3 @@ Operation = (
     | MapLastOp
     | CollapseOp
 )
-
-
-@dataclass(frozen=True, slots=True)
-class Plan:
-    """Bind a source to an immutable operation sequence and execution preferences."""
-
-    source: Source[Any]
-    operations: tuple[Operation, ...] = ()
-    engine: Engine = "auto"
-    parallel: ParallelSettings | None = None
-
-    def append(self, operation: Operation) -> Plan:
-        """Return a new plan with ``operation`` appended to the lazy pipeline."""
-        return Plan(
-            self.source,
-            (*self.operations, operation),
-            self.engine,
-            self.parallel,
-        )
-
-    def with_engine(self, engine: Engine) -> Plan:
-        """Return a copy requesting automatic, Python, or native execution."""
-        return Plan(self.source, self.operations, engine, self.parallel)
-
-    def with_parallel(self, settings: ParallelSettings | None) -> Plan:
-        """Return a copy with plan-level parallel settings replaced or cleared."""
-        return Plan(self.source, self.operations, self.engine, settings)

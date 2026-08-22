@@ -90,7 +90,8 @@ class RowExpr:
         """
         right = self._coerce(other)
         return RowExpr._from_node(
-            Binary(symbol, self._node, right._node), f"({self.label} {symbol} {right.label})"
+            Binary(symbol, self._node, right._node),
+            f"({self.label} {symbol} {right.label})",
         )
 
     def _reverse(
@@ -106,7 +107,8 @@ class RowExpr:
         """
         left = self._coerce(other)
         return RowExpr._from_node(
-            Binary(symbol, left._node, self._node), f"({left.label} {symbol} {self.label})"
+            Binary(symbol, left._node, self._node),
+            f"({left.label} {symbol} {self.label})",
         )
 
     def __add__(self, other: object) -> RowExpr:
@@ -297,7 +299,8 @@ class RowExpr:
     def contains(self, value: object) -> RowExpr:
         """Test whether the supplied literal value belongs to the produced container."""
         return RowExpr._from_node(
-            Call("contains", (self._node, Literal(value))), f"{self.label}.contains({value!r})"
+            Call("contains", (self._node, Literal(value))),
+            f"{self.label}.contains({value!r})",
         )
 
 

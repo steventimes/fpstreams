@@ -15,10 +15,6 @@ from fpstreams import flow
 # --- Tests consolidated from test_collecting_api.py ---
 
 
-def _square(value: int) -> int:
-    return value * value
-
-
 def test_flow_conveniences_and_collectors_stay_thin_and_pythonic() -> None:
     values = flow([3, 1, 2, 4])
 

@@ -1,0 +1,51 @@
+[[group]]
+name = "planning_compile"
+patterns = ["fpstreams_planning/*"]
+
+[[group]]
+name = "python_builtin"
+patterns = ["python_builtin/*"]
+
+[[group]]
+name = "python_row"
+patterns = ["fpstreams_python/*", "fpstreams_lambda/*", "fpstreams_auto/*"]
+
+[[group]]
+name = "aggregation"
+patterns = ["fpstreams_aggregation/*"]
+
+[[group]]
+name = "sort_spill"
+patterns = ["fpstreams_sort/*", "fpstreams_spill/*"]
+
+[[group]]
+name = "join_group"
+patterns = ["fpstreams_join/*", "fpstreams_group/*"]
+
+[[group]]
+name = "arrow"
+patterns = ["fpstreams_arrow/*"]
+
+[[group]]
+name = "rust_native"
+patterns = ["fpstreams_native/*"]
+
+[[group]]
+name = "async_latency"
+patterns = ["fpstreams_async/*/latency/*"]
+
+[[group]]
+name = "async_throughput"
+patterns = ["fpstreams_async/*/throughput/*"]
+
+[[group]]
+name = "operation_sync"
+patterns = ["fpstreams_operation/sync/*"]
+
+[[group]]
+name = "operation_async"
+patterns = ["fpstreams_operation/async/*"]
+
+[[group]]
+name = "operation_rows"
+patterns = ["fpstreams_operation/rows/*"]

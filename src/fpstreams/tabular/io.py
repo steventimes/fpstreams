@@ -6,7 +6,7 @@ import csv
 import json
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Any, Generic, Literal, TypeAlias, TypeVar
+from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 
 from ..collecting.collector import _collect_columns
 from ..expressions.selectors import Selector
@@ -14,6 +14,8 @@ from ..io_safety import spreadsheet_safe_cell
 from ..streams.flow import Flow, flow
 from .arrow import (
     _arrow_modules,
+    _close,
+    _positive_size,
     arrow_batch_factory,
     table_from_rows,
     write_parquet_rows,
@@ -46,6 +48,45 @@ class RowsIOMixin(Generic[T]):
         Returns:
             A field-to-list mapping with one aligned entry for every consumed row.
         """
+        try:
+            pipeline = self._flow._pipeline
+        except TypeError:
+            pipeline = None
+        if (
+            pipeline is not None
+            and pipeline.engine == "auto"
+            and pipeline.parallel is None
+            and not pipeline.operations
+        ):
+            from ..planning.arrow_source import ArrowBatchSource
+
+            descriptor = pipeline.source.native_data
+            if (
+                isinstance(descriptor, ArrowBatchSource)
+                and descriptor.materialized_data is not None
+            ):
+                from ..runtime.failpoints import has_active_failpoints
+
+                if has_active_failpoints():
+                    return _collect_columns(_as_record(row) for row in self)
+                pipeline.source.open_native(ArrowBatchSource)
+                columns: dict[str, list[Any]] = {}
+                row_count = 0
+                batches = descriptor.open_batches()
+                try:
+                    for batch in batches:
+                        if batch.num_rows == 0:
+                            continue
+                        converted = cast(dict[str, list[Any]], batch.to_pydict())
+                        if row_count == 0:
+                            columns = converted
+                        else:
+                            for name, values in converted.items():
+                                columns[name].extend(values)
+                        row_count += batch.num_rows
+                finally:
+                    _close(batches)
+                return columns if row_count else {}
         return _collect_columns(_as_record(row) for row in self)
 
     def to_pandas(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
@@ -79,10 +120,22 @@ class RowsIOMixin(Generic[T]):
         Returns:
             A Flow that closes its upstream iterator when exhausted, failed, or short-circuited.
         """
+        size = _positive_size(batch_size)
+        if schema is None:
+            try:
+                pipeline = self._flow._pipeline
+            except TypeError:
+                pipeline = None
+            if pipeline is not None:
+                from ..execution.arrow import try_arrow_batch_factory
+
+                native_factory = try_arrow_batch_factory(pipeline, batch_size=size)
+                if native_factory is not None:
+                    return flow.defer(native_factory)
         return flow.defer(
             arrow_batch_factory(
                 self,
-                batch_size=batch_size,
+                batch_size=size,
                 schema=schema,
                 as_record=_record_view,
             )
@@ -100,24 +153,99 @@ class RowsIOMixin(Generic[T]):
         Returns:
             A Table containing every row; direct Arrow sources may reuse native batches.
         """
-        native = self._flow._plan.source.native_data
-        if schema is None and not self._flow._plan.operations:
-            try:
-                from ..planning.arrow_source import ArrowBatchSource
+        size = _positive_size(batch_size)
+        try:
+            pipeline = self._flow._pipeline
+        except TypeError:
+            # Joins and aggregates have no source-equivalent linear view. They
+            # must be evaluated before Arrow sees their result records.
+            pipeline = None
+        if schema is None and pipeline is not None:
+            from ..execution.arrow import try_arrow_table
 
-                if isinstance(native, ArrowBatchSource):
-                    pa, _dataset, _parquet = _arrow_modules()
-                    return pa.Table.from_batches(
-                        list(self._flow._plan.source.open_native(ArrowBatchSource).open_batches())
-                    )
-            except (ImportError, TypeError):
-                pass
+            handled, table = try_arrow_table(pipeline, batch_size=size)
+            if handled:
+                return table
         return table_from_rows(
             self,
-            batch_size=batch_size,
+            batch_size=size,
             schema=schema,
             as_record=_record_view,
         )
+
+    def __arrow_c_stream__(self, requested_schema: Any = None) -> Any:
+        """Export this Rows pipeline through Arrow's standard PyCapsule stream protocol."""
+        try:
+            pipeline = self._flow._pipeline
+        except TypeError:
+            pipeline = None
+        if (
+            pipeline is not None
+            and pipeline.engine == "auto"
+            and pipeline.parallel is None
+            and not pipeline.operations
+        ):
+            from ..planning.arrow_source import ArrowBatchSource
+            from ..runtime.failpoints import has_active_failpoints
+
+            descriptor = pipeline.source.native_data
+            pa, _dataset, _parquet = _arrow_modules()
+            # PyArrow 25 does not close the Python iterable held by ``from_batches`` when
+            # RecordBatchReader.close() is called. Restrict lazy export to inputs whose
+            # abandonment cannot leave an external reader, file, or callback source open.
+            if (
+                not has_active_failpoints()
+                and isinstance(descriptor, ArrowBatchSource)
+                and descriptor.kind in {"table", "record_batch"}
+                and isinstance(descriptor.materialized_data, (pa.Table, pa.RecordBatch))
+                and descriptor.schema_hint is not None
+            ):
+
+                def batches() -> Iterator[Any]:
+                    pipeline.source.open_native(ArrowBatchSource)
+                    opened = descriptor.open_batches()
+                    try:
+                        yield from opened
+                    finally:
+                        _close(opened)
+
+                reader = pa.RecordBatchReader.from_batches(descriptor.schema_hint, batches())
+                try:
+                    return reader.__arrow_c_stream__(requested_schema)
+                except BaseException:
+                    _close(reader)
+                    raise
+            if (
+                not has_active_failpoints()
+                and requested_schema is None
+                and type(descriptor) in {list, tuple}
+            ):
+                opened = iter(self.arrow_batches())
+                try:
+                    first_batch = next(opened)
+                except StopIteration:
+                    first_batch = None
+                except BaseException:
+                    _close(opened)
+                    raise
+
+                def batches() -> Iterator[Any]:
+                    try:
+                        if first_batch is not None:
+                            yield first_batch
+                        yield from opened
+                    finally:
+                        _close(opened)
+
+                schema = pa.schema([]) if first_batch is None else first_batch.schema
+                reader = pa.RecordBatchReader.from_batches(schema, batches())
+                try:
+                    return reader.__arrow_c_stream__(requested_schema)
+                except BaseException:
+                    _close(opened)
+                    _close(reader)
+                    raise
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
 
     def polars_batches(self, *, batch_size: int = 65_536, schema: Any = None) -> Flow[Any]:
         """Return a lazy Flow of Polars DataFrames converted from bounded Arrow batches.

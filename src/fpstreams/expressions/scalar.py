@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import operator
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Generic, Literal, TypeVar, cast
+from typing import Any, Literal, cast
 
 ExpressionKind = Literal["int", "bool"]
 
@@ -49,199 +50,109 @@ _BINARY: dict[str, Callable[[int | bool, int | bool], int | bool]] = {
 }
 _OPCODE_NAMES = {opcode: name for name, opcode in _OPCODES.items()}
 _UNARY_OPCODES = {_OPCODES["neg"], _OPCODES["not"], _OPCODES["abs"]}
-_COMPOSED_EVALUATOR_LIMIT = 128
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
+_AST_EVALUATOR_LIMIT = 128
 
 
-@dataclass(frozen=True, slots=True)
-class _EvaluatorNode(Generic[InputT, OutputT]):
-    """Hold a constant, the input item, or a callable while composing an evaluator."""
+_AST_BINARY_OPERATORS: dict[str, type[ast.operator]] = {
+    "add": ast.Add,
+    "sub": ast.Sub,
+    "mul": ast.Mult,
+    "floordiv": ast.FloorDiv,
+    "mod": ast.Mod,
+    "truediv": ast.Div,
+}
+_AST_COMPARISON_OPERATORS: dict[str, type[ast.cmpop]] = {
+    "eq": ast.Eq,
+    "ne": ast.NotEq,
+    "lt": ast.Lt,
+    "le": ast.LtE,
+    "gt": ast.Gt,
+    "ge": ast.GtE,
+}
 
-    kind: Literal["item", "const", "call"]
-    value: OutputT | Callable[[InputT], OutputT] | None = None
+
+def _ast_binary(kind: str, left: ast.expr, right: ast.expr) -> ast.expr:
+    """Build one controlled Python operator node from a scalar opcode name."""
+    binary = _AST_BINARY_OPERATORS.get(kind)
+    if binary is not None:
+        return ast.BinOp(left=left, op=binary(), right=right)
+    comparison = _AST_COMPARISON_OPERATORS.get(kind)
+    if comparison is not None:
+        return ast.Compare(left=left, ops=[comparison()], comparators=[right])
+    if kind in {"and", "or"}:
+        # Scalar expressions historically evaluate both operands and normalize both to
+        # bool. Bitwise combination of those booleans retains that eager behavior.
+        boolean_left = ast.Call(func=ast.Name("_bool", ast.Load()), args=[left], keywords=[])
+        boolean_right = ast.Call(func=ast.Name("_bool", ast.Load()), args=[right], keywords=[])
+        operator_node: ast.operator = ast.BitAnd() if kind == "and" else ast.BitOr()
+        return ast.BinOp(left=boolean_left, op=operator_node, right=boolean_right)
+    raise RuntimeError(f"unknown scalar expression operation: {kind}")
 
 
-def _binary_node(
-    operation: Callable[[OutputT, OutputT], OutputT],
-    left: _EvaluatorNode[InputT, OutputT],
-    right: _EvaluatorNode[InputT, OutputT],
+def _ast_evaluator(
+    instructions: tuple[tuple[int, int | float], ...],
     *,
-    item_converter: Callable[[InputT], OutputT] | None,
-) -> _EvaluatorNode[InputT, OutputT]:
-    """Fold a binary constant pair or specialize a callable for the operand kinds.
-
-    Item nodes read the current input, optionally through item_converter. Call nodes invoke
-    already composed subexpressions. The returned node is constant only when both operands
-    are constant.
-    """
-    if left.kind == "const" and right.kind == "const":
-        return _EvaluatorNode(
-            "const",
-            operation(cast(OutputT, left.value), cast(OutputT, right.value)),
-        )
-    if left.kind == "item" and right.kind == "item":
-        if item_converter is None:
-            return _EvaluatorNode(
-                "call",
-                lambda item: operation(cast(OutputT, item), cast(OutputT, item)),
-            )
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(item_converter(item), item_converter(item)),
-        )
-    if left.kind == "item" and right.kind == "const":
-        right_constant = cast(OutputT, right.value)
-        if item_converter is None:
-            return _EvaluatorNode(
-                "call",
-                lambda item: operation(cast(OutputT, item), right_constant),
-            )
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(item_converter(item), right_constant),
-        )
-    if left.kind == "const" and right.kind == "item":
-        left_constant = cast(OutputT, left.value)
-        if item_converter is None:
-            return _EvaluatorNode(
-                "call",
-                lambda item: operation(left_constant, cast(OutputT, item)),
-            )
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(left_constant, item_converter(item)),
-        )
-    if left.kind == "call" and right.kind == "const":
-        left_evaluator = cast(Callable[[InputT], OutputT], left.value)
-        right_constant = cast(OutputT, right.value)
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(left_evaluator(item), right_constant),
-        )
-    if left.kind == "const" and right.kind == "call":
-        left_constant = cast(OutputT, left.value)
-        right_evaluator = cast(Callable[[InputT], OutputT], right.value)
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(left_constant, right_evaluator(item)),
-        )
-    if left.kind == "item" and right.kind == "call":
-        right_evaluator = cast(Callable[[InputT], OutputT], right.value)
-        if item_converter is None:
-            return _EvaluatorNode(
-                "call",
-                lambda item: operation(cast(OutputT, item), right_evaluator(item)),
-            )
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(item_converter(item), right_evaluator(item)),
-        )
-    if left.kind == "call" and right.kind == "item":
-        left_evaluator = cast(Callable[[InputT], OutputT], left.value)
-        if item_converter is None:
-            return _EvaluatorNode(
-                "call",
-                lambda item: operation(left_evaluator(item), cast(OutputT, item)),
-            )
-        return _EvaluatorNode(
-            "call",
-            lambda item: operation(left_evaluator(item), item_converter(item)),
-        )
-    left_evaluator = cast(Callable[[InputT], OutputT], left.value)
-    right_evaluator = cast(Callable[[InputT], OutputT], right.value)
-    return _EvaluatorNode(
-        "call",
-        lambda item: operation(left_evaluator(item), right_evaluator(item)),
-    )
-
-
-def _unary_node(
-    operation: Callable[[OutputT], OutputT],
-    operand: _EvaluatorNode[InputT, OutputT],
-    *,
-    item_converter: Callable[[InputT], OutputT] | None,
-) -> _EvaluatorNode[InputT, OutputT]:
-    """Fold a unary constant or wrap an item/call node with the unary operation."""
-    if operand.kind == "const":
-        return _EvaluatorNode("const", operation(cast(OutputT, operand.value)))
-    if operand.kind == "item":
-        if item_converter is None:
-            return _EvaluatorNode("call", lambda item: operation(cast(OutputT, item)))
-        return _EvaluatorNode("call", lambda item: operation(item_converter(item)))
-    evaluator = cast(Callable[[InputT], OutputT], operand.value)
-    return _EvaluatorNode("call", lambda item: operation(evaluator(item)))
-
-
-def _node_evaluator(
-    node: _EvaluatorNode[InputT, OutputT],
-    *,
-    item_converter: Callable[[InputT], OutputT] | None,
-) -> Callable[[InputT], OutputT]:
-    """Convert the final composition node into an input callable.
-
-    A call node supplies its stored function, an item node supplies either item_converter or
-    the identity operation, and a constant node ignores its input.
-    """
-    if node.kind == "call":
-        return cast(Callable[[InputT], OutputT], node.value)
-    if node.kind == "item":
-        if item_converter is not None:
-            return item_converter
-        return lambda item: cast(OutputT, item)
-    constant = cast(OutputT, node.value)
-    return lambda _item: constant
-
-
-def _compose_evaluator(
-    instructions: tuple[tuple[int, OutputT], ...],
-    *,
-    binary_operations: Mapping[str, Callable[[OutputT, OutputT], OutputT]],
-    unary_operations: Mapping[int, Callable[[OutputT], OutputT]],
-    item_converter: Callable[[InputT], OutputT] | None,
+    convert_item_to_float: bool,
     description: str,
-) -> Callable[[InputT], OutputT]:
-    """Compose and constant-fold a callable from postfix instructions.
+) -> Callable[[Any], Any]:
+    """Compile a short, validated postfix program into one restricted Python lambda.
 
-    The value stack holds evaluator nodes rather than runtime values, so short programs
-    become specialized closures. item_converter adapts source values for float expressions.
-    Missing or leftover operands raise RuntimeError identified by description.
+    Every AST node comes from the closed opcode vocabulary below; values can only enter as
+    numeric constants or the lambda argument. The restricted globals therefore contain no
+    user-controlled names or general builtins.
     """
-    values: list[_EvaluatorNode[InputT, OutputT]] = []
+    values: list[ast.expr] = []
     for opcode, operand in instructions:
         if opcode == _OPCODES["item"]:
-            values.append(_EvaluatorNode("item"))
+            item_node: ast.expr = ast.Name("_item", ast.Load())
+            if convert_item_to_float:
+                item_node = ast.Call(
+                    func=ast.Name("_float", ast.Load()), args=[item_node], keywords=[]
+                )
+            values.append(item_node)
             continue
         if opcode == _OPCODES["const"]:
-            values.append(_EvaluatorNode("const", operand))
+            values.append(ast.Constant(operand))
             continue
         if opcode in _UNARY_OPCODES:
             if not values:
                 raise RuntimeError(f"malformed {description}: missing operand")
-            values.append(
-                _unary_node(
-                    unary_operations[opcode],
-                    values.pop(),
-                    item_converter=item_converter,
+            value = values.pop()
+            if opcode == _OPCODES["neg"]:
+                values.append(ast.UnaryOp(op=ast.USub(), operand=value))
+            elif opcode == _OPCODES["abs"]:
+                values.append(
+                    ast.Call(func=ast.Name("_abs", ast.Load()), args=[value], keywords=[])
                 )
-            )
+            else:
+                values.append(ast.UnaryOp(op=ast.Not(), operand=value))
             continue
         if len(values) < 2:
             raise RuntimeError(f"malformed {description}: missing right operand")
         right = values.pop()
         left = values.pop()
-        values.append(
-            _binary_node(
-                binary_operations[_OPCODE_NAMES[opcode]],
-                left,
-                right,
-                item_converter=item_converter,
-            )
-        )
+        operation = _OPCODE_NAMES.get(opcode)
+        if operation is None:
+            raise RuntimeError(f"malformed {description}: unknown opcode {opcode}")
+        values.append(_ast_binary(operation, left, right))
     if len(values) != 1:
         raise RuntimeError(f"malformed {description}: unexpected operands")
-    return _node_evaluator(values[0], item_converter=item_converter)
+
+    expression = ast.Expression(
+        body=ast.Lambda(
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="_item")],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[],
+            ),
+            body=values[0],
+        )
+    )
+    code = compile(ast.fix_missing_locations(expression), "<fpstreams-expression>", "eval")
+    namespace = {"__builtins__": {}, "_abs": abs, "_bool": bool, "_float": float}
+    return cast(Callable[[Any], Any], eval(code, namespace))
 
 
 def _postorder_instructions(
@@ -314,46 +225,25 @@ def _flat_int_evaluator(
     return evaluate
 
 
-def _int_neg(value: int | bool) -> int | bool:
-    """Apply arithmetic negation in a composed integer evaluator."""
-    return -value
-
-
-def _int_abs(value: int | bool) -> int | bool:
-    """Apply absolute value in a composed integer evaluator."""
-    return abs(value)
-
-
-def _int_not(value: int | bool) -> int | bool:
-    """Return the logical negation of an integer evaluator value."""
-    return not bool(value)
-
-
-_INT_UNARY: dict[int, Callable[[int | bool], int | bool]] = {
-    _OPCODES["neg"]: _int_neg,
-    _OPCODES["abs"]: _int_abs,
-    _OPCODES["not"]: _int_not,
-}
-
-
 @lru_cache(maxsize=1_024)
 def _compile_int_evaluator(
     instructions: tuple[tuple[int, int], ...],
 ) -> Callable[[int], int | bool]:
     """Compile and LRU-cache an integer evaluator for one instruction tuple.
 
-    Programs of at most 128 instructions use composed callables with constant folding.
+    Programs of at most 128 instructions use one restricted generated Python function.
     Longer programs use the explicit value stack to avoid a large chain of closures. The
     global cache retains up to 1,024 compiled evaluators.
     """
-    if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
+    if len(instructions) > _AST_EVALUATOR_LIMIT:
         return _flat_int_evaluator(instructions)
-    return _compose_evaluator(
-        instructions,
-        binary_operations=_BINARY,
-        unary_operations=_INT_UNARY,
-        item_converter=None,
-        description="expression",
+    return cast(
+        Callable[[int], int | bool],
+        _ast_evaluator(
+            instructions,
+            convert_item_to_float=False,
+            description="expression",
+        ),
     )
 
 
@@ -607,46 +497,25 @@ def _flat_float_evaluator(
     return evaluate
 
 
-def _float_neg(value: float | bool) -> float | bool:
-    """Apply arithmetic negation in a composed float evaluator."""
-    return -value
-
-
-def _float_abs(value: float | bool) -> float | bool:
-    """Apply absolute value in a composed float evaluator."""
-    return abs(value)
-
-
-def _float_not(value: float | bool) -> float | bool:
-    """Return the logical negation of a float evaluator value."""
-    return not bool(value)
-
-
-_FLOAT_UNARY: dict[int, Callable[[float | bool], float | bool]] = {
-    _OPCODES["neg"]: _float_neg,
-    _OPCODES["abs"]: _float_abs,
-    _OPCODES["not"]: _float_not,
-}
-
-
 @lru_cache(maxsize=1_024)
 def _compile_float_evaluator(
     instructions: tuple[tuple[int, float], ...],
 ) -> Callable[[float], float | bool]:
     """Compile and LRU-cache a float evaluator for one instruction tuple.
 
-    Programs of at most 128 instructions use composed callables and convert each item read to
+    Programs of at most 128 instructions use one restricted function and convert each item to
     float. Longer programs use the explicit value stack. The global cache retains up to 1,024
     compiled evaluators.
     """
-    if len(instructions) > _COMPOSED_EVALUATOR_LIMIT:
+    if len(instructions) > _AST_EVALUATOR_LIMIT:
         return _flat_float_evaluator(instructions)
-    return _compose_evaluator(
-        instructions,
-        binary_operations=_FLOAT_BINARY,
-        unary_operations=_FLOAT_UNARY,
-        item_converter=float,
-        description="float expression",
+    return cast(
+        Callable[[float], float | bool],
+        _ast_evaluator(
+            instructions,
+            convert_item_to_float=True,
+            description="float expression",
+        ),
     )
 
 

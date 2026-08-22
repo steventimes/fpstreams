@@ -11,25 +11,39 @@ from typing import Any, Generic, Literal, TypeVar
 from ..collecting.aggregation import (
     Aggregator,
     prepare_aggregations,
-    run_aggregations,
 )
 from ..errors import BufferLimitError, DuplicateKeyError, SelectionError
 from ..expressions.row import RowExpr, lit
 from ..expressions.selectors import Selector, compile_selector
 from ..io_safety import validate_max_record_bytes
-from ..planning.arrow import PlannedRowCallable
+from ..planning.arrow import PlannedRowCallable, RowStageDescriptor
+from ..planning.logical import (
+    GlobalAggregateNode,
+    JoinNode,
+    JoinSpec,
+    merge_engine_requests,
+)
 from ..planning.sync import Engine
 from ..streams.flow import Flow, flow
 from .arrow import (
     arrow_source,
-    parquet_row_factory,
+    csv_source,
+    parquet_source,
 )
-from .dataframe import dataframe_row_factory
+from .dataframe import dataframe_source
 from .grouped import GroupedRows
 from .io import RowsIOMixin
-from .join import JoinSelector, JoinValidation, _build_join
-from .polars import polars_row_factory
+from .join import (
+    _JOIN_MODES,
+    _JOIN_VALIDATIONS,
+    JoinSelector,
+    JoinValidation,
+    _compile_join_selector,
+    _normalize_join_selectors,
+)
+from .polars import polars_source
 from .records import _as_record, _require_unique_names
+from .spill import validate_partitions
 from .spill_limits import SpillLimits
 from .sql import (
     ConnectionFactory,
@@ -39,6 +53,7 @@ from .sql import (
 )
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 
 class Rows(RowsIOMixin[T], Generic[T]):
@@ -80,6 +95,49 @@ class Rows(RowsIOMixin[T], Generic[T]):
         return Rows(flow.defer(records))
 
     @staticmethod
+    def scan_csv(
+        path: str | os.PathLike[str],
+        *,
+        batch_size: int = 65_536,
+        read_options: Any = None,
+        parse_options: Any = None,
+        convert_options: Any = None,
+        memory_pool: Any = None,
+    ) -> Rows[dict[str, Any]]:
+        """Lazily scan typed CSV batches with optional query-level column pruning.
+
+        Unlike :meth:`from_csv`, this explicit Arrow path infers non-string scalar types.
+        PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
+        The incremental Arrow reader is single-threaded and freezes inferred types after its
+        first byte block; use ``read_options`` or ``convert_options`` to control those choices.
+        Query column pruning intentionally avoids conversion work, including conversion errors,
+        in columns the query does not read.
+
+        Args:
+            path: Local CSV path reopened for each iteration.
+            batch_size: Maximum rows exposed by each retained Arrow batch.
+            read_options: Optional ``pyarrow.csv.ReadOptions``.
+            parse_options: Optional ``pyarrow.csv.ParseOptions``.
+            convert_options: Optional ``pyarrow.csv.ConvertOptions``.
+            memory_pool: Optional PyArrow memory pool used by the reader.
+
+        Returns:
+            Reusable typed rows. This adapter requires the ``arrow`` extra.
+        """
+        return Rows(
+            Flow(
+                csv_source(
+                    path,
+                    batch_size=batch_size,
+                    read_options=read_options,
+                    parse_options=parse_options,
+                    convert_options=convert_options,
+                    memory_pool=memory_pool,
+                )
+            )
+        )
+
+    @staticmethod
     def from_jsonl(
         path: str | os.PathLike[str],
         *,
@@ -103,6 +161,18 @@ class Rows(RowsIOMixin[T], Generic[T]):
             """Read bounded lines, decode JSON objects, and yield validated dictionaries."""
             with open(path, "rb") as handle:
                 line_number = 0
+
+                def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                    """Build one JSON object while rejecting duplicate keys before loss."""
+                    value: dict[str, Any] = {}
+                    for name, item in pairs:
+                        if name in value:
+                            raise DuplicateKeyError(
+                                f"JSON Lines record {line_number} contains duplicate key {name!r}"
+                            )
+                        value[name] = item
+                    return value
+
                 while True:
                     encoded = (
                         handle.readline()
@@ -121,22 +191,6 @@ class Rows(RowsIOMixin[T], Generic[T]):
                     if not line.strip():
                         continue
 
-                    def unique_object(
-                        pairs: list[tuple[str, Any]],
-                        *,
-                        record_number: int = line_number,
-                    ) -> dict[str, Any]:
-                        """Build one JSON object while rejecting duplicate keys before loss."""
-                        value: dict[str, Any] = {}
-                        for name, item in pairs:
-                            if name in value:
-                                raise DuplicateKeyError(
-                                    "JSON Lines record "
-                                    f"{record_number} contains duplicate key {name!r}"
-                                )
-                            value[name] = item
-                        return value
-
                     value = json.loads(line, object_pairs_hook=unique_object)
                     if not isinstance(value, Mapping):
                         raise SelectionError(f"JSON Lines record {line_number} is not an object")
@@ -146,14 +200,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
 
     @staticmethod
     def from_arrow(source: Any, *, batch_size: int = 65_536) -> Rows[dict[str, Any]]:
-        """Adapt a PyArrow Table, RecordBatch, or RecordBatchReader to dictionary rows.
+        """Adapt an Arrow object or C Stream provider to dictionary rows.
 
         Args:
-            source: Reusable Table/RecordBatch or one-shot RecordBatchReader.
+            source: Reusable PyArrow Table/RecordBatch, one-shot RecordBatchReader, or an
+                object implementing ``__arrow_c_stream__``. A C Stream provider is imported
+                once at construction and treated as one-shot.
             batch_size: Maximum rows converted from each Arrow batch slice.
 
         Returns:
-            Lazy Rows; a RecordBatchReader may be consumed only once and is closed afterward.
+            Lazy Rows; reader-backed inputs may be consumed only once and are closed afterward.
         """
         return Rows(Flow(arrow_source(source, batch_size=batch_size)))
 
@@ -175,8 +231,8 @@ class Rows(RowsIOMixin[T], Generic[T]):
             Lazy Rows that perform dataframe-to-Arrow conversion when iterated.
         """
         return Rows(
-            flow.defer(
-                dataframe_row_factory(
+            Flow(
+                dataframe_source(
                     frame,
                     batch_size=batch_size,
                     allow_copy=allow_copy,
@@ -206,8 +262,8 @@ class Rows(RowsIOMixin[T], Generic[T]):
             Lazy reusable Rows; a LazyFrame is collected again for each iteration.
         """
         return Rows(
-            flow.defer(
-                polars_row_factory(
+            Flow(
+                polars_source(
                     frame,
                     batch_size=batch_size,
                     maintain_order=maintain_order,
@@ -242,8 +298,8 @@ class Rows(RowsIOMixin[T], Generic[T]):
             Lazy dictionary rows with projection and filtering performed by PyArrow.
         """
         return Rows(
-            flow.defer(
-                parquet_row_factory(
+            Flow(
+                parquet_source(
                     source,
                     columns=columns,
                     filter=filter,
@@ -418,6 +474,28 @@ class Rows(RowsIOMixin[T], Generic[T]):
         """
         return Rows(self._flow.filter(predicate))
 
+    def map(self, function: Callable[[T], R]) -> Flow[R]:
+        """Map rows into an ordinary Flow whose output may have any shape.
+
+        Args:
+            function: Lazily transforms each row into one output value.
+
+        Returns:
+            A Flow of transformed values. Call row operations on that Flow to re-enter Rows.
+        """
+        return self._flow.map(function)
+
+    def flat_map(self, function: Callable[[T], Iterable[R]]) -> Flow[R]:
+        """Map rows to iterables and flatten them into an ordinary Flow.
+
+        Args:
+            function: Lazily transforms each row into zero or more output values.
+
+        Returns:
+            A Flow of flattened values. Call row operations on that Flow to re-enter Rows.
+        """
+        return self._flow.flat_map(function)
+
     def where(self, predicate: Callable[[T], bool] | None = None, **equalities: Any) -> Rows[T]:
         """Require the optional predicate and every named field equality.
 
@@ -430,6 +508,11 @@ class Rows(RowsIOMixin[T], Generic[T]):
         Returns:
             New lazy Rows containing rows that satisfy all supplied conditions.
         """
+        # Preserve a closed RowExpr as the physical filter payload.  Wrapping a predicate-only
+        # call in ``matches`` would erase its IR and force every row through an opaque callback.
+        if predicate is not None and not equalities:
+            return self.filter(predicate)
+
         # Compile equality selectors once; evaluation still happens lazily per row.
         selectors = [(compile_selector(name), expected) for name, expected in equalities.items()]
 
@@ -439,7 +522,19 @@ class Rows(RowsIOMixin[T], Generic[T]):
                 return False
             return all(select(row) == expected for select, expected in selectors)
 
-        return self.filter(matches)
+        return Rows(
+            self._flow.filter(
+                PlannedRowCallable(
+                    matches,
+                    role="predicate",
+                    descriptor=RowStageDescriptor(
+                        "where",
+                        predicate=predicate,
+                        equalities=tuple(equalities.items()),
+                    ),
+                )
+            )
+        )
 
     def with_columns(self, **columns: Selector) -> Rows[dict[str, Any]]:
         """Copy each row and add or replace fields evaluated against the original row.
@@ -459,7 +554,14 @@ class Rows(RowsIOMixin[T], Generic[T]):
                 record[name] = select(row)
             return record
 
-        return Rows(self._flow.map(PlannedRowCallable(enrich)))
+        return Rows(
+            self._flow.map(
+                PlannedRowCallable(
+                    enrich,
+                    descriptor=RowStageDescriptor("with_columns", selectors=tuple(columns.items())),
+                )
+            )
+        )
 
     def rename(self, **columns: str) -> Rows[dict[str, Any]]:
         """Rename top-level fields while rejecting collisions in each output record.
@@ -804,12 +906,19 @@ class Rows(RowsIOMixin[T], Generic[T]):
         Returns:
             Lazy projected Rows; duplicate derived or explicit names are rejected immediately.
         """
-        positional = [
+        positional_specs = [
             (
                 selector.split(".")[-1] if isinstance(selector, str) else str(selector),
-                compile_selector(selector),
+                selector,
             )
             for selector in selectors
+        ]
+        positional = [
+            (
+                name,
+                compile_selector(selector),
+            )
+            for name, selector in positional_specs
         ]
         aliases = [(name, compile_selector(selector)) for name, selector in named.items()]
         _require_unique_names(
@@ -821,7 +930,16 @@ class Rows(RowsIOMixin[T], Generic[T]):
             """Evaluate positional and named selectors into a new projected dictionary."""
             return {name: select(row) for name, select in (*positional, *aliases)}
 
-        return Rows(self._flow.map(PlannedRowCallable(project)))
+        return Rows(
+            self._flow.map(
+                PlannedRowCallable(
+                    project,
+                    descriptor=RowStageDescriptor(
+                        "select", selectors=tuple((*positional_specs, *named.items()))
+                    ),
+                )
+            )
+        )
 
     def sort_by(
         self,
@@ -892,12 +1010,12 @@ class Rows(RowsIOMixin[T], Generic[T]):
             A lazy one-row pipeline containing the named results.
         """
         aggregation_items = prepare_aggregations(aggregations)
-
-        def evaluate() -> Iterator[dict[str, Any]]:
-            """Run all named aggregators in one pass and emit their results as one row."""
-            yield run_aggregations(self, aggregation_items)
-
-        return Rows(flow.defer(evaluate))
+        logical = self._flow._logical_plan
+        return Rows(
+            Flow._from_logical(
+                logical.with_root(GlobalAggregateNode(logical.root, aggregation_items))
+            )
+        )
 
     def group_by(self, *selectors: Selector, **named: Selector) -> GroupedRows[T]:
         """Describe grouped aggregation by positional and/or explicitly named selectors.
@@ -930,7 +1048,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
 
     def join(
         self,
-        other: Iterable[Any] | Rows[Any],
+        other: Iterable[Any] | Flow[Any] | Rows[Any],
         *,
         on: JoinSelector | None = None,
         left_on: JoinSelector | None = None,
@@ -949,7 +1067,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         sides. Set partitions to use bounded-memory hash partitioning through temporary files.
 
         Args:
-            other: The record iterable or Rows pipeline to join.
+            other: The record iterable, Flow, or Rows pipeline to join.
             on: A selector used for both left and right keys.
             left_on: The left key selector when the two sides use different fields.
             right_on: The right key selector when the two sides use different fields.
@@ -971,20 +1089,51 @@ class Rows(RowsIOMixin[T], Generic[T]):
             DuplicateKeyError: If suffixing would create an ambiguous output field.
             BufferLimitError: If spilled execution exceeds a configured resource budget.
         """
+        if how not in _JOIN_MODES:
+            raise ValueError(f"how must be one of {sorted(_JOIN_MODES)!r}")
+        if validate not in _JOIN_VALIDATIONS:
+            raise ValueError(f"validate must be one of {sorted(_JOIN_VALIDATIONS)!r}")
+        normalized_left, normalized_right = _normalize_join_selectors(
+            on=on,
+            left_on=left_on,
+            right_on=right_on,
+        )
+        # Preserve the current eager selector validation without retaining evaluators in the plan.
+        _compile_join_selector(normalized_left)
+        _compile_join_selector(normalized_right)
+        partition_count = None if partitions is None else validate_partitions(partitions)
+        if tempdir is not None and partition_count is None:
+            raise ValueError("tempdir requires partitions")
+        if limits is not None and partition_count is None:
+            raise ValueError("limits requires partitions")
+        if isinstance(other, Rows):
+            right_flow = other._flow
+        elif isinstance(other, Flow):
+            right_flow = other
+        else:
+            right_flow = flow(other)
+        left_logical = self._flow._logical_plan
+        right_logical = right_flow._logical_plan
+        joined_logical = left_logical.with_engine(
+            merge_engine_requests(left_logical.engine, right_logical.engine, operation="join")
+        )
         return Rows(
-            flow.defer(
-                _build_join(
-                    self,
-                    other,
-                    on=on,
-                    left_on=left_on,
-                    right_on=right_on,
-                    how=how,
-                    suffix=suffix,
-                    validate=validate,
-                    partitions=partitions,
-                    tempdir=tempdir,
-                    limits=limits,
+            Flow._from_logical(
+                joined_logical.with_root(
+                    JoinNode(
+                        left_logical.root,
+                        right_logical.root,
+                        JoinSpec(
+                            normalized_left,
+                            normalized_right,
+                            how,
+                            suffix,
+                            validate,
+                            partition_count,
+                            tempdir,
+                            limits,
+                        ),
+                    )
                 )
             )
         )

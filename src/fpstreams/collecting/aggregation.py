@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ..expressions.selectors import Selector, compile_selector
+from . import _collector_base
+from ._collector_base import Aggregator as Aggregator
 from .collector import (
-    Collector,
     finish_collectors,
     initialize_collectors,
-    run_collectors,
     step_collectors,
 )
+from .reducer import COUNT_LAWS, ReducerAggregator
 from .statistics import OnlineStatistics, mean_from, std_from, variance_from
 
 _MISSING = object()
@@ -33,15 +34,39 @@ NativeAggregateSnapshot = tuple[
 ]
 
 
+def _count_initializer() -> int:
+    """Create the project-owned constant-size count identity."""
+    return 0
+
+
+def _count_step(count: int, _row: Any) -> int:
+    """Advance the project-owned whole-row count state."""
+    return count + 1
+
+
+def _count_merge(left: int, right: int) -> int:
+    """Merge two project-owned count states."""
+    return left + right
+
+
+class _ProjectCountAggregator(ReducerAggregator):
+    """Closed collector type constructed only by the project count factory."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__(
+            _count_initializer,
+            _count_step,
+            merge=_count_merge,
+            laws=COUNT_LAWS,
+            native=NativeAggregation("count"),
+        )
+
+
 def _identity(value: Any) -> Any:
     """Select an entire input row when an aggregation has no explicit selector."""
     return value
-
-
-class Aggregator(Collector[Any, Any, Any]):
-    """A collector accepted by named aggregate terminals and optional native fusion."""
-
-    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +78,90 @@ class NativeAggregation:
 
     kind: NativeAggregationKind
     ddof: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NativeGroupAggregation:
+    """Retain one project-owned grouped aggregation and its exact lifecycle."""
+
+    kind: Literal["sum", "min", "max", "first", "last"]
+    selector: Selector | None
+    initializer: Callable[[], Any]
+    step: Callable[[Any, Any], Any]
+    finish: Callable[[Any], Any]
+    combine: Callable[[Any, Any], Any] | None
+    done: Callable[[Any], bool]
+
+
+_GROUP_AGGREGATION_MARKER = "_fpstreams_group_aggregation"
+_GROUP_AGGREGATION_TOKEN = object()
+
+
+def _mark_group_aggregation(
+    aggregation: Aggregator,
+    kind: Literal["sum", "min", "max", "first", "last"],
+    selector: Selector | None,
+) -> Aggregator:
+    """Brand an immutable factory result with its original lifecycle identities."""
+    hint = NativeGroupAggregation(
+        kind,
+        selector,
+        aggregation.initializer,
+        aggregation.step,
+        aggregation.finish,
+        aggregation.combine,
+        aggregation.done,
+    )
+    aggregation.step.__dict__[_GROUP_AGGREGATION_MARKER] = (
+        _GROUP_AGGREGATION_TOKEN,
+        hint,
+    )
+    return aggregation
+
+
+def native_group_aggregation(aggregation: Aggregator) -> NativeGroupAggregation | None:
+    """Recognize a factory result without trusting user-constructible native metadata."""
+    marker = getattr(aggregation.step, _GROUP_AGGREGATION_MARKER, None)
+    if (
+        type(marker) is not tuple
+        or len(marker) != 2
+        or marker[0] is not _GROUP_AGGREGATION_TOKEN
+        or type(marker[1]) is not NativeGroupAggregation
+        or type(aggregation) is not Aggregator
+    ):
+        return None
+    hint = marker[1]
+    return (
+        hint
+        if aggregation.initializer is hint.initializer
+        and aggregation.step is hint.step
+        and aggregation.finish is hint.finish
+        and aggregation.combine is hint.combine
+        and aggregation.done is hint.done
+        else None
+    )
+
+
+def project_count_aggregation(aggregation: Aggregator) -> bool:
+    """Recognize only the constant-size count reducer built by :meth:`agg.count`.
+
+    Native metadata and reducer laws are user-constructible, so neither is enough
+    to authorize a count-specific state merge.  The private lifecycle identities
+    close that gap while the singleton laws prove constant, project-owned state.
+    """
+    native = getattr(aggregation, "native", None)
+    return (
+        type(aggregation) is _ProjectCountAggregator
+        and getattr(aggregation, "initializer", None) is _count_initializer
+        and getattr(aggregation, "step", None) is _count_step
+        and getattr(aggregation, "finish", None) is _collector_base._identity
+        and getattr(aggregation, "combine", None) is _count_merge
+        and getattr(aggregation, "done", None) is _collector_base._never_done
+        and getattr(aggregation, "laws", None) is COUNT_LAWS
+        and type(native) is NativeAggregation
+        and native.kind == "count"
+        and native.ddof == 0
+    )
 
 
 class _DistinctState:
@@ -114,8 +223,10 @@ def finish_aggregations(states: Mapping[str, Any], items: AggregationItems) -> d
 
 
 def run_aggregations(values: Iterable[Any], items: AggregationItems) -> dict[str, Any]:
-    """Run named aggregators in one traversal that closes its iterator and can stop early."""
-    return run_collectors(values, items)
+    """Run the canonical compiled aggregation program in one traversal."""
+    from .program import compile_collectors, run_collector_program
+
+    return run_collector_program(values, compile_collectors(items))
 
 
 def native_aggregation_items(items: AggregationItems) -> bool:
@@ -177,15 +288,7 @@ class _AggFactory:
         Returns:
             An aggregator returning zero for empty input.
         """
-        from .reducer import COUNT_LAWS, ReducerAggregator
-
-        return ReducerAggregator(
-            lambda: 0,
-            lambda count, _row: count + 1,
-            merge=lambda left, right: left + right,
-            laws=COUNT_LAWS,
-            native=NativeAggregation("count"),
-        )
+        return _ProjectCountAggregator()
 
     def count_where(self, predicate: Selector) -> Aggregator:
         """Build an aggregator that counts truthy selector results.
@@ -253,11 +356,20 @@ class _AggFactory:
             An addition-combinable aggregator.
         """
         select = _identity if selector is None else compile_selector(selector)
-        return Aggregator(
-            lambda: 0,
-            lambda total, row: total + select(row),
-            combine=lambda left, right: left + right,
-            native=NativeAggregation("sum") if selector is None else None,
+
+        def step(total: Any, row: Any) -> Any:
+            """Add one selected value to the current total."""
+            return total + select(row)
+
+        return _mark_group_aggregation(
+            Aggregator(
+                lambda: 0,
+                step,
+                combine=lambda left, right: left + right,
+                native=NativeAggregation("sum") if selector is None else None,
+            ),
+            "sum",
+            selector,
         )
 
     def mean(self, selector: Selector | None = None) -> Aggregator:
@@ -385,11 +497,15 @@ class _AggFactory:
             value = select(row)
             return value if current is _MISSING or value < current else current
 
-        return Aggregator(
-            lambda: _MISSING,
-            step,
-            lambda value: None if value is _MISSING else value,
-            native=NativeAggregation("min") if selector is None else None,
+        return _mark_group_aggregation(
+            Aggregator(
+                lambda: _MISSING,
+                step,
+                lambda value: None if value is _MISSING else value,
+                native=NativeAggregation("min") if selector is None else None,
+            ),
+            "min",
+            selector,
         )
 
     def max(self, selector: Selector | None = None) -> Aggregator:
@@ -411,11 +527,15 @@ class _AggFactory:
             value = select(row)
             return value if current is _MISSING or value > current else current
 
-        return Aggregator(
-            lambda: _MISSING,
-            step,
-            lambda value: None if value is _MISSING else value,
-            native=NativeAggregation("max") if selector is None else None,
+        return _mark_group_aggregation(
+            Aggregator(
+                lambda: _MISSING,
+                step,
+                lambda value: None if value is _MISSING else value,
+                native=NativeAggregation("max") if selector is None else None,
+            ),
+            "max",
+            selector,
         )
 
     def first(self, selector: Selector | None = None) -> Aggregator:
@@ -431,12 +551,21 @@ class _AggFactory:
             An aggregator consuming at most one item.
         """
         select = _identity if selector is None else compile_selector(selector)
-        return Aggregator(
-            lambda: _MISSING,
-            lambda current, row: select(row) if current is _MISSING else current,
-            lambda value: None if value is _MISSING else value,
-            done=lambda value: value is not _MISSING,
-            native=NativeAggregation("first") if selector is None else None,
+
+        def step(current: Any, row: Any) -> Any:
+            """Select only while the project-owned missing state remains."""
+            return select(row) if current is _MISSING else current
+
+        return _mark_group_aggregation(
+            Aggregator(
+                lambda: _MISSING,
+                step,
+                lambda value: None if value is _MISSING else value,
+                done=lambda value: value is not _MISSING,
+                native=NativeAggregation("first") if selector is None else None,
+            ),
+            "first",
+            selector,
         )
 
     def last(self, selector: Selector | None = None) -> Aggregator:
@@ -451,11 +580,20 @@ class _AggFactory:
             An aggregator retaining one current value.
         """
         select = _identity if selector is None else compile_selector(selector)
-        return Aggregator(
-            lambda: _MISSING,
-            lambda _current, row: select(row),
-            lambda value: None if value is _MISSING else value,
-            native=NativeAggregation("last") if selector is None else None,
+
+        def step(_current: Any, row: Any) -> Any:
+            """Replace the current value with the newly selected value."""
+            return select(row)
+
+        return _mark_group_aggregation(
+            Aggregator(
+                lambda: _MISSING,
+                step,
+                lambda value: None if value is _MISSING else value,
+                native=NativeAggregation("last") if selector is None else None,
+            ),
+            "last",
+            selector,
         )
 
     def collect(

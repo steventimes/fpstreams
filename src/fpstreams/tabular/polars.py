@@ -7,6 +7,10 @@ from collections.abc import Callable, Iterator
 from importlib import import_module
 from typing import Any, cast
 
+from ..planning.arrow_source import ArrowBatchSource
+from ..planning.source import Source
+from .arrow import _close, _deferred_arrow_source, _schema_names
+
 
 def polars_module() -> Any:
     """Import optional Polars support or raise the package installation hint."""
@@ -73,5 +77,64 @@ def polars_row_factory(
                 yield from batch.to_dicts()
 
         return lazy_records
+
+    raise TypeError("from_polars() expects a polars DataFrame or LazyFrame")
+
+
+def polars_source(
+    frame: Any,
+    *,
+    batch_size: int = 65_536,
+    maintain_order: bool = True,
+    engine: Any = "auto",
+) -> Source[dict[str, Any]]:
+    """Retain lazy Arrow batches beside the established Polars dictionary-row opener."""
+    pl = polars_module()
+    size = _positive_size(batch_size)
+    rows = polars_row_factory(
+        frame,
+        batch_size=size,
+        maintain_order=maintain_order,
+        engine=engine,
+    )
+
+    if isinstance(frame, pl.DataFrame):
+
+        def eager_table() -> Any:
+            table = frame.to_arrow()
+            _schema_names(table.schema)
+            return table
+
+        def eager_batches() -> Iterator[Any]:
+            yield from eager_table().to_batches(max_chunksize=size)
+
+        descriptor = ArrowBatchSource(
+            eager_batches,
+            "polars",
+            size,
+            columnar_opener=eager_table,
+        )
+        return _deferred_arrow_source(rows, descriptor)
+
+    if isinstance(frame, pl.LazyFrame):
+
+        def lazy_batches() -> Iterator[Any]:
+            collected = frame.collect_batches(
+                chunk_size=size,
+                maintain_order=maintain_order,
+                lazy=True,
+                engine=engine,
+            )
+            iterator = iter(collected)
+            try:
+                for batch in iterator:
+                    table = batch.to_arrow()
+                    _schema_names(table.schema)
+                    yield from table.to_batches(max_chunksize=size)
+            finally:
+                _close(iterator)
+
+        descriptor = ArrowBatchSource(lazy_batches, "polars", size)
+        return _deferred_arrow_source(rows, descriptor)
 
     raise TypeError("from_polars() expects a polars DataFrame or LazyFrame")

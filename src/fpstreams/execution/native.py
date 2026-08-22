@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 from .. import _native
 from ..collecting.statistics import StatisticsSnapshot
@@ -31,6 +31,50 @@ _TERMINALS = {
     "any": 6,
     "all": 7,
 }
+_PROBE_MAX_ITEMS = 256
+_SHORT_CIRCUIT_TERMINALS = {"first", "any", "all"}
+_MATERIALIZE_TARGETS = {"list": 0, "tuple": 1, "set": 2}
+
+
+def materialize_available(program: NativeProgram) -> bool:
+    """Return whether this extension exposes the direct container endpoint.
+
+    This deliberately checks only the new optional capability. Older wheels may
+    still execute native programs through their established iterator endpoint.
+    """
+    suffix = "_range" if isinstance(program.source, range) else ""
+    return hasattr(_native, f"materialize_{program.kind}{suffix}")
+
+
+def execute_materialize(program: NativeProgram, target: str) -> Any:
+    """Run one complete numeric program into its final Python collection."""
+    target_code = _MATERIALIZE_TARGETS[target]
+    source = program.source
+    stages = list(program.stages)
+    suffix = "_range" if isinstance(source, range) else ""
+    materialize = getattr(_native, f"materialize_{program.kind}{suffix}")
+    if isinstance(source, range):
+        return materialize(source.start, source.stop, source.step, stages, target_code)
+    return materialize(source, stages, target_code)
+
+
+def _probe_container_terminal(
+    program: NativeProgram, terminal: str, stages: list[Any]
+) -> tuple[bool, int | float | None] | None:
+    """Try a bounded, non-copying list/tuple terminal probe when the wheel has it.
+
+    A probe preserves fused Rust stage state while extracting at most a small
+    prefix under the GIL. ``None`` means either no probe is applicable or it
+    needs the legacy detached bulk kernel to finish a full scan.
+    """
+    source = program.source
+    if terminal not in _SHORT_CIRCUIT_TERMINALS or type(source) not in (list, tuple):
+        return None
+    probe = getattr(_native, f"terminal_{program.kind}_probe", None)
+    if probe is None:
+        return None
+    completed, result = probe(source, stages, _TERMINALS[terminal], _PROBE_MAX_ITEMS)
+    return (True, result) if completed else None
 
 
 def execute(program: NativeProgram) -> Iterator[Any]:
@@ -63,6 +107,9 @@ def execute_terminal(program: NativeProgram, terminal: str) -> int | float | Non
     source = program.source
     stages = list(program.stages)
     code = _TERMINALS[terminal]
+    probed = _probe_container_terminal(program, terminal, stages)
+    if probed is not None:
+        return probed[1]
     if program.kind == "f64":
         # Opcode 8 matches Python 3.11 sequential float sums; newer Python uses
         # compensated summation.
@@ -97,14 +144,25 @@ def execute_statistics(program: NativeProgram) -> StatisticsSnapshot:
     return _native.statistics_i64(source, stages)
 
 
-def execute_aggregate(program: NativeProgram) -> NativeAggregateSnapshot:
-    """Compute all built-in numeric aggregate fields in one fused Rust traversal.
+def execute_aggregate(program: NativeProgram, mask: int | None = None) -> NativeAggregateSnapshot:
+    """Compute requested built-in fields in one fused Rust traversal.
 
-    The returned tuple is count, sum, minimum, maximum, first, last, mean, and
-    squared deviations.
+    New extensions accept an optional field mask while retaining the established
+    count/sum/min/max/first/last/mean/M2 tuple. If that endpoint is absent, an
+    older wheel safely computes the full snapshot instead.
     """
     source = program.source
     stages = list(program.stages)
+    suffix = "_range" if isinstance(source, range) else ""
+    if mask is not None:
+        masked = getattr(_native, f"aggregate_{program.kind}{suffix}_masked", None)
+        if masked is not None:
+            if isinstance(source, range):
+                return cast(
+                    NativeAggregateSnapshot,
+                    masked(source.start, source.stop, source.step, stages, mask),
+                )
+            return cast(NativeAggregateSnapshot, masked(source, stages, mask))
     if program.kind == "f64":
         if isinstance(source, range):
             return _native.aggregate_f64_range(source.start, source.stop, source.step, stages)

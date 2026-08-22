@@ -13,10 +13,6 @@ import fpstreams
 # --- Tests consolidated from test_async_api.py ---
 
 
-def _square(value: int) -> int:
-    return value * value
-
-
 @pytest.mark.asyncio
 async def test_async_flow_maps_with_bounded_ordered_concurrency() -> None:
     active = 0
@@ -784,6 +780,42 @@ async def test_async_cleanup_error_does_not_hide_pipeline_error() -> None:
         await fpstreams.aflow(source()).map(explode).to_list()
 
     assert any("cleanup failed" in note for note in captured.value.__notes__)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["to_set", "reduce", "reduce_by", "for_each"])
+async def test_async_terminal_body_failure_closes_source_immediately(terminal: str) -> None:
+    close_calls = 0
+
+    class FailingHash:
+        def __hash__(self) -> int:
+            raise RuntimeError("terminal body failed")
+
+    async def source():
+        nonlocal close_calls
+        try:
+            yield 1
+            yield FailingHash() if terminal == "to_set" else 2
+        finally:
+            close_calls += 1
+
+    def fail(*_args):
+        raise RuntimeError("terminal body failed")
+
+    values = fpstreams.aflow(source())
+    if terminal == "to_set":
+        result = values.to_set()
+    elif terminal == "reduce":
+        result = values.reduce(fail)
+    elif terminal == "reduce_by":
+        result = values.reduce_by(fail, lambda state, _item: state, initializer=lambda: 0)
+    else:
+        result = values.for_each(fail)
+
+    with pytest.raises(RuntimeError, match="terminal body failed"):
+        await result
+
+    assert close_calls == 1
 
 
 @pytest.mark.asyncio

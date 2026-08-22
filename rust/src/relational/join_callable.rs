@@ -1,0 +1,1475 @@
+//! Callable and Mapping join kernels for hashable Python keys.
+
+use super::adapters::{
+    mapping_proxy_snapshot_capability, snapshot_callable_join_record,
+    standard_namedtuple_snapshot_capability,
+};
+use super::join_exact::{
+    checked_join_output_size, copy_join_record, exact_string_contains_dot, exact_string_equal,
+    factorized_right_positions, join_allocation_error,
+};
+use super::*;
+
+/// Test one live row using only exact C-level type identity.
+fn callable_join_row_type_allowed<const ALLOW_EXACT_DICT: bool>(
+    row: *mut ffi::PyObject,
+    allowed_record_types: &[Py<PyType>],
+    py: Python<'_>,
+) -> bool {
+    // SAFETY: callers retain row through an exact container while this check runs. Py_TYPE and
+    // PyDict_CheckExact are non-dispatching pointer reads, so no critical section can be suspended.
+    (ALLOW_EXACT_DICT && unsafe { ffi::PyDict_CheckExact(row) != 0 })
+        || allowed_record_types
+            .iter()
+            .any(|row_type| row_type.bind(py).as_type_ptr() == unsafe { ffi::Py_TYPE(row) })
+}
+
+/// Parse an exact tuple of strong type capabilities without invoking user code.
+fn callable_join_record_type_tokens(value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Py<PyType>>>> {
+    let tokens = match value.cast_exact::<PyTuple>() {
+        Ok(tokens) => tokens,
+        Err(_) => return Ok(None),
+    };
+    let mut parsed = Vec::new();
+    parsed
+        .try_reserve_exact(tokens.len())
+        .map_err(join_allocation_error)?;
+    for token in tokens.iter() {
+        let token = match token.cast_into::<PyType>() {
+            Ok(token) => token,
+            Err(_) => return Ok(None),
+        };
+        parsed.push(token.unbind());
+    }
+    Ok(Some(parsed))
+}
+
+/// Check the initial record shape without invoking a selector or record protocol.
+pub(super) fn preflight_callable_join_source<const ALLOW_EXACT_DICT: bool>(
+    source: &Bound<'_, PyAny>,
+    allowed_record_types: &[Py<PyType>],
+) -> PyResult<Option<usize>> {
+    if let Ok(rows) = source.cast_exact::<PyList>() {
+        return with_critical_section(source, || {
+            let row_count = rows.len();
+            for index in 0..row_count {
+                // SAFETY: the exact list stays locked and index is below its locked length.
+                // No row reference escapes this callback, so preflight does not need the
+                // million-row strong-reference snapshot used by speculative row kernels.
+                let row = unsafe { ffi::PyList_GetItem(source.as_ptr(), index as ffi::Py_ssize_t) };
+                if row.is_null() {
+                    return Err(PyErr::fetch(source.py()));
+                }
+                // SAFETY: row remains live under the source list's critical section.
+                if !callable_join_row_type_allowed::<ALLOW_EXACT_DICT>(
+                    row,
+                    allowed_record_types,
+                    source.py(),
+                ) {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(row_count))
+        });
+    }
+    let rows = match source.cast_exact::<PyTuple>() {
+        Ok(rows) => rows,
+        Err(_) => return Ok(None),
+    };
+    for index in 0..rows.len() {
+        // SAFETY: exact tuples are immutable and index is within their fixed length.
+        let row = unsafe { ffi::PyTuple_GetItem(source.as_ptr(), index as ffi::Py_ssize_t) };
+        if row.is_null() {
+            return Err(PyErr::fetch(source.py()));
+        }
+        // SAFETY: row is a live tuple item for the duration of this check.
+        if !callable_join_row_type_allowed::<ALLOW_EXACT_DICT>(
+            row,
+            allowed_record_types,
+            source.py(),
+        ) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(rows.len()))
+}
+
+/// Append newly discovered right fields using Python set hashing and equality semantics.
+fn remember_callable_join_columns(
+    record: &Py<PyDict>,
+    columns: &mut Vec<Py<PyAny>>,
+    seen: &Bound<'_, PySet>,
+    can_collapse_right_lookup: &mut bool,
+    py: Python<'_>,
+) -> PyResult<()> {
+    for (name, _value) in record.bind(py).iter() {
+        #[cfg(test)]
+        record_callable_right_schema_full_field_probe();
+        if *can_collapse_right_lookup
+            // SAFETY: name is retained by the locked exact-dict iterator for this check.
+            && unsafe { ffi::PyUnicode_CheckExact(name.as_ptr()) } == 0
+        {
+            *can_collapse_right_lookup = false;
+        }
+        if !seen.contains(&name)? {
+            seen.add(&name)?;
+            columns.try_reserve(1).map_err(join_allocation_error)?;
+            columns.push(name.unbind());
+        }
+    }
+    Ok(())
+}
+
+/// Per-query admission for skipping repeated Python set probes on one exact right layout.
+#[derive(Clone, Copy)]
+enum CallableRightSchemaMode {
+    Unique,
+    Many,
+}
+
+enum CallableRightSchemaCache {
+    Disabled,
+    ObserveFirst {
+        right_count: usize,
+        mode: CallableRightSchemaMode,
+    },
+    ActiveIdentity {
+        field_count: usize,
+    },
+    // This state proves equal exact-string values and order, not pointer identity. Merge
+    // specializations must never treat it as an identity-homogeneous layout.
+    ActiveValue {
+        field_count: usize,
+    },
+    // Keep the wide many candidate only while every row passes stricter pointer-identity checks.
+    // Its first equal-but-distinct layout transitions permanently to ActiveValue.
+    ActiveValueIdentityCandidate {
+        field_count: usize,
+    },
+}
+
+impl CallableRightSchemaCache {
+    fn new(right_count: usize, mode: CallableRightSchemaMode) -> Self {
+        if right_count >= CALLABLE_RIGHT_SCHEMA_CACHE_MIN_ROWS {
+            Self::ObserveFirst { right_count, mode }
+        } else {
+            Self::Disabled
+        }
+    }
+
+    fn identity_homogeneous_field_count(&self) -> Option<usize> {
+        match self {
+            Self::ActiveIdentity { field_count }
+            | Self::ActiveValueIdentityCandidate { field_count } => Some(*field_count),
+            Self::Disabled | Self::ObserveFirst { .. } | Self::ActiveValue { .. } => None,
+        }
+    }
+}
+
+/// Compare a private exact-dict snapshot with the first row's exact-string layout.
+#[inline(always)]
+fn callable_join_same_right_shape<const ALLOW_VALUE_MATCH: bool>(
+    record: &Py<PyDict>,
+    columns: &[Py<PyAny>],
+    field_count: usize,
+    py: Python<'_>,
+) -> PyResult<bool> {
+    if field_count > columns.len() {
+        return Ok(false);
+    }
+    let record = record.bind(py);
+    with_critical_section(record.as_any(), || {
+        let record_ptr = record.as_ptr();
+        // SAFETY: record is a live exact dict protected by its critical section.
+        let actual_count = unsafe { ffi::PyDict_Size(record_ptr) };
+        if actual_count < 0 {
+            return Err(PyErr::fetch(py));
+        }
+        if actual_count as usize != field_count {
+            return Ok(false);
+        }
+
+        let mut position = 0;
+        let mut field = core::ptr::null_mut();
+        let mut ignored_value = core::ptr::null_mut();
+        #[cfg(test)]
+        let mut matched_by_value = false;
+        for expected in &columns[..field_count] {
+            // SAFETY: the locked size bounds successful iteration; PyDict_Next cannot dispatch.
+            if unsafe {
+                ffi::PyDict_Next(record_ptr, &mut position, &mut field, &mut ignored_value)
+            } == 0
+            {
+                return Ok(false);
+            }
+            let expected = expected.bind(py).as_ptr();
+            if field == expected {
+                continue;
+            }
+            if !ALLOW_VALUE_MATCH
+                // SAFETY: `field` is retained by the locked exact-dict iterator for this check.
+                || unsafe { ffi::PyUnicode_CheckExact(field) } == 0
+            {
+                return Ok(false);
+            }
+            // Active admission already proved every first-row column is an exact string.
+            // The current field belongs to the locked exact dict, the expected field is retained
+            // by `columns`, and exact Unicode objects are immutable.
+            if !exact_string_equal(py, field, expected)? {
+                return Ok(false);
+            }
+            #[cfg(test)]
+            {
+                matched_by_value = true;
+            }
+        }
+        #[cfg(test)]
+        if matched_by_value {
+            record_callable_right_schema_value_cache_hit();
+        } else {
+            record_callable_right_schema_identity_cache_hit();
+        }
+        Ok(true)
+    })
+}
+
+/// Preserve the original field-discovery loop unless a fully guarded schema cache hits.
+#[inline(always)]
+fn remember_callable_join_columns_with_cache(
+    record: &Py<PyDict>,
+    columns: &mut Vec<Py<PyAny>>,
+    seen: &Bound<'_, PySet>,
+    can_collapse_right_lookup: &mut bool,
+    cache: &mut CallableRightSchemaCache,
+    py: Python<'_>,
+) -> PyResult<()> {
+    match cache {
+        CallableRightSchemaCache::Disabled => {
+            remember_callable_join_columns(record, columns, seen, can_collapse_right_lookup, py)
+        }
+        CallableRightSchemaCache::ObserveFirst { right_count, mode } => {
+            remember_callable_join_columns(record, columns, seen, can_collapse_right_lookup, py)?;
+            let field_count = record.bind(py).len();
+            if *can_collapse_right_lookup
+                && field_count >= CALLABLE_RIGHT_SCHEMA_CACHE_MIN_FIELDS
+                && columns.len() == field_count
+            {
+                let allow_value_match = matches!(*mode, CallableRightSchemaMode::Many)
+                    || *right_count >= CALLABLE_RIGHT_SCHEMA_VALUE_CACHE_MIN_ROWS
+                    || field_count >= CALLABLE_RIGHT_SCHEMA_VALUE_CACHE_MIN_FIELDS;
+                *cache = if allow_value_match {
+                    let track_identity = field_count >= CALLABLE_JOIN_BULK_MERGE_MIN_FIELDS
+                        && matches!(*mode, CallableRightSchemaMode::Many);
+                    if track_identity {
+                        CallableRightSchemaCache::ActiveValueIdentityCandidate { field_count }
+                    } else {
+                        CallableRightSchemaCache::ActiveValue { field_count }
+                    }
+                } else {
+                    CallableRightSchemaCache::ActiveIdentity { field_count }
+                };
+            } else {
+                *cache = CallableRightSchemaCache::Disabled;
+            }
+            Ok(())
+        }
+        CallableRightSchemaCache::ActiveIdentity { field_count } => {
+            if *can_collapse_right_lookup
+                && callable_join_same_right_shape::<false>(record, columns, *field_count, py)?
+            {
+                return Ok(());
+            }
+            *cache = CallableRightSchemaCache::Disabled;
+            remember_callable_join_columns(record, columns, seen, can_collapse_right_lookup, py)
+        }
+        CallableRightSchemaCache::ActiveValue { field_count } => {
+            if *can_collapse_right_lookup
+                && callable_join_same_right_shape::<true>(record, columns, *field_count, py)?
+            {
+                return Ok(());
+            }
+            *cache = CallableRightSchemaCache::Disabled;
+            remember_callable_join_columns(record, columns, seen, can_collapse_right_lookup, py)
+        }
+        CallableRightSchemaCache::ActiveValueIdentityCandidate { field_count } => {
+            if *can_collapse_right_lookup
+                && callable_join_same_right_shape::<false>(record, columns, *field_count, py)?
+            {
+                return Ok(());
+            }
+            if *can_collapse_right_lookup
+                && callable_join_same_right_shape::<true>(record, columns, *field_count, py)?
+            {
+                *cache = CallableRightSchemaCache::ActiveValue {
+                    field_count: *field_count,
+                };
+                return Ok(());
+            }
+            *cache = CallableRightSchemaCache::Disabled;
+            remember_callable_join_columns(record, columns, seen, can_collapse_right_lookup, py)
+        }
+    }
+}
+
+/// Translate only hash/equality TypeErrors to the public join-key boundary.
+fn callable_join_key_error(py: Python<'_>, error: PyErr) -> PyErr {
+    if error.is_instance_of::<PyTypeError>(py) {
+        PyTypeError::new_err("join keys must be hashable")
+    } else {
+        error
+    }
+}
+
+/// Match the public direct-string selector boundary without returning to a Python callback.
+pub(super) fn direct_join_selection_error(
+    field: &Bound<'_, PyAny>,
+    error: PyErr,
+) -> PyResult<PyErr> {
+    let py = field.py();
+    if !error.is_instance_of::<PyAttributeError>(py)
+        && !error.is_instance_of::<PyKeyError>(py)
+        && !error.is_instance_of::<PyTypeError>(py)
+    {
+        return Ok(error);
+    }
+
+    let prefix = PyString::new(py, "Could not resolve selector ");
+    let middle = PyString::new(py, "; failed at ");
+    let representation = field.repr()?;
+    // SAFETY: every operand is a live Unicode object. PyUnicode_Concat returns a new owned
+    // reference or sets an exception; building inside Python preserves lone surrogate reprs.
+    let message = unsafe { ffi::PyUnicode_Concat(prefix.as_ptr(), representation.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let message = unsafe { ffi::PyUnicode_Concat(message.as_ptr(), middle.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let message = unsafe { ffi::PyUnicode_Concat(message.as_ptr(), representation.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let error_type = PyModule::import(py, "fpstreams.errors")?.getattr("SelectionError")?;
+    let translated = PyErr::from_value(error_type.call1((message,))?);
+    translated.set_context(py, Some(error.clone_ref(py)));
+    translated.set_cause(py, Some(error));
+    Ok(translated)
+}
+
+/// Select a callable key or a preflighted direct field without a runtime mode branch.
+#[inline(always)]
+fn select_hashable_join_key<'py, const DIRECT_FIELDS: bool>(
+    row: &Bound<'py, PyAny>,
+    selector: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if DIRECT_FIELDS {
+        match row.get_item(selector) {
+            Ok(key) => Ok(key),
+            Err(error) => Err(direct_join_selection_error(selector, error)?),
+        }
+    } else {
+        selector.call1((row,))
+    }
+}
+
+/// Build the exact duplicate-cardinality error after the canonical first index lookup.
+fn callable_join_duplicate_error(key: &Bound<'_, PyAny>) -> PyResult<PyErr> {
+    let py = key.py();
+    let prefix = PyString::new(
+        py,
+        "join validate='m:1' requires unique right keys; found duplicate ",
+    );
+    let representation = key.repr()?;
+    // SAFETY: both operands are live Unicode objects. Keeping the message inside Python avoids
+    // lossy UTF-8 conversion of a valid repr containing lone surrogate code points.
+    let message = unsafe { ffi::PyUnicode_Concat(prefix.as_ptr(), representation.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    Ok(PyErr::from_value(
+        py.get_type::<PyValueError>().call1((message,))?,
+    ))
+}
+
+/// Format one generated right target with the same default formatting used by an f-string.
+fn concatenate_callable_join_strings(
+    left: &Bound<'_, PyAny>,
+    suffix: &Bound<'_, PyString>,
+) -> PyResult<Py<PyAny>> {
+    let py = left.py();
+    // SAFETY: both values are exact Unicode objects. PyUnicode_GetLength sets an exception on
+    // failure and otherwise has no observable Python dispatch.
+    let left_length = unsafe { ffi::PyUnicode_GetLength(left.as_ptr()) };
+    if left_length < 0 {
+        return Err(PyErr::fetch(py));
+    }
+    let suffix_length = unsafe { ffi::PyUnicode_GetLength(suffix.as_ptr()) };
+    if suffix_length < 0 {
+        return Err(PyErr::fetch(py));
+    }
+
+    let target = if (left_length == 0) != (suffix_length == 0) {
+        // PyUnicode_Concat is permitted to return its non-empty operand when the other operand
+        // is empty. BUILD_STRING for a two-part f-string instead mints a distinct result. A
+        // two-element join preserves that identity rule on this rare boundary.
+        let separator = PyString::new(py, "");
+        let parts = PyTuple::new(py, [left, suffix.as_any()])?;
+        // SAFETY: separator is exact Unicode and parts is a live two-element exact tuple.
+        unsafe { ffi::PyUnicode_Join(separator.as_ptr(), parts.as_ptr()) }
+    } else {
+        // SAFETY: both operands are live exact Unicode objects.
+        unsafe { ffi::PyUnicode_Concat(left.as_ptr(), suffix.as_ptr()) }
+    };
+    // SAFETY: both Unicode constructors return a new owned reference or set an exception.
+    Ok(unsafe { Bound::from_owned_ptr_or_err(py, target)? }.unbind())
+}
+
+/// Format one generated right target with the same default formatting used by an f-string.
+fn callable_join_suffix_target(
+    name: &Bound<'_, PyAny>,
+    suffix: &Bound<'_, PyString>,
+) -> PyResult<Py<PyAny>> {
+    let py = name.py();
+    let empty = PyString::new(py, "");
+    // SAFETY: PyObject_Format and PyUnicode_Concat return owned references or set an error.
+    let formatted = unsafe { ffi::PyObject_Format(name.as_ptr(), empty.as_ptr()) };
+    let formatted = unsafe { Bound::from_owned_ptr_or_err(py, formatted)? };
+    concatenate_callable_join_strings(&formatted, suffix)
+}
+
+/// Raise the package's canonical collision error without making it part of the hot ABI.
+fn callable_join_duplicate_target_error(
+    name: &Bound<'_, PyAny>,
+    target: &Bound<'_, PyAny>,
+) -> PyResult<PyErr> {
+    let py = name.py();
+    let prefix = PyString::new(py, "join maps right column ");
+    let middle = PyString::new(py, " to existing output column ");
+    let name = name.repr()?;
+    let target = target.repr()?;
+    // SAFETY: every operand is a live Unicode object and each concatenation either returns an
+    // owned reference or sets a Python exception. Avoiding Rust text conversion preserves the
+    // exact repr, including lone surrogate code points.
+    let message = unsafe { ffi::PyUnicode_Concat(prefix.as_ptr(), name.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let message = unsafe { ffi::PyUnicode_Concat(message.as_ptr(), middle.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let message = unsafe { ffi::PyUnicode_Concat(message.as_ptr(), target.as_ptr()) };
+    let message = unsafe { Bound::from_owned_ptr_or_err(py, message)? };
+    let error_type = PyModule::import(py, "fpstreams.errors")?.getattr("DuplicateKeyError")?;
+    Ok(PyErr::from_value(error_type.call1((message,))?))
+}
+
+/// One per-left-row right-field plan, retaining first-seen right name objects.
+type CallableJoinTargets = Vec<(Py<PyAny>, Py<PyAny>, bool)>;
+
+/// A reusable target operation for one proven exact-string left field layout.
+enum CallableJoinTargetOperation {
+    /// Preserve a shared right field already present on the left.
+    Shared,
+    /// Insert under the first-seen right field object itself.
+    Fixed,
+    /// Mint the suffixed exact string separately for every output row.
+    Suffixed,
+}
+
+struct CallableJoinPlanEntry {
+    name: Py<PyAny>,
+    operation: CallableJoinTargetOperation,
+}
+
+/// The overwhelmingly common homogeneous-row plan, guarded by key identity and order.
+struct CallableJoinTargetCache {
+    left_shape: Vec<Py<PyAny>>,
+    plan: Vec<CallableJoinPlanEntry>,
+    bulk_merge_suffix_prefix: Option<usize>,
+}
+
+/// Admit one order-preserving PyDict_Merge plan.
+///
+/// A suffixed source name must collide with the owned left snapshot. Inserting a strict prefix
+/// of suffixed targets first lets override=0 skip their originals while the bulk merge appends
+/// every remaining field in canonical right order. Any later suffixed operation is rejected.
+fn callable_join_bulk_merge_suffix_prefix(plan: &[CallableJoinPlanEntry]) -> Option<usize> {
+    if plan.len() < CALLABLE_JOIN_BULK_MERGE_MIN_FIELDS {
+        return None;
+    }
+    let suffix_prefix = plan
+        .iter()
+        .take_while(|entry| matches!(entry.operation, CallableJoinTargetOperation::Suffixed))
+        .count();
+    if suffix_prefix == plan.len()
+        || plan[suffix_prefix..]
+            .iter()
+            .any(|entry| matches!(entry.operation, CallableJoinTargetOperation::Suffixed))
+    {
+        return None;
+    }
+    Some(suffix_prefix)
+}
+
+/// Compare one private exact dict with a cached exact-string layout without Python hashing.
+fn callable_join_same_left_shape(
+    left: &Py<PyDict>,
+    cached: &CallableJoinTargetCache,
+    py: Python<'_>,
+) -> PyResult<bool> {
+    let left = left.bind(py);
+    with_critical_section(left.as_any(), || {
+        let left_ptr = left.as_ptr();
+        // SAFETY: left is a live exact dict protected by its critical section.
+        let field_count = unsafe { ffi::PyDict_Size(left_ptr) };
+        if field_count < 0 {
+            return Err(PyErr::fetch(py));
+        }
+        if field_count as usize != cached.left_shape.len() {
+            return Ok(false);
+        }
+
+        let mut position = 0;
+        let mut field = core::ptr::null_mut();
+        let mut ignored_value = core::ptr::null_mut();
+        for expected in &cached.left_shape {
+            // SAFETY: the dict is protected by its critical section, and PyDict_Next neither
+            // hashes nor dispatches to user code.
+            if unsafe { ffi::PyDict_Next(left_ptr, &mut position, &mut field, &mut ignored_value) }
+                == 0
+            {
+                return Ok(false);
+            }
+            if field != expected.bind(py).as_ptr() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
+/// Resolve collision targets only after a match (or a left-join miss) is known.
+fn callable_join_targets(
+    left: &Py<PyDict>,
+    right_columns: &[Py<PyAny>],
+    suffix: &Bound<'_, PyString>,
+    shared_names: &Bound<'_, PyFrozenSet>,
+    py: Python<'_>,
+) -> PyResult<(CallableJoinTargets, Option<CallableJoinTargetCache>)> {
+    // Python's canonical `set(left_dict)` reuses the exact dict's cached key hashes. Building an
+    // empty set and adding each key would re-run protocol-sensitive `__hash__` callbacks.
+    // SAFETY: left is a live exact dict and PySet_New returns a new owned exact set or sets an
+    // exception. It performs the same dict-specialized construction as `set(left)`.
+    let left_names = unsafe { ffi::PySet_New(left.bind(py).as_ptr()) };
+    let left_names = unsafe { Bound::from_owned_ptr_or_err(py, left_names)? }
+        .cast_into_exact::<PySet>()
+        .expect("PySet_New must return an exact set");
+    let mut cacheable = right_columns
+        .iter()
+        // SAFETY: every column is a live Python object retained by right_columns.
+        .all(|name| unsafe { ffi::PyUnicode_CheckExact(name.bind(py).as_ptr()) } != 0);
+    let mut left_shape = Vec::new();
+    if cacheable {
+        let field_count = left.bind(py).len();
+        left_shape
+            .try_reserve_exact(field_count)
+            .map_err(join_allocation_error)?;
+    }
+    for (name, _value) in left.bind(py).iter() {
+        if cacheable {
+            // Only exact strings can bypass later Python set hashing/equality observably.
+            if unsafe { ffi::PyUnicode_CheckExact(name.as_ptr()) } != 0 {
+                left_shape.push(name.unbind());
+            } else {
+                cacheable = false;
+                left_shape.clear();
+            }
+        }
+    }
+    let used = left_names
+        .call_method0("copy")?
+        .cast_into_exact::<PySet>()?;
+    let mut targets = Vec::new();
+    targets
+        .try_reserve_exact(right_columns.len())
+        .map_err(join_allocation_error)?;
+    let mut plan = Vec::new();
+    if cacheable {
+        plan.try_reserve_exact(right_columns.len())
+            .map_err(join_allocation_error)?;
+    }
+    for name in right_columns {
+        let name = name.bind(py);
+        let shared = shared_names.contains(name)?;
+        if shared {
+            targets.push((name.clone().unbind(), name.clone().unbind(), true));
+            if cacheable {
+                plan.push(CallableJoinPlanEntry {
+                    name: name.clone().unbind(),
+                    operation: CallableJoinTargetOperation::Shared,
+                });
+            }
+            continue;
+        }
+        let collides = left_names.contains(name)?;
+        let target = if collides {
+            callable_join_suffix_target(name, suffix)?
+        } else {
+            name.clone().unbind()
+        };
+        if used.contains(target.bind(py))? {
+            return Err(callable_join_duplicate_target_error(name, target.bind(py))?);
+        }
+        used.add(target.bind(py))?;
+        targets.push((name.clone().unbind(), target, false));
+        if cacheable {
+            plan.push(CallableJoinPlanEntry {
+                name: name.clone().unbind(),
+                operation: if collides {
+                    CallableJoinTargetOperation::Suffixed
+                } else {
+                    CallableJoinTargetOperation::Fixed
+                },
+            });
+        }
+    }
+    let cache = cacheable.then(|| {
+        let bulk_merge_suffix_prefix = callable_join_bulk_merge_suffix_prefix(&plan);
+        CallableJoinTargetCache {
+            left_shape,
+            plan,
+            bulk_merge_suffix_prefix,
+        }
+    });
+    Ok((targets, cache))
+}
+
+/// Merge a cached many-right plan while retaining one suffix target per left row.
+fn merge_callable_join_targets_bulk_match(
+    output: &Py<PyDict>,
+    right: &Bound<'_, PyDict>,
+    targets: &CallableJoinTargets,
+    suffix_prefix: usize,
+    py: Python<'_>,
+) -> PyResult<()> {
+    let output = output.bind(py);
+    for (name, target, shared) in &targets[..suffix_prefix] {
+        debug_assert!(!shared);
+        let value = right
+            .get_item(name.bind(py))?
+            .expect("identity-homogeneous right rows retain every planned field");
+        output.set_item(target.bind(py), value)?;
+    }
+    // SAFETY: both operands are private exact dictionaries. Right-layout identity proves every
+    // iterated key is the canonical plan object. Exact-string left-layout identity proves each
+    // manually suffixed original exists, so override=0 skips it. The strict-prefix guard keeps
+    // output order and targets were minted once per left row, as in the canonical loop.
+    if unsafe { ffi::PyDict_Merge(output.as_ptr(), right.as_ptr(), 0) } != 0 {
+        return Err(PyErr::fetch(py));
+    }
+    #[cfg(test)]
+    record_callable_join_bulk_merge_hit();
+    Ok(())
+}
+
+/// Merge through a proven homogeneous exact-string plan without rebuilding Python sets.
+fn merge_callable_join_plan_match(
+    output: &Py<PyDict>,
+    right: &Bound<'_, PyDict>,
+    cached: &CallableJoinTargetCache,
+    suffix: &Bound<'_, PyString>,
+    can_collapse_right_lookup: bool,
+    py: Python<'_>,
+) -> PyResult<()> {
+    let output = output.bind(py);
+    for entry in &cached.plan {
+        let name = entry.name.bind(py);
+        if matches!(entry.operation, CallableJoinTargetOperation::Shared)
+            && output.contains(name)?
+        {
+            continue;
+        }
+        let value = if can_collapse_right_lookup {
+            // Every name and every key in these private snapshots is an immutable exact string.
+            // No selector can mutate the snapshots, so the canonical membership probe cannot be
+            // observed and one lookup preserves its result.
+            let Some(value) = right.get_item(name)? else {
+                continue;
+            };
+            value
+        } else {
+            if !right.contains(name)? {
+                continue;
+            }
+            // Canonical merging performs `name in right` followed by `right[name]`. Keep the
+            // second subscription observable and let callback-driven removal raise KeyError.
+            right.as_any().get_item(name)?
+        };
+        match entry.operation {
+            CallableJoinTargetOperation::Suffixed => {
+                // Cache admission proves name is an exact string, so its default formatting is
+                // itself and cannot invoke user code. The helper also preserves the two-part
+                // f-string identity rule when exactly one operand is empty.
+                let target = concatenate_callable_join_strings(name, suffix)?;
+                output.set_item(target.bind(py), value)?;
+            }
+            CallableJoinTargetOperation::Shared | CallableJoinTargetOperation::Fixed => {
+                output.set_item(name, value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve one cached plan into targets once for every many-match left row.
+fn callable_join_targets_from_plan(
+    cached: &CallableJoinTargetCache,
+    suffix: &Bound<'_, PyString>,
+    py: Python<'_>,
+) -> PyResult<CallableJoinTargets> {
+    let mut targets = Vec::new();
+    targets
+        .try_reserve_exact(cached.plan.len())
+        .map_err(join_allocation_error)?;
+    for entry in &cached.plan {
+        let name = entry.name.bind(py);
+        let (target, shared) = match entry.operation {
+            CallableJoinTargetOperation::Shared => (name.clone().unbind(), true),
+            CallableJoinTargetOperation::Fixed => (name.clone().unbind(), false),
+            CallableJoinTargetOperation::Suffixed => {
+                (concatenate_callable_join_strings(name, suffix)?, false)
+            }
+        };
+        targets.push((name.clone().unbind(), target, shared));
+    }
+    Ok(targets)
+}
+
+/// Fill an unmatched row through a proven homogeneous exact-string plan.
+fn merge_callable_join_plan_unmatched(
+    output: &Py<PyDict>,
+    cached: &CallableJoinTargetCache,
+    suffix: &Bound<'_, PyString>,
+    py: Python<'_>,
+) -> PyResult<()> {
+    let output = output.bind(py);
+    for entry in &cached.plan {
+        match entry.operation {
+            CallableJoinTargetOperation::Shared => {}
+            CallableJoinTargetOperation::Fixed => {
+                output.set_item(entry.name.bind(py), py.None())?;
+            }
+            CallableJoinTargetOperation::Suffixed => {
+                let name = entry.name.bind(py);
+                let target = concatenate_callable_join_strings(name, suffix)?;
+                output.set_item(target.bind(py), py.None())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Merge one unique-right match into the already-owned left snapshot.
+fn merge_callable_join_match(
+    output: &Py<PyDict>,
+    right: &Bound<'_, PyDict>,
+    targets: &CallableJoinTargets,
+    shared_names: &Bound<'_, PyFrozenSet>,
+    can_collapse_right_lookup: bool,
+    py: Python<'_>,
+) -> PyResult<()> {
+    let output = output.bind(py);
+    for (name, target, _shared) in targets {
+        let name = name.bind(py);
+        let target = target.bind(py);
+        // Canonical merging re-evaluates `name in shared_names` for every output instead of
+        // reusing the result that selected the collision target. Preserve observable hash/equality
+        // callbacks and any callback-driven membership changes here.
+        if shared_names.contains(name)? && output.contains(target)? {
+            continue;
+        }
+        if can_collapse_right_lookup {
+            if let Some(value) = right.get_item(name)? {
+                output.set_item(target, value)?;
+            }
+        } else if right.contains(name)? {
+            // Preserve the canonical second lookup instead of collapsing membership and
+            // subscription into one PyDict_GetItemRef call.
+            let value = right.as_any().get_item(name)?;
+            output.set_item(target, value)?;
+        }
+    }
+    Ok(())
+}
+
+/// Fill every non-shared right column on one unmatched left output.
+fn merge_callable_join_unmatched(
+    output: &Py<PyDict>,
+    targets: &CallableJoinTargets,
+    shared_names: &Bound<'_, PyFrozenSet>,
+    py: Python<'_>,
+) -> PyResult<()> {
+    let output = output.bind(py);
+    for (name, target, _shared) in targets {
+        // Match the canonical left-join miss loop's fresh `name not in shared_names` probe.
+        if !shared_names.contains(name.bind(py))? {
+            output.set_item(target.bind(py), py.None())?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Shared callable-key unique-right join after its versioned type capabilities are parsed.
+fn join_hashable_unique_records<const DIRECT_FIELDS: bool>(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &[Py<PyType>],
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    if !record_adapter.is_callable() {
+        return Ok(None);
+    }
+    if DIRECT_FIELDS {
+        let left_field = match left_key.cast_exact::<PyString>() {
+            Ok(field) => field,
+            Err(_) => return Ok(None),
+        };
+        let right_field = match right_key.cast_exact::<PyString>() {
+            Ok(field) => field,
+            Err(_) => return Ok(None),
+        };
+        if exact_string_contains_dot(left.py(), left_field.as_ptr())?
+            || exact_string_contains_dot(left.py(), right_field.as_ptr())?
+        {
+            return Ok(None);
+        }
+    } else if !left_key.is_callable() || !right_key.is_callable() {
+        return Ok(None);
+    }
+    let suffix = match suffix.cast_exact::<PyString>() {
+        Ok(suffix) => suffix,
+        Err(_) => return Ok(None),
+    };
+    let shared_names = match shared_names.cast_exact::<PyFrozenSet>() {
+        Ok(names) => names,
+        Err(_) => return Ok(None),
+    };
+    for name in shared_names.iter() {
+        if name.cast_exact::<PyString>().is_err() {
+            return Ok(None);
+        }
+    }
+    let right_count = if DIRECT_FIELDS {
+        preflight_callable_join_source::<false>(right, allowed_record_types)?
+    } else {
+        preflight_callable_join_source::<true>(right, allowed_record_types)?
+    };
+    let Some(right_count) = right_count else {
+        return Ok(None);
+    };
+    let left_count = if DIRECT_FIELDS {
+        preflight_callable_join_source::<false>(left, allowed_record_types)?
+    } else {
+        preflight_callable_join_source::<true>(left, allowed_record_types)?
+    };
+    let Some(left_count) = left_count else {
+        return Ok(None);
+    };
+
+    // From this point forward selectors may have observable effects. Every later shape uses
+    // either the exact-dict branch or record_adapter; no path may return None and replay them.
+    let py = left.py();
+    let index = PyDict::new(py);
+    let seen_columns = PySet::empty(py)?;
+    // A preflighted live list may replace later rows from an earlier selector callback. Check each
+    // actual row below: exact dictionaries are copied, while only the built-in `dict` adapter is
+    // trusted to return a fresh snapshot for any replacement record type.
+    let trusted_record_adapter = record_adapter.is(py.get_type::<PyDict>().as_any());
+    let mapping_proxy = mapping_proxy_snapshot_capability(record_adapter, allowed_record_types)?;
+    let namedtuple = standard_namedtuple_snapshot_capability(record_adapter)?;
+    let mut can_collapse_right_lookup = true;
+    let mut right_columns = Vec::new();
+    right_columns
+        .try_reserve(RECORD_JOIN_V1_MAX_FIELDS.min(right_count))
+        .map_err(join_allocation_error)?;
+    let mut right_schema_cache =
+        CallableRightSchemaCache::new(right_count, CallableRightSchemaMode::Unique);
+    let mut right_iterator = right.try_iter()?;
+    for row in &mut right_iterator {
+        let row = row?;
+        // SAFETY: row is retained by this Bound and exact type identity cannot dispatch user code.
+        if unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } == 0 && !trusted_record_adapter {
+            can_collapse_right_lookup = false;
+        }
+        let record = snapshot_callable_join_record(
+            &row,
+            record_adapter,
+            mapping_proxy.as_ref(),
+            namedtuple.as_ref(),
+        )?;
+        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, right_key)?;
+        remember_callable_join_columns_with_cache(
+            &record,
+            &mut right_columns,
+            &seen_columns,
+            &mut can_collapse_right_lookup,
+            &mut right_schema_cache,
+            py,
+        )?;
+        let existing = index
+            .get_item(&key)
+            .map_err(|error| callable_join_key_error(py, error))?;
+        if existing.is_some() {
+            return Err(callable_join_duplicate_error(&key)?);
+        }
+        index
+            .set_item(&key, record.bind(py))
+            .map_err(|error| callable_join_key_error(py, error))?;
+    }
+
+    let mut joined = Vec::new();
+    joined
+        .try_reserve(left_count)
+        .map_err(join_allocation_error)?;
+    let mut target_cache: Option<CallableJoinTargetCache> = None;
+    let mut left_iterator = left.try_iter()?;
+    for row in &mut left_iterator {
+        let row = row?;
+        let output = snapshot_callable_join_record(
+            &row,
+            record_adapter,
+            mapping_proxy.as_ref(),
+            namedtuple.as_ref(),
+        )?;
+        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, left_key)?;
+        let matched = index
+            .get_item(&key)
+            .map_err(|error| callable_join_key_error(py, error))?;
+        let Some(right_record) = matched else {
+            if left_join {
+                let cache_hit = target_cache
+                    .as_ref()
+                    .map(|cached| callable_join_same_left_shape(&output, cached, py))
+                    .transpose()?
+                    .unwrap_or(false);
+                if cache_hit {
+                    merge_callable_join_plan_unmatched(
+                        &output,
+                        target_cache
+                            .as_ref()
+                            .expect("a cache hit requires a retained target plan"),
+                        suffix,
+                        py,
+                    )?;
+                } else {
+                    let (targets, new_cache) =
+                        callable_join_targets(&output, &right_columns, suffix, shared_names, py)?;
+                    merge_callable_join_unmatched(&output, &targets, shared_names, py)?;
+                    target_cache = new_cache;
+                }
+                if joined.len() == joined.capacity() {
+                    joined.try_reserve(1).map_err(join_allocation_error)?;
+                }
+                joined.push(output);
+            }
+            continue;
+        };
+        let right_record = right_record
+            .cast_into_exact::<PyDict>()
+            .expect("the private join index stores only exact dictionary snapshots");
+        let cache_hit = target_cache
+            .as_ref()
+            .map(|cached| callable_join_same_left_shape(&output, cached, py))
+            .transpose()?
+            .unwrap_or(false);
+        if cache_hit {
+            merge_callable_join_plan_match(
+                &output,
+                &right_record,
+                target_cache
+                    .as_ref()
+                    .expect("a cache hit requires a retained target plan"),
+                suffix,
+                can_collapse_right_lookup,
+                py,
+            )?;
+        } else {
+            let (targets, new_cache) =
+                callable_join_targets(&output, &right_columns, suffix, shared_names, py)?;
+            merge_callable_join_match(
+                &output,
+                &right_record,
+                &targets,
+                shared_names,
+                can_collapse_right_lookup,
+                py,
+            )?;
+            target_cache = new_cache;
+        }
+        if joined.len() == joined.capacity() {
+            joined.try_reserve(1).map_err(join_allocation_error)?;
+        }
+        joined.push(output);
+    }
+    Ok(Some(joined))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Materialize an exact-dict callable-key join without replaying an invoked callback.
+pub(crate) fn join_hashable_unique_records_v1(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    join_hashable_unique_records::<false>(
+        left,
+        right,
+        left_key,
+        right_key,
+        record_adapter,
+        left_join,
+        suffix,
+        shared_names,
+        &[],
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Extend v1 with exact row-type capabilities validated before callback ownership transfers.
+pub(crate) fn join_hashable_unique_records_v2(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
+        return Ok(None);
+    };
+    join_hashable_unique_records::<false>(
+        left,
+        right,
+        left_key,
+        right_key,
+        record_adapter,
+        left_join,
+        suffix,
+        shared_names,
+        &allowed_record_types,
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Select exact-string fields after a Mapping-only v2-style preflight, without Python callbacks.
+pub(crate) fn join_hashable_unique_direct_records_v1(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_field: &Bound<'_, PyAny>,
+    right_field: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
+        return Ok(None);
+    };
+    let record_adapter = left.py().get_type::<PyDict>();
+    if allowed_record_types.is_empty()
+        || allowed_record_types
+            .iter()
+            .any(|row_type| row_type.bind(left.py()).is(&record_adapter))
+    {
+        return Ok(None);
+    }
+    join_hashable_unique_records::<true>(
+        left,
+        right,
+        left_field,
+        right_field,
+        record_adapter.as_any(),
+        left_join,
+        suffix,
+        shared_names,
+        &allowed_record_types,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Shared callable-key many-right join after its versioned type capabilities are parsed.
+fn join_hashable_many_records<const DIRECT_FIELDS: bool>(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &[Py<PyType>],
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    if !record_adapter.is_callable() {
+        return Ok(None);
+    }
+    if DIRECT_FIELDS {
+        let left_field = match left_key.cast_exact::<PyString>() {
+            Ok(field) => field,
+            Err(_) => return Ok(None),
+        };
+        let right_field = match right_key.cast_exact::<PyString>() {
+            Ok(field) => field,
+            Err(_) => return Ok(None),
+        };
+        if exact_string_contains_dot(left.py(), left_field.as_ptr())?
+            || exact_string_contains_dot(left.py(), right_field.as_ptr())?
+        {
+            return Ok(None);
+        }
+    } else if !left_key.is_callable() || !right_key.is_callable() {
+        return Ok(None);
+    }
+    let suffix = match suffix.cast_exact::<PyString>() {
+        Ok(suffix) => suffix,
+        Err(_) => return Ok(None),
+    };
+    let shared_names = match shared_names.cast_exact::<PyFrozenSet>() {
+        Ok(names) => names,
+        Err(_) => return Ok(None),
+    };
+    for name in shared_names.iter() {
+        if name.cast_exact::<PyString>().is_err() {
+            return Ok(None);
+        }
+    }
+    let right_count = if DIRECT_FIELDS {
+        preflight_callable_join_source::<false>(right, allowed_record_types)?
+    } else {
+        preflight_callable_join_source::<true>(right, allowed_record_types)?
+    };
+    let Some(right_count) = right_count else {
+        return Ok(None);
+    };
+    let left_count = if DIRECT_FIELDS {
+        preflight_callable_join_source::<false>(left, allowed_record_types)?
+    } else {
+        preflight_callable_join_source::<true>(left, allowed_record_types)?
+    };
+    let Some(left_count) = left_count else {
+        return Ok(None);
+    };
+
+    // All fallbacks end here. From the first snapshot onward, adapters and selectors own their
+    // observable effects and every error must propagate without replaying either source.
+    let py = left.py();
+    let index = PyDict::new(py);
+    let seen_columns = PySet::empty(py)?;
+    // See the unique-right path: validate ownership against each post-callback live row rather
+    // than relying on the earlier source preflight.
+    let trusted_record_adapter = record_adapter.is(py.get_type::<PyDict>().as_any());
+    let mapping_proxy = mapping_proxy_snapshot_capability(record_adapter, allowed_record_types)?;
+    let namedtuple = standard_namedtuple_snapshot_capability(record_adapter)?;
+    let mut can_collapse_right_lookup = true;
+    let mut right_columns = Vec::new();
+    right_columns
+        .try_reserve(RECORD_JOIN_V1_MAX_FIELDS.min(right_count))
+        .map_err(join_allocation_error)?;
+    let mut right_schema_cache =
+        CallableRightSchemaCache::new(right_count, CallableRightSchemaMode::Many);
+    let mut right_records = Vec::new();
+    right_records
+        .try_reserve_exact(right_count)
+        .map_err(join_allocation_error)?;
+    let mut right_codes = Vec::new();
+    right_codes
+        .try_reserve_exact(right_count)
+        .map_err(join_allocation_error)?;
+    let mut group_counts = Vec::new();
+    group_counts
+        .try_reserve_exact(right_count)
+        .map_err(join_allocation_error)?;
+
+    let mut right_iterator = right.try_iter()?;
+    for row in &mut right_iterator {
+        let row = row?;
+        // SAFETY: row is retained by this Bound and exact type identity cannot dispatch user code.
+        if unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } == 0 && !trusted_record_adapter {
+            can_collapse_right_lookup = false;
+        }
+        let record = snapshot_callable_join_record(
+            &row,
+            record_adapter,
+            mapping_proxy.as_ref(),
+            namedtuple.as_ref(),
+        )?;
+        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, right_key)?;
+        remember_callable_join_columns_with_cache(
+            &record,
+            &mut right_columns,
+            &seen_columns,
+            &mut can_collapse_right_lookup,
+            &mut right_schema_cache,
+            py,
+        )?;
+        let code = match index.get_item(&key)? {
+            Some(code) => code
+                .extract::<usize>()
+                .expect("the private many-right index stores only usize codes"),
+            None => {
+                let code = group_counts.len();
+                index.set_item(&key, code)?;
+                if group_counts.len() == group_counts.capacity() {
+                    group_counts.try_reserve(1).map_err(join_allocation_error)?;
+                }
+                group_counts.push(0);
+                code
+            }
+        };
+        group_counts[code] = checked_join_output_size(group_counts[code], 1)?;
+        if right_codes.len() == right_codes.capacity() {
+            right_codes.try_reserve(1).map_err(join_allocation_error)?;
+        }
+        if right_records.len() == right_records.capacity() {
+            right_records
+                .try_reserve(1)
+                .map_err(join_allocation_error)?;
+        }
+        right_codes.push(code);
+        right_records.push(record);
+    }
+    let bulk_merge_right_field_count = right_schema_cache.identity_homogeneous_field_count();
+    let (group_offsets, right_positions) = factorized_right_positions(&right_codes, &group_counts)?;
+
+    let mut joined = Vec::new();
+    joined
+        .try_reserve(left_count)
+        .map_err(join_allocation_error)?;
+    let mut target_cache: Option<CallableJoinTargetCache> = None;
+    let mut left_iterator = left.try_iter()?;
+    for row in &mut left_iterator {
+        let row = row?;
+        let left_record = snapshot_callable_join_record(
+            &row,
+            record_adapter,
+            mapping_proxy.as_ref(),
+            namedtuple.as_ref(),
+        )?;
+        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, left_key)?;
+        let matched = index.get_item(&key)?;
+        let Some(code) = matched else {
+            if left_join {
+                let output_count = checked_join_output_size(joined.len(), 1)?;
+                joined.try_reserve(1).map_err(join_allocation_error)?;
+                let cache_hit = target_cache
+                    .as_ref()
+                    .map(|cached| callable_join_same_left_shape(&left_record, cached, py))
+                    .transpose()?
+                    .unwrap_or(false);
+                if cache_hit {
+                    merge_callable_join_plan_unmatched(
+                        &left_record,
+                        target_cache
+                            .as_ref()
+                            .expect("a cache hit requires a retained target plan"),
+                        suffix,
+                        py,
+                    )?;
+                } else {
+                    let (targets, new_cache) = callable_join_targets(
+                        &left_record,
+                        &right_columns,
+                        suffix,
+                        shared_names,
+                        py,
+                    )?;
+                    merge_callable_join_unmatched(&left_record, &targets, shared_names, py)?;
+                    target_cache = new_cache;
+                }
+                joined.push(left_record);
+                debug_assert_eq!(joined.len(), output_count);
+            }
+            continue;
+        };
+        let code = code
+            .extract::<usize>()
+            .expect("the private many-right index stores only usize codes");
+        let start = group_offsets[code];
+        let end = group_offsets[code + 1];
+        let matches = &right_positions[start..end];
+        let output_count = checked_join_output_size(joined.len(), matches.len())?;
+        joined
+            .try_reserve(matches.len())
+            .map_err(join_allocation_error)?;
+        let cache_hit = target_cache
+            .as_ref()
+            .map(|cached| callable_join_same_left_shape(&left_record, cached, py))
+            .transpose()?
+            .unwrap_or(false);
+        let (targets, new_cache) = if cache_hit {
+            (
+                callable_join_targets_from_plan(
+                    target_cache
+                        .as_ref()
+                        .expect("a cache hit requires a retained target plan"),
+                    suffix,
+                    py,
+                )?,
+                None,
+            )
+        } else {
+            callable_join_targets(&left_record, &right_columns, suffix, shared_names, py)?
+        };
+        let bulk_suffix_prefix = if cache_hit {
+            let cached = target_cache
+                .as_ref()
+                .expect("a cache hit requires a retained target plan");
+            bulk_merge_right_field_count
+                .filter(|field_count| *field_count == cached.plan.len())
+                .and(cached.bulk_merge_suffix_prefix)
+                .filter(|_| {
+                    trusted_record_adapter || unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } != 0
+                })
+        } else {
+            None
+        };
+        let mut original = Some(left_record);
+        for (match_index, &right_position) in matches.iter().enumerate() {
+            let output = if match_index + 1 == matches.len() {
+                original
+                    .take()
+                    .expect("the final match owns the original left snapshot")
+            } else {
+                copy_join_record(
+                    py,
+                    original
+                        .as_ref()
+                        .expect("earlier matches retain the original left snapshot"),
+                )?
+            };
+            if let Some(suffix_prefix) = bulk_suffix_prefix {
+                merge_callable_join_targets_bulk_match(
+                    &output,
+                    right_records[right_position].bind(py),
+                    &targets,
+                    suffix_prefix,
+                    py,
+                )?;
+            } else {
+                merge_callable_join_match(
+                    &output,
+                    right_records[right_position].bind(py),
+                    &targets,
+                    shared_names,
+                    can_collapse_right_lookup,
+                    py,
+                )?;
+            }
+            joined.push(output);
+        }
+        if !cache_hit {
+            target_cache = new_cache;
+        }
+        debug_assert_eq!(joined.len(), output_count);
+    }
+    Ok(Some(joined))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Materialize an exact-dict callable-key many-right join without replaying callbacks.
+pub(crate) fn join_hashable_many_records_v1(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    join_hashable_many_records::<false>(
+        left,
+        right,
+        left_key,
+        right_key,
+        record_adapter,
+        left_join,
+        suffix,
+        shared_names,
+        &[],
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Extend callable many v1 with exact row-type capabilities checked before callbacks.
+pub(crate) fn join_hashable_many_records_v2(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_key: &Bound<'_, PyAny>,
+    right_key: &Bound<'_, PyAny>,
+    record_adapter: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
+        return Ok(None);
+    };
+    join_hashable_many_records::<false>(
+        left,
+        right,
+        left_key,
+        right_key,
+        record_adapter,
+        left_join,
+        suffix,
+        shared_names,
+        &allowed_record_types,
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+/// Select exact-string fields for a many join after a Mapping-only exact-type preflight.
+pub(crate) fn join_hashable_many_direct_records_v1(
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    left_field: &Bound<'_, PyAny>,
+    right_field: &Bound<'_, PyAny>,
+    left_join: bool,
+    suffix: &Bound<'_, PyAny>,
+    shared_names: &Bound<'_, PyAny>,
+    allowed_record_types: &Bound<'_, PyAny>,
+) -> PyResult<Option<Vec<Py<PyDict>>>> {
+    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
+        return Ok(None);
+    };
+    let record_adapter = left.py().get_type::<PyDict>();
+    if allowed_record_types.is_empty()
+        || allowed_record_types
+            .iter()
+            .any(|row_type| row_type.bind(left.py()).is(&record_adapter))
+    {
+        return Ok(None);
+    }
+    join_hashable_many_records::<true>(
+        left,
+        right,
+        left_field,
+        right_field,
+        record_adapter.as_any(),
+        left_join,
+        suffix,
+        shared_names,
+        &allowed_record_types,
+    )
+}

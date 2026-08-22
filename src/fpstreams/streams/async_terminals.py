@@ -96,7 +96,14 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         Returns:
             The distinct emitted items; every item must be hashable.
         """
-        return {item async for item in self}
+        values: set[T] = set()
+        iterator = self.__aiter__()
+        try:
+            async for item in iterator:
+                values.add(item)
+        finally:
+            await _close(iterator)
+        return values
 
     async def join(self, separator: str = "") -> str:
         """Convert items to strings and join them with separator.
@@ -442,11 +449,15 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             EmptyFlowError: If the async flow is empty and `initial` is omitted.
         """
         accumulator = initial
-        async for item in self:
-            if accumulator is _MISSING:
-                accumulator = item
-            else:
-                accumulator = await _resolve(function(accumulator, item))
+        iterator = self.__aiter__()
+        try:
+            async for item in iterator:
+                if accumulator is _MISSING:
+                    accumulator = item
+                else:
+                    accumulator = await _resolve(function(accumulator, item))
+        finally:
+            await _close(iterator)
         if accumulator is _MISSING:
             raise EmptyFlowError("reduce() called on an empty async flow")
         return accumulator
@@ -522,15 +533,19 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             raise TypeError("initializer must be callable")
         select = compile_selector(key)
         states: dict[Any, R] = {}
-        async for item in self:
-            group = await _resolve(select(item))
-            try:
-                state = states[group]
-            except KeyError:
-                state = cast(R, await _resolve(initializer()))
-            except TypeError:
-                raise TypeError("reduce_by() keys must be hashable") from None
-            states[group] = cast(R, await _resolve(function(state, item)))
+        iterator = self.__aiter__()
+        try:
+            async for item in iterator:
+                group = await _resolve(select(item))
+                try:
+                    state = states[group]
+                except KeyError:
+                    state = cast(R, await _resolve(initializer()))
+                except TypeError:
+                    raise TypeError("reduce_by() keys must be hashable") from None
+                states[group] = cast(R, await _resolve(function(state, item)))
+        finally:
+            await _close(iterator)
         return states
 
     fold_by = reduce_by
@@ -611,5 +626,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             action: Sync or async callable resolved once for every emitted item; return values are
                 ignored.
         """
-        async for item in self:
-            await _resolve(action(item))
+        iterator = self.__aiter__()
+        try:
+            async for item in iterator:
+                await _resolve(action(item))
+        finally:
+            await _close(iterator)

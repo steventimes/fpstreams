@@ -111,17 +111,23 @@ def db_row_factory(
 
     def records() -> Iterator[dict[str, Any]]:
         """Open a fresh connection, fetch query rows in bounded batches, and close resources."""
+        from ..runtime.failpoints import hit
+
         connection: Any = None
         cursor: Any = None
         try:
             connection = connect()
+            hit("db.connect.after")
             cursor = connection.cursor()
+            hit("db.cursor.after")
             if parameters is None:
                 cursor.execute(query)
             else:
                 cursor.execute(query, parameters)
+            hit("db.execute.after")
             names = _column_names(cursor.description)
             while batch := cursor.fetchmany(size):
+                hit("db.fetch.after")
                 for row in batch:
                     yield _record_from_row(row, names)
         finally:
@@ -171,6 +177,8 @@ def write_db_rows(
         Number of source rows submitted after the transaction commits successfully.
     """
 
+    from ..runtime.failpoints import hit
+
     if not callable(connect):
         raise TypeError("connect must be a zero-argument callable")
     if parameters is not None and not callable(parameters):
@@ -182,7 +190,9 @@ def write_db_rows(
     iterator: Iterator[Any] | None = None
     try:
         connection = connect()
+        hit("db.connect.after")
         cursor = connection.cursor()
+        hit("db.cursor.after")
         iterator = iter(source)
         batch: list[Any] = []
         count = 0
@@ -191,9 +201,12 @@ def write_db_rows(
             count += 1
             if len(batch) == size:
                 cursor.executemany(statement, batch)
+                hit("db.execute.after")
                 batch.clear()
         if batch:
             cursor.executemany(statement, batch)
+            hit("db.execute.after")
+        hit("db.commit.before")
         connection.commit()
         return count
     except BaseException:

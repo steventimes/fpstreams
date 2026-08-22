@@ -154,7 +154,9 @@ def _flat_map(source: StreamFacts, _operation: Any) -> StreamFacts:
     if source.cardinality.kind is CardinalityKind.EXACT and source.cardinality.value == 0:
         return _facts(source, cardinality=Cardinality.exact(0))
     return _facts(
-        source, termination=TerminationEvidence.UNKNOWN, cardinality=Cardinality.unknown()
+        source,
+        termination=TerminationEvidence.UNKNOWN,
+        cardinality=Cardinality.unknown(),
     )
 
 
@@ -267,7 +269,9 @@ def _concat(source: StreamFacts, operation: Any) -> StreamFacts:
             cardinality=Cardinality.exact(total),
         )
     return _facts(
-        source, termination=TerminationEvidence.UNKNOWN, cardinality=Cardinality.unknown()
+        source,
+        termination=TerminationEvidence.UNKNOWN,
+        cardinality=Cardinality.unknown(),
     )
 
 
@@ -327,7 +331,9 @@ def _cross(source: StreamFacts, operation: Any) -> StreamFacts:
     right = operation.source.facts
     if source.cardinality.kind is CardinalityKind.EXACT and source.cardinality.value == 0:
         return _facts(
-            source, termination=TerminationEvidence.PROVEN_FINITE, cardinality=Cardinality.exact(0)
+            source,
+            termination=TerminationEvidence.PROVEN_FINITE,
+            cardinality=Cardinality.exact(0),
         )
     if (
         source.termination is TerminationEvidence.PROVEN_FINITE
@@ -345,7 +351,9 @@ def _cross(source: StreamFacts, operation: Any) -> StreamFacts:
                 ),
             )
         return _facts(
-            source, termination=TerminationEvidence.PROVEN_FINITE, cardinality=Cardinality.unknown()
+            source,
+            termination=TerminationEvidence.PROVEN_FINITE,
+            cardinality=Cardinality.unknown(),
         )
     if (
         right.termination is TerminationEvidence.PROVEN_INFINITE
@@ -357,7 +365,9 @@ def _cross(source: StreamFacts, operation: Any) -> StreamFacts:
             cardinality=Cardinality.unknown(),
         )
     return _facts(
-        source, termination=TerminationEvidence.UNKNOWN, cardinality=Cardinality.unknown()
+        source,
+        termination=TerminationEvidence.UNKNOWN,
+        cardinality=Cardinality.unknown(),
     )
 
 
@@ -386,7 +396,9 @@ def _combine_latest(source: StreamFacts, operation: Any) -> StreamFacts:
         for item in facts
     ):
         return _facts(
-            source, termination=TerminationEvidence.PROVEN_FINITE, cardinality=Cardinality.exact(0)
+            source,
+            termination=TerminationEvidence.PROVEN_FINITE,
+            cardinality=Cardinality.exact(0),
         )
     if any(item.termination is TerminationEvidence.PROVEN_INFINITE for item in facts):
         termination = TerminationEvidence.PROVEN_INFINITE
@@ -476,7 +488,8 @@ _SYNC_RULE_ITEMS = [
         ParallelMapOp,
         state=_state_bounded,
         transfer=lambda s, o: _facts(
-            s, ordering=OrderingGuarantee.ORDERED if o.ordered else OrderingGuarantee.UNORDERED
+            s,
+            ordering=(OrderingGuarantee.ORDERED if o.ordered else OrderingGuarantee.UNORDERED),
         ),
     ),
     _rule(FilterOp, transfer=_filter),
@@ -484,20 +497,44 @@ _SYNC_RULE_ITEMS = [
     _rule(FlatMapOp, transfer=_flat_map),
     _rule(TakeOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_take),
     _rule(TakeWhileOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_take_while),
-    _rule(TakeWhileInclusiveOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_take_while),
+    _rule(
+        TakeWhileInclusiveOp,
+        progress=ProgressKind.PREFIX_EMITTING,
+        transfer=_take_while,
+    ),
     _rule(DropOp, transfer=_drop),
     _rule(UniqueOp, state=_state_unique, transfer=_filter),
-    _rule(ChunkOp, progress=ProgressKind.PREFIX_EMITTING, state=_state_bounded, transfer=_chunk),
-    _rule(WindowOp, progress=ProgressKind.PREFIX_EMITTING, state=_state_bounded, transfer=_window),
+    _rule(
+        ChunkOp,
+        progress=ProgressKind.PREFIX_EMITTING,
+        state=_state_bounded,
+        transfer=_chunk,
+    ),
+    _rule(
+        WindowOp,
+        progress=ProgressKind.PREFIX_EMITTING,
+        state=_state_bounded,
+        transfer=_window,
+    ),
     _rule(GroupRunsOp, progress=ProgressKind.PREFIX_EMITTING, state=_state_input),
     _rule(PairwiseOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_pairwise),
     _rule(ZipOp, transfer=_zip),
     _rule(ZipLongestOp, transfer=_zip_longest),
     _rule(IntersperseOp),
     _rule(ConcatOp, transfer=_concat),
-    _rule(CrossOp, progress=ProgressKind.SIDE_INPUT_FINAL, state=_state_input, transfer=_cross),
+    _rule(
+        CrossOp,
+        progress=ProgressKind.SIDE_INPUT_FINAL,
+        state=_state_input,
+        transfer=_cross,
+    ),
     _rule(ScanOp, progress=ProgressKind.PREFIX_EMITTING, requires_order=True),
-    _rule(ScanRightOp, progress=ProgressKind.GLOBAL_FINAL, state=_state_input, requires_order=True),
+    _rule(
+        ScanRightOp,
+        progress=ProgressKind.GLOBAL_FINAL,
+        state=_state_input,
+        requires_order=True,
+    ),
     _rule(
         SortOp,
         progress=ProgressKind.GLOBAL_FINAL,
@@ -569,7 +606,7 @@ def _async_map_transfer(source: StreamFacts, operation: Any) -> StreamFacts:
     """Preserve async-map facts except for ordered versus completion-order output."""
     return _facts(
         source,
-        ordering=OrderingGuarantee.ORDERED if operation.ordered else OrderingGuarantee.UNORDERED,
+        ordering=(OrderingGuarantee.ORDERED if operation.ordered else OrderingGuarantee.UNORDERED),
     )
 
 
@@ -663,9 +700,12 @@ for _class, _name in _ASYNC_NAMES.items():
         _state = _state_unique
         _transfer = _filter
     elif _class in {_Zip, _ZipLongest, _Concat, _Cross}:
-        _transfer = {_Zip: _zip, _ZipLongest: _zip_longest, _Concat: _concat, _Cross: _cross}[
-            _class
-        ]
+        _transfer = {
+            _Zip: _zip,
+            _ZipLongest: _zip_longest,
+            _Concat: _concat,
+            _Cross: _cross,
+        }[_class]
         if _class is _Cross:
             _progress = ProgressKind.SIDE_INPUT_FINAL
             _state = _state_input
@@ -685,7 +725,12 @@ for _class, _name in _ASYNC_NAMES.items():
         (
             _class,
             OperatorRule(
-                _name, _progress, _state, _transfer, _dependencies_for(_progress), _requires_order
+                _name,
+                _progress,
+                _state,
+                _transfer,
+                _dependencies_for(_progress),
+                _requires_order,
             ),
         )
     )

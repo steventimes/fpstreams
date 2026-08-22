@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .async_ import _AsyncPlan
+from .async_ import AsyncLogicalPlan
+from .logical import Pipeline
 from .semantic_rules import ASYNC_OPERATOR_RULES, SYNC_OPERATOR_RULES, OperatorRule
 from .semantics import (
     AsyncTerminalName,
@@ -17,7 +18,6 @@ from .semantics import (
     StreamFacts,
     TerminationEvidence,
 )
-from .sync import Plan
 
 
 def _terminal_condition(terminal: str) -> CompletionCondition:
@@ -32,7 +32,9 @@ def _terminal_condition(terminal: str) -> CompletionCondition:
 
 
 def _analyse(
-    source: StreamFacts, operations: tuple[object, ...], rules: dict[type[Any], OperatorRule]
+    source: StreamFacts,
+    operations: tuple[object, ...],
+    rules: dict[type[Any], OperatorRule],
 ) -> tuple[tuple[OperatorAnalysis, ...], StreamFacts]:
     """Apply exact-type rules in plan order and capture each input-to-output fact transition."""
     current = source
@@ -139,7 +141,7 @@ def _diagnostics(
     return tuple(diagnostics)
 
 
-def analyze_sync_plan(plan: Plan, terminal: str = "iterate") -> PlanSemantics:
+def analyze_sync_plan(plan: Pipeline, terminal: str = "iterate") -> PlanSemantics:
     """Analyze a synchronous plan with the sync rule registry and terminal diagnostics."""
     operations, output = _analyse(plan.source.facts, plan.operations, SYNC_OPERATOR_RULES)
     return PlanSemantics(
@@ -152,7 +154,7 @@ def analyze_sync_plan(plan: Plan, terminal: str = "iterate") -> PlanSemantics:
 
 
 def analyze_async_plan(
-    plan: _AsyncPlan[object], terminal: AsyncTerminalName = "iterate"
+    plan: AsyncLogicalPlan[object], terminal: AsyncTerminalName = "iterate"
 ) -> PlanSemantics:
     """Analyze an asynchronous plan with the async rule registry and terminal diagnostics."""
     operations, output = _analyse(plan.source.facts, plan.operations, ASYNC_OPERATOR_RULES)

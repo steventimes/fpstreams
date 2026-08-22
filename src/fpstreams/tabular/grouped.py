@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
 from ..collecting.aggregation import (
     Aggregator,
-    finish_aggregations,
-    initialize_aggregations,
     prepare_aggregations,
-    step_aggregations,
 )
 from ..errors import DuplicateKeyError
-from ..expressions.selectors import Selector, compile_selector
-from ..streams.flow import flow
-from .spill import spilled_group_aggregate, validate_partitions
+from ..expressions.selectors import Selector
+from ..planning.logical import GroupAggregateNode, GroupAggregateSpec
+from ..streams.flow import Flow
+from .spill import validate_partitions
 from .spill_limits import SpillLimits
 
 if TYPE_CHECKING:
@@ -85,44 +82,27 @@ class GroupedRows(Generic[T]):
         """
         aggregation_items = prepare_aggregations(aggregations)
         key_names = tuple(name for name, _selector in self._keys)
-        keys = tuple(compile_selector(selector) for _name, selector in self._keys)
-        multiple_keys = len(keys) > 1
         overlap = set(key_names) & aggregations.keys()
         if overlap:
             name = next(name for name in key_names if name in overlap)
             raise DuplicateKeyError(f"aggregate output column {name!r} collides with a group key")
 
-        def evaluate() -> Iterator[dict[str, Any]]:
-            """Aggregate groups in memory or use bounded spill processing when configured."""
-            if self._partitions is not None:
-                yield from spilled_group_aggregate(
-                    self._rows,
-                    key_names=key_names,
-                    keys=keys,
-                    aggregation_items=aggregation_items,
-                    partitions=self._partitions,
-                    tempdir=self._tempdir,
-                    limits=self._limits or SpillLimits(),
-                )
-                return
-            groups: dict[Any, dict[str, Any]] = {}
-            for row in self._rows:
-                key = tuple(select(row) for select in keys) if multiple_keys else keys[0](row)
-                try:
-                    states = groups[key]
-                except KeyError:
-                    states = initialize_aggregations(aggregation_items)
-                    groups[key] = states
-                except TypeError:
-                    raise TypeError("group_by keys must be hashable") from None
-                step_aggregations(states, aggregation_items, row)
-
-            for key, states in groups.items():
-                key_values = key if multiple_keys else (key,)
-                result = dict(zip(key_names, key_values, strict=True))
-                result.update(finish_aggregations(states, aggregation_items))
-                yield result
-
         from .rows import Rows
 
-        return Rows(flow.defer(evaluate))
+        logical = self._rows._flow._logical_plan
+        return Rows(
+            Flow._from_logical(
+                logical.with_root(
+                    GroupAggregateNode(
+                        logical.root,
+                        GroupAggregateSpec(
+                            self._keys,
+                            aggregation_items,
+                            self._partitions,
+                            self._tempdir,
+                            self._limits,
+                        ),
+                    )
+                )
+            )
+        )

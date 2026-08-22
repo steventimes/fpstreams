@@ -5,72 +5,30 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar, cast
+from typing import Any, Generic, Literal, TypeVar
 
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector, compile_selector
+from ._collector_base import (
+    Collector as Collector,
+)
+from ._collector_base import (
+    CollectorItems as CollectorItems,
+)
+from ._collector_base import (
+    _identity as _identity,
+)
+from ._collector_base import (
+    _never_done as _never_done,
+)
 
 T = TypeVar("T")
 K = TypeVar("K")
 R = TypeVar("R")
-S = TypeVar("S")
 U = TypeVar("U")
 V = TypeVar("V")
 
 _MISSING = object()
-
-
-def _identity(value: Any) -> Any:
-    """Return collector state unchanged when no explicit finisher is required."""
-    return value
-
-
-def _never_done(_state: Any) -> bool:
-    """Mark a collector as unable to finish before its input is exhausted."""
-    return False
-
-
-@dataclass(frozen=True, slots=True)
-class Collector(Generic[T, S, R]):
-    """Describe an immutable streaming reduction from input items to a result.
-
-    `initializer` creates independent state, `step` consumes one item, and `finish` converts
-    final state to the public result. An optional `combine` merges partial states. `done`
-    enables source short-circuiting, and `native` carries planner metadata without affecting
-    Python execution.
-    """
-
-    initializer: Callable[[], S]
-    step: Callable[[S, T], S]
-    finish: Callable[[S], R] = _identity
-    combine: Callable[[S, S], S] | None = None
-    done: Callable[[S], bool] = _never_done
-    native: Any | None = None
-
-    def __post_init__(self) -> None:
-        """Require callable lifecycle hooks and an optional callable state combiner."""
-        for name in ("initializer", "step", "finish", "done"):
-            if not callable(getattr(self, name)):
-                raise TypeError(f"Collector {name} must be callable")
-        if self.combine is not None and not callable(self.combine):
-            raise TypeError("Collector combine must be callable or None")
-
-    def __call__(self, values: Iterable[T]) -> R:
-        """Initialize, step, and finish this collector over one iterable traversal.
-
-        Input stops as soon as `done(state)` is true. If the iterator exposes `close`, it is
-        closed after completion or error.
-
-        Args:
-            values: Iterable traversed until exhaustion or this collector's completion.
-
-        Returns:
-            `finish(state)` after all consumed values have updated the state.
-        """
-        return cast(R, run_collectors(values, (("result", self),))["result"])
-
-
-CollectorItems = tuple[tuple[str, Collector[Any, Any, Any]], ...]
 
 
 def prepare_collectors(
@@ -120,31 +78,10 @@ def finish_collectors(states: Mapping[str, Any], items: CollectorItems) -> dict[
 
 
 def run_collectors(values: Iterable[Any], items: CollectorItems) -> dict[str, Any]:
-    """Run named collectors in one pass, stopping when all results are complete.
+    """Run the canonical fixed-layout collector program in one traversal."""
+    from .program import compile_collectors, run_collector_program
 
-    Each source value is offered to every unfinished collector. The source iterator is always
-    closed when it provides a callable `close`, including after early completion or an error.
-    Lifecycle exceptions propagate and prevent unfinished results from being returned.
-    """
-    states = initialize_collectors(items)
-    iterator = iter(values)
-    try:
-        # No collector can stop early here, so avoid an `all(done(...))` check per input item.
-        if all(collector.done is _never_done for _name, collector in items):
-            for value in iterator:
-                step_collectors(states, items, value)
-        else:
-            while not collectors_done(states, items):
-                try:
-                    value = next(iterator)
-                except StopIteration:
-                    break
-                step_collectors(states, items, value)
-    finally:
-        close = getattr(iterator, "close", None)
-        if callable(close):
-            close()
-    return finish_collectors(states, items)
+    return run_collector_program(values, compile_collectors(items))
 
 
 def _append(values: list[Any], value: Any) -> list[Any]:

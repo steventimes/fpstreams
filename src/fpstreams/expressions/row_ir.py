@@ -227,7 +227,12 @@ def analyze_row_node(root: Any) -> RowExprAnalysis:
                 NullBehavior.COALESCES if isinstance(node, Coalesce) else NullBehavior.PYTHON
             )
             results[key] = RowExprAnalysis(
-                fields, deterministic, pure, null_behavior, frozenset({"python"}), opaque
+                fields,
+                deterministic,
+                pure,
+                null_behavior,
+                frozenset({"python"}),
+                opaque,
             )
         elif key not in results:
             stack.append((node, True))

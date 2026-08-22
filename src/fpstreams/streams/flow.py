@@ -4,18 +4,39 @@ from __future__ import annotations
 
 import operator
 import os
-from collections.abc import Callable, Iterable, Iterator
+import sys
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, cast
-
-from ..execution import (
-    execute,
+from importlib import import_module
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    Protocol,
+    TypeVar,
+    cast,
+    overload,
 )
+
+import fpstreams
+
+if TYPE_CHECKING:
+    import polars as pl
+
 from ..expressions.selectors import Selector, compile_selector
-from ..planning.explain import PlanExplanation
+from ..planning.explain import PlanExplanation, explain_query
 from ..planning.gather import Gatherer
-from ..planning.native import TerminalName, validate_terminal
+from ..planning.logical import (
+    LogicalPlan,
+    Pipeline,
+    Query,
+    SourceNode,
+    TerminalSpec,
+    linear_pipeline,
+)
+from ..planning.native import TerminalName
 from ..planning.semantics import (
     Cardinality,
     OrderingGuarantee,
@@ -47,7 +68,6 @@ from ..planning.sync import (
     ParallelBackend,
     ParallelMapOp,
     ParallelSettings,
-    Plan,
     PrependOp,
     ScanOp,
     ScanRightOp,
@@ -69,6 +89,38 @@ R = TypeVar("R")
 C = TypeVar("C")
 U = TypeVar("U")
 _MISSING = object()
+_TABULAR_MODULE_ROOTS = frozenset(("pandas", "polars", "pyarrow"))
+
+
+class _ArrowCStreamProvider(Protocol):
+    """Static shape of the Arrow PyCapsule stream protocol."""
+
+    def __arrow_c_stream__(self, requested_schema: Any = None) -> Any: ...
+
+
+class _DataFrameProvider(Protocol):
+    """Static shape of the dataframe interchange protocol."""
+
+    def __dataframe__(
+        self,
+        nan_as_null: bool = False,
+        allow_copy: bool = True,
+    ) -> Any: ...
+
+
+def _tabular_module_root(source_type: type[Any]) -> str | None:
+    """Return a recognized vendor root, including for application-defined subclasses."""
+    module_root = source_type.__module__.partition(".")[0]
+    if module_root in _TABULAR_MODULE_ROOTS:
+        return module_root
+    return next(
+        (
+            root
+            for base in source_type.__mro__[1:]
+            if (root := base.__module__.partition(".")[0]) in _TABULAR_MODULE_ROOTS
+        ),
+        None,
+    )
 
 
 def _default_item_size(value: Any) -> int:
@@ -94,15 +146,31 @@ class _FoldState(Generic[R]):
 class Flow(FlowTerminalsMixin[T], Generic[T]):
     """A synchronous pipeline that opens its source only when iterated or consumed."""
 
-    __slots__ = ("_plan",)
+    __slots__ = ("_logical_plan",)
 
-    def __init__(self, source: Iterable[T] | Source[T] | Plan) -> None:
-        """Wrap an iterable or owned source, or reuse an existing immutable execution plan."""
-        if isinstance(source, Plan):
-            self._plan = source
-        else:
-            owned = source if isinstance(source, Source) else Source.from_iterable(source)
-            self._plan = Plan(owned)
+    def __init__(self, source: Iterable[T] | Source[T]) -> None:
+        """Wrap an iterable or owned source, or reuse an internal logical pipeline."""
+        owned = source if isinstance(source, Source) else Source.from_iterable(source)
+        self._logical_plan = LogicalPlan(SourceNode(owned))
+
+    @classmethod
+    def _from_logical(cls, logical: LogicalPlan) -> Flow[Any]:
+        """Create a flow from an already-validated internal logical tree."""
+        instance = object.__new__(cls)
+        instance._logical_plan = logical
+        return instance
+
+    @property
+    def _pipeline(self) -> Pipeline:
+        """Return the canonical unopened linear view for backend selection."""
+        return linear_pipeline(self._logical_plan)
+
+    def _query(self, name: str, *arguments: Any, **options: Any) -> Query:
+        """Describe one terminal request without executing or opening the pipeline."""
+        return Query(
+            self._logical_plan,
+            TerminalSpec(name, arguments, tuple(options.items())),
+        )
 
     @staticmethod
     def of(*items: R) -> Flow[R]:
@@ -210,12 +278,15 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         )
 
     def __iter__(self) -> Iterator[T]:
-        """Interpret the stored plan lazily with streaming-safe engine selection."""
-        return execute(self._plan, auto_native=False)
+        """Compile and execute every public iteration through the physical pipeline."""
+        from ..execution.physical import execute_physical
+        from ..planning.compiler import compile_iteration
+
+        return execute_physical(compile_iteration(self._query("iterate")))
 
     def _append(self, operation: Operation) -> Flow[Any]:
         """Return a new Flow whose immutable plan includes `operation`."""
-        return Flow(self._plan.append(operation))
+        return self._from_logical(self._logical_plan.append(operation))
 
     def map(self, function: Callable[[T], R]) -> Flow[R]:
         """Apply function to each item lazily.
@@ -231,8 +302,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             map.
         """
         # Store the transform in the immutable plan; no item is mapped yet.
-        if self._plan.parallel is not None:
-            settings = self._plan.parallel
+        if self._logical_plan.parallel is not None:
+            settings = self._logical_plan.parallel
             return self.map_parallel(
                 function,
                 workers=settings.workers,
@@ -310,7 +381,9 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             buffer = 2 * (workers or (os.cpu_count() or 1))
         if buffer < 1:
             raise ValueError("buffer must be at least 1")
-        return Flow(self._plan.with_parallel(ParallelSettings(workers, backend, ordered, buffer)))
+        return self._from_logical(
+            self._logical_plan.with_parallel(ParallelSettings(workers, backend, ordered, buffer))
+        )
 
     def sequential(self) -> Flow[T]:
         """Return a flow whose following maps run sequentially.
@@ -318,7 +391,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         Returns:
             A flow sharing this pipeline with parallel defaults cleared for later maps.
         """
-        return Flow(self._plan.with_parallel(None))
+        return self._from_logical(self._logical_plan.with_parallel(None))
 
     def tap(self, function: Callable[[T], None]) -> Flow[T]:
         """Run a side effect for each item while passing the item through.
@@ -963,7 +1036,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         if engine not in ("auto", "python", "native"):
             raise ValueError("engine must be 'auto', 'python', or 'native'")
-        return Flow(self._plan.with_engine(engine))
+        return self._from_logical(self._logical_plan.with_engine(engine))
 
     def explain(self, terminal: TerminalName = "iterate") -> PlanExplanation:
         """Describe engine selection, stages, and fused operations without executing.
@@ -976,7 +1049,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         Returns:
             A structured explanation of the selected engine and planned stages.
         """
-        return PlanExplanation(self._plan, validate_terminal(terminal))
+        return explain_query(self._query(terminal))
 
     def pairs(self) -> Any:
         """View a flow of two-tuples as a key/value Pairs pipeline.
@@ -984,9 +1057,94 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         Returns:
             A lazy `Pairs` view over this flow.
         """
-        from .pairs import Pairs
+        # Pairs depends on Flow for its public factory and annotations. Resolve the
+        # adapter only at this API boundary so neither module can observe the other
+        # while it is still being initialized.
+        pairs_type = cast(Any, import_module(".pairs", __package__)).Pairs
+        return pairs_type(cast(Flow[tuple[Any, Any]], self))
 
-        return Pairs(cast(Flow[tuple[Any, Any]], self))
+    def rows(self) -> fpstreams.Rows[T]:
+        """View this flow as a lazy record pipeline without inspecting its items.
+
+        Returns:
+            A Rows view that shares this flow's plan and source ownership.
+        """
+        from ..tabular.rows import Rows
+
+        return Rows(self)
+
+    def select(self, *selectors: str | int, **named: Selector) -> fpstreams.Rows[dict[str, Any]]:
+        """Project record fields through a lazy Rows view of this flow."""
+        return self.rows().select(*selectors, **named)
+
+    def with_columns(self, **columns: Selector) -> fpstreams.Rows[dict[str, Any]]:
+        """Add or replace record fields through a lazy Rows view of this flow."""
+        return self.rows().with_columns(**columns)
+
+    def rename(self, **columns: str) -> fpstreams.Rows[dict[str, Any]]:
+        """Rename record fields through a lazy Rows view of this flow."""
+        return self.rows().rename(**columns)
+
+    def cast(self, **columns: Callable[[Any], Any]) -> fpstreams.Rows[dict[str, Any]]:
+        """Convert named record fields through a lazy Rows view of this flow."""
+        return self.rows().cast(**columns)
+
+    def fill_nulls(self, **replacements: object) -> fpstreams.Rows[dict[str, Any]]:
+        """Replace missing or None record fields through a lazy Rows view."""
+        return self.rows().fill_nulls(**replacements)
+
+    def drop_nulls(
+        self,
+        *selectors: Selector,
+        how: Literal["any", "all"] = "any",
+    ) -> fpstreams.Rows[T]:
+        """Drop records according to selected None values through a Rows view."""
+        return self.rows().drop_nulls(*selectors, how=how)
+
+    def explode(
+        self,
+        selector: Selector,
+        *,
+        into: str | None = None,
+        outer: bool = False,
+    ) -> fpstreams.Rows[dict[str, Any]]:
+        """Expand one selected iterable through a lazy Rows view."""
+        return self.rows().explode(selector, into=into, outer=outer)
+
+    def unnest(self, column: str, *, prefix: str = "") -> fpstreams.Rows[dict[str, Any]]:
+        """Promote fields from one nested record through a lazy Rows view."""
+        return self.rows().unnest(column, prefix=prefix)
+
+    def unpivot(
+        self,
+        *columns: str,
+        names_to: str = "variable",
+        values_to: str = "value",
+    ) -> fpstreams.Rows[dict[str, Any]]:
+        """Reshape wide records into name/value records through a Rows view."""
+        return self.rows().unpivot(*columns, names_to=names_to, values_to=values_to)
+
+    def pivot(
+        self,
+        *,
+        index: Selector | tuple[Selector, ...],
+        columns: Selector,
+        values: Selector,
+        aggregate: str | Callable[[Any, Any], Any] = "error",
+        fill: Any = None,
+    ) -> fpstreams.Rows[dict[str, Any]]:
+        """Reshape long records into wide records through a lazy Rows view."""
+        return self.rows().pivot(
+            index=index,
+            columns=columns,
+            values=values,
+            aggregate=aggregate,
+            fill=fill,
+        )
+
+    def group_by(self, *selectors: Selector, **named: Selector) -> fpstreams.tabular.GroupedRows[T]:
+        """Describe grouped aggregation through a lazy Rows view of this flow."""
+        return self.rows().group_by(*selectors, **named)
 
     def take(self, count: int) -> Flow[T]:
         """Emit at most count items, then close the upstream iterator.
@@ -1077,9 +1235,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         return self._append(DropWhileOp(predicate))
 
     @contextmanager
-    def _open(self) -> Iterator[Iterator[T]]:
+    def _open(self) -> Generator[Iterator[T], None, None]:
         """Yield one pipeline iterator and close it when the context exits."""
-        iterator = iter(self)
+        from ..execution.physical import execute_physical
+        from ..planning.compiler import compile_iteration
+
+        iterator = execute_physical(compile_iteration(self._query("iterate")))
         try:
             yield iterator
         finally:
@@ -1093,16 +1254,181 @@ class _FlowFactory:
 
     __slots__ = ()
 
-    def __call__(self, source: Iterable[T]) -> Flow[T]:
-        """Create a lazy flow over an iterable source.
+    def _from_loaded_tabular_type(self, source: Any, module_root: str) -> Flow[Any] | None:
+        """Use a vendor adapter only after confirming the genuine loaded runtime type."""
+        if module_root == "polars":
+            polars = cast(Any, sys.modules.get("polars"))
+            if polars is not None and isinstance(source, (polars.DataFrame, polars.LazyFrame)):
+                return self.from_polars(source)
+        elif module_root == "pyarrow":
+            pyarrow = cast(Any, sys.modules.get("pyarrow"))
+            if pyarrow is not None and isinstance(
+                source,
+                (pyarrow.Table, pyarrow.RecordBatch, pyarrow.RecordBatchReader),
+            ):
+                return self.from_arrow(source)
+        elif module_root == "pandas":
+            pandas = cast(Any, sys.modules.get("pandas"))
+            if pandas is not None and isinstance(source, pandas.DataFrame):
+                return self.from_dataframe(source)
+        return None
+
+    if TYPE_CHECKING:
+
+        @overload
+        def __call__(
+            self,
+            source: pl.Series,
+        ) -> Flow[Any]: ...
+
+    @overload
+    def __call__(self, source: Flow[T]) -> Flow[T]: ...
+
+    @overload
+    # Rows also exports Arrow, but runtime dispatch deliberately preserves its existing Flow[T]
+    # before considering structural tabular protocols.
+    def __call__(self, source: fpstreams.Rows[T]) -> Flow[T]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def __call__(
+        self,
+        source: _ArrowCStreamProvider | _DataFrameProvider,
+    ) -> Flow[dict[str, Any]]: ...
+
+    @overload
+    def __call__(self, source: Iterable[T]) -> Flow[T]: ...
+
+    @overload
+    def __call__(self, source: Any) -> Flow[Any]: ...
+
+    def __call__(self, source: Any) -> Flow[Any]:
+        """Create a lazy flow, retaining recognized tabular source protocols.
 
         Args:
-            source: The iterable consumed when the flow is evaluated.
+            source: A Flow, Rows view, iterable, or supported tabular protocol provider.
 
         Returns:
-            A flow that emits items from `source` when consumed.
+            A flow that emits items or record dictionaries when consumed.
         """
+        source_type = type(source)
+        # Exact built-ins include the common containers and iterator implementations (including
+        # generator). They cannot acquire either tabular protocol, so avoid all adapter probes.
+        if source_type.__module__ == "builtins":
+            return Flow(source)
+        if isinstance(source, Flow):
+            return source
+        rows_type = getattr(fpstreams, "Rows", ())
+        if isinstance(source, rows_type):
+            return cast(Flow[Any], source._flow)
+
+        tabular_root = _tabular_module_root(source_type)
+        if tabular_root is not None:
+            adapted = self._from_loaded_tabular_type(source, tabular_root)
+            if adapted is not None:
+                return adapted
+            # Series, Arrow arrays, and other one-dimensional vendor objects can
+            # expose Arrow/dataframe protocols whose schema is not a record batch.
+            # They keep their ordinary iterable semantics instead of being forced
+            # through the record-oriented adapters below.
+            return Flow(source)
+
+        arrow_protocol = callable(getattr(source_type, "__arrow_c_stream__", None))
+        dataframe_protocol = callable(getattr(source_type, "__dataframe__", None))
+        # A custom dual-protocol provider chooses Arrow's standard stream. Concrete pandas,
+        # Polars, and PyArrow objects were routed above to preserve their adapter semantics.
+        if arrow_protocol:
+            return self.from_arrow(source)
+        if dataframe_protocol:
+            return self.from_dataframe(source)
         return Flow(source)
+
+    def from_arrow(self, source: Any, *, batch_size: int = 65_536) -> Flow[dict[str, Any]]:
+        """Adapt Arrow data through the established Rows source implementation."""
+        from ..tabular.rows import Rows
+
+        return Rows.from_arrow(source, batch_size=batch_size)._flow
+
+    def from_dataframe(
+        self,
+        frame: Any,
+        *,
+        batch_size: int = 65_536,
+        allow_copy: bool = True,
+    ) -> Flow[dict[str, Any]]:
+        """Adapt a dataframe interchange provider through the Rows implementation."""
+        from ..tabular.rows import Rows
+
+        return Rows.from_dataframe(
+            frame,
+            batch_size=batch_size,
+            allow_copy=allow_copy,
+        )._flow
+
+    from_pandas = from_dataframe
+
+    def from_polars(
+        self,
+        frame: Any,
+        *,
+        batch_size: int = 65_536,
+        maintain_order: bool = True,
+        engine: Any = "auto",
+    ) -> Flow[dict[str, Any]]:
+        """Adapt a Polars DataFrame or LazyFrame through the Rows implementation."""
+        from ..tabular.rows import Rows
+
+        return Rows.from_polars(
+            frame,
+            batch_size=batch_size,
+            maintain_order=maintain_order,
+            engine=engine,
+        )._flow
+
+    def scan_csv(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        batch_size: int = 65_536,
+        read_options: Any = None,
+        parse_options: Any = None,
+        convert_options: Any = None,
+        memory_pool: Any = None,
+    ) -> Flow[dict[str, Any]]:
+        """Scan typed CSV batches through the established Rows adapter."""
+        from ..tabular.rows import Rows
+
+        return Rows.scan_csv(
+            path,
+            batch_size=batch_size,
+            read_options=read_options,
+            parse_options=parse_options,
+            convert_options=convert_options,
+            memory_pool=memory_pool,
+        )._flow
+
+    def from_parquet(
+        self,
+        source: Any,
+        *,
+        columns: Iterable[str] | None = None,
+        filter: Any = None,
+        batch_size: int = 65_536,
+        use_threads: bool = True,
+        filesystem: Any = None,
+        partitioning: Any = None,
+    ) -> Flow[dict[str, Any]]:
+        """Scan Parquet data through the established Rows adapter."""
+        from ..tabular.rows import Rows
+
+        return Rows.from_parquet(
+            source,
+            columns=columns,
+            filter=filter,
+            batch_size=batch_size,
+            use_threads=use_threads,
+            filesystem=filesystem,
+            partitioning=partitioning,
+        )._flow
 
     def defer(self, factory: Callable[[], Iterable[T]]) -> Flow[T]:
         """Create a reusable flow that calls factory for each iteration.

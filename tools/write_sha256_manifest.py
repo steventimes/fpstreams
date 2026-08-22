@@ -1,4 +1,4 @@
-"""Hash each artifact except the output and write a filename-sorted SHA-256 manifest."""
+"""Write a portable, filename-sorted SHA-256 manifest for release artifacts."""
 
 from __future__ import annotations
 
@@ -16,12 +16,23 @@ def file_sha256(path: Path) -> str:
 
 
 def write_manifest(directory: Path, output: Path) -> None:
+    """Hash visible files and name them relative to the manifest's directory.
+
+    GitHub uploads ``output.parent`` as one artifact tree, so paths must remain
+    verifiable after download. Build-tool metadata such as ``.gitignore`` is not
+    a distributable package and is deliberately omitted.
+    """
+    output_parent = output.parent.resolve()
     artifacts = sorted(
         path
         for path in directory.iterdir()
-        if path.is_file() and path.resolve() != output.resolve()
+        if path.is_file() and not path.name.startswith(".") and path.resolve() != output.resolve()
     )
-    lines = [f"{file_sha256(path)}  {path.name}\n" for path in artifacts]
+    try:
+        names = [path.resolve().relative_to(output_parent).as_posix() for path in artifacts]
+    except ValueError as error:
+        raise ValueError("artifact directory must be inside the manifest directory") from error
+    lines = [f"{file_sha256(path)}  {name}\n" for path, name in zip(artifacts, names, strict=True)]
     output.write_text("".join(lines), encoding="utf-8")
 
 
