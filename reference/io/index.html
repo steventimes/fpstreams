@@ -1,0 +1,1846 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Typed, lazy data pipelines for Python">
+      
+      
+      
+        <link rel="canonical" href="https://steventimes.github.io/fpstreams/reference/io/">
+      
+      
+        <link rel="prev" href="../pairs/">
+      
+      
+        <link rel="next" href="../collecting/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Data input and output - fpstreams</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/playground.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#data-input-and-output" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="fpstreams" class="md-header__button md-logo" aria-label="fpstreams" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fpstreams
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Data input and output
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="fpstreams" class="md-nav__button md-logo" aria-label="fpstreams" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    fpstreams
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance and execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/execution-reports/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution reports
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../playground/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try in browser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 status and roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../async_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AsyncFlow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pairs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pairs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data input and output
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data input and output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#input-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csv-compatibility-and-typed-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSV: compatibility and typed scan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CSV: compatibility and typed scan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rowsfrom_csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rows.from_csv
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rowsscan_csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rows.scan_csv
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#json-lines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Lines
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#column-mappings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column mappings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#numpy-arrays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NumPy arrays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#arrow-and-the-c-stream-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Arrow and the C stream protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataframe-interchange-and-pandas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataframe interchange and pandas
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#polars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Polars
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parquet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parquet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#databases-and-sqlite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Databases and SQLite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spreadsheet-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spreadsheet safety
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-errors-and-partial-effects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files, errors, and partial effects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser-playground" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browser playground
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../collecting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Collecting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gatherers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gatherers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../containers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Option and Result
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../functional/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Functional utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors and runtime values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#input-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csv-compatibility-and-typed-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSV: compatibility and typed scan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CSV: compatibility and typed scan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rowsfrom_csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rows.from_csv
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rowsscan_csv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rows.scan_csv
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#json-lines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Lines
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#column-mappings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column mappings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#numpy-arrays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NumPy arrays
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#arrow-and-the-c-stream-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Arrow and the C stream protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataframe-interchange-and-pandas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataframe interchange and pandas
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#polars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Polars
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parquet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parquet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#databases-and-sqlite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Databases and SQLite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spreadsheet-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spreadsheet safety
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-errors-and-partial-effects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files, errors, and partial effects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser-playground" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browser playground
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="data-input-and-output">Data input and output</h1>
+<p>fpstreams separates source selection from query construction. File formats are
+never guessed from a string path, and a two-dimensional Python object is not
+silently reclassified by sampling its contents. Use an explicit adapter when the
+source contract matters.</p>
+<h2 id="input-matrix">Input matrix</h2>
+<table>
+<thead>
+<tr>
+<th>Entry point</th>
+<th>Input</th>
+<th>Output</th>
+<th>Evaluation</th>
+<th>Replayability</th>
+<th>Extra</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>flow(source)</code></td>
+<td>Iterable, Flow/Rows, recognized tabular object or protocol provider</td>
+<td><code>Flow</code></td>
+<td>Lazy for ordinary iterables</td>
+<td>Follows source</td>
+<td>None for core</td>
+</tr>
+<tr>
+<td><code>rows(source)</code></td>
+<td>Records, Flow, recognized tabular input</td>
+<td><code>Rows</code></td>
+<td>Lazy view</td>
+<td>Follows source</td>
+<td>None for core</td>
+</tr>
+<tr>
+<td><code>rows.from_csv(path)</code></td>
+<td>CSV path, text handle, or opener</td>
+<td>string-valued dictionaries</td>
+<td>Opens or reads on execution</td>
+<td>Path/opener replayable; handle one-shot</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>rows.scan_csv(path)</code></td>
+<td>CSV file</td>
+<td>typed dictionaries from Arrow batches</td>
+<td>File opens on execution</td>
+<td>Reopens by path</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>rows.from_jsonl(path)</code></td>
+<td>JSONL path, text/binary handle, or opener</td>
+<td>dictionaries</td>
+<td>Opens or reads on execution</td>
+<td>Path/opener replayable; handle one-shot</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>flow.from_columns</code> / <code>rows.from_columns</code></td>
+<td>Explicit mapping of equal-length columns</td>
+<td>named record pipeline</td>
+<td>Arrow table built at construction</td>
+<td>Replays the retained table</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>flow.from_numpy</code></td>
+<td>Explicit one- or two-dimensional array</td>
+<td>Python scalars for 1D; named dictionaries for 2D</td>
+<td><code>numpy.asarray</code> at construction; values converted on execution</td>
+<td>Replays the retained array</td>
+<td><code>data</code></td>
+</tr>
+<tr>
+<td><code>rows.from_numpy</code></td>
+<td>Explicit two-dimensional array</td>
+<td>dictionaries with named columns</td>
+<td><code>numpy.asarray</code> at construction; rows converted on execution</td>
+<td>Replays the retained array</td>
+<td><code>data</code></td>
+</tr>
+<tr>
+<td><code>flow.from_arrow</code> / <code>rows.from_arrow</code></td>
+<td>Arrow table, batch, reader or C stream provider</td>
+<td>record pipeline</td>
+<td>Adapter-dependent</td>
+<td>Table/batch reusable; reader/stream one-shot</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>flow.from_dataframe</code> / <code>rows.from_dataframe</code></td>
+<td><code>__dataframe__</code> provider</td>
+<td>record pipeline</td>
+<td>Conversion deferred</td>
+<td>Provider-dependent</td>
+<td><code>data</code></td>
+</tr>
+<tr>
+<td><code>flow.from_polars</code> / <code>rows.from_polars</code></td>
+<td>Polars DataFrame/LazyFrame</td>
+<td>record pipeline</td>
+<td>LazyFrame collection deferred</td>
+<td>Provider-dependent</td>
+<td><code>polars</code></td>
+</tr>
+<tr>
+<td><code>flow.from_parquet</code> / <code>rows.from_parquet</code></td>
+<td>Parquet path/dataset</td>
+<td>typed records</td>
+<td>Scan opens on execution</td>
+<td>Reopens by source</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>rows.from_db(connect, query, ...)</code></td>
+<td>DB-API connection factory</td>
+<td>dictionaries</td>
+<td>Connects on execution</td>
+<td>Reconnects through factory</td>
+<td>Driver supplied by app</td>
+</tr>
+<tr>
+<td><code>rows.from_sqlite(database, query, ...)</code></td>
+<td>SQLite path or URI</td>
+<td>dictionaries</td>
+<td>Connects on execution</td>
+<td>Reconnects by path</td>
+<td>Standard library</td>
+</tr>
+</tbody>
+</table>
+<p><code>flow(source)</code> recognizes concrete PyArrow, pandas, and Polars types only when
+their package is already loaded. It does not import all optional packages to
+probe every arbitrary object. Standard <code>__arrow_c_stream__</code> and <code>__dataframe__</code>
+providers are recognized directly; Arrow wins when an object exposes both.</p>
+<h2 id="csv-compatibility-and-typed-scan">CSV: compatibility and typed scan</h2>
+<p>Two CSV adapters intentionally expose different contracts.</p>
+<h3 id="rowsfrom_csv"><code>rows.from_csv</code></h3>
+<p>Use the standard-library-compatible reader when string cells and <code>csv</code> dialect
+options are desired.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">paid</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_csv</span><span class="p">(</span><span class="s2">&quot;orders.csv&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">status</span><span class="o">=</span><span class="s2">&quot;paid&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+</code></pre></div>
+<ul>
+<li>the header becomes dictionary keys;</li>
+<li>cells remain strings unless a later <code>cast</code> or <code>parse</code> converts them;</li>
+<li>a path opens only when the pipeline executes and reopens on later executions;</li>
+<li>an already-open text handle is caller-owned, starts at its current position, is not closed by
+  fpstreams, and makes the pipeline one-shot;</li>
+<li>a zero-argument opener is called for each execution, and fpstreams closes every handle it
+  returns;</li>
+<li>duplicate header names raise <code>DuplicateKeyError</code> before the first row is emitted.</li>
+</ul>
+<p>The ownership distinction makes upload streams and remote-storage clients usable without a
+temporary file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">io</span><span class="w"> </span><span class="kn">import</span> <span class="n">StringIO</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">uploaded</span> <span class="o">=</span> <span class="n">StringIO</span><span class="p">(</span><span class="s2">&quot;id,name</span><span class="se">\n</span><span class="s2">1,Ada</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">records</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_csv</span><span class="p">(</span><span class="n">uploaded</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">assert</span> <span class="ow">not</span> <span class="n">uploaded</span><span class="o">.</span><span class="n">closed</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># An opener makes the source replayable. Each returned handle is library-owned.</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">records</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_csv</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">bucket</span><span class="o">.</span><span class="n">open_text</span><span class="p">(</span><span class="s2">&quot;orders.csv&quot;</span><span class="p">))</span>
+</code></pre></div>
+<h3 id="rowsscan_csv"><code>rows.scan_csv</code></h3>
+<p>Use the Arrow-backed scanner for typed, batched work and query projection.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">paid</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">scan_csv</span><span class="p">(</span><span class="s2">&quot;orders.csv&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;paid&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>Arrow owns CSV type inference and parsing rules. Projection can avoid materializing
+unused columns. Install with <code>pip install "fpstreams[arrow]"</code>.</p>
+<h2 id="json-lines">JSON Lines</h2>
+<p><code>rows.from_jsonl</code> reads one JSON value per physical line and requires each value
+to be an object. The default maximum record size protects against a single
+unbounded line; tune it explicitly for trusted larger records.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">events</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_jsonl</span><span class="p">(</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s2">&quot;events.jsonl&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">max_record_bytes</span><span class="o">=</span><span class="mi">4</span> <span class="o">*</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>Duplicate object keys are rejected rather than silently choosing one value.
+<code>max_record_bytes=None</code> disables the byte limit for trusted input.</p>
+<p>Paths, handles, and openers follow the same ownership contract as <code>from_csv</code>. JSONL handles may
+yield <code>bytes</code> or <code>str</code>. <code>encoding</code> decodes paths and binary handles; it also defines encoded-byte
+accounting for a text handle when <code>max_record_bytes</code> is active.</p>
+<h2 id="column-mappings">Column mappings</h2>
+<p>Use <code>from_columns</code> when data already consists of independent named columns. The
+mapping itself is not reinterpreted by <code>flow(columns)</code> or <code>rows(columns)</code>; the
+explicit factory constructs and retains a PyArrow table immediately.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">records</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">from_columns</span><span class="p">(</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;open&quot;</span><span class="p">,</span> <span class="s2">&quot;closed&quot;</span><span class="p">]},</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">1_024</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
+</code></pre></div>
+<p>Column names must be unique, non-empty strings and all columns must have the
+same length. The retained table is replayable. Install with
+<code>pip install "fpstreams[arrow]"</code>.</p>
+<h2 id="numpy-arrays">NumPy arrays</h2>
+<p>NumPy input is explicit. Ordinary <code>flow(array)</code> keeps an ndarray's normal
+iterable behavior, and plain two-dimensional lists are never inspected to guess
+that they are tables. <code>flow.from_numpy</code> accepts a one-dimensional array as a
+scalar source or a two-dimensional array as named records. <code>rows.from_numpy</code>
+accepts only the record form:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">values</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]))</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="k">assert</span> <span class="n">values</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">measurements</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span> <span class="mf">20.5</span><span class="p">],</span> <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mf">21.0</span><span class="p">]]),</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="n">columns</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;sensor_id&quot;</span><span class="p">,</span> <span class="s2">&quot;temperature&quot;</span><span class="p">],</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="p">)</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="k">assert</span> <span class="n">measurements</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;sensor_id&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="p">{</span><span class="s2">&quot;sensor_id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    <span class="p">{</span><span class="s2">&quot;sensor_id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="p">]</span>
+</code></pre></div>
+<p><code>from_numpy</code> calls <code>numpy.asarray</code> once when the adapter is constructed. The
+exact ndarray returned by <code>asarray</code> is retained and the conversion is not
+repeated on later executions. Whether that array owns or shares its storage
+follows NumPy's rules: mutations to the original input are visible only when
+the retained result shares that storage. The source is replayable; Python
+scalars or dictionary rows are produced only as each execution pulls them.
+<code>columns</code> is invalid for a one-dimensional array. For a two-dimensional array,
+omit it to use the string names <code>"0"</code>, <code>"1"</code>, and so on. Explicit names must be
+unique, non-empty strings matching the array width.</p>
+<p><code>Rows.to_numpy(*selectors, dtype=None, copy=None)</code> always returns a
+two-dimensional ndarray. Selectors use the normal Rows field, path, index,
+expression, callable, and <code>SelectionError</code> rules. Without selectors, record
+fields follow first-seen order and missing fields become <code>None</code>. Empty output
+has shape <code>(0, number_of_selected_columns)</code>; an empty source with no known
+columns has shape <code>(0, 0)</code>.</p>
+<p>The <code>copy</code> parameter follows the installed NumPy version: <code>None</code> copies only when
+needed, and <code>True</code> requests a distinct result. <code>False</code> is a strict no-copy request
+on NumPy 2.x, which raises when the shape or dtype requires allocation; NumPy
+1.x treats it as a best-effort preference. fpstreams does not promise zero-copy
+conversion in general. Selectors, record alignment, dtype conversion, and
+non-NumPy sources can all require allocation.</p>
+<h2 id="arrow-and-the-c-stream-protocol">Arrow and the C stream protocol</h2>
+<p>Accepted Arrow sources include tables, record batches, record-batch readers,
+and providers of <code>__arrow_c_stream__</code>. Use <code>from_parquet</code> for an Arrow Dataset.</p>
+<ul>
+<li>Tables and record batches are retained and can normally be evaluated again.</li>
+<li>A <code>RecordBatchReader</code> is one-shot.</li>
+<li>A custom C stream is imported once at construction and is one-shot.</li>
+<li>Column-compatible filters, projections, casts, and aggregations may remain in
+  Arrow until a row-only operation requires Python-visible records;
+  <code>Rows.explain()</code> reports the retained prefix and its boundary.</li>
+<li>Crossing into arbitrary Python callbacks materializes Python-visible values as
+  required by the callback contract.</li>
+</ul>
+<p>The C stream protocol provides interoperability, not a promise of zero copies in
+every downstream operation. Schema conversion, unsupported data types, or a
+Python row boundary can require allocation.</p>
+<h2 id="dataframe-interchange-and-pandas">Dataframe interchange and pandas</h2>
+<p><code>from_dataframe</code> accepts the standard <code>__dataframe__</code> protocol. Conversion is
+deferred until execution where the provider permits it. Pandas indices are not
+emitted as data columns; reset or copy the index into a column first when it is
+part of the dataset.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">from_dataframe</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;customer_id&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p><code>from_pandas</code> is an alias of <code>from_dataframe</code>. Install the data integration with
+<code>pip install "fpstreams[data]"</code>.</p>
+<h2 id="polars">Polars</h2>
+<p><code>from_polars</code> accepts a Polars <code>DataFrame</code> or <code>LazyFrame</code>. A LazyFrame is retained
+until execution rather than collected during construction. Conversion uses Arrow
+interoperability and therefore requires the <code>polars</code> extra.</p>
+<p>Use <code>to_polars_batches</code> or <code>polars_batches</code> when downstream code can consume
+batches and a complete DataFrame is unnecessary.</p>
+<h2 id="parquet">Parquet</h2>
+<p>Parquet adapters accept explicit projection and filtering supported by the Arrow
+dataset layer. Select only required columns before a Python callback so the
+scanner can avoid unnecessary I/O and decoding.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_parquet</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="s2">&quot;warehouse/orders/&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">columns</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;region&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">],</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>Directory and dataset replayability follows the underlying path or dataset
+object. Files are opened during execution, not when the plan is created.</p>
+<h2 id="databases-and-sqlite">Databases and SQLite</h2>
+<p><code>rows.from_db</code> accepts a connection factory rather than an already-open global
+connection. Each execution calls the factory, executes the query, derives field
+names from the cursor description, and closes resources it owns.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">sqlite3</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">orders</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_db</span><span class="p">(</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="k">lambda</span><span class="p">:</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;shop.db&quot;</span><span class="p">),</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="s2">&quot;select id, amount from orders where status = ?&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;paid&quot;</span><span class="p">,),</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">fetch_size</span><span class="o">=</span><span class="mi">1_000</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>rows.from_sqlite</code> is the convenience adapter for a database path or URI. Query
+parameters must use the database driver's binding mechanism; never interpolate
+untrusted values into SQL text.</p>
+<h2 id="output-matrix">Output matrix</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Result or effect</th>
+<th>Materialization</th>
+<th>Extra</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Flow.to_list</code>, <code>Flow.to_tuple</code>, <code>Flow.to_set</code></td>
+<td>Python container</td>
+<td>Full result</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Rows.to_list</code></td>
+<td>List of records</td>
+<td>Full result</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Rows.to_columns</code></td>
+<td>dictionary of column lists</td>
+<td>Full result</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Rows.to_numpy</code></td>
+<td>two-dimensional NumPy array, optionally selected</td>
+<td>Full result</td>
+<td><code>data</code></td>
+</tr>
+<tr>
+<td><code>Flow.to_json</code></td>
+<td>JSON array file</td>
+<td>Streams values to the destination</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Flow.to_csv</code></td>
+<td>scalar/sequence/mapping CSV file</td>
+<td>Streams rows to file</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Rows.to_csv</code></td>
+<td>record CSV file</td>
+<td>Streams rows; schema/header policy is explicit</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>Rows.to_jsonl</code></td>
+<td>JSON object lines</td>
+<td>Streams rows</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>to_arrow</code></td>
+<td>Arrow table</td>
+<td>Full result</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>to_arrow_batches</code></td>
+<td>Arrow record batches</td>
+<td>Batch materialization</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>to_pandas</code></td>
+<td>pandas DataFrame</td>
+<td>Full result</td>
+<td><code>data</code></td>
+</tr>
+<tr>
+<td><code>to_polars</code></td>
+<td>Polars DataFrame</td>
+<td>Full result</td>
+<td><code>polars</code></td>
+</tr>
+<tr>
+<td><code>to_parquet</code></td>
+<td>Local Parquet file</td>
+<td>Streams bounded row groups, then atomically publishes the file</td>
+<td><code>arrow</code></td>
+</tr>
+<tr>
+<td><code>to_db</code> / <code>to_sqlite</code></td>
+<td>Inserted database rows</td>
+<td>Batched side effect</td>
+<td>Driver / standard library</td>
+</tr>
+</tbody>
+</table>
+<p>Rows-specific output signatures are available only after entering the Rows view.
+For example, <code>flow(records).rows().to_csv(...)</code> exposes <code>fieldnames</code>, header, and
+extra-field policies; <code>Flow.to_csv(...)</code> accepts arbitrary value shapes.</p>
+<h2 id="spreadsheet-safety">Spreadsheet safety</h2>
+<p>CSV intended for Excel, Sheets, or similar applications can treat leading
+characters such as <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</code> as formulas. Set
+<code>spreadsheet_safe=True</code> for untrusted text. fpstreams prefixes suspect cells with
+a single quote. Leave it disabled for machine interchange where byte-level value
+preservation is required.</p>
+<h2 id="files-errors-and-partial-effects">Files, errors, and partial effects</h2>
+<p>Read adapters own files and connections they open and close them on completion,
+early termination, and failure. Writer methods document whether they stream
+directly or use a replace/transaction boundary. A raised error means callers
+must not assume an external file or database accepted no rows unless the adapter
+explicitly provides atomic behavior.</p>
+<p>Common adapter failures include:</p>
+<ul>
+<li><code>ImportError</code> with the required optional extra when an integration is absent;</li>
+<li><code>SelectionError</code> for a missing field or invalid selector;</li>
+<li><code>DuplicateKeyError</code> for duplicate JSON keys or a duplicate key under an
+  error-on-duplicate dictionary policy;</li>
+<li><code>BufferLimitError</code> when a configured record, batch, spill, fan-out, or output
+  budget is exceeded;</li>
+<li>the underlying parser, filesystem, Arrow, dataframe, or database exception
+  when that boundary owns the failure.</li>
+</ul>
+<h2 id="browser-playground">Browser playground</h2>
+<p>The <a href="../../playground/">browser playground</a> installs a pure-Python wheel into a
+Pyodide worker. It is meant for in-memory core examples. Browser security does
+not expose arbitrary local paths, normal process pools, or the CPython/Rust
+extension. Use the installed package for production I/O and native execution.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "content.code.copy", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

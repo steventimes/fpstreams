@@ -1,0 +1,282 @@
+.fp-playground {
+  --fp-ink: #e7edf7;
+  --fp-muted: #9ba8bb;
+  --fp-panel: #101927;
+  --fp-panel-deep: #09111d;
+  --fp-line: #263448;
+  --fp-cyan: #56d9d0;
+  --fp-amber: #ffbd63;
+  --fp-red: #ff7d82;
+  margin: 2rem 0;
+  overflow: hidden;
+  border: 1px solid var(--fp-line);
+  border-radius: 0.55rem;
+  background: var(--fp-panel-deep);
+  color: var(--fp-ink);
+  box-shadow: 0 1.2rem 3rem rgb(2 8 18 / 20%);
+}
+
+.fp-playground__masthead,
+.fp-playground__controls,
+.fp-playground__pane-heading,
+.fp-playground__examples {
+  display: flex;
+  align-items: center;
+}
+
+.fp-playground__masthead {
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid var(--fp-line);
+  background: #0d1725;
+}
+
+.fp-playground__masthead h2 {
+  margin: 0.1rem 0 0;
+  color: var(--fp-ink);
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.fp-playground__eyebrow {
+  margin: 0;
+  color: var(--fp-cyan);
+  font: 600 0.61rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.13em;
+}
+
+.fp-playground__status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--fp-muted);
+  font: 500 0.68rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.fp-playground__status-light {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--fp-amber);
+  box-shadow: 0 0 0.7rem color-mix(in srgb, var(--fp-amber) 60%, transparent);
+}
+
+.fp-playground__status[data-status="ready"] .fp-playground__status-light {
+  background: var(--fp-cyan);
+}
+
+.fp-playground__status[data-status="error"] .fp-playground__status-light {
+  background: var(--fp-red);
+}
+
+.fp-playground__status[data-status="loading"] .fp-playground__status-light,
+.fp-playground__status[data-status="running"] .fp-playground__status-light {
+  animation: fp-pulse 1.25s ease-in-out infinite;
+}
+
+.fp-playground__examples {
+  gap: 0.35rem;
+  padding: 0.65rem 1.25rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--fp-line);
+}
+
+.fp-playground button {
+  min-height: 2.1rem;
+  padding: 0.42rem 0.72rem;
+  border: 1px solid var(--fp-line);
+  border-radius: 0.28rem;
+  background: transparent;
+  color: var(--fp-muted);
+  font: 600 0.68rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+}
+
+.fp-playground button:hover:not(:disabled),
+.fp-playground button[aria-pressed="true"] {
+  border-color: var(--fp-cyan);
+  background: rgb(86 217 208 / 9%);
+  color: var(--fp-cyan);
+}
+
+.fp-playground button:focus-visible,
+.fp-playground textarea:focus-visible {
+  outline: 2px solid var(--fp-amber);
+  outline-offset: 2px;
+}
+
+.fp-playground button:disabled {
+  cursor: wait;
+  opacity: 0.42;
+}
+
+.fp-playground__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(18rem, 0.92fr);
+  min-height: 29rem;
+}
+
+.fp-playground__pane {
+  min-width: 0;
+}
+
+.fp-playground__editor-pane {
+  border-right: 1px solid var(--fp-line);
+}
+
+.fp-playground__pane-heading {
+  justify-content: space-between;
+  min-height: 2.4rem;
+  padding: 0 0.85rem;
+  border-bottom: 1px solid var(--fp-line);
+  color: var(--fp-muted);
+  font: 600 0.63rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.fp-playground__shortcut {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.fp-playground textarea {
+  display: block;
+  width: 100%;
+  min-height: 23.7rem;
+  resize: vertical;
+  padding: 1rem;
+  border: 0;
+  background: var(--fp-panel-deep);
+  color: var(--fp-ink);
+  caret-color: var(--fp-cyan);
+  font: 0.75rem/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+  tab-size: 4;
+}
+
+.fp-playground__help {
+  margin: 0;
+  padding: 0.55rem 0.85rem;
+  border-top: 1px solid var(--fp-line);
+  color: var(--fp-muted);
+  font-size: 0.64rem;
+}
+
+.fp-playground__output-pane {
+  background: var(--fp-panel);
+}
+
+.fp-playground__channel {
+  padding: 0.8rem 0.9rem 0;
+}
+
+.fp-playground__channel > span {
+  color: var(--fp-muted);
+  font: 600 0.58rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.fp-playground__channel pre {
+  min-height: 3.2rem;
+  margin: 0.4rem 0 0;
+  padding: 0.65rem;
+  overflow: auto;
+  border: 1px solid var(--fp-line);
+  border-radius: 0.28rem;
+  background: rgb(3 10 19 / 45%);
+  color: var(--fp-ink);
+  font: 0.71rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fp-playground__channel--result pre {
+  border-left: 2px solid var(--fp-cyan);
+}
+
+.fp-playground__channel--error pre {
+  border-left: 2px solid var(--fp-red);
+  color: #ffc1c4;
+}
+
+.fp-playground__controls {
+  gap: 0.45rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--fp-line);
+}
+
+.fp-playground__controls .fp-playground__run {
+  border-color: var(--fp-cyan);
+  background: var(--fp-cyan);
+  color: #071116;
+}
+
+.fp-playground__controls > span {
+  margin-left: auto;
+  color: var(--fp-muted);
+  font: 0.61rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes fp-pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.78);
+  }
+}
+
+@media (max-width: 58rem) {
+  .fp-playground__workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .fp-playground__editor-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--fp-line);
+  }
+
+  .fp-playground__masthead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 36rem) {
+  .fp-playground__masthead,
+  .fp-playground__examples,
+  .fp-playground__controls {
+    padding-right: 0.75rem;
+    padding-left: 0.75rem;
+  }
+
+  .fp-playground__controls {
+    flex-wrap: wrap;
+  }
+
+  .fp-playground__controls > span {
+    flex-basis: 100%;
+    margin: 0.3rem 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fp-playground__status-light {
+    animation: none !important;
+  }
+}
