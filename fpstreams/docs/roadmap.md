@@ -1,20 +1,22 @@
 # v2 status and roadmap
 
-fpstreams 2 replaces the v1 implementation. The current stable version is `2.0.0`.
+fpstreams 2 replaces the v1 implementation. This source tree targets `2.1.0`.
 
 ## Included in 2.0
 
 - Domain-oriented package layout with small compatibility facades.
-- Lazy `Flow`, `AsyncFlow`, `Rows`, and `Pairs` APIs.
+- A primary synchronous `Flow` entry point, explicit relational `Rows` views,
+  and lazy `AsyncFlow` and `Pairs` APIs.
 - Placeholder and row expression systems.
 - Collectors, named aggregators, and grouped aggregation.
 - Fused synchronous and asynchronous Python execution.
-- Native Rust numeric plans plus automatic hybrid planning.
+- Native Rust scalar kernels and automatic Python/native planning.
 - Bounded concurrent async mapping, merge operations, timeouts, debounce, and
   time-windowed buffering.
 - CSV, JSONL, SQLite, DB-API, Arrow, Parquet, pandas, and Polars adapters.
 - External sorting and partitioned spill paths for joins and grouping.
-- One-shot source enforcement and deterministic resource cleanup.
+- One-shot source enforcement and cleanup of iterators, tasks, files, and
+  connections owned by fpstreams.
 - Strict typing, Python/Rust parity tests, and wheel/sdist packaging.
 
 ## 2.0 stabilization completed
@@ -25,16 +27,31 @@ fpstreams 2 replaces the v1 implementation. The current stable version is `2.0.0
 - Skew-aware spill repartitioning with finite partition, match, state, and output limits.
 - Spreadsheet-safe CSV as an opt-in mode and bounded JSONL records by default.
 - Patched development dependencies, SHA-pinned Actions, automated dependency updates,
-  verified release artifacts, and SHA-256 manifests.
+  clean-install smoke tests for built wheels and the sdist, and SHA-256 manifests.
 - Machine-readable release benchmarks and branch-coverage gates for high-risk modules.
+
+## Included in 2.1
+
+- Record operations available from the primary `flow()` entry point, while
+  preserving `Rows` as an explicit view and compatibility namespace.
+- Column and NumPy construction APIs, NumPy output, Rows concatenation, and
+  standard Arrow C stream/dataframe protocol routing.
+- Structured execution reports for synchronous, asynchronous, and relational
+  terminals.
+- Async queue sources, bounded prefetch, session windows, and numeric terminals.
+- Wider guarded Rust and NumPy execution for scalar, pair, record, join, group,
+  reshape, and global aggregation plans.
+- Cross-library benchmark output with Python, NumPy, and pandas comparisons.
 
 ## Stability commitments
 
 ### Freeze public behavior
 
-Public names, signatures, exceptions, source-consumption rules, and engine fallback
-behavior are stable within the v2 release line. Breaking changes belong in a future
-major release. v2 does not add an alias for every v1 method.
+Starting with 2.1, public names, signatures, exceptions, source-consumption
+rules, and engine fallback behavior remain compatible within the v2 release
+line. A documented safety limit may be tightened only with a changelog entry
+and an explicit opt-out. Other breaking changes belong in a future major
+release. v2 does not add an alias for every v1 method.
 
 ### Add native operations only with parity tests
 
@@ -54,7 +71,7 @@ Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
 packages remain optional dependencies.
 
-## Possible work after 2.0
+## Possible work after 2.1
 
 - Additional streaming joins and merge operations for already-sorted inputs.
 - More approximate or bounded statistical aggregators.
@@ -62,29 +79,37 @@ packages remain optional dependencies.
 - Additional `Option`/`Result` traversal helpers.
 - Narrow extension hooks for custom sources, aggregators, and native kernels.
 
-These ideas stay out of 2.0 unless they can be added without weakening API
-consistency, memory bounds, or Python/Rust parity.
+These ideas are outside 2.1. Later work must preserve API consistency, memory
+bounds, and Python/Rust parity. Longer-term research includes bounded/unbounded
+capability typing, mergeable aggregator algebra, incremental Rows, broader Arrow
+or Substrait pushdown, and an async cancel-scope redesign.
 
-Research directions such as bounded/unbounded capability typing, mergeable
-aggregator algebra, incremental Rows, Arrow/Substrait pushdown, async cancel-scope
-redesign, and free-threaded Python support remain future work. The 2026-08-14
-stabilization audit did not implement or claim completion of those items.
+Free-threaded Python has a narrower boundary. An experimental, non-blocking job
+builds the native extension on a CPython 3.14t interpreter, then runs static
+auditing, targeted native snapshot stress tests, and threaded smoke checks. It
+is not a release-wheel target or a claim of complete free-threaded performance
+parity. Fast paths that cannot meet the free-threaded safety contract are
+disabled and use their canonical fallback. Standard CPython 3.11 through 3.14
+remains the release-tested matrix.
 
-## What fpstreams will not do
+## Scope boundaries
 
-fpstreams will not replace NumPy, pandas, Polars, or a distributed query engine.
-It is a pipeline layer that passes data to those systems when appropriate. Ordinary
-transforms are not distributed automatically, and unbounded inputs are not silently
-materialized.
+fpstreams is a local pipeline layer. It passes columnar and dataframe work to
+NumPy, pandas, Polars, or Arrow when appropriate and does not provide distributed
+execution. Unbounded inputs are not silently materialized.
 
-## Release validation
+## Repository validation
 
-The v2 release gate covers:
+CI checks source changes. Before building release artifacts, the publish workflow
+also validates the tag, rebuilds the native extension, and runs the complete
+Python and Rust test suites on Linux. Together, the repository workflows provide:
 
-- no known Python/native semantic divergence in supported plans;
-- clean tests, lint, strict typing, Rust formatting, clippy, and package builds;
-- documented behavior for one-shot sources, cancellation, spilling, and fallbacks;
-- clean installation and native/Python smoke tests for every wheel and the sdist;
+- Python/native parity tests for supported plan families;
+- tests, lint, strict typing, Rust formatting, clippy, and package builds;
+- contract tests for one-shot sources, cancellation, spilling, and fallbacks;
+- clean-install and native/Python smoke tests for every wheel and the sdist;
+- source tests on standard CPython 3.11 through 3.14, with the separate CPython
+  3.14t job remaining experimental and non-blocking;
 - repository and focus-module branch-coverage thresholds;
-- SHA-pinned CI actions, minimal publish credentials, and artifact hash manifests;
-- a migration path for supported v1 entry-point aliases.
+- SHA-pinned CI actions, OIDC-based PyPI publishing, and SHA-256 artifact manifests;
+- a documented migration path for supported v1 entry-point aliases.

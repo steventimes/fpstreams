@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a scoped API, adapter, or execution improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the workflow that is difficult today, without assuming a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Show the API or result you would expect.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Note existing fpstreams or ecosystem approaches you tried.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Semantics and scale
+      description: Mention ordering, memory bounds, async cleanup, data types, or input scale that matters.

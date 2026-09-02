@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://steventimes.github.io/fpstreams/
+    about: Check the guides and API reference before opening an issue.
+  - name: Security report
+    url: https://github.com/steventimes/fpstreams/security/advisories/new
+    about: Report suspected vulnerabilities privately.

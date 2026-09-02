@@ -8,8 +8,14 @@ theme:
   name: material
   features:
     - navigation.sections
+    - navigation.indexes
     - navigation.top
+    - navigation.tracking
     - content.code.copy
+    - content.tabs.link
+
+extra_css:
+  - assets/stylesheets/playground.css
 
 plugins:
   - search
@@ -33,20 +39,33 @@ plugins:
 markdown_extensions:
   - admonition
   - attr_list
+  - md_in_html
+  - tables
   - pymdownx.highlight:
       anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.superfences
 
 nav:
   - Getting started: index.md
+  - User guide:
+      - Core concepts: user-guide/concepts.md
+      - Performance and execution: user-guide/performance.md
+      - Execution reports: user-guide/execution-reports.md
+      - FAQ: faq.md
+  - Try in browser: playground.md
   - v2 status and roadmap: roadmap.md
   - API reference:
+      - API index: reference/index.md
       - Flow: reference/flow.md
       - AsyncFlow: reference/async_flow.md
       - Rows: reference/rows.md
       - Pairs: reference/pairs.md
+      - Data input and output: reference/io.md
       - Collecting: reference/collecting.md
       - Gatherers: reference/gatherers.md
       - Expressions: reference/expressions.md
       - Option and Result: reference/containers.md
       - Functional utilities: reference/functional.md
+      - Errors and runtime values: reference/errors.md

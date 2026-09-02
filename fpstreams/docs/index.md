@@ -1,16 +1,20 @@
 # fpstreams v2
 
-fpstreams builds typed, lazy data pipelines over ordinary Python iterables and
-async iterables. The v2 API has four focused entry points:
+fpstreams builds typed, lazy data pipelines over ordinary Python iterables,
+retained tabular inputs, and async iterables. The v2 API has four construction
+namespaces; `flow` is the primary synchronous entry point:
 
 | Entry point | Use it for |
 | --- | --- |
-| `flow(source)` | General synchronous transformations and reductions |
+| `flow(source)` | Synchronous value or record pipelines, including supported tabular sources |
 | `aflow(source)` | Asynchronous I/O, merging, time-based operators, bounded concurrency |
-| `rows(source)` | Records, expressions, joins, grouping, reshape, and data-system I/O |
+| `rows(source)` | An explicit relational/compatibility view and record-specific data I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-The current stable release is `2.0.0`.
+These docs target `2.1.0`.
+
+The [2.1 changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
+summarizes the new public APIs and execution changes.
 
 ## Installation
 
@@ -18,7 +22,10 @@ The current stable release is `2.0.0`.
 pip install fpstreams
 ~~~
 
-Python 3.11 or newer is required. Optional integrations are installed separately:
+Python 3.11 or newer is required. Standard CPython 3.11 through 3.14 is covered
+by release testing. Free-threaded CPython 3.14t currently has an experimental,
+non-blocking job that builds the extension on a 3.14t interpreter rather than
+producing release wheels. Optional integrations are installed separately:
 
 ~~~bash
 pip install "fpstreams[async]"
@@ -76,11 +83,12 @@ Use a `Collector` when the result is a general container or reduction. Use an
 
 ## Work with records
 
-String selectors address record fields. `col()` builds row expressions without
-repetitive lambdas.
+`flow()` also starts record pipelines. String selectors address record fields,
+and `col()` builds row expressions without repetitive lambdas. Nonconflicting
+record methods enter a Rows view automatically.
 
 ~~~python
-from fpstreams import agg, col, rows
+from fpstreams import agg, col, flow
 
 orders = [
     {"region": "eu", "status": "paid", "amount": 24},
@@ -90,8 +98,8 @@ orders = [
 ]
 
 result = (
-    rows(orders)
-    .where(col("status") == "paid")
+    flow(orders)
+    .filter(col("status") == "paid")
     .group_by("region")
     .aggregate(
         orders=agg.count(),
@@ -107,11 +115,22 @@ assert result == [
 ]
 ~~~
 
-`Rows` can read and write CSV, JSONL, SQLite, DB-API sources, Arrow, Parquet,
-pandas, and Polars. Optional third-party packages are imported only when those
-adapters are used.
+Use `flow(records).rows()` when you need a method whose Flow meaning is already
+established: Flow `drop(count)` skips items, `join(separator)` builds a string,
+`aggregate(...)` executes to a dictionary, and `where(predicate)` aliases
+`filter`. Their Rows counterparts remove columns, perform a relational join,
+build a lazy one-row relation, and accept record equalities.
+Flow also keeps its own output signatures; enter `.rows()` before `to_csv()`,
+`to_pandas()`, or `to_df()` when you need Rows-specific options.
 
-## Run asynchronous work safely
+`flow(source)` automatically retains concrete PyArrow, pandas, and Polars inputs
+and recognizes standard `__arrow_c_stream__` and `__dataframe__` providers.
+Explicit Flow factories cover Arrow, dataframe, Polars, typed CSV, and Parquet.
+The `rows` namespace also supplies compatibility CSV, JSONL, SQLite, DB-API, and
+record-oriented output methods. Optional third-party packages are imported only
+when the corresponding adapter is used.
+
+## Bound asynchronous concurrency
 
 ~~~python
 import asyncio
@@ -143,7 +162,9 @@ fpstreams cancels outstanding tasks and closes the owned async iterator.
 ## Understand execution
 
 The default engine is `auto`. It selects a fused Python loop, a native Rust
-kernel, or a hybrid plan based on the source, operations, and requested terminal.
+kernel, an Arrow-native prefix, or a hybrid plan based on the source,
+operations, and requested terminal. Relational plans can use guarded native
+subpaths while keeping their canonical fallback.
 
 ~~~python
 from fpstreams import flow, item
@@ -187,10 +208,12 @@ default; `max_record_bytes=None` disables it for trusted input.
 ## Moving from v1
 
 `Stream`, `AsyncStream`, and `ParallelStream` remain import aliases to ease
-migration, but new code should use `flow`, `aflow`, `rows`, and `pairs`.
+migration. New synchronous code should start with `flow`; use `.rows()` or the
+`rows` namespace for an explicit relational view or a record-specific adapter.
+Use `aflow` and `pairs` for their respective domains.
 
 The old `core` and standalone `ParallelStream` implementations were removed.
 The import alias and `Flow.parallel()` compatibility strategy remain. New code can
-use `parallel_map()` for thread or process mapping and `map_async()` for async work.
+use `map_parallel()` for thread or process mapping and `map_async()` for async work.
 Because v2 changes terminal and error semantics, test existing pipelines before
 upgrading production code.

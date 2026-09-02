@@ -1,0 +1,57 @@
+name: Bug report
+description: Report reproducible incorrect behavior or a regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting a problem. Please remove secrets and private data from examples.
+  - type: input
+    id: version
+    attributes:
+      label: fpstreams version
+      placeholder: 2.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, architecture, and relevant optional packages.
+      placeholder: CPython 3.12, Linux x86_64, NumPy 2.x
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Execution engine
+      options:
+        - auto
+        - python
+        - native
+        - arrow or numpy path
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include a complete example that can be copied into a fresh environment.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full exception and `pipeline.explain(...).to_dict()` when relevant.
+    validations:
+      required: true

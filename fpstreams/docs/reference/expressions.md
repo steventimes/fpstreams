@@ -1,14 +1,20 @@
 # Expressions
 
 `item` and `fitem` build scalar placeholder expressions for flows. `col()`,
-`lit()`, `when()`, and `coalesce()` build record expressions for `Rows`.
+`lit()`, `when()`, and `coalesce()` build record expressions for Rows and for
+record-capable Flow operations.
 
 ~~~python
-from fpstreams import col, flow, item, rows
+from fpstreams import col, flow, item
 
 numbers = flow(range(5)).filter(item % 2 == 0).map(item * 10)
-active = rows([{"status": "active"}]).where(col("status") == "active")
+active = flow([{"status": "active"}]).filter(col("status") == "active").select("status")
 ~~~
+
+Scalar `filter()` and `map()` calls keep an ordinary Flow. A nonconflicting
+record method such as `select()` enters Rows automatically; call `.rows()` first
+when you need a conflicting relational method such as Rows `where()` with field
+equalities.
 
 ## Building row expressions
 

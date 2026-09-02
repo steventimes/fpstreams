@@ -1,0 +1,25 @@
+name: Usage question
+description: Ask how to build a pipeline or choose an fpstreams API.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: input
+    id: version
+    attributes:
+      label: fpstreams version
+      placeholder: 2.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Include a small input and the result you want when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include the smallest relevant code sample and any error.

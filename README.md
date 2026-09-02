@@ -3,19 +3,22 @@
 [![CI](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/fpstreams.svg)](https://pypi.org/project/fpstreams/)
 [![Python](https://img.shields.io/pypi/pyversions/fpstreams.svg)](https://pypi.org/project/fpstreams/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/steventimes/fpstreams/blob/master/LICENSE)
+
+[Documentation](https://steventimes.github.io/fpstreams/) · [Browser playground](https://steventimes.github.io/fpstreams/playground/) · [Changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) · [Contributing](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
 
 Typed, lazy data pipelines for Python, with synchronous streams, structured
 asynchronous concurrency, record-oriented transforms, and optional Rust execution.
 
-> fpstreams 2 is the stable, ground-up replacement for the v1 implementation.
+> fpstreams 2 replaces the v1 implementation and retains the compatibility
+> aliases listed below.
 
 ## What is in v2
 
 - `Flow[T]`: the primary synchronous entry point for lazy value and record
   pipelines, including retained tabular sources.
 - `AsyncFlow[T]`: asynchronous transforms with bounded concurrency, ordering,
-  timeouts, merging, debouncing, and cancellation-safe cleanup.
+  timeouts, merging, debouncing, and cleanup of tasks created by the pipeline.
 - `Rows[T]`: an explicit relational and compatibility view for expressions,
   joins, grouping, reshape operations, and record-oriented data I/O.
 - `Pairs[K, V]`: key/value transforms and per-key collection or aggregation.
@@ -27,10 +30,16 @@ asynchronous concurrency, record-oriented transforms, and optional Rust executio
   subpaths, and hybrid execution when only part of a plan is native.
 - Configured memory and output limits for external sort and partitioned joins/grouping.
 
+Version 2.1 adds execution reports, direct record operations from `flow()`,
+standard Arrow/dataframe protocol routing, retained NumPy execution, and new
+async queue, prefetch, window, and numeric terminal APIs. See the
+[changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for the release summary.
+
 Python 3.11 or newer is required. Release testing covers standard CPython 3.11
 through 3.14. Free-threaded CPython 3.14t is exercised by an experimental,
-non-blocking source-build workflow; it is not currently a release-wheel target,
-and unsupported fast paths fall back conservatively.
+non-blocking job that builds the native extension on a 3.14t interpreter; it is
+not currently a release-wheel target, and unsupported fast paths fall back
+conservatively.
 
 ## Installation
 
@@ -141,9 +150,11 @@ methods when you need Rows-specific options, for example
 readers, pandas DataFrames, Polars frames, and standard
 `__arrow_c_stream__`/`__dataframe__` providers. Arrow takes priority when a
 custom object implements both protocols, and a pandas index is not emitted as a
-record column. Explicit Flow factories cover Arrow, dataframe, Polars, typed
-CSV, and Parquet inputs. The `rows` namespace continues to provide compatibility
-CSV, JSONL, SQLite, DB-API, and record-oriented output methods:
+record column. Explicit Flow factories cover Arrow, equal-length named columns,
+NumPy arrays, dataframe, Polars, typed CSV, and Parquet inputs. The `rows`
+namespace continues to provide compatibility CSV, JSONL, SQLite, DB-API, and
+record-oriented output methods. CSV and JSONL
+inputs accept paths, caller-owned open handles, or replayable opener functions:
 
 ~~~python
 from fpstreams import col, flow
@@ -186,8 +197,8 @@ async def main() -> None:
 asyncio.run(main())
 ~~~
 
-Async iterators and outstanding tasks are closed or cancelled when a pipeline
-finishes, errors, times out, or short-circuits.
+Async iterators consumed by a pipeline are closed, and tasks created by the
+pipeline are cancelled, when it finishes, errors, times out, or short-circuits.
 
 ### Key/value pipelines
 
@@ -268,9 +279,9 @@ CSV output is raw by default for machine interchange. For values supplied by
 untrusted users and later opened in spreadsheet software, pass
 `spreadsheet_safe=True`; strings beginning (after whitespace) with `=`, `+`,
 `-`, or `@` are prefixed with a single quote. JSONL reads accept at most 8 MiB
-per physical record by default and reject larger lines before decoding. Pass
-`max_record_bytes=None` only for trusted local input when an unlimited record is
-intentional.
+per physical record by default and reject larger lines before JSON parsing;
+binary inputs are checked before decoding as well. Pass `max_record_bytes=None`
+only for trusted local input when an unlimited record is intentional.
 
 ## Source and resource semantics
 
@@ -297,7 +308,7 @@ is required. Use `aflow` and `pairs` for their respective domains.
 v2 breaks parts of the v1 API. The standalone `core` and `ParallelStream`
 implementations are gone. `ParallelStream` remains an alias, and `Flow.parallel()`
 remains as a compatibility strategy for following maps. New code can call
-`parallel_map()` directly or use `map_async()` for asynchronous work.
+`map_parallel()` directly or use `map_async()` for asynchronous work.
 
 ## Development
 
@@ -305,21 +316,35 @@ remains as a compatibility strategy for following maps. New code can call
 uv sync --extra arrow --extra data --extra polars \
   --group build --group test --group lint --group type --group docs
 
-uv run pytest --cov=src/fpstreams --cov-branch --cov-report=term-missing --cov-report=json
-uv run python tools/check_coverage.py coverage.json
-uv run ruff check src tests tools benchmark.py
-uv run ruff format --check src tests tools benchmark.py
+uv run maturin develop --release
+uv run pytest -W error --cov=src/fpstreams --cov-branch --cov-report=term-missing
+uv run coverage report
+uv run ruff check src tests scripts benchmarks benchmark.py
+uv run ruff format --check src tests scripts benchmarks benchmark.py
 uv run mypy src/fpstreams
 cargo test --manifest-path rust/Cargo.toml
+uv run python scripts/build_browser_wheel.py
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 ~~~
+
+Run `./run_benchmark.sh` for the configurable benchmark matrix. Its settings are
+kept at the top of the script, including input size, repeats, presets, case
+filters, and optional JSON output. Competitive mode checks equivalent tasks
+against Python, NumPy, and pandas and prints the percentage difference.
 
 The source tree is organized by domain under `src/fpstreams/`: `streams`,
 `planning`, `execution`, `collecting`, `tabular`, `expressions`, and `primitives`.
 Small top-level modules are compatibility facades, not duplicate implementations.
-The [Chinese code-reading guide](CODE_READING_GUIDE.zh-CN.md) follows complete
-sync, relational, spill, native, and async execution paths through those domains.
+The [Chinese code-reading guide](https://github.com/steventimes/fpstreams/blob/master/CODE_READING_GUIDE.zh-CN.md)
+walks through the main sync, relational, spill, native, and async execution paths
+in those domains.
+
+Contributions are welcome. The
+[contributing guide](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
+contains the development setup, validation commands, and performance-change
+expectations. Use the issue forms for reproducible bugs and scoped proposals;
+report security problems through GitHub's private vulnerability reporting flow.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See the [license](https://github.com/steventimes/fpstreams/blob/master/LICENSE).

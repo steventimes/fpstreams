@@ -31,6 +31,8 @@ jobs:
           enable-cache: true
       - name: Install documentation dependencies
         run: uv sync --frozen --group docs
+      - name: Build browser playground wheel
+        run: python scripts/build_browser_wheel.py
       - name: Deploy to gh-pages
         run: >-
           uv run mkdocs gh-deploy --force --strict

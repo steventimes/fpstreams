@@ -11,7 +11,7 @@ reporting feature for this repository. Do not open a public issue before the
 report has been assessed.
 
 Include the affected version, a minimal reproduction, the expected impact, and
-any known mitigations. You should receive an acknowledgement within seven days.
+any known mitigations. We aim to acknowledge reports within seven days.
 If the report is confirmed, maintainers will coordinate a fix and disclosure
 with you.
 
