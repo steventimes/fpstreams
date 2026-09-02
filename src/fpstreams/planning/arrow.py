@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal, cast
+from threading import RLock
+from types import CodeType, FunctionType
+from typing import Any, Literal, TypeVar, cast
+from weakref import WeakKeyDictionary
 
+from ..expressions.row import RowExpr
 from ..expressions.row_ir import Binary, Field
 from ..expressions.row_ir import Literal as RowLiteral
 from .arrow_source import ArrowBatchSource, RangePredicate
@@ -54,30 +58,71 @@ class RowStageDescriptor:
     selector, Python callable, or literal identity from another query.
     """
 
-    kind: Literal["with_columns", "where", "select"]
+    kind: Literal["with_columns", "where", "select", "rename", "cast", "fill_nulls"]
     selectors: tuple[tuple[str, object], ...] = ()
     predicate: object | None = None
     equalities: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
-class PlannedRowCallable:
-    """Wrap a row callable so structural planning can recognize a closed projection."""
+class _RowStageMetadata:
+    """Bind one trusted function identity to its query-local structural descriptor."""
 
-    function: Callable[[Any], Any]
-    role: str = "projection"
-    descriptor: RowStageDescriptor | None = None
+    token: object
+    code: CodeType
+    descriptor: RowStageDescriptor
 
-    def __call__(self, row: Any) -> Any:
-        """Delegate row evaluation to the wrapped callable."""
-        return self.function(row)
+
+_RowFunction = TypeVar("_RowFunction", bound=Callable[..., Any])
+
+
+def _row_stage_registry() -> tuple[
+    Callable[[_RowFunction, RowStageDescriptor], _RowFunction],
+    Callable[[object], RowStageDescriptor | None],
+]:
+    """Create private identity metadata helpers without exposing the registry token."""
+    token = object()
+    metadata: WeakKeyDictionary[FunctionType, _RowStageMetadata] = WeakKeyDictionary()
+    lock = RLock()
+
+    def register(function: _RowFunction, descriptor: RowStageDescriptor) -> _RowFunction:
+        """Register an exact function and return that same callable unchanged."""
+        if type(function) is not FunctionType:
+            raise TypeError("planned row stages require an exact Python function")
+        with lock:
+            metadata[cast(FunctionType, function)] = _RowStageMetadata(
+                token,
+                cast(FunctionType, function).__code__,
+                descriptor,
+            )
+        return function
+
+    def descriptor(function: object) -> RowStageDescriptor | None:
+        """Read only metadata installed for this exact function identity."""
+        if type(function) is not FunctionType:
+            return None
+        with lock:
+            registered = metadata.get(function)
+        if (
+            registered is None
+            or registered.token is not token
+            or function.__code__ is not registered.code
+        ):
+            return None
+        return registered.descriptor
+
+    return register, descriptor
+
+
+_register_row_stage, _row_stage_descriptor = _row_stage_registry()
+del _row_stage_registry
 
 
 def _direct_projection(operation: MapOp | FilterOp) -> ArrowProjectionSpec | None:
     """Return an ordered direct-field spec for an exact internal ``Rows.select`` map."""
-    if not isinstance(operation, MapOp) or type(operation.function) is not PlannedRowCallable:
+    if not isinstance(operation, MapOp):
         return None
-    descriptor = operation.function.descriptor
+    descriptor = _row_stage_descriptor(operation.function)
     if descriptor is None or descriptor.kind != "select":
         return None
     direct_selectors: list[tuple[str, str]] = []
@@ -102,7 +147,10 @@ def _direct_primitive_filter(operation: MapOp | FilterOp) -> bool:
     """Recognize one side-effect-free field/literal comparison for a batch pipeline."""
     if not isinstance(operation, FilterOp) or operation.negate:
         return False
-    root = getattr(operation.predicate, "_node", None)
+    predicate = operation.predicate
+    if type(predicate) is not RowExpr:
+        return False
+    root = predicate._node
     if not isinstance(root, Binary) or root.kind not in {
         "==",
         "!=",
@@ -132,7 +180,10 @@ def direct_exact_equality(operation: MapOp | FilterOp) -> tuple[str, object] | N
     """Return one side-effect-free field/builtin equality usable by early Arrow execution."""
     if not isinstance(operation, FilterOp) or operation.negate:
         return None
-    root = getattr(operation.predicate, "_node", None)
+    predicate = operation.predicate
+    if type(predicate) is not RowExpr:
+        return None
+    root = predicate._node
     if not isinstance(root, Binary) or root.kind != "==":
         return None
     if isinstance(root.left, Field) and isinstance(root.right, RowLiteral):
@@ -157,7 +208,10 @@ def direct_exact_i64_range(operation: MapOp | FilterOp) -> RangePredicate | None
     """Normalize one exact field/i64 range comparison into field-left form."""
     if not isinstance(operation, FilterOp) or operation.negate:
         return None
-    root = getattr(operation.predicate, "_node", None)
+    predicate = operation.predicate
+    if type(predicate) is not RowExpr:
+        return None
+    root = predicate._node
     if not isinstance(root, Binary) or root.kind not in {"<", "<=", ">", ">="}:
         return None
     if isinstance(root.left, Field) and isinstance(root.right, RowLiteral):
@@ -224,6 +278,33 @@ def plan_arrow_first_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
     )
 
 
+def plan_arrow_reduction_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
+    """Select a total scalar projection that is safe to evaluate before a reduction.
+
+    Reduction callbacks and comparisons must retain their Python order.  A lone direct field
+    map is the only initial shape whose batch evaluation cannot run user code or introduce a
+    later expression error before the terminal observes an earlier value.
+    """
+    if plan.engine != "auto" or not isinstance(plan.source.native_data, ArrowBatchSource):
+        return None
+    operations = plan.operations
+    if plan.parallel is not None or not operations or operations[1:]:
+        return None
+    operation = operations[0]
+    if not isinstance(operation, MapOp):
+        return None
+    function = operation.function
+    if type(function) is not RowExpr:
+        return None
+    root = function._node
+    if type(root) is not Field or type(root.name) is not str or "." in root.name:
+        return None
+    prefix = plan_arrow_prefix(plan)
+    if prefix is None or prefix.operation_count != 1 or prefix.operations[0] is not operation:
+        return None
+    return prefix
+
+
 def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
     """Return a conservative Arrow-safe leading map/filter segment for an automatic plan.
 
@@ -250,7 +331,7 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
         # with an expression stage would make Arrow's overflow, null, cast, and operator
         # protocols observable before the canonical Python projection.
         callable_node = getattr(operation, "function", getattr(operation, "predicate", None))
-        if callable_node.__class__.__name__ == "RowExpr":
+        if type(callable_node) is RowExpr:
             if isinstance(operation, FilterOp) and operation.negate:
                 return ArrowPrefixPlan(
                     0,
@@ -291,9 +372,38 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
         # follows a tentative RowExpr prefix, executing only that prefix would expose Arrow's
         # arithmetic/null behavior before the wrapper falls back.  Discard the whole tentative
         # batch program; ordinary opaque callbacks keep the established prefix behavior.
-        if type(callable_node) is PlannedRowCallable:
+        if _row_stage_descriptor(callable_node) is not None:
             return ArrowPrefixPlan(0, (), ArrowBoundaryReason.OPAQUE_EXPRESSION, True)
         return ArrowPrefixPlan(
             len(accepted), tuple(accepted), ArrowBoundaryReason.OPAQUE_EXPRESSION, True
         )
     return ArrowPrefixPlan(len(accepted), tuple(accepted), ArrowBoundaryReason.FULL_PREFIX, True)
+
+
+def supports_arrow_table_materialization(prefix: ArrowPrefixPlan) -> bool:
+    """Return whether a complete prefix can stay columnar through table materialization."""
+    operations = prefix.operations
+    if not operations:
+        return True
+    if prefix.projection is None:
+        return all(_direct_primitive_filter(operation) for operation in operations)
+    return bool(prefix.projection.selectors) and (
+        (len(operations) == 1 and isinstance(operations[0], MapOp))
+        or (
+            len(operations) == 2
+            and _direct_primitive_filter(operations[0])
+            and isinstance(operations[1], MapOp)
+        )
+    )
+
+
+def plan_arrow_table_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
+    """Return a full Arrow prefix whose output can remain a native table."""
+    prefix = plan_arrow_prefix(plan)
+    if (
+        prefix is None
+        or prefix.operation_count != len(plan.operations)
+        or not supports_arrow_table_materialization(prefix)
+    ):
+        return None
+    return prefix

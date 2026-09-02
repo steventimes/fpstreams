@@ -87,7 +87,12 @@ def assert_reducer_laws(
     equivalent: Callable[[Any, Any], bool] = operator.eq,
 ) -> None:
     """Run :func:`check_reducer_laws` and raise for its first failed property."""
-    report = check_reducer_laws(reducer, values, partitions=partitions, equivalent=equivalent)
+    report = check_reducer_laws(
+        reducer,
+        values,
+        partitions=partitions,
+        equivalent=equivalent,
+    )
     if not report.associative:
         raise AssertionError("reducer merge is not associative")
     if not report.identity:

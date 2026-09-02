@@ -17,6 +17,8 @@ from ..planning.async_ import (
     _MapAsync,
     _Merge,
     _MergeMap,
+    _Prefetch,
+    _SessionWindow,
     _SwitchMap,
     _Tap,
     _Throttle,
@@ -87,7 +89,14 @@ class AsyncSwitchMapNode(AsyncPhysicalNode):
 class AsyncTimerNode(AsyncPhysicalNode):
     """One timer-driven operation; timer ownership is supplied by its executor."""
 
-    operation: _Timeout | _Debounce | _BufferTimeout | _Delay | _Throttle
+    operation: _Timeout | _Debounce | _BufferTimeout | _SessionWindow | _Delay | _Throttle
+
+
+@dataclass(frozen=True, slots=True)
+class AsyncPrefetchNode(AsyncPhysicalNode):
+    """One explicitly bounded asynchronous pull-ahead operation."""
+
+    operation: _Prefetch
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +155,10 @@ def compile_async_query(query: AsyncQuery) -> AsyncPhysicalPlan:
             node = AsyncMergeMapNode((index,), "merge_map", operation)
         elif isinstance(operation, _SwitchMap):
             node = AsyncSwitchMapNode((index,), "switch_map", operation)
+        elif isinstance(operation, _Prefetch):
+            node = AsyncPrefetchNode((index,), "prefetch", operation)
+        elif isinstance(operation, _SessionWindow):
+            node = AsyncTimerNode((index,), "session_window", operation)
         elif isinstance(operation, (_Timeout, _Debounce, _BufferTimeout, _Delay, _Throttle)):
             node = AsyncTimerNode((index,), type(operation).__name__.removeprefix("_"), operation)
         else:

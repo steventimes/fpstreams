@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
 import operator
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
+from time import perf_counter_ns
 from typing import Any, Generic, TypeVar, cast
 
 from ..collecting.aggregation import Aggregator, prepare_aggregations
@@ -27,12 +29,52 @@ from ..collecting.statistics import (
 )
 from ..errors import BufferLimitError, EmptyFlowError
 from ..expressions.selectors import Selector, compile_selector
-from ..planning.async_utils import _MISSING, _close, _resolve
+from ..planning.async_utils import _MISSING, _resolve, closing_async_iterators
 from ..primitives.result import Err, Ok
+from ..runtime.report import ExecutionResult, _start_recording, _stop_recording
 
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
+_REPORTABLE_ASYNC_TERMINALS = frozenset(
+    {
+        "aggregate",
+        "all",
+        "any",
+        "average",
+        "collect",
+        "count",
+        "count_by",
+        "find",
+        "find_index",
+        "first",
+        "fold_by",
+        "fold_right",
+        "for_each",
+        "frequencies",
+        "index_of",
+        "join",
+        "last",
+        "max",
+        "mean",
+        "min",
+        "minmax",
+        "none",
+        "nth",
+        "partition",
+        "partition_results",
+        "reduce",
+        "reduce_by",
+        "reduce_right",
+        "std",
+        "sum",
+        "summarize",
+        "to_list",
+        "to_set",
+        "to_tuple",
+        "variance",
+    }
+)
 
 
 async def _run_async_collectors(
@@ -45,20 +87,25 @@ async def _run_async_collectors(
     """
     states = initialize_collectors(items)
     iterator = values.__aiter__()
-    try:
+    async with closing_async_iterators((iterator,)):
         while not collectors_done(states, items):
             try:
                 value = await anext(iterator)
             except StopAsyncIteration:
                 break
             step_collectors(states, items, value)
-    finally:
-        await _close(iterator)
     return finish_collectors(states, items)
 
 
 class AsyncFlowTerminalsMixin(Generic[T]):
     """Terminal and reduction methods mixed into the public AsyncFlow class."""
+
+    def _retained_identity_terminal(
+        self,
+        terminal: str,
+    ) -> Awaitable[Any] | None:
+        """Return deferred direct work only for a proven retained identity terminal."""
+        return None
 
     def __aiter__(self) -> AsyncIterator[T]:
         """Yield items from the concrete AsyncFlow implementation."""
@@ -74,12 +121,34 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Build a lazy async pipeline that skips the first `count` items."""
         raise NotImplementedError
 
+    async def run_with_report(
+        self,
+        terminal: str,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ExecutionResult[Any]:
+        """Await one eager terminal normally and pair its value with a read-only report."""
+        if terminal not in _REPORTABLE_ASYNC_TERMINALS:
+            raise ValueError(f"{terminal!r} is not a reportable eager terminal")
+        method = getattr(self, terminal)
+        recorder, token = _start_recording(terminal, "async")
+        started = perf_counter_ns()
+        try:
+            value = await method(*args, **kwargs)
+            return recorder.finish(value, perf_counter_ns() - started)
+        finally:
+            _stop_recording(token)
+
     async def to_list(self) -> list[T]:
         """Consume the async flow and collect its items in a list.
 
         Returns:
             All emitted items in encounter order.
         """
+        direct = self._retained_identity_terminal("list")
+        if direct is not None:
+            return cast(list[T], await direct)
         return [item async for item in self]
 
     async def to_tuple(self) -> tuple[T, ...]:
@@ -88,6 +157,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         Returns:
             All emitted items in encounter order as a tuple.
         """
+        direct = self._retained_identity_terminal("tuple")
+        if direct is not None:
+            return cast(tuple[T, ...], await direct)
         return tuple([item async for item in self])
 
     async def to_set(self) -> set[T]:
@@ -98,11 +170,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """
         values: set[T] = set()
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 values.add(item)
-        finally:
-            await _close(iterator)
         return values
 
     async def join(self, separator: str = "") -> str:
@@ -119,11 +189,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """
         values: list[str] = []
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 values.append(str(item))
-        finally:
-            await _close(iterator)
         return separator.join(values)
 
     async def partition(
@@ -142,11 +210,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         matches: list[T] = []
         misses: list[T] = []
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 (matches if await _resolve(predicate(item)) else misses).append(item)
-        finally:
-            await _close(iterator)
         return matches, misses
 
     async def partition_results(self) -> tuple[list[Any], list[Exception]]:
@@ -162,7 +228,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         successes: list[Any] = []
         failures: list[Exception] = []
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for result in iterator:
                 if isinstance(result, Ok):
                     successes.append(result.value)
@@ -170,8 +236,6 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                     failures.append(result.error)
                 else:
                     raise TypeError("partition_results() requires Result values")
-        finally:
-            await _close(iterator)
         return successes, failures
 
     async def first(self, default: Any = _MISSING) -> T | Any:
@@ -187,14 +251,13 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             EmptyFlowError: If the flow is empty and no default is supplied.
         """
         iterator = self.__aiter__()
-        try:
-            return await anext(iterator)
-        except StopAsyncIteration:
-            if default is _MISSING:
-                raise EmptyFlowError("first() called on an empty async flow") from None
-            return default
-        finally:
-            await _close(iterator)
+        async with closing_async_iterators((iterator,)):
+            try:
+                return await anext(iterator)
+            except StopAsyncIteration:
+                if default is _MISSING:
+                    raise EmptyFlowError("first() called on an empty async flow") from None
+                return default
 
     async def last(self, default: Any = _MISSING) -> T | Any:
         """Return the last item, or default when the flow is empty.
@@ -255,13 +318,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             raise TypeError("predicate must be callable")
         iterator = self.__aiter__()
         position = 0
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 if await _resolve(predicate(item)):
                     return position
                 position += 1
-        finally:
-            await _close(iterator)
         return None
 
     async def index_of(self, value: T) -> int | None:
@@ -308,11 +369,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         width = -position
         tail: deque[T] = deque(maxlen=width)
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 tail.append(item)
-        finally:
-            await _close(iterator)
         if len(tail) == width:
             return tail[0]
         if default is not _MISSING:
@@ -325,10 +384,106 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         Returns:
             The total number of emitted items.
         """
+        direct = self._retained_identity_terminal("count")
+        if direct is not None:
+            return cast(int, await direct)
         count = 0
         async for _item in self:
             count += 1
         return count
+
+    async def sum(self, start: Any = 0) -> Any:
+        """Add all items to `start` in one asynchronous traversal.
+
+        Args:
+            start: Initial value, with the same string and bytes restrictions as Python's
+                built-in `sum`.
+
+        Returns:
+            The total of `start` and every emitted item.
+        """
+        total = builtins.sum((), start)
+        iterator = self.__aiter__()
+        async with closing_async_iterators((iterator,)):
+            async for item in iterator:
+                total = total + item
+        return total
+
+    async def _extreme(
+        self,
+        *,
+        key: Selector | None,
+        better: Callable[[Any, Any], bool],
+        name: str,
+    ) -> T:
+        """Return one streaming extreme while retaining the first item on equal keys."""
+        select = None if key is None else compile_selector(key)
+        iterator = self.__aiter__()
+        async with closing_async_iterators((iterator,)):
+            try:
+                result = await anext(iterator)
+            except StopAsyncIteration:
+                raise EmptyFlowError(f"{name}() requires at least one item") from None
+            result_key = result if select is None else await _resolve(select(result))
+            async for item in iterator:
+                item_key = item if select is None else await _resolve(select(item))
+                if better(item_key, result_key):
+                    result = item
+                    result_key = item_key
+            return result
+
+    async def min(self, *, key: Selector | None = None) -> T:
+        """Return the first item with the smallest selected value.
+
+        Args:
+            key: Optional sync or async callable, field name, index, path, or expression used for
+                comparison.
+
+        Raises:
+            EmptyFlowError: If the async flow emits no items.
+        """
+        return await self._extreme(key=key, better=operator.lt, name="min")
+
+    async def max(self, *, key: Selector | None = None) -> T:
+        """Return the first item with the largest selected value.
+
+        Args:
+            key: Optional sync or async callable, field name, index, path, or expression used for
+                comparison.
+
+        Raises:
+            EmptyFlowError: If the async flow emits no items.
+        """
+        return await self._extreme(key=key, better=operator.gt, name="max")
+
+    async def minmax(self, *, key: Selector | None = None) -> tuple[T, T]:
+        """Return the first minimum and maximum items in one traversal.
+
+        Args:
+            key: Optional sync or async callable, field name, index, path, or expression used for
+                comparison.
+
+        Raises:
+            EmptyFlowError: If the async flow emits no items.
+        """
+        select = None if key is None else compile_selector(key)
+        iterator = self.__aiter__()
+        async with closing_async_iterators((iterator,)):
+            try:
+                minimum = maximum = await anext(iterator)
+            except StopAsyncIteration:
+                raise EmptyFlowError("minmax() requires at least one item") from None
+            first_key: Any = minimum if select is None else await _resolve(select(minimum))
+            minimum_key = maximum_key = first_key
+            async for item in iterator:
+                item_key = item if select is None else await _resolve(select(item))
+                if item_key < minimum_key:
+                    minimum = item
+                    minimum_key = item_key
+                if item_key > maximum_key:
+                    maximum = item
+                    maximum_key = item_key
+            return minimum, maximum
 
     async def collect(
         self,
@@ -378,11 +533,9 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Consume numeric items into a stable one-pass statistics snapshot."""
         statistics = OnlineStatistics()
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 statistics.accept(item)
-        finally:
-            await _close(iterator)
         return statistics.snapshot()
 
     async def mean(self) -> float | None:
@@ -450,14 +603,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """
         accumulator = initial
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 if accumulator is _MISSING:
                     accumulator = item
                 else:
                     accumulator = await _resolve(function(accumulator, item))
-        finally:
-            await _close(iterator)
         if accumulator is _MISSING:
             raise EmptyFlowError("reduce() called on an empty async flow")
         return accumulator
@@ -492,13 +643,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                 raise ValueError("max_items must be non-negative")
         values: list[T] = []
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 if max_items is not None and len(values) >= max_items:
                     raise BufferLimitError(f"reduce_right() exceeded max_items={max_items}")
                 values.append(item)
-        finally:
-            await _close(iterator)
         if initial is _MISSING:
             if not values:
                 raise EmptyFlowError("reduce_right() requires at least one item")
@@ -534,7 +683,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         select = compile_selector(key)
         states: dict[Any, R] = {}
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 group = await _resolve(select(item))
                 try:
@@ -544,8 +693,6 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                 except TypeError:
                     raise TypeError("reduce_by() keys must be hashable") from None
                 states[group] = cast(R, await _resolve(function(state, item)))
-        finally:
-            await _close(iterator)
         return states
 
     fold_by = reduce_by
@@ -580,13 +727,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             `True` when any item satisfies `predicate`; `False` for an empty flow.
         """
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 if await _resolve(predicate(item)):
                     return True
             return False
-        finally:
-            await _close(iterator)
 
     async def all(self, predicate: Callable[[T], bool | Awaitable[bool]] = bool) -> bool:
         """Return whether every item satisfies the predicate.
@@ -599,13 +744,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             `True` when every item satisfies `predicate`, including for an empty flow.
         """
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 if not await _resolve(predicate(item)):
                     return False
             return True
-        finally:
-            await _close(iterator)
 
     async def none(self, predicate: Callable[[T], bool | Awaitable[bool]] = bool) -> bool:
         """Return whether no item satisfies predicate.
@@ -627,8 +770,6 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                 ignored.
         """
         iterator = self.__aiter__()
-        try:
+        async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 await _resolve(action(item))
-        finally:
-            await _close(iterator)

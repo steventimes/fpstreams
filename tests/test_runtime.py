@@ -19,6 +19,40 @@ from fpstreams.runtime.metrics import QueryMetrics
 from fpstreams.runtime.tasks import TaskRole, TaskRuntime
 
 
+def test_free_threaded_flow_smoke() -> None:
+    """Exercise shared Flow plans only on a GIL-disabled interpreter."""
+    import os
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    import fpstreams
+
+    if getattr(sys, "_is_gil_enabled", lambda: True)():
+        pytest.skip("requires a free-threaded interpreter")
+
+    thread_count = int(os.environ.get("FPSTREAMS_FT_SMOKE_THREADS", "16"))
+    iterations = int(os.environ.get("FPSTREAMS_FT_SMOKE_ITERATIONS", "200"))
+    values = list(range(100))
+    expected = sum(value * 2 for value in values if value % 3 == 0)
+
+    def work(_worker: int) -> int:
+        result = 0
+        for _ in range(iterations):
+            result += (
+                fpstreams.Flow.of(*values)
+                .map(lambda value: value * 2)
+                .filter(lambda value: value % 3 == 0)
+                .sum()
+            )
+        return result
+
+    with ThreadPoolExecutor(max_workers=thread_count) as executor:
+        results = list(executor.map(work, range(thread_count)))
+
+    assert results == [expected * iterations] * thread_count
+    assert asyncio.run(fpstreams.AsyncFlow.of(1, 2, 3).count()) == 3
+
+
 @pytest.mark.asyncio
 async def test_ordered_ring_releases_only_next_sequence() -> None:
     ring = OrderedResultRing(capacity=3)
@@ -517,6 +551,7 @@ def test_spill_registry_removes_registered_directory(tmp_path) -> None:
 
 from collections.abc import Iterator
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -945,31 +980,47 @@ def test_spilled_count_preaggregation_planner_accepts_only_the_closed_count_shap
     ]
 
 
-def test_spilled_count_preaggregation_reduces_physical_spill_without_changing_results() -> None:
-    """A repeated pure record key becomes one partial while an instrumented run stays raw."""
+def _execute_spilled_count(
+    records: list[dict[str, Any]],
+    *,
+    key_field: str,
+    output_name: str,
+    partitions: int = 8,
+    instrumented: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """Execute one real spill-count plan and return its result and physical bytes."""
     import fpstreams
 
+    grouped = (
+        fpstreams.rows(records)
+        .group_by(key_field)
+        .spill(partitions)
+        .aggregate(**{output_name: fpstreams.agg.count()})
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    runtime = QueryRuntime()
+    if instrumented:
+        with failpoint("unrelated.transition", RuntimeError("unused")):
+            result = list(execute_physical(physical, runtime=runtime))
+    else:
+        result = list(execute_physical(physical, runtime=runtime))
+    physical_bytes = runtime.metrics.spill_bytes
+    runtime.close()
+    return result, physical_bytes
+
+
+def test_spilled_count_preaggregation_reduces_physical_spill_without_changing_results() -> None:
+    """A repeated pure record key becomes one partial while an instrumented run stays raw."""
     records = [
         {"id": "hot", "position": position, "payload": "x" * 96} for position in range(4_096)
     ]
 
-    def execute(*, instrumented: bool) -> tuple[list[dict[str, object]], int]:
-        grouped = (
-            fpstreams.rows(records).group_by("id").spill(8).aggregate(total=fpstreams.agg.count())
-        )
-        physical = compile_query(grouped._flow._query("list"))
-        runtime = QueryRuntime()
-        if instrumented:
-            with failpoint("unrelated.transition", RuntimeError("unused")):
-                result = list(execute_physical(physical, runtime=runtime))
-        else:
-            result = list(execute_physical(physical, runtime=runtime))
-        spill_bytes = runtime.metrics.spill_bytes
-        runtime.close()
-        return result, spill_bytes
-
-    optimized, optimized_bytes = execute(instrumented=False)
-    canonical, canonical_bytes = execute(instrumented=True)
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", instrumented=True
+    )
 
     assert optimized == canonical == [{"id": "hot", "total": len(records)}]
     assert optimized_bytes * 4 < canonical_bytes
@@ -977,30 +1028,171 @@ def test_spilled_count_preaggregation_reduces_physical_spill_without_changing_re
 
 def test_spilled_count_preaggregation_auto_colds_a_uniform_stream() -> None:
     """A bounded prefix with no frequency signal switches permanently to raw spilling."""
-    import fpstreams
-
     records = [{"id": position, "payload": position} for position in range(20_000)]
 
-    def execute(*, instrumented: bool) -> tuple[list[dict[str, int]], int]:
-        grouped = (
-            fpstreams.rows(records).group_by("id").spill(32).aggregate(total=fpstreams.agg.count())
-        )
-        runtime = QueryRuntime()
-        physical = compile_query(grouped._flow._query("list"))
-        if instrumented:
-            with failpoint("unrelated.transition", RuntimeError("unused")):
-                result = list(execute_physical(physical, runtime=runtime))
-        else:
-            result = list(execute_physical(physical, runtime=runtime))
-        physical_bytes = runtime.metrics.spill_bytes
-        runtime.close()
-        return result, physical_bytes
-
-    optimized, optimized_bytes = execute(instrumented=False)
-    canonical, canonical_bytes = execute(instrumented=True)
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", partitions=32, instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", partitions=32, instrumented=True
+    )
 
     assert optimized == canonical
     assert optimized_bytes == canonical_bytes
+
+
+def test_spilled_count_gate_rejects_many_shallow_repeats_without_a_hot_key(
+    monkeypatch,
+) -> None:
+    """Aggregate repeat evidence alone must not admit hundreds of one-row partials."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    keys = [key for _round in range(2) for key in range(128)]
+    keys.extend(key for _round in range(6) for key in range(128))
+    keys.extend(key for _round in range(8) for key in range(128, 512))
+    records = [
+        {
+            "segment": key,
+            **{f"measure_{field}": position + field for field in range(4)},
+        }
+        for position, key in enumerate(keys)
+    ]
+    partials = 0
+    original_partial = spill.group_count_partial
+
+    def tracked_partial(*args, **kwargs):
+        nonlocal partials
+        partials += 1
+        return original_partial(*args, **kwargs)
+
+    monkeypatch.setattr(spill, "group_count_partial", tracked_partial)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("segment")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result == [{"segment": key, "observations": 8} for key in range(512)]
+    assert partials == 0
+
+
+def test_spilled_count_gate_extends_evidence_for_stable_low_cardinality() -> None:
+    """Strong recurrence may earn bounded extra sampling before count admission."""
+    keys = [key for _round in range(32) for key in range(256)]
+    records = [
+        {
+            "segment": key,
+            **{f"measure_{field}": position + field for field in range(36)},
+        }
+        for position, key in enumerate(keys)
+    ]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="segment", output_name="observations", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="segment", output_name="observations", instrumented=True
+    )
+
+    assert optimized == canonical == [{"segment": key, "observations": 32} for key in range(256)]
+    assert optimized_bytes * 2 < canonical_bytes
+
+
+def test_spilled_count_gate_rechecks_a_cold_prefix_for_later_hot_data() -> None:
+    """One cold sample must not permanently hide a sustained later hot key."""
+    keys = [*range(1, 257), *([0] * 4_096)]
+    records = [
+        {
+            "cohort": key,
+            **{f"reading_{field}": position + field for field in range(10)},
+        }
+        for position, key in enumerate(keys)
+    ]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="cohort", output_name="observations", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="cohort", output_name="observations", instrumented=True
+    )
+
+    assert optimized == canonical
+    assert optimized_bytes * 2 < canonical_bytes
+
+
+def test_spilled_count_gate_retires_after_a_hot_prefix_turns_cold(monkeypatch) -> None:
+    """A stale prefix signal must not keep scanning an arbitrarily long unique tail."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    keys = [*([0] * 230), *range(1, 27), *range(1_000, 5_096)]
+    records = [
+        {
+            "cohort": key,
+            **{f"reading_{field}": position + field for field in range(30)},
+        }
+        for position, key in enumerate(keys)
+    ]
+    purity_checks = 0
+    original_proof = spill._pickle_pure_row
+
+    def tracked_proof(row, key):
+        nonlocal purity_checks
+        purity_checks += 1
+        return original_proof(row, key)
+
+    monkeypatch.setattr(spill, "_pickle_pure_row", tracked_proof)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("cohort")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result[0] == {"cohort": 0, "observations": 230}
+    assert len(result) == 4_123
+    assert result[-1] == {"cohort": 5_095, "observations": 1}
+    assert purity_checks < len(records) // 2
+
+
+def test_spilled_count_gate_stops_rechecking_a_still_unique_stream(monkeypatch) -> None:
+    """A second cold window is enough when recurrence evidence remains absent."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    records = [
+        {
+            "cohort": position,
+            **{f"reading_{field}": position + field for field in range(2)},
+        }
+        for position in range(2_048)
+    ]
+    purity_checks = 0
+    original_proof = spill._pickle_pure_row
+
+    def tracked_proof(row, key):
+        nonlocal purity_checks
+        purity_checks += 1
+        return original_proof(row, key)
+
+    monkeypatch.setattr(spill, "_pickle_pure_row", tracked_proof)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("cohort")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result == [{"cohort": position, "observations": 1} for position in range(2_048)]
+    assert purity_checks <= 512
 
 
 class _SpillPickleObserved:
@@ -1906,6 +2098,8 @@ def test_spilled_relational_file_minimum_is_checked_before_one_shot_input(tmp_pa
 
     assert not opened
     assert runtime.metrics.open_files == 0
+    assert rows.to_list() == [{"id": 1, "count": 1}]
+    assert opened
 
 
 def test_sort_merge_fan_in_obeys_the_query_file_limit_during_compaction(tmp_path) -> None:

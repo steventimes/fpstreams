@@ -1,5 +1,6 @@
-//! Shared native-kernel errors and compensated statistics for one-pass aggregate terminals.
+//! Shared exact-container guards, native-kernel errors, and one-pass aggregate state.
 
+use pyo3::buffer::{Element, PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{
     PyAttributeError, PyKeyError, PyMemoryError, PyOverflowError, PyTypeError, PyValueError,
     PyZeroDivisionError,
@@ -89,8 +90,94 @@ pub(crate) fn all_exact_dict_rows_v1(source: &Bound<'_, PyAny>) -> PyResult<bool
     })
 }
 
+/// Accept only the builtin list and tuple iterator implementations.
+///
+/// Constructing the canonical iterators through public APIs keeps the abi3 extension independent
+/// of CPython's private concrete iterator symbols. Exact-type comparison cannot invoke user code.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn is_exact_sequence_iterator(
+    py: Python<'_>,
+    source: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    let list_iterator = PyList::empty(py).as_any().try_iter()?;
+    let tuple_iterator = PyTuple::empty(py).as_any().try_iter()?;
+    // SAFETY: all three objects are live and Py_TYPE cannot dispatch Python code.
+    let source_type = unsafe { ffi::Py_TYPE(source.as_ptr()) };
+    Ok(
+        source_type == unsafe { ffi::Py_TYPE(list_iterator.as_ptr()) }
+            || source_type == unsafe { ffi::Py_TYPE(tuple_iterator.as_ptr()) },
+    )
+}
+
+/// Prove an exact dictionary has only exact string keys without dispatching key protocols.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn exact_dict_has_only_string_keys(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+) -> PyResult<bool> {
+    exact_dict_has_only_string_keys_up_to(py, row, ffi::Py_ssize_t::MAX)
+}
+
+/// Prove exact string keys while periodically honoring pending Python signals.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn exact_dict_has_only_string_keys_interruptible(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+) -> PyResult<bool> {
+    exact_dict_has_only_string_keys_impl(py, row, ffi::Py_ssize_t::MAX, true)
+}
+
+/// Prove exact string keys while declining dictionaries above a fixed field count.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn exact_dict_has_only_string_keys_up_to(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+    max_fields: ffi::Py_ssize_t,
+) -> PyResult<bool> {
+    exact_dict_has_only_string_keys_impl(py, row, max_fields, false)
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+fn exact_dict_has_only_string_keys_impl(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+    max_fields: ffi::Py_ssize_t,
+    check_signals: bool,
+) -> PyResult<bool> {
+    // SAFETY: the attached GIL keeps this exact dictionary stable and PyDict_Size cannot
+    // dispatch Python code.
+    let field_count = unsafe { ffi::PyDict_Size(row) };
+    if field_count < 0 {
+        return Err(PyErr::fetch(py));
+    }
+    if field_count > max_fields {
+        return Ok(false);
+    }
+    let mut position = 0;
+    let mut field = core::ptr::null_mut();
+    let mut ignored_value = core::ptr::null_mut();
+    for field_index in 0..field_count {
+        if check_signals && field_index != 0 && field_index % 4096 == 0 {
+            py.check_signals()?;
+        }
+        // SAFETY: PyDict_Next returns borrowed entries and never invokes key protocols.
+        if unsafe { ffi::PyDict_Next(row, &mut position, &mut field, &mut ignored_value) } == 0 {
+            return Ok(false);
+        }
+        if unsafe { ffi::PyUnicode_CheckExact(field) } == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Translate only failures raised while the direct dict lookup callable is active.
-fn direct_field_selection_error(
+pub(crate) fn direct_field_selection_error(
     field: &Bound<'_, PyAny>,
     selection_error_type: &Bound<'_, PyAny>,
     error: PyErr,
@@ -216,6 +303,7 @@ pub(crate) fn direct_dict_field_key_v1(
     Ok(unsafe { Bound::from_owned_ptr_or_err(py, callable)? }.unbind())
 }
 
+#[cfg(Py_GIL_DISABLED)]
 fn extract_exact_i64_item(value: &Bound<'_, PyAny>) -> PyResult<i64> {
     if !value.is_exact_instance_of::<PyInt>() {
         return Err(PyTypeError::new_err(
@@ -225,6 +313,28 @@ fn extract_exact_i64_item(value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // Exact PyInt extraction preserves PyO3's OverflowError for values
     // outside signed i64 without permitting subclass protocol dispatch.
     value.extract()
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+/// Extract one borrowed exact integer without dispatching Python protocols.
+///
+/// # Safety
+///
+/// `value` must be a valid, non-null borrowed Python object for the lifetime of `py`.
+unsafe fn extract_exact_i64_ptr(py: Python<'_>, value: *mut ffi::PyObject) -> PyResult<i64> {
+    if unsafe { ffi::PyLong_CheckExact(value) } == 0 {
+        return Err(PyTypeError::new_err(
+            "native i64 containers require exact integers",
+        ));
+    }
+    // SAFETY: the exact-type check excludes protocol dispatch.  CPython returns
+    // -1 both as a valid value and as an error sentinel, so inspect the error indicator.
+    let output = unsafe { ffi::PyLong_AsLongLong(value) };
+    if output == -1 && unsafe { !ffi::PyErr_Occurred().is_null() } {
+        return Err(PyErr::fetch(py));
+    }
+    Ok(output)
 }
 
 fn extract_exact_f64_item(value: &Bound<'_, PyAny>, allow_integers: bool) -> PyResult<f64> {
@@ -247,26 +357,165 @@ fn extract_exact_f64_item(value: &Bound<'_, PyAny>, allow_integers: bool) -> PyR
 /// The full snapshot is deliberately taken while the GIL is held.  Exact
 /// container and item checks make every indexed read non-reentrant; only after
 /// the owned Rust vector exists may the compute-heavy kernel detach.
-pub(crate) fn extract_i64_container(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
+#[cfg(not(Py_GIL_DISABLED))]
+pub(crate) fn snapshot_exact_i64_sequence(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
+    let py = values.py();
     if values.is_exact_instance_of::<PyList>() {
         let list = values.cast::<PyList>()?;
-        let mut output = Vec::with_capacity(list.len());
-        for value in list.iter() {
-            output.push(extract_exact_i64_item(&value)?);
+        let length = list.len();
+        let mut output = Vec::with_capacity(length);
+        for index in 0..length {
+            // SAFETY: an exact list cannot resize while the GIL is held, and index is in bounds.
+            let value = unsafe { ffi::PyList_GetItem(list.as_ptr(), index as ffi::Py_ssize_t) };
+            // SAFETY: the in-bounds item remains a valid borrowed reference while the GIL is held.
+            output.push(unsafe { extract_exact_i64_ptr(py, value) }?);
         }
         return Ok(output);
     }
     if values.is_exact_instance_of::<PyTuple>() {
         let tuple = values.cast::<PyTuple>()?;
-        let mut output = Vec::with_capacity(tuple.len());
-        for value in tuple.iter() {
-            output.push(extract_exact_i64_item(&value)?);
+        let length = tuple.len();
+        let mut output = Vec::with_capacity(length);
+        for index in 0..length {
+            // SAFETY: exact tuples are immutable and index is in bounds.
+            let value = unsafe { ffi::PyTuple_GetItem(tuple.as_ptr(), index as ffi::Py_ssize_t) };
+            // SAFETY: the in-bounds tuple item is a valid borrowed reference for the tuple's life.
+            output.push(unsafe { extract_exact_i64_ptr(py, value) }?);
         }
         return Ok(output);
     }
     Err(PyTypeError::new_err(
         "native numeric sources require an exact list or tuple",
     ))
+}
+
+#[cfg(Py_GIL_DISABLED)]
+fn snapshot_exact_i64_list(
+    values: &Bound<'_, PyAny>,
+    list: &Bound<'_, PyList>,
+) -> PyResult<Vec<i64>> {
+    let py = values.py();
+    with_critical_section(values, || {
+        let length = list.len();
+        let mut output = Vec::with_capacity(length);
+        for index in 0..length {
+            // SAFETY: the exact list stays locked for the full snapshot and index is below its
+            // locked length. Each borrowed item remains live until its immediate i64 extraction.
+            let value = unsafe { ffi::PyList_GetItem(list.as_ptr(), index as ffi::Py_ssize_t) };
+            if value.is_null() {
+                return Err(PyErr::fetch(py));
+            }
+            // SAFETY: value is a live borrowed reference owned by the locked exact list.
+            let value = unsafe { Borrowed::from_ptr(py, value) };
+            output.push(extract_exact_i64_item(value.as_any())?);
+        }
+        Ok(output)
+    })
+}
+
+#[inline]
+pub(crate) fn extract_i64_container(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
+    #[cfg(not(Py_GIL_DISABLED))]
+    {
+        snapshot_exact_i64_sequence(values)
+    }
+    #[cfg(Py_GIL_DISABLED)]
+    {
+        if values.is_exact_instance_of::<PyList>() {
+            let list = values.cast::<PyList>()?;
+            return snapshot_exact_i64_list(values, list);
+        }
+        if values.is_exact_instance_of::<PyTuple>() {
+            let tuple = values.cast::<PyTuple>()?;
+            let mut output = Vec::with_capacity(tuple.len());
+            for value in tuple.iter() {
+                output.push(extract_exact_i64_item(&value)?);
+            }
+            return Ok(output);
+        }
+        Err(PyTypeError::new_err(
+            "native numeric sources require an exact list or tuple",
+        ))
+    }
+}
+
+/// Acquire one C-contiguous, one-dimensional native-endian signed i64 buffer.
+pub(crate) fn acquire_i64_buffer(values: &Bound<'_, PyAny>) -> PyResult<PyBuffer<i64>> {
+    let buffer = PyBuffer::<i64>::get(values).map_err(|_| {
+        PyTypeError::new_err("native i64 buffers require signed native-endian 64-bit values")
+    })?;
+    if buffer.dimensions() != 1 || !buffer.is_c_contiguous() {
+        return Err(PyTypeError::new_err(
+            "native i64 buffers require one C-contiguous dimension",
+        ));
+    }
+    let format = buffer.format().to_bytes();
+    #[cfg(target_endian = "little")]
+    let wrong_endian = matches!(format.first(), Some(b'>') | Some(b'!'));
+    #[cfg(target_endian = "big")]
+    let wrong_endian = matches!(format.first(), Some(b'<'));
+    if wrong_endian {
+        return Err(PyTypeError::new_err(
+            "native i64 buffers require native-endian values",
+        ));
+    }
+    Ok(buffer)
+}
+
+/// Acquire one C-contiguous, one-dimensional native-endian f64 buffer.
+///
+/// Empty buffers intentionally skip the alignment check, retaining the accepted-input boundary of
+/// the existing snapshot path.
+pub(crate) fn acquire_f64_buffer(values: &Bound<'_, PyAny>) -> PyResult<Option<PyBuffer<f64>>> {
+    let buffer = PyUntypedBuffer::get(values).map_err(|_| {
+        PyTypeError::new_err("native f64 buffers require native-endian 64-bit floating values")
+    })?;
+    if buffer.item_size() != std::mem::size_of::<f64>()
+        || !<f64 as Element>::is_compatible_format(buffer.format())
+    {
+        return Err(PyTypeError::new_err(
+            "native f64 buffers require native-endian 64-bit floating values",
+        ));
+    }
+    if buffer.dimensions() != 1 || !buffer.is_c_contiguous() {
+        return Err(PyTypeError::new_err(
+            "native f64 buffers require one C-contiguous dimension",
+        ));
+    }
+    let format = buffer.format().to_bytes();
+    #[cfg(target_endian = "little")]
+    let wrong_endian = matches!(format.first(), Some(b'>') | Some(b'!'));
+    #[cfg(target_endian = "big")]
+    let wrong_endian = matches!(format.first(), Some(b'<'));
+    if wrong_endian {
+        return Err(PyTypeError::new_err(
+            "native f64 buffers require native-endian values",
+        ));
+    }
+    if buffer.item_count() == 0 {
+        return Ok(None);
+    }
+    let buffer = buffer.into_typed::<f64>().map_err(|_| {
+        PyTypeError::new_err("native f64 buffers require aligned 64-bit floating values")
+    })?;
+    Ok(Some(buffer))
+}
+
+/// Snapshot one validated external i64 buffer while Python remains attached.
+///
+/// External exporters may be writable from native code that has released the GIL. Keep all Rust
+/// reductions on this owned copy instead of borrowing their storage through ``as_slice()``.
+pub(crate) fn extract_i64_buffer(values: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
+    let buffer = acquire_i64_buffer(values)?;
+    buffer.to_vec(values.py())
+}
+
+/// Snapshot one validated external f64 buffer while Python remains attached.
+pub(crate) fn extract_f64_buffer(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+    match acquire_f64_buffer(values)? {
+        Some(buffer) => buffer.to_vec(values.py()),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Copy an exact built-in floating container without invoking ``__float__``.
@@ -356,7 +605,7 @@ impl CompensatedSum {
     #[inline]
     pub(crate) fn accept(&mut self, value: f64) {
         let combined = self.total + value;
-        if self.total.is_finite() && value.is_finite() && combined.is_finite() {
+        if combined.is_finite() {
             self.compensation += if self.total.abs() >= value.abs() {
                 self.total - combined + value
             } else {
@@ -388,7 +637,7 @@ impl OnlineStatistics {
         self.count = self.count.checked_add(1).ok_or(KernelError::Overflow)?;
 
         let combined = self.total + value;
-        if self.total.is_finite() && value.is_finite() && combined.is_finite() {
+        if combined.is_finite() {
             self.compensation += if self.total.abs() >= value.abs() {
                 self.total - combined + value
             } else {
@@ -412,10 +661,6 @@ impl OnlineStatistics {
             (self.total + self.compensation) / (self.count as f64)
         };
         (self.count, mean, self.squared_deviations)
-    }
-
-    pub(crate) fn sum(&self) -> f64 {
-        self.total + self.compensation
     }
 }
 

@@ -28,6 +28,7 @@ TerminalName = Literal[
     "list",
     "count",
     "sum",
+    "mean",
     "statistics",
     "aggregate",
     "min",
@@ -42,10 +43,17 @@ TerminalName = Literal[
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 _AUTO_THRESHOLD = 8
+_AUTO_IDENTITY_I64_SUM_THRESHOLD = 65_536
 _COPY_SHORT_CIRCUIT_LIMIT = 1_024
 _COPY_SHORT_CIRCUIT_RATIO = 64
+_ALLOCATING_I64_MAP_ROOTS = frozenset({"add", "sub", "mul", "floordiv", "neg"})
+_IDENTITY_PROPAGATING_I64_MAP_ROOTS = frozenset({"item", "abs", "mod"})
+_AUTO_I64_EXTERNAL_IDENTITY_REASON = (
+    "automatic exact i64 container materialization preserves externally owned values"
+)
 _EXTENSION_CAPABILITY_CACHE: dict[NativeKind, tuple[object, bool]] = {}
 _PROBE_CAPABILITY_CACHE: dict[NativeKind, tuple[object, bool]] = {}
+_buffer_capability_cache: dict[NativeKind, tuple[object, bool]] = {}
 _exact_container_capability_cache: tuple[object, bool] | None = None
 
 
@@ -53,7 +61,7 @@ _exact_container_capability_cache: tuple[object, bool] | None = None
 class NativeProgram:
     """Hold retained numeric source data and fused opcode stages for one Rust kernel kind."""
 
-    source: range | list[Any] | tuple[Any, ...]
+    source: Any
     stages: tuple[Any, ...]
     kind: NativeKind = "i64"
 
@@ -78,6 +86,7 @@ _TERMINALS = frozenset(
         "list",
         "count",
         "sum",
+        "mean",
         "statistics",
         "aggregate",
         "min",
@@ -102,11 +111,39 @@ def _terminal_metadata(
     decision: EngineDecision,
     plan: Pipeline,
     terminal: TerminalName,
+    *,
+    source_is_container: bool | None = None,
 ) -> EngineDecision:
-    """Attach source scanning, copying, materialization, and complexity metadata to a decision."""
+    """Attach worst-case data movement and complexity metadata to a terminal decision."""
     source = plan.source.native_data
     crosses_native_boundary = decision.engine in {"native", "hybrid"}
-    container_source = isinstance(source, (list, tuple))
+    if source_is_container is None:
+        source_is_container = (
+            isinstance(source, (list, tuple)) or _numpy_buffer_kind(source) is not None
+        )
+    metadata_count = terminal == "count" and exact_count(plan) is not None
+    direct_i64_container_sum = (
+        decision.engine == "native"
+        and decision.program is not None
+        and decision.program.kind == "i64"
+        and not decision.program.stages
+        and type(source) in (list, tuple)
+        and terminal == "sum"
+    )
+    direct_exact_container_mean = (
+        decision.engine == "native"
+        and decision.program is not None
+        and not decision.program.stages
+        and type(source) in (list, tuple)
+        and terminal == "mean"
+        and _exact_number_mean_available()
+    )
+    range_metadata = (
+        decision.engine == "native"
+        and type(source) is range
+        and not plan.operations
+        and terminal in {"sum", "min", "max", "last"}
+    )
     probe_path = (
         decision.engine == "native"
         and decision.program is not None
@@ -117,6 +154,8 @@ def _terminal_metadata(
     reason = (
         f"{decision.reason}; bounded probe; only undecided fallback bulk-copies"
         if probe_path
+        else f"{decision.reason}; retained range terminal uses constant-time metadata"
+        if range_metadata
         else decision.reason
     )
     return EngineDecision(
@@ -124,14 +163,20 @@ def _terminal_metadata(
         reason,
         decision.program,
         decision.native_operation_count,
-        # These are worst-case flags: an undecided bounded probe restarts the
-        # legacy bulk adapter, which scans and copies the whole container.
-        scans_source=crosses_native_boundary and container_source,
-        copies_source=crosses_native_boundary and container_source,
+        # An undecided bounded probe restarts the legacy bulk adapter, and numeric
+        # buffer kernels may snapshot exporters before detached computation.
+        scans_source=crosses_native_boundary and source_is_container and not metadata_count,
+        copies_source=(
+            crosses_native_boundary
+            and source_is_container
+            and not metadata_count
+            and not direct_i64_container_sum
+            and not direct_exact_container_mean
+        ),
         materializes=terminal == "list" or decision.engine == "hybrid",
         complexity=(
             "O(1)"
-            if terminal == "count" and exact_count(plan) is not None
+            if metadata_count or range_metadata
             else "short-circuiting"
             if terminal in {"first", "any", "all"}
             else "O(n)"
@@ -144,7 +189,7 @@ def exact_count(plan: Pipeline) -> int | None:
     capabilities = plan.source.capabilities
     if plan.operations or not capabilities.reiterable:
         return None
-    return capabilities.exact_size
+    return plan.source.current_exact_size()
 
 
 def _valid_source(source: object) -> bool:
@@ -153,7 +198,47 @@ def _valid_source(source: object) -> bool:
         return all(
             _I64_MIN <= value <= _I64_MAX for value in (source.start, source.stop, source.step)
         )
-    return isinstance(source, (list, tuple))
+    return isinstance(source, (list, tuple)) or _numpy_buffer_kind(source) is not None
+
+
+def _is_exact_i64(value: object) -> bool:
+    """Return whether one built-in integer fits the native signed lane."""
+    return type(value) is int and _I64_MIN <= value <= _I64_MAX
+
+
+def _auto_direct_i64_sum_candidate(source: object, terminal: TerminalName) -> bool:
+    """Return whether a retained sequence clears the allocation-free sum crossover."""
+    if terminal != "sum" or type(source) not in (list, tuple):
+        return False
+    sequence = cast(list[object] | tuple[object, ...], source)
+    return (
+        len(sequence) >= _AUTO_IDENTITY_I64_SUM_THRESHOLD
+        and _is_exact_i64(sequence[0])
+        and _is_exact_i64(sequence[-1])
+    )
+
+
+def _numpy_i64_buffer(source: object) -> Any | None:
+    """Return a validated explicit NumPy column buffer without importing NumPy eagerly."""
+    from ..tabular.numpy import numpy_i64_buffer
+
+    return numpy_i64_buffer(source)
+
+
+def _numpy_f64_buffer(source: object) -> Any | None:
+    """Return a validated explicit NumPy float column buffer without importing NumPy eagerly."""
+    from ..tabular.numpy import numpy_f64_buffer
+
+    return numpy_f64_buffer(source)
+
+
+def _numpy_buffer_kind(source: object) -> NativeKind | None:
+    """Return the exact native representation exposed by an explicit NumPy column."""
+    if _numpy_i64_buffer(source) is not None:
+        return "i64"
+    if _numpy_f64_buffer(source) is not None:
+        return "f64"
+    return None
 
 
 def _expression(operation: object) -> Expr | FExpr | None:
@@ -220,7 +305,11 @@ def _compile_stage(operation: Operation, kind: NativeKind) -> tuple[Any | None, 
     return None, f"operation {operation.name!r} is not native-compilable"
 
 
-def _compile(plan: Pipeline) -> tuple[NativeProgram | None, str]:
+def _compile(
+    plan: Pipeline,
+    *,
+    known_buffer_kind: NativeKind | None = None,
+) -> tuple[NativeProgram | None, str]:
     """Compile every operation into one typed native instruction stream.
 
     The compiler rejects mixed expression kinds, opaque callables, unsupported operations,
@@ -243,8 +332,14 @@ def _compile(plan: Pipeline) -> tuple[NativeProgram | None, str]:
     if not stages:
         return None, "pipeline has no native-compilable operations"
     source = plan.source.native_data
-    if not _valid_source(source):
-        return None, f"source is not a {kind} range, list, or tuple"
+    if known_buffer_kind is None:
+        if not _valid_source(source):
+            return None, f"source is not a {kind} range, list, or tuple"
+        buffer_kind = _numpy_buffer_kind(source)
+    else:
+        buffer_kind = known_buffer_kind
+    if buffer_kind is not None and kind != buffer_kind:
+        return None, f"a {buffer_kind} buffer cannot enter the native {kind} kernel"
     if kind == "f64" and isinstance(source, range) and not _f64_range_starts_with_map(plan):
         return (
             None,
@@ -438,11 +533,46 @@ def _container_probe_available(kind: NativeKind) -> bool:
     return available
 
 
-def _copy_would_dominate_short_circuit(plan: Pipeline) -> bool:
+def _buffer_extraction_available(kind: NativeKind) -> bool:
+    """Require versioned endpoints before selecting an external numeric buffer."""
+    try:
+        from .. import _native
+    except ImportError:
+        return False
+    cached = _buffer_capability_cache.get(kind)
+    if cached is not None and cached[0] is _native:
+        return cached[1]
+    terminal_name = "aggregate_i64_buffer_masked_v1"
+    if kind == "f64":
+        terminal_name = "terminal_f64_buffer_v1"
+    available = all(
+        hasattr(_native, name)
+        for name in (
+            terminal_name,
+            f"execute_{kind}_buffer_v1",
+            f"materialize_{kind}_buffer_v1",
+            f"mean_{kind}_buffer_v1",
+        )
+    )
+    if kind == "f64":
+        available = available and hasattr(_native, "aggregate_f64_buffer_masked_v1")
+    _buffer_capability_cache[kind] = (_native, available)
+    return available
+
+
+def _copy_would_dominate_short_circuit(
+    plan: Pipeline,
+    *,
+    known_buffer_kind: NativeKind | None = None,
+) -> bool:
     """Detect a tiny ``take`` bound whose output does not justify copying a large container."""
     source = plan.source.native_data
-    size = plan.source.capabilities.exact_size
-    if not isinstance(source, (list, tuple)) or size is None:
+    size = plan.source.current_exact_size()
+    if (
+        not isinstance(source, (list, tuple))
+        and known_buffer_kind is None
+        and _numpy_buffer_kind(source) is None
+    ) or size is None:
         return False
     limits = [operation.count for operation in plan.operations if isinstance(operation, TakeOp)]
     if not limits:
@@ -454,7 +584,21 @@ def _copy_would_dominate_short_circuit(plan: Pipeline) -> bool:
     )
 
 
-def select_engine(plan: Pipeline) -> EngineDecision:
+def _retained_one_shot_decision(plan: Pipeline) -> EngineDecision | None:
+    """Keep retained one-shot sources on the executor that owns canonical claiming."""
+    if plan.source.native_data is None or plan.source.capabilities.reiterable:
+        return None
+    reason = "retained one-shot sources require canonical claiming"
+    if plan.engine == "native":
+        raise NativeUnsupportedError(reason)
+    return EngineDecision("python", reason)
+
+
+def select_engine(
+    plan: Pipeline,
+    *,
+    _known_buffer_kind: NativeKind | None = None,
+) -> EngineDecision:
     """Select Python or native execution for a fully compilable operation pipeline.
 
     Forced native mode raises on compilation or extension failure. Automatic mode also applies
@@ -462,15 +606,28 @@ def select_engine(plan: Pipeline) -> EngineDecision:
     """
     if plan.engine == "python":
         return EngineDecision("python", "python engine explicitly requested")
+    if retained_one_shot := _retained_one_shot_decision(plan):
+        return retained_one_shot
     # Rust adapters copy list/tuple sources in full; a tiny take result cannot amortize that cost.
-    if plan.engine == "auto" and _copy_would_dominate_short_circuit(plan):
+    if plan.engine == "auto" and _copy_would_dominate_short_circuit(
+        plan,
+        known_buffer_kind=_known_buffer_kind,
+    ):
         return EngineDecision(
             "python",
             "avoided copying the entire list or tuple for a tiny short-circuit output",
         )
 
-    program, reason = _compile(plan)
+    program, reason = _compile(plan, known_buffer_kind=_known_buffer_kind)
     if program is None:
+        if plan.engine == "native":
+            raise NativeUnsupportedError(reason)
+        return EngineDecision("python", reason)
+    buffer_kind = (
+        _known_buffer_kind if _known_buffer_kind is not None else _numpy_buffer_kind(program.source)
+    )
+    if buffer_kind is not None and not _buffer_extraction_available(buffer_kind):
+        reason = f"native extension lacks {buffer_kind} buffer snapshot endpoints"
         if plan.engine == "native":
             raise NativeUnsupportedError(reason)
         return EngineDecision("python", reason)
@@ -479,7 +636,7 @@ def select_engine(plan: Pipeline) -> EngineDecision:
             raise NativeUnsupportedError("native extension is not installed")
         return EngineDecision("python", "native extension is not installed")
     if plan.engine == "auto":
-        size = plan.source.capabilities.exact_size
+        size = plan.source.current_exact_size()
         if size is None or size < _AUTO_THRESHOLD:
             return EngineDecision(
                 "python",
@@ -488,7 +645,10 @@ def select_engine(plan: Pipeline) -> EngineDecision:
     return EngineDecision("native", reason, program, len(plan.operations))
 
 
-def _identity_program(plan: Pipeline) -> tuple[NativeProgram | None, str]:
+def _identity_program(
+    plan: Pipeline,
+    buffer_kind: NativeKind | None,
+) -> tuple[NativeProgram | None, str]:
     """Build an operation-free native program without scanning a numeric container."""
     source = plan.source.native_data
     if isinstance(source, range):
@@ -498,8 +658,13 @@ def _identity_program(plan: Pipeline) -> tuple[NativeProgram | None, str]:
             NativeProgram(source, (), "i64"),
             "numeric range can use the native identity kernel",
         )
+    if buffer_kind is not None:
+        return (
+            NativeProgram(source, (), buffer_kind),
+            f"explicit NumPy column can use the native {buffer_kind} buffer kernel",
+        )
     if not isinstance(source, (list, tuple)):
-        return None, "identity native terminals require a range, list, or tuple"
+        return None, "identity native terminals require a range, list, tuple, or numeric buffer"
     if not _exact_container_extraction_available():
         return None, "native extension lacks exact numeric container extraction"
     # A short-circuit terminal only needs the first element to choose a numeric
@@ -514,7 +679,7 @@ def _identity_program(plan: Pipeline) -> tuple[NativeProgram | None, str]:
     # terminals, while bounded probes validate only the reachable prefix.  The
     # first exact item is therefore sufficient to choose a representation.
     first = source[0]
-    if type(first) is int and _I64_MIN <= first <= _I64_MAX:
+    if _is_exact_i64(first):
         return (
             NativeProgram(source, (), "i64"),
             "identity terminal selects the first i64 value without a source scan",
@@ -527,42 +692,148 @@ def _identity_program(plan: Pipeline) -> tuple[NativeProgram | None, str]:
     return None, "identity native terminals require i64 integers or floats"
 
 
+def _exact_number_mean_available() -> bool:
+    """Return whether the extension can validate a mixed exact-number container itself."""
+    try:
+        from .. import _native
+    except ImportError:
+        return False
+    return callable(getattr(_native, "mean_exact_numbers_v1", None))
+
+
+def _auto_exact_container_mean_program(
+    plan: Pipeline,
+    terminal: TerminalName,
+) -> tuple[NativeProgram, str] | None:
+    """Build the mean-only mixed-number candidate without inspecting any element.
+
+    The program kind is only the carrier used by the established native decision. Execution
+    calls ``mean_exact_numbers_v1`` before every typed adapter, so Rust owns exact built-in
+    validation and can safely decline subclasses or unsupported values for Python replay.
+    """
+    source = plan.source.native_data
+    if (
+        plan.engine != "auto"
+        or terminal != "mean"
+        or type(source) not in (list, tuple)
+        or not _exact_number_mean_available()
+    ):
+        return None
+    return (
+        NativeProgram(source, (), "i64"),
+        "exact list or tuple can use the mixed-number mean kernel without a type pre-scan",
+    )
+
+
+def _forced_native_exact_count_decision(
+    plan: Pipeline,
+    terminal: TerminalName,
+    source: object,
+    buffer_kind: NativeKind | None,
+    *,
+    source_is_container: bool,
+) -> EngineDecision | None:
+    """Select metadata-only count for a supported retained native container."""
+    if not (
+        plan.engine == "native"
+        and terminal == "count"
+        and exact_count(plan) is not None
+        and (type(source) in (list, tuple, range) or buffer_kind is not None)
+    ):
+        return None
+    if not _extension_available("i64"):
+        raise NativeUnsupportedError("native extension is not installed")
+    return _terminal_metadata(
+        EngineDecision(
+            "native",
+            "exact retained source cardinality needs no element conversion",
+            NativeProgram(source, (), "i64"),
+        ),
+        plan,
+        terminal,
+        source_is_container=source_is_container,
+    )
+
+
+def _buffer_short_circuit_decision(
+    plan: Pipeline,
+    terminal: TerminalName,
+    buffer_kind: NativeKind | None,
+) -> EngineDecision | None:
+    """Keep automatic buffer terminals streaming when a full snapshot defeats short-circuiting."""
+    if buffer_kind is None:
+        return None
+    if terminal in {"any", "all"}:
+        reason = "NumPy buffer any/all stays in Python to preserve short-circuiting"
+        if plan.engine == "native":
+            raise NativeUnsupportedError(reason)
+        return EngineDecision("python", reason)
+    if terminal == "first":
+        reason = "NumPy buffer first stays in Python to preserve short-circuiting"
+        if plan.engine == "native":
+            raise NativeUnsupportedError(reason)
+        return EngineDecision("python", reason)
+    return None
+
+
+def _select_operation_terminal_engine(
+    plan: Pipeline,
+    terminal: TerminalName,
+) -> EngineDecision:
+    """Select one terminal engine for a non-identity numeric pipeline."""
+    if plan.engine == "python":
+        return _terminal_metadata(select_engine(plan), plan, terminal)
+    source = plan.source.native_data
+    if plan.engine == "auto" and terminal == "minmax" and type(source) in (list, tuple):
+        return _terminal_metadata(
+            EngineDecision(
+                "python",
+                "automatic minmax preserves exact container representative identity",
+            ),
+            plan,
+            terminal,
+        )
+    buffer_kind = _numpy_buffer_kind(source)
+    source_is_container = isinstance(source, (list, tuple)) or buffer_kind is not None
+    if buffered := _buffer_short_circuit_decision(plan, terminal, buffer_kind):
+        return _terminal_metadata(
+            buffered,
+            plan,
+            terminal,
+            source_is_container=source_is_container,
+        )
+    decision = select_engine(plan, _known_buffer_kind=buffer_kind)
+    if (
+        plan.engine == "auto"
+        and terminal in {"first", "any", "all"}
+        and type(source) in (list, tuple)
+        and decision.engine == "native"
+        and decision.program is not None
+        and not _container_probe_available(decision.program.kind)
+    ):
+        decision = EngineDecision(
+            "python",
+            "native extension lacks bounded container short-circuit probes",
+        )
+    return _terminal_metadata(
+        decision,
+        plan,
+        terminal,
+        source_is_container=source_is_container,
+    )
+
+
 def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDecision:
     """Select an engine for a terminal, including operation-free native identity kernels.
 
-    Automatic list/tuple terminals stay in Python to avoid a type scan and Rust copy; ranges can
-    use native identity kernels after capability and crossover checks.
+    Automatic list/tuple terminals normally stay in Python to avoid a type scan and Rust copy.
+    Statistics are the exception: their Python fallback performs substantially more work per
+    item than the exact-container copy, so sufficiently large numeric containers use the native
+    identity kernel. Ranges can use native identity kernels after capability and crossover checks.
     """
     terminal = validate_terminal(terminal)
     if plan.operations:
-        source = plan.source.native_data
-        if plan.engine == "auto" and terminal == "minmax" and type(source) in (list, tuple):
-            return _terminal_metadata(
-                EngineDecision(
-                    "python",
-                    "automatic minmax preserves exact container representative identity",
-                ),
-                plan,
-                terminal,
-            )
-        decision = select_engine(plan)
-        if (
-            plan.engine == "auto"
-            and terminal in {"first", "any", "all"}
-            and type(source) in (list, tuple)
-            and decision.engine == "native"
-            and decision.program is not None
-            and not _container_probe_available(decision.program.kind)
-        ):
-            return _terminal_metadata(
-                EngineDecision(
-                    "python",
-                    "native extension lacks bounded container short-circuit probes",
-                ),
-                plan,
-                terminal,
-            )
-        return _terminal_metadata(decision, plan, terminal)
+        return _select_operation_terminal_engine(plan, terminal)
     if plan.engine == "python":
         return _terminal_metadata(
             EngineDecision("python", "python engine explicitly requested"),
@@ -570,30 +841,75 @@ def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDeci
             terminal,
         )
     source = plan.source.native_data
-    if plan.engine == "auto" and isinstance(source, (list, tuple)):
+    if retained_one_shot := _retained_one_shot_decision(plan):
+        return _terminal_metadata(retained_one_shot, plan, terminal)
+    buffer_kind = _numpy_buffer_kind(source)
+    source_is_container = isinstance(source, (list, tuple)) or buffer_kind is not None
+    metadata_count = _forced_native_exact_count_decision(
+        plan,
+        terminal,
+        source,
+        buffer_kind,
+        source_is_container=source_is_container,
+    )
+    if metadata_count is not None:
+        return metadata_count
+    if buffered := _buffer_short_circuit_decision(plan, terminal, buffer_kind):
+        return _terminal_metadata(
+            buffered,
+            plan,
+            terminal,
+            source_is_container=source_is_container,
+        )
+    if (
+        plan.engine == "auto"
+        and isinstance(source, (list, tuple))
+        and terminal not in {"mean", "statistics"}
+        and not _auto_direct_i64_sum_candidate(source, terminal)
+    ):
         return _terminal_metadata(
             EngineDecision(
                 "python",
-                "identity list/tuple stays in Python to avoid a type scan and Rust copy",
+                "identity list/tuple stays in Python below its direct native crossover",
             ),
             plan,
             terminal,
+            source_is_container=source_is_container,
         )
-    program, reason = _identity_program(plan)
+    mean_candidate = _auto_exact_container_mean_program(plan, terminal)
+    program, reason = (
+        mean_candidate if mean_candidate is not None else _identity_program(plan, buffer_kind)
+    )
     if program is None:
         if plan.engine == "native":
             raise NativeUnsupportedError(reason)
-        return _terminal_metadata(EngineDecision("python", reason), plan, terminal)
-    if not _extension_available(program.kind):
+        return _terminal_metadata(
+            EngineDecision("python", reason),
+            plan,
+            terminal,
+            source_is_container=source_is_container,
+        )
+    if buffer_kind is not None and not _buffer_extraction_available(buffer_kind):
+        reason = f"native extension lacks {buffer_kind} buffer snapshot endpoints"
+        if plan.engine == "native":
+            raise NativeUnsupportedError(reason)
+        return _terminal_metadata(
+            EngineDecision("python", reason),
+            plan,
+            terminal,
+            source_is_container=source_is_container,
+        )
+    if mean_candidate is None and not _extension_available(program.kind):
         if plan.engine == "native":
             raise NativeUnsupportedError("native extension is not installed")
         return _terminal_metadata(
             EngineDecision("python", "native extension is not installed"),
             plan,
             terminal,
+            source_is_container=source_is_container,
         )
     if plan.engine == "auto":
-        size = plan.source.capabilities.exact_size
+        size = plan.source.current_exact_size()
         if size is None or size < _AUTO_THRESHOLD:
             return _terminal_metadata(
                 EngineDecision(
@@ -602,8 +918,14 @@ def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDeci
                 ),
                 plan,
                 terminal,
+                source_is_container=source_is_container,
             )
-    return _terminal_metadata(EngineDecision("native", reason, program), plan, terminal)
+    return _terminal_metadata(
+        EngineDecision("native", reason, program),
+        plan,
+        terminal,
+        source_is_container=source_is_container,
+    )
 
 
 def select_materializing_engine(plan: Pipeline) -> EngineDecision:
@@ -613,7 +935,14 @@ def select_materializing_engine(plan: Pipeline) -> EngineDecision:
     available extension, a source above the crossover threshold, and a Python suffix that does
     not depend on streaming a short-circuit or bounded external-sort stage.
     """
+    if not plan.operations and _numpy_buffer_kind(plan.source.native_data) is not None:
+        return select_terminal_engine(plan, "list")
     decision = select_engine(plan)
+    if _auto_i64_materialization_exposes_external_identity(plan, decision):
+        return EngineDecision(
+            "python",
+            _AUTO_I64_EXTERNAL_IDENTITY_REASON,
+        )
     if decision.engine != "python" or plan.engine != "auto":
         return decision
 
@@ -627,7 +956,7 @@ def select_materializing_engine(plan: Pipeline) -> EngineDecision:
     if not _extension_available(program.kind):
         return decision
 
-    size = plan.source.capabilities.exact_size
+    size = plan.source.current_exact_size()
     if size is None or size < _AUTO_THRESHOLD:
         return decision
 
@@ -656,3 +985,56 @@ def select_materializing_engine(plan: Pipeline) -> EngineDecision:
         program,
         prefix_length,
     )
+
+
+def _auto_i64_materialization_exposes_external_identity(
+    plan: Pipeline,
+    decision: EngineDecision,
+) -> bool:
+    """Keep automatic exact i64 outputs in Python while they may expose input identities.
+
+    Exact list and tuple elements belong to the caller. Native pass-through stages would
+    re-box those integers, so they preserve the externally-owned state. An exact integer
+    expression map clears the state only when its root necessarily allocates a result and
+    its program actually reads an item. Constant-only maps expose their retained constant,
+    while item, abs, and modulo can preserve an input/result identity and therefore propagate
+    the incoming state. Forced native and f64 plans deliberately retain their established
+    contracts.
+    """
+    program = decision.program
+    if (
+        plan.engine != "auto"
+        or decision.engine != "native"
+        or program is None
+        or program.kind != "i64"
+        or type(program.source) not in (list, tuple)
+        or len(program.stages) != len(plan.operations)
+    ):
+        return False
+
+    externally_owned = True
+    for operation, stage in zip(plan.operations, program.stages, strict=True):
+        if not isinstance(operation, MapOp):
+            continue
+        if type(operation) is not MapOp or type(operation.function) is not Expr:
+            return True
+        expression = operation.function
+        if type(stage) is not tuple or len(stage) != 2:
+            return True
+        instructions = stage[1]
+        contains_item = type(instructions) is tuple and any(
+            type(instruction) is tuple
+            and len(instruction) == 2
+            and type(instruction[0]) is int
+            and instruction[0] == 0
+            for instruction in instructions
+        )
+        if not contains_item:
+            externally_owned = True
+        elif expression.operation in _ALLOCATING_I64_MAP_ROOTS:
+            externally_owned = False
+        elif expression.operation in _IDENTITY_PROPAGATING_I64_MAP_ROOTS:
+            continue
+        else:
+            return True
+    return externally_owned

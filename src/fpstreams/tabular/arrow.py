@@ -10,6 +10,7 @@ from contextlib import suppress
 from importlib import import_module
 from itertools import islice
 from pathlib import Path
+from types import FunctionType
 from typing import Any, TypeAlias, cast
 
 from ..errors import DuplicateKeyError
@@ -20,12 +21,14 @@ from ..planning.arrow_source import (
 )
 from ..planning.arrow_source import batch_to_rows as batch_to_rows
 from ..planning.semantics import facts_from_capabilities
-from ..planning.source import Source, SourceCapabilities
+from ..planning.source import Source, SourceCapabilities, _function_code
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
 _CSV_PROJECTION_PROBE_BYTES = 64 * 1024
 _MAX_PARQUET_PRUNING_PROBE_ROW_GROUPS = 512
 _MAX_PARQUET_PRUNING_PROBE_FRAGMENTS = 512
+_PARQUET_METADATA_COUNT_TOKEN = object()
+_PARQUET_METADATA_COUNT_MARKER = "__fpstreams_guarded_parquet_metadata_count__"
 
 
 def _arrow_modules() -> tuple[Any, Any, Any]:
@@ -60,6 +63,14 @@ def _close(resource: Any) -> None:
     if callable(close):
         with suppress(Exception):
             close()
+
+
+_CANONICAL_ARROW_BATCH_TO_ROWS = cast(FunctionType, batch_to_rows)
+_CANONICAL_ARROW_BATCH_TO_ROWS_CODE = _function_code(_CANONICAL_ARROW_BATCH_TO_ROWS)
+_CANONICAL_ARROW_CLOSE = cast(FunctionType, _close)
+_CANONICAL_ARROW_CLOSE_CODE = _function_code(_CANONICAL_ARROW_CLOSE)
+_CANONICAL_ARROW_OPEN_BATCHES = cast(FunctionType, ArrowBatchSource.open_batches)
+_CANONICAL_ARROW_OPEN_BATCHES_CODE = _function_code(_CANONICAL_ARROW_OPEN_BATCHES)
 
 
 class _OwnedReaderRows(Iterator[dict[str, Any]]):
@@ -307,6 +318,72 @@ def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, A
     )
 
 
+def guarded_arrow_mean_source(source: object) -> ArrowBatchSource | None:
+    """Return a replayable in-memory Arrow descriptor with its skipped row loop intact."""
+    if (
+        type(source) is not Source
+        or not source.capabilities.reiterable
+        or not source._factory_is_pristine()
+        or globals().get("batch_to_rows") is not _CANONICAL_ARROW_BATCH_TO_ROWS
+        or _function_code(_CANONICAL_ARROW_BATCH_TO_ROWS) is not _CANONICAL_ARROW_BATCH_TO_ROWS_CODE
+        or globals().get("_close") is not _CANONICAL_ARROW_CLOSE
+        or _function_code(_CANONICAL_ARROW_CLOSE) is not _CANONICAL_ARROW_CLOSE_CODE
+        or ArrowBatchSource.__dict__.get("open_batches") is not _CANONICAL_ARROW_OPEN_BATCHES
+        or _function_code(_CANONICAL_ARROW_OPEN_BATCHES) is not _CANONICAL_ARROW_OPEN_BATCHES_CODE
+    ):
+        return None
+    descriptor = source.native_data
+    if (
+        type(descriptor) is not ArrowBatchSource
+        or descriptor.kind not in {"table", "record_batch"}
+        or descriptor.materialized_data is None
+    ):
+        return None
+    for captured in source._initial_factory_closure:
+        if captured is descriptor:
+            return cast(ArrowBatchSource, descriptor)
+    return None
+
+
+def guarded_parquet_count_opener(source: object) -> Callable[[], int | None] | None:
+    """Return a local metadata counter still bound to its canonical row source."""
+    if type(source) is not Source or not source._factory_is_pristine():
+        return None
+    descriptor = source.native_data
+    if type(descriptor) is not ArrowBatchSource or descriptor.kind != "parquet":
+        return None
+    count_opener = descriptor.count_opener
+    if type(count_opener) is not FunctionType:
+        return None
+    marker = getattr(count_opener, _PARQUET_METADATA_COUNT_MARKER, None)
+    if type(marker) is not tuple or len(marker) != 5:
+        return None
+    token, batches, dataset_module, dataset_factory, metadata_guarded = marker
+    if (
+        token is not _PARQUET_METADATA_COUNT_TOKEN
+        or metadata_guarded is not True
+        or descriptor.opener is not batches
+        or getattr(dataset_module, "dataset", None) is not dataset_factory
+        or not any(captured is batches for captured in source._initial_factory_closure)
+    ):
+        return None
+    return count_opener
+
+
+def columns_source(
+    columns: Mapping[str, Any],
+    *,
+    batch_size: int = 65_536,
+) -> Source[dict[str, Any]]:
+    """Build a retained Arrow source directly from an explicit mapping of columns."""
+    pa, _dataset, _parquet = _arrow_modules()
+    size = _positive_size(batch_size)
+    if not isinstance(columns, Mapping):
+        raise TypeError("from_columns() expects a mapping")
+    _column_names(columns, operation="from_columns")
+    return arrow_source(pa.table(columns), batch_size=size)
+
+
 def _deferred_arrow_source(
     rows: Callable[[], Iterator[dict[str, Any]]],
     descriptor: ArrowBatchSource,
@@ -441,45 +518,6 @@ def csv_source(
         byte_size_opener=byte_size,
     )
     return _deferred_arrow_source(records, descriptor)
-
-
-def parquet_row_factory(
-    source: Any,
-    *,
-    columns: Iterable[str] | None = None,
-    filter: Any = None,
-    batch_size: int = 65_536,
-    use_threads: bool = True,
-    filesystem: Any = None,
-    partitioning: Any = None,
-) -> Callable[[], Iterator[dict[str, Any]]]:
-    """Build a reusable Parquet scanner opener with projection and filter pushdown."""
-    (
-        batches,
-        _size,
-        _projected_batches,
-        _requested_batches,
-        _count_rows,
-    ) = _parquet_batch_factory(
-        source,
-        columns=columns,
-        filter=filter,
-        batch_size=batch_size,
-        use_threads=use_threads,
-        filesystem=filesystem,
-        partitioning=partitioning,
-    )
-
-    def records() -> Iterator[dict[str, Any]]:
-        """Convert fresh scanner batches through the canonical Arrow row boundary."""
-        iterator = batches()
-        try:
-            for batch in iterator:
-                yield from batch_to_rows(batch)
-        finally:
-            _close(iterator)
-
-    return records
 
 
 def _parquet_equality_expression(
@@ -621,7 +659,20 @@ def _parquet_predicate_can_prune(
     return kept < total
 
 
-def _parquet_batch_factory(
+def _guarded_local_parquet_metadata_count(
+    source: Any,
+    filesystem: Any,
+    partitioning: Any,
+) -> bool:
+    """Prove metadata counting has no caller-defined source or filesystem callback."""
+    return bool(
+        filesystem is None
+        and partitioning is None
+        and ((type(source) is str and "://" not in source) or type(source) is type(Path()))
+    )
+
+
+def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener construction
     source: Any,
     *,
     columns: Iterable[str] | None = None,
@@ -641,6 +692,15 @@ def _parquet_batch_factory(
     _pa, dataset_module, _parquet = _arrow_modules()
     size = _positive_size(batch_size)
     projected = None if columns is None else list(_column_names(columns, operation="Parquet scan"))
+    dataset_factory = getattr(dataset_module, "dataset", None)
+    metadata_count_is_guarded = bool(
+        dataset_factory is not None
+        and _guarded_local_parquet_metadata_count(
+            source,
+            filesystem,
+            partitioning,
+        )
+    )
     adaptive_pruning = filesystem is None and (
         (type(source) is str and "://" not in source) or isinstance(source, Path)
     )
@@ -745,6 +805,11 @@ def _parquet_batch_factory(
 
     def count_rows() -> int | None:
         """Count the public scan through Arrow's metadata-aware scanner terminal."""
+        if (
+            not metadata_count_is_guarded
+            or getattr(dataset_module, "dataset", None) is not dataset_factory
+        ):
+            return None
         dataset = open_dataset()
         _schema_names(dataset.schema)
         scanner = dataset.scanner(
@@ -760,6 +825,17 @@ def _parquet_batch_factory(
         result = count()
         return result if type(result) is int and result >= 0 else None
 
+    setattr(
+        count_rows,
+        _PARQUET_METADATA_COUNT_MARKER,
+        (
+            _PARQUET_METADATA_COUNT_TOKEN,
+            batches,
+            dataset_module,
+            dataset_factory,
+            metadata_count_is_guarded,
+        ),
+    )
     return batches, size, projected_batches, requested_batches, count_rows
 
 

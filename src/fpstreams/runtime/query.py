@@ -8,6 +8,7 @@ from typing import Literal
 from .files import FileManager
 from .limits import QueryLimits
 from .metrics import QueryMetrics
+from .report import _current_recorder
 from .resources import ResourceRegistry, _add_cleanup_failure
 from .spill import SpillFileRegistry
 from .tasks import TaskRuntime, _await_cleanup_task, _start_cleanup_task
@@ -25,6 +26,7 @@ class QueryRuntime:
         self.tasks = TaskRuntime(self.limits, self.metrics)
         self._closed = False
         self._close_task: asyncio.Future[None] | None = None
+        self._report_recorder = _current_recorder()
 
     def __enter__(self) -> QueryRuntime:
         """Enter synchronous runtime ownership."""
@@ -53,8 +55,11 @@ class QueryRuntime:
         if self._closed:
             return
         self._closed = True
-        self.files.close()
-        self.resources.close(active_error)
+        try:
+            self.files.close()
+            self.resources.close(active_error)
+        finally:
+            self._record_report_metrics()
 
     async def aclose(self, active_error: BaseException | None = None) -> None:
         """Close task and resource ownership once."""
@@ -75,9 +80,19 @@ class QueryRuntime:
             notes = getattr(active_error, "__notes__", ()) or ()
             if summary not in notes:
                 _add_cleanup_failure(active_error, [error])
+        finally:
+            self._record_report_metrics()
 
     async def _aclose_impl(self) -> None:
         """Run every asynchronous cleanup phase under one cancellation-safe owner."""
         self.files.close()
         await self.tasks._aclose_from_owner()
         await self.resources.aclose()
+
+    def _record_report_metrics(self) -> None:
+        """Copy metrics to the execution-local recorder at most once."""
+        recorder = self._report_recorder
+        if recorder is None:
+            return
+        self._report_recorder = None
+        recorder.record_metrics(self.metrics)

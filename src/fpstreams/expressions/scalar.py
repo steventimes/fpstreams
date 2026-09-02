@@ -704,3 +704,10 @@ class FExpr:
 
 
 fitem = FExpr("item")
+
+
+def _compile_scalar_callable(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Resolve a scalar expression to its cached Python evaluator once per execution."""
+    if isinstance(function, (Expr, FExpr)):
+        return function._python_evaluator()
+    return function

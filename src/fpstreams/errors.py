@@ -27,3 +27,7 @@ class NativeUnsupportedError(FlowError):
 
 class BufferLimitError(FlowError):
     """Raised when a bounded record or buffer exceeds its configured byte or item limit."""
+
+
+# Lazy execution backends must share the exception class bound by eager selector compilation.
+_CANONICAL_SELECTION_ERROR = SelectionError

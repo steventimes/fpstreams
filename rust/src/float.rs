@@ -3,14 +3,24 @@
 use crate::common::{
     AGGREGATE_COUNT, AGGREGATE_FIRST, AGGREGATE_LAST, AGGREGATE_M2, AGGREGATE_MAXIMUM,
     AGGREGATE_MEAN, AGGREGATE_MINIMUM, AGGREGATE_TOTAL, CompensatedSum, KernelError,
-    OnlineStatistics, extract_f64_container, kernel_error, materialize_target, materialize_values,
-    snapshot_exact_container_prefix, validate_aggregate_mask,
+    OnlineStatistics, validate_aggregate_mask,
 };
-use crate::integer::I64Range;
-use pyo3::exceptions::{PyTypeError, PyValueError};
-use pyo3::prelude::*;
-use pyo3::types::{PyFloat, PyInt};
+use crate::numeric_mean::CompensatedMean;
 use std::ops::ControlFlow;
+
+mod affine_pair;
+mod endpoints;
+
+pub(crate) use affine_pair::run_f64_affine_comparison_pair_sum;
+pub(crate) use endpoints::{
+    aggregate_f64, aggregate_f64_buffer_masked_v1, aggregate_f64_buffer_masked_v2,
+    aggregate_f64_masked, aggregate_f64_range, aggregate_f64_range_masked, count_f64,
+    count_f64_range, execute_f64, execute_f64_buffer_v1, execute_f64_range, materialize_f64,
+    materialize_f64_buffer_v1, materialize_f64_range, mean_f64, mean_f64_buffer_v1,
+    mean_f64_buffer_v2, mean_f64_range, sequential_f64_aggregate_total_v1, statistics_f64,
+    statistics_f64_range, terminal_f64, terminal_f64_buffer_v1, terminal_f64_buffer_v2,
+    terminal_f64_probe, terminal_f64_range,
+};
 
 pub(crate) type FloatInstruction = (u8, f64);
 pub(crate) type FloatProgram = Vec<(u8, Vec<FloatInstruction>)>;
@@ -40,12 +50,135 @@ fn source_allows_integer_conversion(program: &FloatProgram) -> bool {
 
 struct FloatStage {
     kind: u8,
-    code: Vec<FloatInstruction>,
+    expression: Option<PreparedFloatExpression>,
     remaining: u64,
     dropping: bool,
 }
 
-fn evaluate_f64(
+struct StatelessFloatMapFilter {
+    mapper: PreparedFloatExpression,
+    predicate: PreparedFloatExpression,
+    negated: bool,
+}
+
+pub(crate) struct FloatComparison {
+    pub(crate) item_left: bool,
+    pub(crate) opcode: u8,
+    pub(crate) operand: f64,
+}
+
+pub(crate) enum PreparedFloatExpression {
+    /// An exact ``fitem * multiplier + offset`` map without interpreter dispatch.
+    Affine { multiplier: f64, offset: f64 },
+    /// One direct item/constant comparison.
+    Comparison(FloatComparison),
+    /// Two direct comparisons combined by boolean and/or.
+    ComparisonPair {
+        left: FloatComparison,
+        right: FloatComparison,
+        boolean_opcode: u8,
+    },
+    /// Every expression outside the conservative peephole vocabulary.
+    Bytecode(Vec<FloatInstruction>),
+}
+
+fn parse_float_comparison(code: &[FloatInstruction]) -> Option<FloatComparison> {
+    match code {
+        [(0, _), (1, operand), (opcode @ 8..=13, _)] => Some(FloatComparison {
+            item_left: true,
+            opcode: *opcode,
+            operand: *operand,
+        }),
+        [(1, operand), (0, _), (opcode @ 8..=13, _)] => Some(FloatComparison {
+            item_left: false,
+            opcode: *opcode,
+            operand: *operand,
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn prepare_float_expression(code: Vec<FloatInstruction>) -> PreparedFloatExpression {
+    if let [(0, _), (1, multiplier), (4, _), (1, offset), (2, _)] = code.as_slice() {
+        return PreparedFloatExpression::Affine {
+            multiplier: *multiplier,
+            offset: *offset,
+        };
+    }
+    if let Some(comparison) = parse_float_comparison(&code) {
+        return PreparedFloatExpression::Comparison(comparison);
+    }
+    if let [left @ .., (boolean_opcode @ (14 | 15), _)] = code.as_slice()
+        && left.len() == 6
+        && let (Some(left), Some(right)) = (
+            parse_float_comparison(&left[..3]),
+            parse_float_comparison(&left[3..]),
+        )
+    {
+        return PreparedFloatExpression::ComparisonPair {
+            left,
+            right,
+            boolean_opcode: *boolean_opcode,
+        };
+    }
+    PreparedFloatExpression::Bytecode(code)
+}
+
+impl FloatComparison {
+    #[inline]
+    fn evaluate(&self, value: f64) -> bool {
+        let (left, right) = if self.item_left {
+            (value, self.operand)
+        } else {
+            (self.operand, value)
+        };
+        match self.opcode {
+            8 => left == right,
+            9 => left != right,
+            10 => left < right,
+            11 => left <= right,
+            12 => left > right,
+            13 => left >= right,
+            _ => unreachable!("prepared float comparison has an invalid opcode"),
+        }
+    }
+}
+
+impl PreparedFloatExpression {
+    #[inline]
+    pub(crate) fn evaluate(&self, value: f64, stack: &mut Vec<f64>) -> Result<f64, KernelError> {
+        match self {
+            Self::Affine { multiplier, offset } => Ok(value * *multiplier + *offset),
+            Self::Comparison(comparison) => Ok(f64::from(comparison.evaluate(value))),
+            Self::ComparisonPair {
+                left,
+                right,
+                boolean_opcode,
+            } => {
+                let left = left.evaluate(value);
+                let right = right.evaluate(value);
+                Ok(f64::from(match boolean_opcode {
+                    14 => left && right,
+                    15 => left || right,
+                    _ => unreachable!("prepared float boolean has an invalid opcode"),
+                }))
+            }
+            Self::Bytecode(code) => evaluate_f64(value, code, stack),
+        }
+    }
+}
+
+impl FloatStage {
+    #[inline]
+    fn evaluate(&self, value: f64, stack: &mut Vec<f64>) -> Result<f64, KernelError> {
+        self.expression
+            .as_ref()
+            .ok_or(KernelError::InvalidProgram("missing stage expression"))?
+            .evaluate(value, stack)
+    }
+}
+
+pub(crate) fn evaluate_f64(
     value: f64,
     code: &[FloatInstruction],
     stack: &mut Vec<f64>,
@@ -131,9 +264,11 @@ fn prepare_f64(program: FloatProgram) -> Result<Vec<FloatStage>, KernelError> {
             } else {
                 0
             };
+            let expression =
+                matches!(kind, 0 | 1 | 2 | 6 | 7 | 8).then(|| prepare_float_expression(code));
             Ok(FloatStage {
                 kind,
-                code,
+                expression,
                 remaining,
                 dropping: kind == 7,
             })
@@ -141,11 +276,29 @@ fn prepare_f64(program: FloatProgram) -> Result<Vec<FloatStage>, KernelError> {
         .collect()
 }
 
+fn prepare_stateless_f64_map_filter(
+    program: FloatProgram,
+) -> Result<StatelessFloatMapFilter, KernelError> {
+    let mut stages = program.into_iter();
+    let (_, mapper) = stages
+        .next()
+        .ok_or(KernelError::InvalidProgram("missing float map stage"))?;
+    let (filter_kind, predicate) = stages
+        .next()
+        .ok_or(KernelError::InvalidProgram("missing float filter stage"))?;
+    Ok(StatelessFloatMapFilter {
+        mapper: prepare_float_expression(mapper),
+        predicate: prepare_float_expression(predicate),
+        negated: filter_kind == 2,
+    })
+}
+
 enum FloatProcessStop {
     Consumer,
     SourceComplete,
 }
 
+#[inline(always)]
 fn process_f64_value<F>(
     stages: &mut [FloatStage],
     source_value: f64,
@@ -161,16 +314,16 @@ where
     for stage in stages {
         match stage.kind {
             0 => {
-                value = evaluate_f64(value, &stage.code, stack)?;
+                value = stage.evaluate(value, stack)?;
             }
             1 => {
-                if evaluate_f64(value, &stage.code, stack)? == 0.0 {
+                if stage.evaluate(value, stack)? == 0.0 {
                     emit_value = false;
                     break;
                 }
             }
             2 => {
-                if evaluate_f64(value, &stage.code, stack)? != 0.0 {
+                if stage.evaluate(value, stack)? != 0.0 {
                     emit_value = false;
                     break;
                 }
@@ -190,13 +343,13 @@ where
                 }
             }
             6 => {
-                if evaluate_f64(value, &stage.code, stack)? == 0.0 {
+                if stage.evaluate(value, stack)? == 0.0 {
                     return Ok(ControlFlow::Break(FloatProcessStop::SourceComplete));
                 }
             }
             7 => {
                 if stage.dropping {
-                    if evaluate_f64(value, &stage.code, stack)? != 0.0 {
+                    if stage.evaluate(value, stack)? != 0.0 {
                         emit_value = false;
                         break;
                     }
@@ -204,7 +357,7 @@ where
                 }
             }
             8 => {
-                if evaluate_f64(value, &stage.code, stack)? == 0.0 {
+                if stage.evaluate(value, stack)? == 0.0 {
                     stop_after_item = true;
                 }
             }
@@ -220,7 +373,25 @@ where
     Ok(ControlFlow::Continue(()))
 }
 
+#[inline]
 fn process_f64<I, F>(values: I, program: FloatProgram, mut emit: F) -> Result<(), KernelError>
+where
+    I: IntoIterator<Item = f64>,
+    F: FnMut(f64) -> Result<ControlFlow<()>, KernelError>,
+{
+    if matches!(program.as_slice(), [(0, _), (1 | 2, _)]) {
+        let map_filter = prepare_stateless_f64_map_filter(program)?;
+        return process_stateless_f64_map_filter(values, map_filter, &mut emit);
+    }
+    process_general_f64(values, program, emit)
+}
+
+#[inline]
+fn process_general_f64<I, F>(
+    values: I,
+    program: FloatProgram,
+    mut emit: F,
+) -> Result<(), KernelError>
 where
     I: IntoIterator<Item = f64>,
     F: FnMut(f64) -> Result<ControlFlow<()>, KernelError>,
@@ -242,6 +413,80 @@ where
     Ok(())
 }
 
+#[inline(never)]
+fn process_stateless_f64_map_filter<I, F>(
+    values: I,
+    map_filter: StatelessFloatMapFilter,
+    emit: &mut F,
+) -> Result<(), KernelError>
+where
+    I: IntoIterator<Item = f64>,
+    F: FnMut(f64) -> Result<ControlFlow<()>, KernelError>,
+{
+    let StatelessFloatMapFilter {
+        mapper,
+        predicate,
+        negated,
+    } = map_filter;
+    match (&mapper, &predicate) {
+        (
+            PreparedFloatExpression::Affine { multiplier, offset },
+            PreparedFloatExpression::Comparison(comparison),
+        ) => {
+            for source_value in values {
+                let value = source_value * *multiplier + *offset;
+                if comparison.evaluate(value) == negated {
+                    continue;
+                }
+                if emit(value)?.is_break() {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
+        (
+            PreparedFloatExpression::Affine { multiplier, offset },
+            PreparedFloatExpression::ComparisonPair {
+                left,
+                right,
+                boolean_opcode,
+            },
+        ) => {
+            for source_value in values {
+                let value = source_value * *multiplier + *offset;
+                let left_matches = left.evaluate(value);
+                let right_matches = right.evaluate(value);
+                let matches = match boolean_opcode {
+                    14 => left_matches && right_matches,
+                    15 => left_matches || right_matches,
+                    _ => unreachable!("prepared float boolean has an invalid opcode"),
+                };
+                if matches == negated {
+                    continue;
+                }
+                if emit(value)?.is_break() {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let mut stack = Vec::new();
+    for source_value in values {
+        let value = mapper.evaluate(source_value, &mut stack)?;
+        let matches = predicate.evaluate(value, &mut stack)? != 0.0;
+        if matches == negated {
+            continue;
+        }
+        if emit(value)?.is_break() {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_f64<I>(values: I, program: FloatProgram) -> Result<Vec<f64>, KernelError>
 where
     I: IntoIterator<Item = f64>,
@@ -252,6 +497,16 @@ where
         Ok(ControlFlow::Continue(()))
     })?;
     Ok(output)
+}
+
+pub(crate) fn run_f64_buffer_materialization(
+    values: Vec<f64>,
+    program: FloatProgram,
+) -> Result<Vec<f64>, KernelError> {
+    if program.is_empty() {
+        return Ok(values);
+    }
+    run_f64(values, program)
 }
 
 pub(crate) fn run_f64_count<I>(values: I, program: FloatProgram) -> Result<u64, KernelError>
@@ -274,21 +529,45 @@ pub(crate) fn run_f64_terminal<I>(
 where
     I: IntoIterator<Item = f64>,
 {
+    run_f64_terminal_state::<_, false>(values, program, terminal).map(|(_emitted, result)| result)
+}
+
+fn run_f64_terminal_state<I, const TRACK_EMITTED: bool>(
+    values: I,
+    program: FloatProgram,
+    terminal: u8,
+) -> Result<(u64, Option<f64>), KernelError>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let values = if terminal == 1 {
+        match run_f64_affine_comparison_pair_sum::<_, TRACK_EMITTED>(values, &program) {
+            Ok(result) => return result,
+            Err(values) => values,
+        }
+    } else {
+        values
+    };
     let mut result = match terminal {
         1 | 6 | 8 => Some(0.0),
         7 => Some(1.0),
-        2..=5 => None,
+        0 | 2..=5 => None,
         _ => {
             return Err(KernelError::InvalidProgram("unknown float terminal"));
         }
     };
     let mut compensation = 0.0;
+    let mut emitted = 0_u64;
     process_f64(values, program, |value| {
+        if TRACK_EMITTED {
+            emitted = emitted.checked_add(1).ok_or(KernelError::Overflow)?;
+        }
         let control = match terminal {
+            0 => ControlFlow::Continue(()),
             1 | 8 => {
                 let current = result.unwrap_or_default();
                 let total = current + value;
-                if terminal == 1 && current.is_finite() && value.is_finite() && total.is_finite() {
+                if terminal == 1 && total.is_finite() {
                     compensation += if current.abs() >= value.abs() {
                         current - total + value
                     } else {
@@ -342,7 +621,90 @@ where
     if terminal == 1 {
         result = result.map(|value| value + compensation);
     }
-    Ok(result)
+    Ok((emitted, result))
+}
+
+pub(crate) fn run_f64_identity_terminal<I>(
+    values: I,
+    terminal: u8,
+) -> Result<(u64, Option<f64>), KernelError>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut result = match terminal {
+        1 | 6 | 8 => Some(0.0),
+        7 => Some(1.0),
+        0 | 2..=5 => None,
+        _ => {
+            return Err(KernelError::InvalidProgram("unknown float terminal"));
+        }
+    };
+    let mut compensation = 0.0;
+    let mut emitted = 0_u64;
+    for value in values {
+        emitted = emitted.checked_add(1).ok_or(KernelError::Overflow)?;
+        let stop = match terminal {
+            0 => false,
+            1 | 8 => {
+                let current = result.unwrap_or_default();
+                let total = current + value;
+                if terminal == 1 && total.is_finite() {
+                    compensation += if current.abs() >= value.abs() {
+                        current - total + value
+                    } else {
+                        value - total + current
+                    };
+                } else if terminal == 1 {
+                    compensation = 0.0;
+                }
+                result = Some(total);
+                false
+            }
+            2 => {
+                result = Some(result.map_or(
+                    value,
+                    |current| {
+                        if value < current { value } else { current }
+                    },
+                ));
+                false
+            }
+            3 => {
+                result = Some(result.map_or(
+                    value,
+                    |current| {
+                        if value > current { value } else { current }
+                    },
+                ));
+                false
+            }
+            4 => {
+                result = Some(value);
+                false
+            }
+            5 => {
+                result = Some(value);
+                true
+            }
+            6 if value != 0.0 => {
+                result = Some(1.0);
+                true
+            }
+            7 if value == 0.0 => {
+                result = Some(0.0);
+                true
+            }
+            6 | 7 => false,
+            _ => unreachable!(),
+        };
+        if stop {
+            break;
+        }
+    }
+    if terminal == 1 {
+        result = result.map(|value| value + compensation);
+    }
+    Ok((emitted, result))
 }
 
 pub(crate) fn run_f64_statistics<I>(
@@ -360,6 +722,29 @@ where
     Ok(statistics.snapshot())
 }
 
+pub(crate) fn run_f64_mean<I>(values: I, program: FloatProgram) -> Result<Option<f64>, KernelError>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut mean = CompensatedMean::default();
+    process_f64(values, program, |value| {
+        mean.accept(value)?;
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok(mean.value())
+}
+
+pub(crate) fn run_f64_identity_mean<I>(values: I) -> Result<Option<f64>, KernelError>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut mean = CompensatedMean::default();
+    for value in values {
+        mean.accept(value)?;
+    }
+    Ok(mean.value())
+}
+
 pub(crate) fn run_f64_aggregate<I>(
     values: I,
     program: FloatProgram,
@@ -371,6 +756,7 @@ where
     let mut maximum = None;
     let mut first = None;
     let mut last = None;
+    let mut total = 0.0;
     let mut statistics = OnlineStatistics::default();
     process_f64(values, program, |value| {
         minimum = Some(minimum.map_or(
@@ -387,10 +773,10 @@ where
         ));
         first.get_or_insert(value);
         last = Some(value);
+        total += value;
         statistics.accept(value)?;
         Ok(ControlFlow::Continue(()))
     })?;
-    let total = statistics.sum();
     let (count, mean, squared_deviations) = statistics.snapshot();
     Ok((
         count,
@@ -415,7 +801,7 @@ where
     let mask = validate_aggregate_mask(mask)?;
     let needs_statistics = mask & (AGGREGATE_MEAN | AGGREGATE_M2) != 0;
     let mut count = 0_u64;
-    let mut total = CompensatedSum::default();
+    let mut total = 0.0;
     let mut minimum = None;
     let mut maximum = None;
     let mut first = None;
@@ -429,9 +815,9 @@ where
             if mask & AGGREGATE_COUNT != 0 {
                 count = count.checked_add(1).ok_or(KernelError::Overflow)?;
             }
-            if mask & AGGREGATE_TOTAL != 0 {
-                total.accept(value);
-            }
+        }
+        if mask & AGGREGATE_TOTAL != 0 {
+            total += value;
         }
         if mask & AGGREGATE_MINIMUM != 0 {
             minimum = Some(minimum.map_or(
@@ -474,11 +860,7 @@ where
             0
         },
         if mask & AGGREGATE_TOTAL != 0 {
-            if needs_statistics {
-                statistics.sum()
-            } else {
-                total.value()
-            }
+            total
         } else {
             0.0
         },
@@ -499,330 +881,91 @@ where
     ))
 }
 
-#[pyfunction]
-pub(crate) fn execute_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-) -> PyResult<Vec<f64>> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64(values, program))
-        .map_err(kernel_error)
-}
+pub(crate) fn run_f64_identity_aggregate_masked<I>(
+    values: I,
+    mask: u8,
+) -> Result<F64AggregateSnapshot, KernelError>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mask = validate_aggregate_mask(mask)?;
+    let needs_statistics = mask & (AGGREGATE_MEAN | AGGREGATE_M2) != 0;
+    let mut count = 0_u64;
+    let mut total = 0.0;
+    let mut minimum = None;
+    let mut maximum = None;
+    let mut first = None;
+    let mut last = None;
+    let mut statistics = OnlineStatistics::default();
 
-#[pyfunction]
-pub(crate) fn execute_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-) -> PyResult<Vec<f64>> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64(values, program))
-        .map_err(kernel_error)
-}
-
-/// Run a fused f64 program detached, then build the requested terminal container once.
-#[pyfunction]
-pub(crate) fn materialize_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-    target: u8,
-) -> PyResult<Py<PyAny>> {
-    let target = materialize_target(target)?;
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    let output = py
-        .detach(move || run_f64(values, program))
-        .map_err(kernel_error)?;
-    materialize_values(py, output, target)
-}
-
-/// Range-specialized counterpart of ``materialize_f64``.
-#[pyfunction]
-pub(crate) fn materialize_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-    target: u8,
-) -> PyResult<Py<PyAny>> {
-    let target = materialize_target(target)?;
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    let output = py
-        .detach(move || run_f64(values, program))
-        .map_err(kernel_error)?;
-    materialize_values(py, output, target)
-}
-
-#[pyfunction]
-pub(crate) fn terminal_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-    terminal: u8,
-) -> PyResult<Option<f64>> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64_terminal(values, program, terminal))
-        .map_err(kernel_error)
-}
-
-fn extract_f64_item(value: &Bound<'_, PyAny>, allow_integers: bool) -> PyResult<f64> {
-    let exact_float = value.is_exact_instance_of::<PyFloat>();
-    if !(exact_float || (allow_integers && value.is_exact_instance_of::<PyInt>())) {
-        return Err(PyTypeError::new_err(if allow_integers {
-            "native f64 container probes require exact floats or integers"
+    for value in values {
+        if needs_statistics {
+            statistics.accept(value)?;
         } else {
-            "native f64 container probes require exact floats"
-        }));
-    }
-    value.extract()
-}
-
-/// Probe a small exact list/tuple prefix while retaining the fused stage state.
-///
-/// Holding the GIL for this bounded path is intentional: it avoids PyO3's eager
-/// whole-container extraction. A non-decision returns ``(false, None)`` so the
-/// Python adapter can restart the detached bulk f64 kernel for a full traversal.
-#[pyfunction]
-pub(crate) fn terminal_f64_probe(
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-    terminal: u8,
-    max_items: usize,
-) -> PyResult<(bool, Option<f64>)> {
-    if !(5..=7).contains(&terminal) {
-        return Err(kernel_error(KernelError::InvalidProgram(
-            "container probes require first, any, or all",
-        )));
-    }
-    let allow_integers = source_allows_integer_conversion(&program);
-    let (items, exhausted) = snapshot_exact_container_prefix(values, max_items)?;
-    let mut stages = prepare_f64(program).map_err(kernel_error)?;
-    let mut result = match terminal {
-        5 => None,
-        6 => Some(0.0),
-        7 => Some(1.0),
-        _ => unreachable!(),
-    };
-    if stages
-        .iter()
-        .any(|stage| stage.kind == 3 && stage.remaining == 0)
-    {
-        return Ok((true, result));
-    }
-
-    let mut stack = Vec::new();
-    for item in items {
-        let value = extract_f64_item(item.bind(values.py()), allow_integers)?;
-        let mut emit = |value| {
-            let stop = match terminal {
-                5 => {
-                    result = Some(value);
-                    true
-                }
-                6 if value != 0.0 => {
-                    result = Some(1.0);
-                    true
-                }
-                7 if value == 0.0 => {
-                    result = Some(0.0);
-                    true
-                }
-                6 | 7 => false,
-                _ => unreachable!(),
-            };
-            Ok(if stop {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            })
-        };
-        if process_f64_value(&mut stages, value, &mut stack, &mut emit)
-            .map_err(kernel_error)?
-            .is_break()
-        {
-            return Ok((true, result));
+            if mask & AGGREGATE_COUNT != 0 {
+                count = count.checked_add(1).ok_or(KernelError::Overflow)?;
+            }
+        }
+        if mask & AGGREGATE_TOTAL != 0 {
+            total += value;
+        }
+        if mask & AGGREGATE_MINIMUM != 0 {
+            minimum = Some(minimum.map_or(
+                value,
+                |current: f64| {
+                    if value < current { value } else { current }
+                },
+            ));
+        }
+        if mask & AGGREGATE_MAXIMUM != 0 {
+            maximum = Some(maximum.map_or(
+                value,
+                |current: f64| {
+                    if value > current { value } else { current }
+                },
+            ));
+        }
+        if mask & AGGREGATE_FIRST != 0 {
+            first.get_or_insert(value);
+        }
+        if mask & AGGREGATE_LAST != 0 {
+            last = Some(value);
         }
     }
-    Ok((exhausted, if exhausted { result } else { None }))
-}
 
-#[pyfunction]
-pub(crate) fn terminal_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-    terminal: u8,
-) -> PyResult<Option<f64>> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_terminal(values, program, terminal))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn statistics_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-) -> PyResult<(u64, f64, f64)> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64_statistics(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn statistics_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-) -> PyResult<(u64, f64, f64)> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_statistics(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn aggregate_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-) -> PyResult<F64AggregateSnapshot> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64_aggregate(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn aggregate_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-) -> PyResult<F64AggregateSnapshot> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_aggregate(values, program))
-        .map_err(kernel_error)
-}
-
-/// Compute only requested aggregate fields while retaining the eight-slot ABI schema.
-#[pyfunction]
-pub(crate) fn aggregate_f64_masked(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-    mask: u8,
-) -> PyResult<F64AggregateSnapshot> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
-}
-
-/// Range-specialized counterpart of ``aggregate_f64_masked``.
-#[pyfunction]
-pub(crate) fn aggregate_f64_range_masked(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-    mask: u8,
-) -> PyResult<F64AggregateSnapshot> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn count_f64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: FloatProgram,
-) -> PyResult<u64> {
-    let allow_integers = source_allows_integer_conversion(&program);
-    let values = extract_f64_container(values, allow_integers)?;
-    py.detach(move || run_f64_count(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn count_f64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: FloatProgram,
-) -> PyResult<u64> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = (I64Range {
-        current: start,
-        stop,
-        step,
-    })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_count(values, program))
-        .map_err(kernel_error)
+    let (statistics_count, mean, squared_deviations) = if needs_statistics {
+        statistics.snapshot()
+    } else {
+        (0, 0.0, 0.0)
+    };
+    Ok((
+        if mask & AGGREGATE_COUNT != 0 {
+            if needs_statistics {
+                statistics_count
+            } else {
+                count
+            }
+        } else {
+            0
+        },
+        if mask & AGGREGATE_TOTAL != 0 {
+            total
+        } else {
+            0.0
+        },
+        minimum,
+        maximum,
+        first,
+        last,
+        if mask & AGGREGATE_MEAN != 0 {
+            mean
+        } else {
+            0.0
+        },
+        if mask & AGGREGATE_M2 != 0 {
+            squared_deviations
+        } else {
+            0.0
+        },
+    ))
 }

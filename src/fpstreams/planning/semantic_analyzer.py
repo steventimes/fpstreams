@@ -143,9 +143,10 @@ def _diagnostics(
 
 def analyze_sync_plan(plan: Pipeline, terminal: str = "iterate") -> PlanSemantics:
     """Analyze a synchronous plan with the sync rule registry and terminal diagnostics."""
-    operations, output = _analyse(plan.source.facts, plan.operations, SYNC_OPERATOR_RULES)
+    source = plan.source.current_facts()
+    operations, output = _analyse(source, plan.operations, SYNC_OPERATOR_RULES)
     return PlanSemantics(
-        plan.source.facts,
+        source,
         operations,
         output,
         _terminal_condition(terminal),

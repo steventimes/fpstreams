@@ -27,6 +27,7 @@ from .errors import (
 from .expressions import Expr, FExpr, RowExpr, coalesce, col, fitem, item, lit, when
 from .functional import curry, pipe, retry
 from .primitives import Err, Ok, Option, Result
+from .runtime.report import ExecutionReport, ExecutionResult
 from .streams import (
     AsyncFlow,
     AsyncStream,
@@ -40,7 +41,7 @@ from .streams import (
 )
 from .tabular import Rows, SpillLimits, rows
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 Stream = Flow
 ParallelStream = Flow
 
@@ -56,6 +57,8 @@ __all__ = [
     "EmptyFlowError",
     "EmptyInputPolicy",
     "Err",
+    "ExecutionReport",
+    "ExecutionResult",
     "Expr",
     "FExpr",
     "Flow",

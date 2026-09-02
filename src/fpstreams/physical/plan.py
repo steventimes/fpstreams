@@ -11,6 +11,7 @@ from ..expressions.typed_ir import TypedExpr
 from ..planning.arrow import ArrowPrefixPlan
 from ..planning.logical import TerminalSpec
 from ..planning.native import EngineDecision
+from ..planning.numpy import NumpyPrefixPlan
 from ..planning.source import Source
 from ..planning.sync import Engine, Operation, ParallelSettings, SortOp
 
@@ -73,6 +74,7 @@ class BackendPayload:
 
     native_decision: EngineDecision | None = None
     arrow_prefix: ArrowPrefixPlan | None = None
+    numpy_prefix: NumpyPrefixPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)

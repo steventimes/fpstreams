@@ -5,7 +5,7 @@ from __future__ import annotations
 import operator
 import os
 import sys
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
@@ -82,6 +82,7 @@ from ..planning.sync import (
     ZipOp,
 )
 from ..primitives.result import Err, Ok, Result
+from ..runtime.iterators import closing_iterators
 from .flow_terminals import FlowTerminalsMixin
 
 T = TypeVar("T")
@@ -164,6 +165,28 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
     def _pipeline(self) -> Pipeline:
         """Return the canonical unopened linear view for backend selection."""
         return linear_pipeline(self._logical_plan)
+
+    def _uncompiled_exact_count(self) -> int | None:
+        """Read trusted identity-source cardinality before backend compilation.
+
+        Forced native requests still compile so extension availability and source support remain
+        part of that explicit contract. Automatic and Python identity plans can return metadata
+        recorded from exact built-in containers without opening or inspecting their contents.
+        """
+        logical = self._logical_plan
+        if logical.engine == "native" or not isinstance(logical.root, SourceNode):
+            return None
+        capabilities = logical.root.source.capabilities
+        if not capabilities.reiterable:
+            return None
+        return logical.root.source.current_exact_size()
+
+    def _uncompiled_python_identity_pipeline(self, query: Query) -> Pipeline | None:
+        """Expose an operation-free auto/Python source without selecting a backend."""
+        logical = query.logical
+        if logical.engine not in {"auto", "python"} or not isinstance(logical.root, SourceNode):
+            return None
+        return linear_pipeline(logical)
 
     def _query(self, name: str, *arguments: Any, **options: Any) -> Query:
         """Describe one terminal request without executing or opening the pipeline."""
@@ -281,8 +304,11 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Compile and execute every public iteration through the physical pipeline."""
         from ..execution.physical import execute_physical
         from ..planning.compiler import compile_iteration
+        from ..runtime.report import _record_sync_plan
 
-        return execute_physical(compile_iteration(self._query("iterate")))
+        physical = compile_iteration(self._query("iterate"))
+        _record_sync_plan(physical)
+        return execute_physical(physical)
 
     def _append(self, operation: Operation) -> Flow[Any]:
         """Return a new Flow whose immutable plan includes `operation`."""
@@ -1239,14 +1265,40 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Yield one pipeline iterator and close it when the context exits."""
         from ..execution.physical import execute_physical
         from ..planning.compiler import compile_iteration
+        from ..runtime.report import _record_sync_plan
 
-        iterator = execute_physical(compile_iteration(self._query("iterate")))
-        try:
+        physical = compile_iteration(self._query("iterate"))
+        _record_sync_plan(physical)
+        iterator = execute_physical(physical)
+        with closing_iterators((iterator,)):
             yield iterator
-        finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
+
+    def _consume(self, consumer: Callable[[Iterator[T]], R]) -> R:
+        """Consume one compiled iteration plan inside the terminal's call stack."""
+        from ..execution.physical import consume_physical
+        from ..planning.compiler import compile_iteration
+        from ..runtime.report import _record_sync_plan
+
+        physical = compile_iteration(self._query("iterate"))
+        _record_sync_plan(physical)
+        return consume_physical(
+            physical,
+            cast(Callable[[Iterator[Any]], R], consumer),
+            self._pipeline if physical.root is None else None,
+        )
+
+
+_CANONICAL_FLOW_DROP = Flow.drop
+_CANONICAL_FLOW_FIRST = Flow.first
+_CANONICAL_FLOW_LAST = Flow.last
+_CANONICAL_FLOW_QUERY = Flow._query
+_CANONICAL_FLOW_QUERY_CODE = Flow._query.__code__
+_CANONICAL_FLOW_TERMINAL_CONTEXT = Flow._terminal_context
+_CANONICAL_FLOW_TERMINAL_CONTEXT_CODE = Flow._terminal_context.__code__
+_CANONICAL_FLOW_COMPILED_TERMINAL_CONTEXT = Flow._compiled_terminal_context
+_CANONICAL_FLOW_COMPILED_TERMINAL_CONTEXT_CODE = Flow._compiled_terminal_context.__code__
+_CANONICAL_FLOW_NATIVE_DECISION = Flow._native_decision
+_CANONICAL_FLOW_NATIVE_DECISION_CODE = Flow._native_decision.__code__
 
 
 class _FlowFactory:
@@ -1332,8 +1384,8 @@ class _FlowFactory:
             # through the record-oriented adapters below.
             return Flow(source)
 
-        arrow_protocol = callable(getattr(source_type, "__arrow_c_stream__", None))
-        dataframe_protocol = callable(getattr(source_type, "__dataframe__", None))
+        arrow_protocol = callable(getattr(source, "__arrow_c_stream__", None))
+        dataframe_protocol = callable(getattr(source, "__dataframe__", None))
         # A custom dual-protocol provider chooses Arrow's standard stream. Concrete pandas,
         # Polars, and PyArrow objects were routed above to preserve their adapter semantics.
         if arrow_protocol:
@@ -1347,6 +1399,32 @@ class _FlowFactory:
         from ..tabular.rows import Rows
 
         return Rows.from_arrow(source, batch_size=batch_size)._flow
+
+    def from_columns(
+        self,
+        columns: Mapping[str, Any],
+        *,
+        batch_size: int = 65_536,
+    ) -> Flow[dict[str, Any]]:
+        """Adapt an explicit mapping of independent columns through Arrow."""
+        from ..tabular.rows import Rows
+
+        return Rows.from_columns(columns, batch_size=batch_size)._flow
+
+    def from_numpy(
+        self,
+        array: Any,
+        *,
+        columns: Iterable[str] | None = None,
+    ) -> Flow[Any]:
+        """Adapt a one-dimensional NumPy array to scalars or a two-dimensional one to rows."""
+        from ..tabular.numpy import numpy_module, numpy_scalar_source
+        from ..tabular.rows import Rows
+
+        values = numpy_module("from_numpy()").asarray(array)
+        if values.ndim == 1:
+            return Flow(numpy_scalar_source(values, columns=columns))
+        return Rows.from_numpy(values, columns=columns)._flow
 
     def from_dataframe(
         self,

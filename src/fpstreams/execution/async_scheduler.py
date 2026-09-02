@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import inspect
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -12,13 +12,14 @@ from ..physical.async_plan import (
     AsyncMergeMapNode,
     AsyncMergeNode,
     AsyncPhysicalPlan,
+    AsyncPrefetchNode,
     AsyncSerialOperationNode,
     AsyncSerialStage,
     AsyncSwitchMapNode,
     AsyncTimerNode,
 )
 from ..planning.async_ import AsyncOperation, _Filter, _MapAsync, _Tap
-from ..planning.async_utils import _resolve, close_async_iterators
+from ..planning.async_utils import close_async_iterators, closing_async_iterators
 from ..runtime.query import QueryRuntime
 from ..runtime.resources import _add_cleanup_failure
 from .async_map import execute_async_map
@@ -29,6 +30,7 @@ from .async_merge import (
     execute_switch_map,
 )
 from .async_ops import apply_async_operation
+from .async_prefetch import execute_async_prefetch
 from .async_timers import execute_async_timer
 
 
@@ -36,23 +38,34 @@ async def _execute_serial_stage(
     source: AsyncIterator[Any], operations: tuple[AsyncOperation, ...]
 ) -> AsyncIterator[Any]:
     """Fuse adjacent serial map, filter, and tap operations in physical order."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             current = item
             emit = True
             for operation in operations:
                 if isinstance(operation, _MapAsync):
-                    current = await _resolve(operation.function(current))
+                    mapped = operation.function(current)
+                    if inspect.isawaitable(mapped):
+                        mapped = await mapped
+                    current = mapped
+                    del mapped
                 elif isinstance(operation, _Filter):
-                    if not await _resolve(operation.predicate(current)):
-                        emit = False
-                        break
+                    accepted = operation.predicate(current)
+                    if inspect.isawaitable(accepted):
+                        accepted = await accepted
+                    try:
+                        if not accepted:
+                            emit = False
+                            break
+                    finally:
+                        del accepted
                 elif isinstance(operation, _Tap):
-                    await _resolve(operation.action(current))
+                    action_result = operation.action(current)
+                    if inspect.isawaitable(action_result):
+                        action_result = await action_result
+                    del action_result
             if emit:
                 yield current
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _close_async_execution(
@@ -97,6 +110,7 @@ async def _iterate_async_physical(
 ) -> AsyncIterator[Any]:
     """Open and execute a compiled plan after the first downstream pull."""
     iterator: AsyncIterator[Any] | None = None
+    active_error: BaseException | None = None
     try:
         iterator = plan.source.open()
         for node in plan.nodes:
@@ -114,14 +128,19 @@ async def _iterate_async_physical(
                 iterator = execute_switch_map(iterator, node, query_runtime)
             elif isinstance(node, AsyncTimerNode):
                 iterator = execute_async_timer(iterator, node, query_runtime)
+            elif isinstance(node, AsyncPrefetchNode):
+                iterator = execute_async_prefetch(iterator, node, query_runtime)
             elif isinstance(node, AsyncSerialOperationNode):
                 iterator = apply_async_operation(iterator, node.operation)
             else:
                 raise TypeError(f"unsupported async physical node: {type(node).__name__}")
         async for item in iterator:
             yield item
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await _close_async_execution(iterator, query_runtime, sys.exception())
+        await _close_async_execution(iterator, query_runtime, active_error)
 
 
 class _RuntimeOwnedAsyncIterator:
@@ -157,7 +176,7 @@ class _RuntimeOwnedAsyncIterator:
         if self._closed:
             return
         self._closed = True
-        await _close_async_execution(self._inner, self._runtime, sys.exception())
+        await _close_async_execution(self._inner, self._runtime, None)
 
 
 def execute_async_physical(

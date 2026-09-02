@@ -33,3 +33,10 @@ def hit(name: str) -> None:
 def has_active_failpoints() -> bool:
     """Return whether this task or thread requires instrumented execution boundaries."""
     return bool(_ACTIVE.get())
+
+
+# Consumers load lazily, so public transition-hook provenance belongs in this eager owner.
+_CANONICAL_HIT = hit
+_CANONICAL_HIT_CODE = hit.__code__
+_CANONICAL_HAS_ACTIVE_FAILPOINTS = has_active_failpoints
+_CANONICAL_HAS_ACTIVE_FAILPOINTS_CODE = has_active_failpoints.__code__

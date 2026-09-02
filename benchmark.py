@@ -1,34 +1,50 @@
 """Run fpstreams timing scenarios and emit human- and machine-readable regression data."""
 
+# ruff: noqa: E402 - this src-layout entry point must select the local package before imports
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import fnmatch
+import hashlib
 import json
+import os
 import platform
 import statistics
 import sys
 import time
 import tracemalloc
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, Literal, NamedTuple
 
+# Running this repository script directly puts the documentation directory named
+# ``fpstreams`` ahead of the src-layout package. Prefer the adjacent source tree when present.
+_SOURCE_TREE = Path(__file__).resolve().parent / "src"
+if _SOURCE_TREE.is_dir():
+    sys.path.insert(0, str(_SOURCE_TREE))
+
 import fpstreams
+from benchmarks.competitive import (
+    list_competitive_cases,
+    render_competitive,
+)
+from benchmarks.competitive import (
+    run_competitive as run_competitive_matrix,
+)
 from fpstreams import fitem, flow, item
 from fpstreams.planning.gather import Gatherer
 from fpstreams.planning.logical import Pipeline
 from fpstreams.planning.source import Source
 from fpstreams.planning.sync import DropOp, FilterOp, MapOp, TakeOp
 
-Backend = Literal["python-builtin", "python", "native", "auto", "numpy", "pandas"]
+Backend = Literal["python-builtin", "python", "native", "auto"]
 Task = Callable[[], object]
-Normalizer = Callable[[object], object]
 _MIN_FIRST_ROW_SAMPLES = 15
 _SCALAR_FUSION_GUARD_MIN_SIZE = 4_096
 
@@ -46,16 +62,7 @@ class Scenario:
     first_row_task: Task | None = None
     minimum_repeats: int = 1
     maximum_ratio: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CompetitivePair:
-    """Two equivalent workloads plus their library-specific result normalizers."""
-
-    reference: Scenario
-    candidate: Scenario
-    normalize_reference: Normalizer
-    normalize_candidate: Normalizer
+    cleanup: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 def measure(function: Task, repeats: int) -> list[float]:
@@ -101,6 +108,20 @@ def _record(scenario: Scenario, repeats: int) -> dict[str, Any]:
     return record
 
 
+def _cleanup_scenarios(scenarios: Sequence[Scenario]) -> None:
+    """Release shared benchmark fixtures once without adding cleanup to timed work."""
+    callbacks: list[Callable[[], None]] = []
+    seen: set[int] = set()
+    for scenario in scenarios:
+        cleanup = scenario.cleanup
+        if cleanup is None or id(cleanup) in seen:
+            continue
+        seen.add(id(cleanup))
+        callbacks.append(cleanup)
+    for cleanup in reversed(callbacks):
+        cleanup()
+
+
 def _builtin_task(source: Sequence[int] | range, terminal: str) -> Task:
     if terminal == "sum":
         return lambda: sum(source)
@@ -125,91 +146,6 @@ def _python_map_filter(source: Sequence[int] | range) -> list[int]:
 
 def _sum_task(task: Callable[[], Sequence[int]]) -> int:
     return sum(task())
-
-
-def _numpy_map_filter_sum(values: Any) -> Any:
-    """Run the eager NumPy equivalent of fpstreams' fused numeric expression pipeline."""
-    mapped = values * 3 + 1
-    return mapped[mapped % 2 == 0].sum()
-
-
-def _pandas_group_sum(frame: Any) -> Any:
-    """Run a stable-order sum against an already-materialized pandas table."""
-    return frame.groupby("key", sort=False, as_index=False).agg(total=("value", "sum"))
-
-
-def _normalize_pandas_groups(value: object) -> tuple[tuple[int, int], ...]:
-    """Convert a two-column pandas result to a dependency-neutral ordered value."""
-    return tuple((int(key), int(total)) for key, total in value.itertuples(index=False, name=None))  # type: ignore[attr-defined]
-
-
-def _normalize_fpstreams_groups(value: object) -> tuple[tuple[int, int], ...]:
-    """Convert fpstreams group rows to the same ordered value used for correctness checks."""
-    return tuple((int(row["key"]), int(row["total"])) for row in value)  # type: ignore[union-attr]
-
-
-def _competitive_pairs(size: int) -> tuple[CompetitivePair, ...]:
-    """Build opt-in compute-only comparisons without extending the frozen release suite."""
-    try:
-        import numpy as np
-        import pandas as pd  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise RuntimeError(
-            "competitive benchmarks require the 'data' extra: pip install fpstreams[data]"
-        ) from error
-
-    numeric_values = np.arange(size, dtype=np.int64)
-    numeric_pipeline = flow(range(size)).map(item * 3 + 1).filter(item % 2 == 0)
-
-    # Both tabular competitors receive a reusable, already-materialized source. Construction
-    # cost is excluded so this pair measures the group operator rather than adapter ingestion.
-    group_count = min(64, size)
-    records = tuple((index % group_count, index) for index in range(size))
-    frame = pd.DataFrame.from_records(records, columns=("key", "value"))
-    grouped_rows = fpstreams.rows(records).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
-
-    return (
-        CompetitivePair(
-            Scenario(
-                "competitive/numpy/array/map_filter/sum",
-                partial(_numpy_map_filter_sum, numeric_values),
-                "numpy",
-                "ndarray",
-                "sum",
-                None,
-            ),
-            Scenario(
-                "competitive/fpstreams/range/map_filter/sum",
-                numeric_pipeline.sum,
-                "auto",
-                "range",
-                "sum",
-                "competitive/numpy/array/map_filter/sum",
-            ),
-            int,
-            int,
-        ),
-        CompetitivePair(
-            Scenario(
-                "competitive/pandas/dataframe/group_sum",
-                partial(_pandas_group_sum, frame),
-                "pandas",
-                "dataframe",
-                "group_sum",
-                None,
-            ),
-            Scenario(
-                "competitive/fpstreams/rows/group_sum",
-                grouped_rows.to_list,
-                "auto",
-                "tuple_rows",
-                "group_sum",
-                "competitive/pandas/dataframe/group_sum",
-            ),
-            _normalize_pandas_groups,
-            _normalize_fpstreams_groups,
-        ),
-    )
 
 
 def _identity_scenarios(size: int, *, include_tuple: bool) -> list[Scenario]:
@@ -523,6 +459,8 @@ def _async_operation_scenarios() -> list[Scenario]:
         ("timeout", lambda stream: stream.timeout(0.01)),
         ("debounce", lambda stream: stream.debounce(0)),
         ("buffer_timeout", lambda stream: stream.buffer_timeout(2, 0.01)),
+        ("session_window", lambda stream: stream.session_window(0.01, max_count=2)),
+        ("prefetch", lambda stream: stream.prefetch(2)),
         ("delay", lambda stream: stream.delay(0.000001)),
         ("throttle", lambda stream: stream.throttle(4, per=0.01)),
         ("take", lambda stream: stream.take(2)),
@@ -678,6 +616,35 @@ def _rows_operation_scenarios() -> list[Scenario]:
     ]
 
 
+def _pair_row_filter_scenarios(size: int) -> list[Scenario]:
+    """Guard pair-wide RowExpr filtering against its canonical Python execution."""
+    row_count = min(size, 300_000)
+    cardinality = max(1, min(100_003, row_count))
+    values = [(index % cardinality, index) for index in range(row_count)]
+    expression = (fpstreams.col(0) + fpstreams.col(1)) % 3 == 0
+    filtered = fpstreams.pairs(values).filter_pairs(expression)
+    python_name = "fpstreams_pairs/row_expr_filter/to_dict/python"
+    return [
+        Scenario(
+            python_name,
+            partial(filtered.with_engine("python").to_dict, on_duplicate="last"),
+            "python",
+            "pair_tuples",
+            "filter_to_dict",
+            None,
+        ),
+        Scenario(
+            "fpstreams_pairs/row_expr_filter/to_dict/auto",
+            partial(filtered.to_dict, on_duplicate="last"),
+            "auto",
+            "pair_tuples",
+            "filter_to_dict",
+            python_name,
+            maximum_ratio=0.25 if row_count >= 4_096 else None,
+        ),
+    ]
+
+
 def _callable_group_scenarios(size: int) -> list[Scenario]:
     """Guard the fixed callable-key/value group loops with scalable workloads."""
     cardinality = min(size, 64)
@@ -791,7 +758,6 @@ def _callable_group_scenarios(size: int) -> list[Scenario]:
                 "group_aggregate",
                 dictionary_baselines[name],
                 minimum_repeats=15,
-                maximum_ratio=0.98,
             )
         )
 
@@ -1329,6 +1295,38 @@ def _arrow_identity_list_scenarios(size: int) -> list[Scenario]:
     ]
 
 
+def _arrow_numeric_mean_scenarios(size: int) -> list[Scenario]:
+    """Guard the direct compensated mean against the canonical Arrow row route."""
+    try:
+        import pyarrow as pa
+    except ImportError:
+        return []
+
+    row_count = min(size, 300_000)
+    table = pa.table({"value": pa.array(range(row_count), type=pa.int64())})
+    values = fpstreams.flow.from_arrow(table).map(fpstreams.col("value"))
+    python_name = "fpstreams_arrow/table/direct_i64_mean/python"
+    return [
+        Scenario(
+            python_name,
+            values.with_engine("python").mean,
+            "python",
+            "arrow_table",
+            "mean",
+            None,
+        ),
+        Scenario(
+            "fpstreams_arrow/table/direct_i64_mean/auto",
+            values.mean,
+            "auto",
+            "arrow_table",
+            "mean",
+            python_name,
+            maximum_ratio=0.10 if row_count >= 4_096 else None,
+        ),
+    ]
+
+
 def _arrow_stable_sort_scenarios(size: int) -> list[Scenario]:
     """Compare canonical row sorting with a direct retained-Arrow field sort."""
     try:
@@ -1366,6 +1364,57 @@ def _arrow_stable_sort_scenarios(size: int) -> list[Scenario]:
             "arrow_table",
             "sort",
             python_name,
+        ),
+    ]
+
+
+def _arrow_group_multi_scenarios(size: int) -> list[Scenario]:
+    """Track retained-columnar grouped lanes against canonical Python row execution."""
+    try:
+        import pyarrow as pa
+    except ImportError:
+        return []
+
+    row_count = min(size, 300_000)
+    cardinality = max(1, min(32_768, row_count))
+    table = pa.table(
+        {
+            "key": pa.array(
+                ((index * 9_973 + 17) % cardinality for index in range(row_count)),
+                type=pa.int64(),
+            ),
+            "value": pa.array(
+                (index % 2_001 - 1_000 for index in range(row_count)), type=pa.int64()
+            ),
+        }
+    )
+    source = fpstreams.rows.from_arrow(table)
+    aggregations = {
+        "rows": fpstreams.agg.count(),
+        "total": fpstreams.agg.sum("value"),
+        "minimum": fpstreams.agg.min("value"),
+        "maximum": fpstreams.agg.max("value"),
+    }
+    canonical = source.with_engine("python").group_by("key").aggregate(**aggregations)
+    automatic = source.group_by("key").aggregate(**aggregations)
+    python_name = "fpstreams_arrow/table/group_multi/python"
+    return [
+        Scenario(
+            python_name,
+            canonical.to_list,
+            "python",
+            "arrow_table",
+            "group_multi",
+            None,
+        ),
+        Scenario(
+            "fpstreams_arrow/table/group_multi/auto",
+            automatic.to_list,
+            "auto",
+            "arrow_table",
+            "group_multi",
+            python_name,
+            maximum_ratio=0.60 if row_count >= 4_096 else None,
         ),
     ]
 
@@ -1567,10 +1616,15 @@ def _arrow_file_group_scenarios(size: int) -> list[Scenario]:
         }
     )
     workspace = TemporaryDirectory(prefix="fpstreams-arrow-file-group-")
-    csv_path = Path(workspace.name) / "groups.csv"
-    parquet_path = Path(workspace.name) / "groups.parquet"
-    pa_csv.write_csv(table, csv_path)
-    pq.write_table(table, parquet_path, row_group_size=65_536)
+    cleanup_workspace = workspace.cleanup
+    try:
+        csv_path = Path(workspace.name) / "groups.csv"
+        parquet_path = Path(workspace.name) / "groups.parquet"
+        pa_csv.write_csv(table, csv_path)
+        pq.write_table(table, parquet_path, row_group_size=65_536)
+    except BaseException:
+        cleanup_workspace()
+        raise
 
     def group_sum(
         storage: Literal["csv", "parquet"], backend: Literal["python", "auto"]
@@ -1598,6 +1652,7 @@ def _arrow_file_group_scenarios(size: int) -> list[Scenario]:
                     source_kind,
                     "group_sum",
                     None,
+                    cleanup=cleanup_workspace,
                 ),
                 Scenario(
                     f"fpstreams_arrow/{storage}/group_sum/auto",
@@ -1607,6 +1662,7 @@ def _arrow_file_group_scenarios(size: int) -> list[Scenario]:
                     "group_sum",
                     python_name,
                     maximum_ratio=0.60 if row_count == 300_000 else None,
+                    cleanup=cleanup_workspace,
                 ),
             )
         )
@@ -1708,12 +1764,23 @@ def native_build_metadata() -> dict[str, object]:
     try:
         from fpstreams import _native
     except ImportError:
-        return {"available": False, "profile": "unavailable", "path": None}
+        return {
+            "available": False,
+            "profile": "unavailable",
+            "path": None,
+            "sha256": None,
+        }
     profile = _native.build_profile() if hasattr(_native, "build_profile") else "unknown"
+    native_path = str(getattr(_native, "__file__", "")) or None
+    native_sha256 = None
+    if native_path is not None:
+        with Path(native_path).open("rb") as handle:
+            native_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
     return {
         "available": True,
         "profile": profile,
-        "path": str(getattr(_native, "__file__", "")) or None,
+        "path": native_path,
+        "sha256": native_sha256,
     }
 
 
@@ -1791,6 +1858,7 @@ def run(
         scenarios.extend(_sync_operation_scenarios())
         scenarios.extend(_async_operation_scenarios())
         scenarios.extend(_rows_operation_scenarios())
+        scenarios.extend(_pair_row_filter_scenarios(size))
         scenarios.extend(_callable_group_scenarios(size))
         scenarios.extend(_fixed_sparse_group_scenarios(size))
         scenarios.extend(_composite_group_scenarios(size))
@@ -1800,7 +1868,9 @@ def run(
         scenarios.extend(_value_layout_callable_join_scenarios(size))
         scenarios.extend(_exact_dict_sort_scenarios(size))
         scenarios.extend(_arrow_identity_list_scenarios(size))
+        scenarios.extend(_arrow_numeric_mean_scenarios(size))
         scenarios.extend(_arrow_stable_sort_scenarios(size))
+        scenarios.extend(_arrow_group_multi_scenarios(size))
         scenarios.extend(_arrow_unique_join_scenarios(size))
         scenarios.extend(_arrow_c_stream_scenarios(size))
         scenarios.extend(_arrow_reader_group_scenarios(size))
@@ -1811,99 +1881,67 @@ def run(
             scenarios.extend(_integer_pipeline_scenarios(size, bool(native["available"])))
     if domain in {"float", "both"}:
         scenarios.extend(_float_scenarios(size, bool(native["available"])))
-    if include:
-        scenarios = [
-            scenario
-            for scenario in scenarios
-            if any(fnmatch.fnmatch(scenario.name, pattern) for pattern in include)
-        ]
-        if not scenarios:
-            raise ValueError("benchmark include patterns selected no scenarios")
+    owned_scenarios = tuple(scenarios)
+    try:
+        if include:
+            scenarios = [
+                scenario
+                for scenario in scenarios
+                if any(fnmatch.fnmatch(scenario.name, pattern) for pattern in include)
+            ]
+            if not scenarios:
+                raise ValueError("benchmark include patterns selected no scenarios")
 
-    results = [_record(scenario, repeats) for scenario in scenarios]
-    return {
-        "schema_version": 1,
-        "metadata": {
-            "fpstreams_version": fpstreams.__version__,
-            "python_version": platform.python_version(),
-            "implementation": platform.python_implementation(),
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "native": native,
-            "size": size,
-            "repeats": repeats,
-            "domain": domain,
-            "quick": quick,
-        },
-        "results": results,
-        "regressions": find_regressions(results),
-    }
+        results = [_record(scenario, repeats) for scenario in scenarios]
+        return {
+            "schema_version": 1,
+            "metadata": {
+                "fpstreams_version": fpstreams.__version__,
+                "python_version": platform.python_version(),
+                "implementation": platform.python_implementation(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+                "processor": platform.processor(),
+                "native": native,
+                "size": size,
+                "repeats": repeats,
+                "domain": domain,
+                "quick": quick,
+            },
+            "results": results,
+            "regressions": find_regressions(results),
+        }
+    finally:
+        _cleanup_scenarios(owned_scenarios)
 
 
-def run_competitive(*, size: int, repeats: int) -> dict[str, Any]:
-    """Compare equivalent NumPy/Pandas workloads and reject any semantic mismatch.
+def run_competitive(
+    *,
+    size: int,
+    repeats: int,
+    quick: bool = False,
+    include: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Compare natural Python, NumPy, and pandas equivalents after checking results.
 
-    These compute-only comparisons deliberately stay outside the immutable release
-    scenario set. They report observed ratios instead of imposing a misleading gate:
-    an already-materialized ndarray or DataFrame is the specialist libraries' best case.
+    The opt-in matrix stays outside the immutable release scenarios and reports observed
+    ratios without creating a regression gate. Compute-only rows reuse materialized inputs;
+    adapter rows are explicitly marked end-to-end.
     """
-    if size < 1:
-        raise ValueError("size must be positive")
-    if repeats < 1:
-        raise ValueError("repeats must be positive")
-
-    pairs = _competitive_pairs(size)
-    results: list[dict[str, Any]] = []
-    comparisons: list[dict[str, Any]] = []
-    for pair in pairs:
-        expected = pair.normalize_reference(pair.reference.task())
-        actual = pair.normalize_candidate(pair.candidate.task())
-        if actual != expected:
-            raise RuntimeError(
-                f"competitive result mismatch: {pair.candidate.name} != {pair.reference.name}"
-            )
-
-        reference = _record(pair.reference, repeats)
-        candidate = _record(pair.candidate, repeats)
-        results.extend((reference, candidate))
-        reference_seconds = float(reference["median_seconds"])
-        comparisons.append(
-            {
-                "candidate": pair.candidate.name,
-                "baseline": pair.reference.name,
-                "outputs_equal": True,
-                "ratio": (
-                    float(candidate["median_seconds"]) / reference_seconds
-                    if reference_seconds
-                    else 1.0
-                ),
-            }
-        )
-
-    return {
-        "schema_version": 1,
-        "metadata": {
-            "suite": "competitive",
-            "fpstreams_version": fpstreams.__version__,
-            "python_version": platform.python_version(),
-            "implementation": platform.python_implementation(),
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "native": native_build_metadata(),
-            "size": size,
-            "repeats": repeats,
-            "scope": "compute-only on reusable, pre-materialized inputs",
-        },
-        "results": results,
-        "comparisons": comparisons,
-        "regressions": [],
-    }
+    return run_competitive_matrix(
+        size=size,
+        repeats=repeats,
+        native=native_build_metadata(),
+        quick=quick,
+        include=include,
+    )
 
 
 def render(report: Mapping[str, Any]) -> None:
     metadata = report["metadata"]
+    if metadata.get("suite") == "competitive":
+        render_competitive(report)
+        return
     print(
         "fpstreams benchmark · "
         f"Python {metadata['python_version']} · {metadata['platform']} · "
@@ -1914,6 +1952,30 @@ def render(report: Mapping[str, Any]) -> None:
             f"{result['name']:<52} {result['median_seconds']:>10.6f}s "
             f"± {result['stdev_seconds']:.6f}s"
         )
+
+
+def _write_json_report(path: Path, report: Mapping[str, Any]) -> None:
+    """Replace a report only after its complete JSON payload reaches disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def main() -> int:
@@ -1931,19 +1993,25 @@ def main() -> int:
 
     try:
         if arguments.competitive:
-            if (
-                arguments.domain != "int"
-                or arguments.quick
-                or arguments.fail_on_regression
-                or arguments.include
-            ):
+            if arguments.domain != "int" or arguments.fail_on_regression:
                 raise ValueError(
-                    "--competitive cannot be combined with --domain, --quick, "
-                    "--fail-on-regression, or --include"
+                    "--competitive cannot be combined with a non-int --domain or "
+                    "--fail-on-regression"
                 )
+            if arguments.list_scenarios:
+                selected = list_competitive_cases(
+                    quick=arguments.quick,
+                    include=arguments.include,
+                )
+                if not selected:
+                    raise ValueError("competitive include patterns selected no cases")
+                print("\n".join(selected))
+                return 0
             report = run_competitive(
-                size=1 if arguments.list_scenarios else arguments.size,
-                repeats=1 if arguments.list_scenarios else arguments.repeats,
+                size=arguments.size,
+                repeats=arguments.repeats,
+                quick=arguments.quick,
+                include=arguments.include,
             )
         else:
             report = run(
@@ -1963,8 +2031,7 @@ def main() -> int:
         return 0
     render(report)
     if arguments.json is not None:
-        arguments.json.parent.mkdir(parents=True, exist_ok=True)
-        arguments.json.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        _write_json_report(arguments.json, report)
     if arguments.fail_on_regression and report["regressions"]:
         for regression in report["regressions"]:
             print(

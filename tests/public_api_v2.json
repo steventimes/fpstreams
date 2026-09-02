@@ -1247,6 +1247,29 @@
           ],
           "return": "AsyncFlow[R]"
         },
+        "from_queue": {
+          "parameters": [
+            {
+              "annotation": "asyncio.Queue[R]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "queue"
+            },
+            {
+              "annotation": "object",
+              "default": {
+                "required": false,
+                "value": "<builtins.object>"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "stop"
+            }
+          ],
+          "return": "AsyncFlow[R]"
+        },
         "group_runs": {
           "parameters": [
             {
@@ -1468,6 +1491,15 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "timeout"
+            },
+            {
+              "annotation": "int | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "buffer"
             }
           ],
           "return": "AsyncFlow[R]"
@@ -1517,6 +1549,29 @@
             }
           ],
           "return": "AsyncFlow[T]"
+        },
+        "max": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "T"
         },
         "mean": {
           "parameters": [
@@ -1586,6 +1641,52 @@
             }
           ],
           "return": "AsyncFlow[R]"
+        },
+        "min": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "T"
+        },
+        "minmax": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "tuple[T, T]"
         },
         "none": {
           "parameters": [
@@ -1799,6 +1900,29 @@
           ],
           "return": "AsyncFlow[Any]"
         },
+        "prefetch": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "capacity"
+            }
+          ],
+          "return": "AsyncFlow[T]"
+        },
         "prepend": {
           "parameters": [
             {
@@ -1959,6 +2083,47 @@
           ],
           "return": "AsyncFlow[T]"
         },
+        "run_with_report": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "terminal"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "args"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "return": "ExecutionResult[Any]"
+        },
         "scan": {
           "parameters": [
             {
@@ -2032,6 +2197,38 @@
           ],
           "return": "AsyncFlow[R]"
         },
+        "session_window": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "float",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idle_for"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "max_count"
+            }
+          ],
+          "return": "AsyncFlow[tuple[T, ...]]"
+        },
         "skip": {
           "parameters": [
             {
@@ -2100,6 +2297,29 @@
             }
           ],
           "return": "float | None"
+        },
+        "sum": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": false,
+                "value": 0
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "start"
+            }
+          ],
+          "return": "Any"
         },
         "summarize": {
           "parameters": [
@@ -3361,6 +3581,127 @@
         "return": "None"
       },
       "target": "fpstreams.primitives.result.Err"
+    },
+    "ExecutionReport": {
+      "callables": {},
+      "kind": "class",
+      "properties": [],
+      "signature": {
+        "parameters": [
+          {
+            "annotation": "str",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "terminal"
+          },
+          {
+            "annotation": "str",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "requested_engine"
+          },
+          {
+            "annotation": "str",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "compiler_engine"
+          },
+          {
+            "annotation": "str",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "strategy"
+          },
+          {
+            "annotation": "str",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "reason"
+          },
+          {
+            "annotation": "int",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "elapsed_ns"
+          },
+          {
+            "annotation": "int",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "peak_owned_async_tasks"
+          },
+          {
+            "annotation": "int",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "peak_spill_files"
+          },
+          {
+            "annotation": "int",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "spill_bytes_written"
+          }
+        ],
+        "return": "None"
+      },
+      "target": "fpstreams.runtime.report.ExecutionReport"
+    },
+    "ExecutionResult": {
+      "callables": {},
+      "kind": "class",
+      "properties": [],
+      "signature": {
+        "parameters": [
+          {
+            "annotation": "T",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "value"
+          },
+          {
+            "annotation": "ExecutionReport",
+            "default": {
+              "required": true,
+              "value": null
+            },
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "report"
+          }
+        ],
+        "return": "None"
+      },
+      "target": "fpstreams.runtime.report.ExecutionResult"
     },
     "Expr": {
       "callables": {
@@ -5895,6 +6236,47 @@
           ],
           "return": "fpstreams.Rows[T]"
         },
+        "run_with_report": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "terminal"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "args"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "return": "ExecutionResult[Any]"
+        },
         "scan": {
           "parameters": [
             {
@@ -7779,7 +8161,7 @@
               "name": "self"
             },
             {
-              "annotation": "Callable[[K, V], bool]",
+              "annotation": "Callable[[K, V], bool] | RowExpr",
               "default": {
                 "required": true,
                 "value": null
@@ -8117,6 +8499,29 @@
             }
           ],
           "return": "Flow[V]"
+        },
+        "with_engine": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Engine",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "engine"
+            }
+          ],
+          "return": "Pairs[K, V]"
         }
       },
       "kind": "class",
@@ -9085,6 +9490,29 @@
           ],
           "return": "Rows[dict[str, Any]]"
         },
+        "concat": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Iterable[T] | Flow[T] | Rows[T]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "others"
+            }
+          ],
+          "return": "Rows[T]"
+        },
         "count": {
           "parameters": [
             {
@@ -9208,6 +9636,29 @@
             }
           ],
           "return": "Rows[T]"
+        },
+        "explain": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "TerminalName",
+              "default": {
+                "required": false,
+                "value": "iterate"
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "terminal"
+            }
+          ],
+          "return": "PlanExplanation"
         },
         "explode": {
           "parameters": [
@@ -9429,10 +9880,33 @@
           ],
           "return": "Rows[dict[str, Any]]"
         },
+        "from_columns": {
+          "parameters": [
+            {
+              "annotation": "Mapping[str, Any]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "columns"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 65536
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "batch_size"
+            }
+          ],
+          "return": "Rows[dict[str, Any]]"
+        },
         "from_csv": {
           "parameters": [
             {
-              "annotation": "str | os.PathLike[str]",
+              "annotation": "str | os.PathLike[str] | TextIO | Callable[[], TextIO]",
               "default": {
                 "required": true,
                 "value": null
@@ -9537,7 +10011,7 @@
         "from_jsonl": {
           "parameters": [
             {
-              "annotation": "str | os.PathLike[str]",
+              "annotation": "str | os.PathLike[str] | TextIO | BinaryIO | Callable[[], TextIO | BinaryIO]",
               "default": {
                 "required": true,
                 "value": null
@@ -9562,6 +10036,29 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "max_record_bytes"
+            }
+          ],
+          "return": "Rows[dict[str, Any]]"
+        },
+        "from_numpy": {
+          "parameters": [
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "array"
+            },
+            {
+              "annotation": "Iterable[str] | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "columns"
             }
           ],
           "return": "Rows[dict[str, Any]]"
@@ -10145,6 +10642,47 @@
           ],
           "return": "Rows[dict[str, Any]]"
         },
+        "run_with_report": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "terminal"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "args"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "return": "ExecutionResult[Any]"
+        },
         "scan_csv": {
           "parameters": [
             {
@@ -10560,6 +11098,20 @@
           ],
           "return": "Any"
         },
+        "to_flow": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "return": "Flow[T]"
+        },
         "to_jsonl": {
           "parameters": [
             {
@@ -10614,6 +11166,47 @@
             }
           ],
           "return": "list[T]"
+        },
+        "to_numpy": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Selector",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "selectors"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "dtype"
+            },
+            {
+              "annotation": "bool | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "copy"
+            }
+          ],
+          "return": "Any"
         },
         "to_pandas": {
           "parameters": [
@@ -11227,7 +11820,7 @@
       "properties": [],
       "signature": null,
       "target": "builtins.str",
-      "value": "2.0.0"
+      "value": "2.1.0"
     },
     "aflow": {
       "callables": {
@@ -11267,6 +11860,29 @@
             }
           ],
           "return": "AsyncFlow[str]"
+        },
+        "from_queue": {
+          "parameters": [
+            {
+              "annotation": "asyncio.Queue[R]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "queue"
+            },
+            {
+              "annotation": "object",
+              "default": {
+                "required": false,
+                "value": "<builtins.object>"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "stop"
+            }
+          ],
+          "return": "AsyncFlow[R]"
         },
         "interval": {
           "parameters": [
@@ -11721,6 +12337,29 @@
           ],
           "return": "Flow[dict[str, Any]]"
         },
+        "from_columns": {
+          "parameters": [
+            {
+              "annotation": "Mapping[str, Any]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "columns"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 65536
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "batch_size"
+            }
+          ],
+          "return": "Flow[dict[str, Any]]"
+        },
         "from_dataframe": {
           "parameters": [
             {
@@ -11752,6 +12391,29 @@
             }
           ],
           "return": "Flow[dict[str, Any]]"
+        },
+        "from_numpy": {
+          "parameters": [
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "array"
+            },
+            {
+              "annotation": "Iterable[str] | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "columns"
+            }
+          ],
+          "return": "Flow[Any]"
         },
         "from_pandas": {
           "parameters": [
@@ -12212,10 +12874,33 @@
           ],
           "return": "Rows[dict[str, Any]]"
         },
+        "from_columns": {
+          "parameters": [
+            {
+              "annotation": "Mapping[str, Any]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "columns"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 65536
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "batch_size"
+            }
+          ],
+          "return": "Rows[dict[str, Any]]"
+        },
         "from_csv": {
           "parameters": [
             {
-              "annotation": "str | os.PathLike[str]",
+              "annotation": "str | os.PathLike[str] | TextIO | Callable[[], TextIO]",
               "default": {
                 "required": true,
                 "value": null
@@ -12320,7 +13005,7 @@
         "from_jsonl": {
           "parameters": [
             {
-              "annotation": "str | os.PathLike[str]",
+              "annotation": "str | os.PathLike[str] | TextIO | BinaryIO | Callable[[], TextIO | BinaryIO]",
               "default": {
                 "required": true,
                 "value": null
@@ -12345,6 +13030,29 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "max_record_bytes"
+            }
+          ],
+          "return": "Rows[dict[str, Any]]"
+        },
+        "from_numpy": {
+          "parameters": [
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "array"
+            },
+            {
+              "annotation": "Iterable[str] | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "columns"
             }
           ],
           "return": "Rows[dict[str, Any]]"
@@ -12678,6 +13386,8 @@
     "EmptyFlowError",
     "EmptyInputPolicy",
     "Err",
+    "ExecutionReport",
+    "ExecutionResult",
     "Expr",
     "FExpr",
     "Flow",
@@ -12719,5 +13429,5 @@
     "rows",
     "when"
   ],
-  "version": "2.0.0"
+  "version": "2.1.0"
 }

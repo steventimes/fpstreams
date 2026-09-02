@@ -9,6 +9,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from ..runtime.iterators import closing_iterators
 from ..storage import SpillStore, SpillWriter
 
 _PARTITION_BUFFER_BYTES = 4 * 1024 * 1024
@@ -406,13 +407,9 @@ def merge_ordered(
         generation += 1
 
     records = _merge_ordered_records(current, store=store)
-    try:
+    with closing_iterators((records,)):
         for _order, value in records:
             yield value
-    finally:
-        close = getattr(records, "close", None)
-        if callable(close):
-            close()
 
 
 def repartition(
@@ -457,6 +454,7 @@ def repartition(
         from ..runtime.resources import _add_cleanup_failure
 
         errors: list[BaseException] = []
+        effective_active = None if isinstance(active_error, GeneratorExit) else active_error
         try:
             writers.close(active_error)
         except BaseException as error:
@@ -467,5 +465,5 @@ def repartition(
                 close()
             except BaseException as error:
                 errors.append(error)
-        _add_cleanup_failure(active_error, errors)
+        _add_cleanup_failure(effective_active, errors)
     return writers.files()

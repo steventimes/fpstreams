@@ -11,10 +11,12 @@ from .logical import Pipeline, Query
 from .native import (
     EngineDecision,
     TerminalName,
+    _numpy_buffer_kind,
     select_materializing_engine,
     select_terminal_engine,
     validate_terminal,
 )
+from .numpy import NumpyPrefixPlan, plan_numpy_prefix
 from .semantic_analyzer import analyze_async_plan, analyze_sync_plan
 from .semantics import AsyncTerminalName
 from .sync import FilterOp, MapOp, Operation, ParallelMapOp, TapOp
@@ -110,6 +112,23 @@ def _with_arrow_prefix(
     return arrow_stages, boundaries
 
 
+def _with_numpy_prefix(
+    plan: Pipeline,
+    stages: list[dict[str, Any]],
+    numpy_prefix: NumpyPrefixPlan | None,
+) -> list[dict[str, Any]]:
+    """Return one full guarded NumPy stage when columnar row execution is planned."""
+    if numpy_prefix is None or numpy_prefix.operation_count != len(plan.operations):
+        return stages
+    return [
+        {
+            "engine": "numpy",
+            "operations": [operation.name for operation in plan.operations],
+            "fused": len(plan.operations) > 1,
+        }
+    ]
+
+
 def _with_physical_engines(
     stages: list[dict[str, Any]],
     physical_nodes: tuple[Any, ...],
@@ -133,11 +152,13 @@ def _explanation_stages(
     plan: Pipeline,
     decision: EngineDecision,
     arrow_prefix: ArrowPrefixPlan | None,
+    numpy_prefix: NumpyPrefixPlan | None,
     physical_nodes: tuple[Any, ...],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return serialized stages and materialization boundaries for one explanation."""
     stages = _selected_engine_stages(plan, decision)
     stages, boundaries = _with_arrow_prefix(plan, stages, arrow_prefix)
+    stages = _with_numpy_prefix(plan, stages, numpy_prefix)
     return _with_physical_engines(stages, physical_nodes), boundaries
 
 
@@ -150,7 +171,9 @@ def _explanation_data_movement(
     if terminal in {"iterate", "list"}:
         source = plan.source.native_data
         crosses_native_boundary = decision.engine in {"native", "hybrid"}
-        container_source = isinstance(source, (list, tuple))
+        container_source = (
+            isinstance(source, (list, tuple)) or _numpy_buffer_kind(source) is not None
+        )
         return (
             {
                 "scans_source": crosses_native_boundary and container_source,
@@ -182,6 +205,18 @@ def _serialize_arrow_prefix(
     }
 
 
+def _serialize_numpy_prefix(
+    numpy_prefix: NumpyPrefixPlan | None,
+) -> dict[str, Any] | None:
+    """Return the stable JSON-ready representation of a NumPy row prefix."""
+    if numpy_prefix is None:
+        return None
+    return {
+        "operation_count": numpy_prefix.operation_count,
+        "guarded": numpy_prefix.guarded,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class PlanExplanation:
     """Pair a synchronous plan and terminal for deferred explanation serialization."""
@@ -190,6 +225,7 @@ class PlanExplanation:
     terminal: TerminalName = "iterate"
     decision: EngineDecision | None = None
     arrow_prefix: ArrowPrefixPlan | None = None
+    numpy_prefix: NumpyPrefixPlan | None = None
     relations: dict[str, Any] | None = None
     physical_nodes: tuple[Any, ...] = ()
 
@@ -215,10 +251,14 @@ class PlanExplanation:
         arrow_prefix = self.arrow_prefix
         if arrow_prefix is None and compiled_decision is None:
             arrow_prefix = plan_arrow_prefix(self.plan)
+        numpy_prefix = self.numpy_prefix
+        if numpy_prefix is None and compiled_decision is None and self.terminal == "list":
+            numpy_prefix = plan_numpy_prefix(self.plan)
         stages, boundaries = _explanation_stages(
             self.plan,
             decision,
             arrow_prefix,
+            numpy_prefix,
             self.physical_nodes,
         )
 
@@ -226,7 +266,7 @@ class PlanExplanation:
             "terminal": self.terminal,
             "source": {
                 "reiterable": capabilities.reiterable,
-                "exact_size": capabilities.exact_size,
+                "exact_size": self.plan.source.current_exact_size(),
                 "ordered": capabilities.ordered,
             },
             "requested_engine": self.plan.engine,
@@ -241,6 +281,7 @@ class PlanExplanation:
             "semantics": semantics.to_dict(include_diagnostics=False),
             "diagnostics": [item.to_dict() for item in semantics.diagnostics],
             "arrow_prefix": _serialize_arrow_prefix(arrow_prefix),
+            "numpy_prefix": _serialize_numpy_prefix(numpy_prefix),
             "boundaries": boundaries,
         }
         if self.relations is not None:
@@ -273,6 +314,7 @@ def explain_physical(physical: Any) -> PlanExplanation:
             validate_terminal(physical.terminal.name),
             decision=EngineDecision("python", physical.decision.reason),
             arrow_prefix=None,
+            numpy_prefix=None,
             relations=_explain_relation(physical.root),
             physical_nodes=physical_nodes,
         )
@@ -284,6 +326,7 @@ def explain_physical(physical: Any) -> PlanExplanation:
         validate_terminal(physical.terminal.name),
         payload.native_decision,
         payload.arrow_prefix,
+        payload.numpy_prefix,
         physical_nodes=physical.nodes,
     )
 
@@ -291,6 +334,7 @@ def explain_physical(physical: Any) -> PlanExplanation:
 def _explain_relation(root: Any) -> dict[str, Any]:
     """Serialize physical relation choices without inspecting sources or callbacks."""
     from ..physical.relational import (
+        ArrowGlobalAggregateSpec,
         GlobalAggregatePhysicalNode,
         GroupAggregatePhysicalNode,
         JoinPhysicalNode,
@@ -321,6 +365,10 @@ def _explain_relation(root: Any) -> dict[str, Any]:
         }
         if root.arrow_i64_sum is not None:
             result.update(candidate="arrow_hash", guarded=True)
+        elif root.numpy_group is not None:
+            result.update(candidate="numpy_hash", guarded=True)
+        elif root.native_pair_i64_expr_sum is not None:
+            result.update(candidate="native_pair_expr_hash", guarded=True)
         return result
     if isinstance(root, GlobalAggregatePhysicalNode):
         result = {
@@ -329,8 +377,16 @@ def _explain_relation(root: Any) -> dict[str, Any]:
         }
         if root.exact_count_name is not None:
             result.update(candidate="exact_size", guarded=True)
+        elif isinstance(root.arrow_i64_sum, ArrowGlobalAggregateSpec):
+            result.update(candidate="arrow_multi_reduce", guarded=True)
         elif root.arrow_i64_sum is not None:
             result.update(candidate="arrow_reduce", guarded=True)
+        elif root.numpy_global is not None:
+            result.update(candidate="numpy_reduce", guarded=True)
+        elif root.native_multi_i64 is not None:
+            result.update(candidate="native_multi_reduce", guarded=True)
+        elif root.native_record_i64_sum is not None:
+            result.update(candidate="native_reduce", guarded=True)
         return result
     raise TypeError(f"unsupported physical relation: {type(root).__name__}")
 

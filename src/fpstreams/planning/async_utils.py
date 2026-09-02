@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from typing import Any
 
 _MISSING = object()
@@ -62,3 +63,17 @@ async def close_async_iterators(
                 _add_cleanup_error(first_cleanup_error, error)
     if first_cleanup_error is not None:
         raise first_cleanup_error
+
+
+@asynccontextmanager
+async def closing_async_iterators(
+    iterators: Iterable[AsyncIterator[Any]],
+) -> AsyncGenerator[None, None]:
+    """Own async iterators for one block without reading ambient exception state."""
+    try:
+        yield
+    except BaseException as error:
+        await close_async_iterators(tuple(iterators), active_error=error)
+        raise
+    else:
+        await close_async_iterators(tuple(iterators))

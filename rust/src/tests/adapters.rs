@@ -112,8 +112,6 @@ fn standard_namedtuple_adapter_snapshots_two_types_and_preserves_zip_truncation(
                 .unwrap(),
             record_continuations.as_any(),
             &record_globals,
-            &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-            &py.import("sys").unwrap().getattr("getprofile").unwrap(),
         )
         .unwrap()
         .expect("two canonical NamedTuple layouts should be admitted");
@@ -246,8 +244,6 @@ fn standard_namedtuple_adapter_declines_noncanonical_factory_inputs() {
                     &fixture.getattr("Mapping").unwrap(),
                     record_continuations.as_any(),
                     &record_globals,
-                    &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-                    &py.import("sys").unwrap().getattr("getprofile").unwrap(),
                 )
                 .unwrap()
                 .is_none()
@@ -265,8 +261,6 @@ fn standard_namedtuple_adapter_declines_noncanonical_factory_inputs() {
                 &fixture.getattr("Mapping").unwrap(),
                 record_continuations.as_any(),
                 &record_globals,
-                &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-                &py.import("sys").unwrap().getattr("getprofile").unwrap(),
             )
             .unwrap()
             .is_none()
@@ -290,8 +284,6 @@ fn standard_namedtuple_adapter_declines_noncanonical_factory_inputs() {
                 &fixture.getattr("Mapping").unwrap(),
                 record_continuations.as_any(),
                 &record_globals,
-                &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-                &py.import("sys").unwrap().getattr("getprofile").unwrap(),
             )
             .unwrap()
             .is_none()
@@ -310,8 +302,6 @@ fn standard_namedtuple_adapter_declines_noncanonical_factory_inputs() {
                 &fixture.getattr("Mapping").unwrap(),
                 record_continuations.as_any(),
                 &record_globals,
-                &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-                &py.import("sys").unwrap().getattr("getprofile").unwrap(),
             )
             .unwrap()
             .is_none()
@@ -376,8 +366,6 @@ fn standard_namedtuple_adapter_guard_drift_falls_back_once_on_the_same_row() {
                 &fixture.getattr("Mapping").unwrap(),
                 record_continuations.as_any(),
                 &record_globals,
-                &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-                &py.import("sys").unwrap().getattr("getprofile").unwrap(),
             )
             .unwrap()
             .unwrap_or_else(|| panic!("canonical {kind} fixture should be admitted"));
@@ -418,7 +406,7 @@ fn callable_join_namedtuple_snapshot_falls_back_once_after_live_list_replacement
     Python::attach(|py| {
         let fixture = PyModule::from_code(
             py,
-            c"from abc import get_cache_token\nfrom collections import namedtuple\n\nRow = namedtuple('Row', 'id value')\ntoken = get_cache_token()\ncanonical_code = Row.__dict__['_asdict'].__code__\nevents = []\nright = [Row(1, 'r1'), Row(2, 'r2')]\nleft = [Row(2, 'l2')]\n\nclass Replacement:\n    def __init__(self, id, value):\n        self.id = id\n        self.value = value\n    def _asdict(self):\n        return {'id': self.id, 'value': self.value}\n\ndef fallback(row):\n    events.append(f'fallback:{row.id}')\n    return dict(row._asdict())\n\ndef right_key(row):\n    events.append(f'right:{row.id}')\n    if row.id == 1:\n        right[1] = Replacement(2, 'r2')\n    return row.id\n\ndef left_key(row):\n    events.append(f'left:{row.id}')\n    return row.id\n",
+            c"from abc import get_cache_token\nfrom collections import namedtuple\n\nRow = namedtuple('Row', 'id value')\ntoken = get_cache_token()\ncanonical_code = Row.__dict__['_asdict'].__code__\nevents = []\nright = [Row(1, 'r1'), Row(2, 'r2')]\nleft = [Row(2, 'l2')]\n\ndef stable_cache_token():\n    return token\n\nclass Replacement:\n    def __init__(self, id, value):\n        self.id = id\n        self.value = value\n    def _asdict(self):\n        return {'id': self.id, 'value': self.value}\n\ndef fallback(row):\n    events.append(f'fallback:{row.id}')\n    return dict(row._asdict())\n\ndef right_key(row):\n    events.append(f'right:{row.id}')\n    if row.id == 1:\n        right[1] = Replacement(2, 'r2')\n    return row.id\n\ndef left_key(row):\n    events.append(f'left:{row.id}')\n    return row.id\n",
             c"standard_namedtuple_live_join_fixture.py",
             c"standard_namedtuple_live_join_fixture",
         )
@@ -435,7 +423,7 @@ fn callable_join_namedtuple_snapshot_falls_back_once_after_live_list_replacement
         let adapter = standard_namedtuple_record_adapter_v1(
             record_types.as_any(),
             &fallback,
-            &fixture.getattr("get_cache_token").unwrap(),
+            &fixture.getattr("stable_cache_token").unwrap(),
             &fixture.getattr("token").unwrap(),
             &fixture.getattr("namedtuple").unwrap(),
             &py.import("types").unwrap().getattr("CodeType").unwrap(),
@@ -445,11 +433,9 @@ fn callable_join_namedtuple_snapshot_falls_back_once_after_live_list_replacement
                 .unwrap(),
             record_continuations.as_any(),
             &record_globals,
-            &py.import("sys").unwrap().getattr("gettrace").unwrap(),
-            &py.import("sys").unwrap().getattr("getprofile").unwrap(),
         )
         .unwrap()
-        .unwrap();
+        .expect("the live-list replacement fixture should admit its canonical NamedTuple");
         let shared = PyFrozenSet::empty(py).unwrap();
         let joined = join_hashable_unique_records_v2(
             &fixture.getattr("left").unwrap(),

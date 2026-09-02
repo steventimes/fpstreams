@@ -31,9 +31,11 @@ from .async_ import (
     _Merge,
     _MergeMap,
     _Pairwise,
+    _Prefetch,
     _Prepend,
     _Scan,
     _ScanRight,
+    _SessionWindow,
     _SwitchMap,
     _Take,
     _TakeWhile,
@@ -245,7 +247,7 @@ def _window(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _concat(source: StreamFacts, operation: Any) -> StreamFacts:
     """Sum all proven-finite exact inputs, otherwise conservatively classify concatenation."""
-    sources = (source, *(item.facts for item in operation.sources))
+    sources = (source, *(item.current_facts() for item in operation.sources))
     total = 0
     exact = True
     for item in sources:
@@ -277,7 +279,7 @@ def _concat(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _zip(source: StreamFacts, operation: Any) -> StreamFacts:
     """Derive shortest-input termination and the minimum available cardinality bound."""
-    right = operation.source.facts
+    right = operation.source.current_facts()
     if (
         source.termination is TerminationEvidence.PROVEN_FINITE
         or right.termination is TerminationEvidence.PROVEN_FINITE
@@ -310,7 +312,7 @@ def _zip(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _zip_longest(source: StreamFacts, operation: Any) -> StreamFacts:
     """Derive longest-input termination while leaving output cardinality unknown."""
-    right = operation.source.facts
+    right = operation.source.current_facts()
     if (
         source.termination is TerminationEvidence.PROVEN_INFINITE
         or right.termination is TerminationEvidence.PROVEN_INFINITE
@@ -328,7 +330,7 @@ def _zip_longest(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _cross(source: StreamFacts, operation: Any) -> StreamFacts:
     """Derive Cartesian-product finiteness and multiply two exact finite counts."""
-    right = operation.source.facts
+    right = operation.source.current_facts()
     if source.cardinality.kind is CardinalityKind.EXACT and source.cardinality.value == 0:
         return _facts(
             source,
@@ -373,7 +375,7 @@ def _cross(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _merge(source: StreamFacts, operation: Any) -> StreamFacts:
     """Combine concurrent-source termination and mark cardinality and encounter order unknown."""
-    facts = (source, *(item.facts for item in operation.sources))
+    facts = (source, *(item.current_facts() for item in operation.sources))
     if any(item.termination is TerminationEvidence.PROVEN_INFINITE for item in facts):
         termination = TerminationEvidence.PROVEN_INFINITE
     elif all(item.termination is TerminationEvidence.PROVEN_FINITE for item in facts):
@@ -390,7 +392,7 @@ def _merge(source: StreamFacts, operation: Any) -> StreamFacts:
 
 def _combine_latest(source: StreamFacts, operation: Any) -> StreamFacts:
     """Classify latest-value combination, including the finite-empty case for any empty input."""
-    facts = (source, *(item.facts for item in operation.sources))
+    facts = (source, *(item.current_facts() for item in operation.sources))
     if any(
         item.cardinality.kind is CardinalityKind.EXACT and item.cardinality.value == 0
         for item in facts
@@ -419,11 +421,6 @@ def _state_stateless(_operation: Any) -> StateProfile:
     return StateProfile.stateless()
 
 
-def _state_constant(_operation: Any) -> StateProfile:
-    """Resolve an operator to a constant-memory profile."""
-    return StateProfile.constant()
-
-
 def _state_bounded(operation: Any) -> StateProfile:
     """Infer a non-negative state bound from the first configured buffer or concurrency field."""
     bound = (
@@ -431,6 +428,7 @@ def _state_bounded(operation: Any) -> StateProfile:
         or getattr(operation, "size", None)
         or getattr(operation, "max_items", None)
         or getattr(operation, "max_count", None)
+        or getattr(operation, "capacity", None)
         or getattr(operation, "concurrency", None)
     )
     return StateProfile.bounded(max(0, int(bound or 0)))
@@ -569,6 +567,8 @@ _ASYNC_NAMES: dict[type[Any], str] = {
     _Timeout: "timeout",
     _Debounce: "debounce",
     _BufferTimeout: "buffer_timeout",
+    _SessionWindow: "session_window",
+    _Prefetch: "prefetch",
     _Delay: "delay",
     _Throttle: "throttle",
     _Take: "take",
@@ -647,6 +647,12 @@ for _class, _name in _ASYNC_NAMES.items():
     if _class is _MapAsync:
         _state = _state_bounded
         _transfer = _async_map_transfer
+    elif _class is _Prefetch:
+        _state = _state_bounded
+    elif _class is _SessionWindow:
+        _progress = ProgressKind.PREFIX_EMITTING
+        _state = _state_bounded
+        _transfer = _unknown_cardinality
     elif _class is _Filter:
         _transfer = _filter
     elif _class is _FlatMap:

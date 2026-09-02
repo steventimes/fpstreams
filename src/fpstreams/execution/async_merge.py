@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
@@ -16,6 +15,7 @@ from ..physical.async_plan import (
 from ..planning.async_ import _to_async_iterator
 from ..planning.async_utils import _MISSING, _resolve, close_async_iterators
 from ..runtime.query import QueryRuntime
+from ..runtime.resources import run_async_cleanup
 from ..runtime.tasks import TaskRole, TaskScope
 
 
@@ -31,6 +31,7 @@ async def execute_merge(
     scope = runtime.tasks.scope(f"merge:{node.logical_ids[0]}")
     active: dict[int, AsyncIterator[Any]] = {0: source}
     pending: dict[asyncio.Task[Any], int] = {}
+    active_error: BaseException | None = None
     try:
         for position, additional in enumerate(node.operation.sources, start=1):
             active[position] = additional.open()
@@ -38,20 +39,32 @@ async def execute_merge(
             pending[scope.create_task(_pull(iterator), role=TaskRole.SOURCE)] = position
         while pending:
             done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            ordered_done = sorted(done, key=pending.__getitem__)
+            for task in ordered_done:
+                failure = task.exception() if not task.cancelled() else asyncio.CancelledError()
+                if failure is not None and not isinstance(failure, StopAsyncIteration):
+                    pending.pop(task)
+                    await scope.take_result(task)
+                    raise AssertionError("unreachable")
+            for task in ordered_done:
                 position = pending.pop(task)
                 iterator = active[position]
                 try:
                     item = await scope.take_result(task)
                 except StopAsyncIteration:
-                    await close_async_iterators((iterator,), active_error=sys.exception())
                     active.pop(position)
+                    await close_async_iterators((iterator,))
                     continue
                 yield item
                 pending[scope.create_task(_pull(iterator), role=TaskRole.SOURCE)] = position
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await scope.aclose()
-        await close_async_iterators(tuple(active.values()), active_error=sys.exception())
+        await run_async_cleanup(
+            (scope.aclose, lambda: close_async_iterators(tuple(active.values()))),
+            active_error,
+        )
 
 
 async def execute_combine_latest(
@@ -68,6 +81,7 @@ async def execute_combine_latest(
     pending: dict[asyncio.Task[Any], int] = {}
     latest: list[Any] = [_MISSING] * (len(node.operation.sources) + 1)
     ready = 0
+    active_error: BaseException | None = None
     try:
         for position, additional in enumerate(node.operation.sources, start=1):
             active[position] = additional.open()
@@ -75,16 +89,29 @@ async def execute_combine_latest(
             pending[scope.create_task(_pull(iterator), role=TaskRole.SOURCE)] = position
         while pending:
             done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            ordered_done = sorted(done, key=pending.__getitem__)
+            # An empty source makes future tuples impossible, but every pull that
+            # completed in the same scheduler turn must be observed first. Otherwise
+            # set iteration order can silently discard a concurrent source failure.
+            for task in ordered_done:
+                failure = task.exception() if not task.cancelled() else asyncio.CancelledError()
+                if failure is not None and not isinstance(failure, StopAsyncIteration):
+                    pending.pop(task)
+                    await scope.take_result(task)
+                    raise AssertionError("unreachable")
+
+            impossible = False
+            reschedule: list[tuple[int, AsyncIterator[Any]]] = []
+            for task in ordered_done:
                 position = pending.pop(task)
                 iterator = active[position]
                 try:
                     item = await scope.take_result(task)
                 except StopAsyncIteration:
-                    await close_async_iterators((iterator,), active_error=sys.exception())
                     active.pop(position)
+                    await close_async_iterators((iterator,))
                     if latest[position] is _MISSING:
-                        return
+                        impossible = True
                     continue
 
                 if latest[position] is _MISSING:
@@ -92,10 +119,19 @@ async def execute_combine_latest(
                 latest[position] = item
                 if ready == len(latest):
                     yield tuple(latest)
+                reschedule.append((position, iterator))
+            if impossible:
+                return
+            for position, iterator in reschedule:
                 pending[scope.create_task(_pull(iterator), role=TaskRole.SOURCE)] = position
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await scope.aclose()
-        await close_async_iterators(tuple(active.values()), active_error=sys.exception())
+        await run_async_cleanup(
+            (scope.aclose, lambda: close_async_iterators(tuple(active.values()))),
+            active_error,
+        )
 
 
 async def _open_inner(operation: Any, item: Any, runtime: QueryRuntime) -> AsyncIterator[Any]:
@@ -160,10 +196,12 @@ async def execute_merge_map(
     scope = runtime.tasks.scope(f"merge_map:{node.logical_ids[0]}")
     outer_pull: asyncio.Task[Any] | None = None
     outer_done = False
-    mappings: set[asyncio.Task[AsyncIterator[Any]]] = set()
+    mappings: dict[asyncio.Task[AsyncIterator[Any]], int] = {}
     inners: dict[int, AsyncIterator[Any]] = {}
     inner_pulls: dict[asyncio.Task[Any], int] = {}
+    next_mapping_id = 0
     next_inner_id = 0
+    active_error: BaseException | None = None
     try:
         while True:
             occupied = len(mappings) + len(inners)
@@ -178,7 +216,26 @@ async def execute_merge_map(
                 return
 
             done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            ordered_done = sorted(
+                done,
+                key=lambda task: (
+                    (0, 0)
+                    if task is outer_pull
+                    else (1, mappings[task])
+                    if task in mappings
+                    else (2, inner_pulls[task])
+                ),
+            )
+            for task in ordered_done:
+                failure = task.exception() if not task.cancelled() else asyncio.CancelledError()
+                stop_is_end = task is outer_pull or task in inner_pulls
+                if failure is not None and (
+                    not stop_is_end or not isinstance(failure, StopAsyncIteration)
+                ):
+                    await scope.take_result(task)
+                    raise AssertionError("unreachable")
+
+            for task in ordered_done:
                 if task is outer_pull:
                     outer_pull = None
                     try:
@@ -186,17 +243,17 @@ async def execute_merge_map(
                     except StopAsyncIteration:
                         outer_done = True
                     else:
-                        mappings.add(
-                            scope.create_task(
-                                _open_inner(node.operation, outer_item, runtime),
-                                role=TaskRole.USER_CALL,
-                            )
+                        mapping = scope.create_task(
+                            _open_inner(node.operation, outer_item, runtime),
+                            role=TaskRole.USER_CALL,
                         )
+                        mappings[mapping] = next_mapping_id
+                        next_mapping_id += 1
                     continue
 
                 if task in mappings:
                     mapping = task
-                    mappings.remove(mapping)
+                    mappings.pop(mapping)
                     nested = await scope.take_result(mapping)
                     position = next_inner_id
                     next_inner_id += 1
@@ -209,18 +266,26 @@ async def execute_merge_map(
                 try:
                     item = await scope.take_result(task)
                 except StopAsyncIteration:
-                    await _release_inners(runtime, (nested,))
                     inners.pop(position)
+                    await _release_inners(runtime, (nested,))
                     continue
                 yield item
                 inner_pulls[scope.create_task(_pull(nested), role=TaskRole.SOURCE)] = position
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await scope.aclose()
-        await _close_inner_operator_ownership(
-            runtime,
-            (source,),
-            tuple(inners.values()),
-            active_error=sys.exception(),
+        await run_async_cleanup(
+            (
+                scope.aclose,
+                lambda: _close_inner_operator_ownership(
+                    runtime,
+                    (source,),
+                    tuple(inners.values()),
+                    active_error=None,
+                ),
+            ),
+            active_error,
         )
 
 
@@ -246,6 +311,7 @@ async def execute_switch_map(  # noqa: C901
     mapping: asyncio.Task[AsyncIterator[Any]] | None = None
     inner: AsyncIterator[Any] | None = None
     inner_pull: asyncio.Task[Any] | None = None
+    active_error: BaseException | None = None
     try:
         while True:
             waiting = {task for task in (outer_pull, mapping, inner_pull) if task is not None}
@@ -301,12 +367,20 @@ async def execute_switch_map(  # noqa: C901
                     yield item
                     if inner is not None:
                         inner_pull = scope.create_task(_pull(inner), role=TaskRole.SOURCE)
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await scope.aclose()
         current_inners = () if inner is None else (inner,)
-        await _close_inner_operator_ownership(
-            runtime,
-            (source,),
-            current_inners,
-            active_error=sys.exception(),
+        await run_async_cleanup(
+            (
+                scope.aclose,
+                lambda: _close_inner_operator_ownership(
+                    runtime,
+                    (source,),
+                    current_inners,
+                    active_error=None,
+                ),
+            ),
+            active_error,
         )

@@ -7,13 +7,13 @@ use super::*;
 /// The per-table random seed makes precomputed collision patterns less reusable across
 /// tables; this intentionally does not claim SipHash's adaptive denial-of-service resistance.
 #[derive(Clone)]
-struct SeededI64BuildHasher {
+pub(crate) struct SeededI64BuildHasher {
     seed_a: u64,
     seed_b: u64,
 }
 
 impl SeededI64BuildHasher {
-    fn random() -> Self {
+    pub(crate) fn random() -> Self {
         let entropy = RandomState::new();
         Self {
             seed_a: entropy.hash_one(0x6a09_e667_f3bc_c909_u64),
@@ -22,7 +22,7 @@ impl SeededI64BuildHasher {
     }
 }
 
-struct SeededI64Hasher {
+pub(crate) struct SeededI64Hasher {
     seed_a: u64,
     seed_b: u64,
     state: u64,
@@ -178,6 +178,36 @@ pub(crate) fn group_sum_i64_exact_pairs_v1(
     group_sum_i64_tuple_rows(source, 0, 1, Some(2))
 }
 
+#[pyfunction]
+/// Aggregate exact pairs once, returning compact pairs or the final nested dictionary.
+pub(crate) fn group_sum_i64_exact_pairs_v2(
+    source: &Bound<'_, PyAny>,
+    output_name: &Bound<'_, PyAny>,
+) -> PyResult<Option<(bool, Py<PyAny>)>> {
+    // Validate the output key before scanning. Exact strings have side-effect-free hashing and
+    // equality, so a declined native attempt cannot observe user code while materializing.
+    let output_name = match output_name.cast_exact::<PyString>() {
+        Ok(name) => name,
+        Err(_) => return Ok(None),
+    };
+    let Some(groups) = group_sum_i64_tuple_rows(source, 0, 1, Some(2))? else {
+        return Ok(None);
+    };
+    let py = source.py();
+    if groups.len() < GROUP_SUM_FINAL_ROWS_THRESHOLD {
+        let pairs = PyList::new(py, groups)?;
+        return Ok(Some((false, pairs.into_any().unbind())));
+    }
+
+    let result = new_dict_fallible(py)?;
+    for (key, total) in groups {
+        let values = new_dict_fallible(py)?;
+        set_widened_i64_item(&values, output_name, total)?;
+        result.set_item(key, values)?;
+    }
+    Ok(Some((true, result.into_any().unbind())))
+}
+
 /// Aggregate exact tuple rows, optionally requiring one fixed row width.
 fn group_sum_i64_tuple_rows(
     source: &Bound<'_, PyAny>,
@@ -249,7 +279,9 @@ pub(crate) fn group_sum_i64_rows_v1(
         Ok(name) => name,
         Err(_) => return Ok(None),
     };
-    let Some(groups) = group_sum_i64_pairs(source, key_index, value_index)? else {
+    // Keep the scan local to this materializing wrapper. Calling through the legacy
+    // ``#[pyfunction]`` entry point prevents LLVM from specializing the fixed-index row loop.
+    let Some(groups) = group_sum_i64_tuple_rows(source, key_index, value_index, None)? else {
         return Ok(None);
     };
     let py = source.py();
@@ -264,7 +296,7 @@ pub(crate) fn group_sum_i64_rows_v1(
     for (key, total) in groups {
         let row = new_dict_fallible(py)?;
         row.set_item(key_name, key)?;
-        row.set_item(output_name, total)?;
+        set_widened_i64_item(&row, output_name, total)?;
         rows.push(row.unbind());
     }
     let rows = PyList::new(py, rows)?;
@@ -280,6 +312,28 @@ fn group_exact_tuple_sequence(
     value_index: isize,
     required_width: Option<usize>,
 ) -> PyResult<Option<ObjectKeyGroups>> {
+    if key_index >= 0 && value_index >= 0 {
+        let key_position = key_index as usize;
+        let value_position = value_index as usize;
+        if required_width == Some(2) && key_position == 0 && value_position == 1 {
+            return group_exact_fixed_index_tuple_sequence::<true>(
+                py,
+                row_count,
+                get_row,
+                key_position,
+                value_position,
+            );
+        }
+        if required_width.is_none() {
+            return group_exact_fixed_index_tuple_sequence::<false>(
+                py,
+                row_count,
+                get_row,
+                key_position,
+                value_position,
+            );
+        }
+    }
     let mut state = ObjectKeyGroupState::new(row_count);
     let mut cached_layout: Option<(usize, usize, usize)> = None;
     let mut row_index = 0;
@@ -324,6 +378,90 @@ fn group_exact_tuple_sequence(
         row_index += 1;
     }
     Ok(Some(state.groups))
+}
+
+/// Aggregate fixed non-negative tuple positions without normalizing them for every row.
+fn group_exact_fixed_index_tuple_sequence<const EXACT_PAIR: bool>(
+    py: Python<'_>,
+    row_count: usize,
+    mut get_row: impl FnMut(usize) -> *mut ffi::PyObject,
+    key_position: usize,
+    value_position: usize,
+) -> PyResult<Option<ObjectKeyGroups>> {
+    let mut state = ObjectKeyGroupState::new(row_count);
+    let mut row_index = 0;
+    while row_index < row_count && state.groups.len() <= OBJECT_KEY_CACHE_SLOTS {
+        let row = get_row(row_index);
+        if row.is_null() {
+            return Err(PyErr::fetch(py));
+        }
+        if group_exact_fixed_index_tuple_row::<true, EXACT_PAIR>(
+            py,
+            row,
+            key_position,
+            value_position,
+            &mut state,
+        )?
+        .is_none()
+        {
+            return Ok(None);
+        }
+        row_index += 1;
+    }
+    while row_index < row_count {
+        let row = get_row(row_index);
+        if row.is_null() {
+            return Err(PyErr::fetch(py));
+        }
+        if group_exact_fixed_index_tuple_row::<false, EXACT_PAIR>(
+            py,
+            row,
+            key_position,
+            value_position,
+            &mut state,
+        )?
+        .is_none()
+        {
+            return Ok(None);
+        }
+        row_index += 1;
+    }
+    Ok(Some(state.groups))
+}
+
+/// Validate one exact tuple and aggregate two already-normalized non-negative positions.
+#[inline(always)]
+fn group_exact_fixed_index_tuple_row<const USE_OBJECT_CACHE: bool, const EXACT_PAIR: bool>(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+    key_position: usize,
+    value_position: usize,
+    state: &mut ObjectKeyGroupState,
+) -> PyResult<Option<()>> {
+    // SAFETY: row is kept live by the GIL-protected list, immutable source tuple, or owned
+    // free-threaded snapshot used by the sequence caller.
+    if unsafe { ffi::PyTuple_CheckExact(row) } == 0 {
+        return Ok(None);
+    }
+    // SAFETY: row was proven to be an exact tuple.
+    let width = unsafe { ffi::PyTuple_Size(row) };
+    if width < 0 {
+        return Err(PyErr::fetch(py));
+    }
+    let width = width as usize;
+    if (EXACT_PAIR && width != 2)
+        || (!EXACT_PAIR && (key_position >= width || value_position >= width))
+    {
+        return Ok(None);
+    }
+    // SAFETY: exact-pair mode fixes positions 0 and 1; general mode checked both positions.
+    let key_object = unsafe { ffi::PyTuple_GetItem(row, key_position as ffi::Py_ssize_t) };
+    // SAFETY: as above for the selected value position.
+    let value_object = unsafe { ffi::PyTuple_GetItem(row, value_position as ffi::Py_ssize_t) };
+    if key_object.is_null() || value_object.is_null() {
+        return Err(PyErr::fetch(py));
+    }
+    add_exact_i64_objects::<USE_OBJECT_CACHE>(py, key_object, value_object, state)
 }
 
 /// Validate and aggregate one exact tuple row in either cached or uncached key mode.
@@ -392,14 +530,14 @@ pub(super) fn new_dict_fallible<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyD
 }
 
 /// Adaptive exact-integer index kept outside Python containers and critical sections.
-enum I64GroupPositions {
+pub(super) enum I64GroupPositions {
     Dense(Vec<usize>),
     Hash(FastI64PositionMap),
 }
 
 impl I64GroupPositions {
     /// Find a key while adaptively retaining dense slots only for a compact non-negative range.
-    fn position<I>(
+    pub(super) fn position<I>(
         &mut self,
         key: i64,
         dense_limit: usize,
@@ -446,7 +584,7 @@ impl I64GroupPositions {
     }
 
     /// Reserve storage for one new hashed group; dense storage is prepared by `position`.
-    fn try_reserve_group(&mut self) -> PyResult<()> {
+    pub(super) fn try_reserve_group(&mut self) -> PyResult<()> {
         if let Self::Hash(positions) = self {
             positions.try_reserve(1).map_err(group_allocation_error)?;
         }
@@ -454,7 +592,7 @@ impl I64GroupPositions {
     }
 
     /// Record a position after all fallible reservations have succeeded.
-    fn insert(&mut self, key: i64, position: usize) {
+    pub(super) fn insert(&mut self, key: i64, position: usize) {
         match self {
             Self::Dense(slots) => {
                 let index =
@@ -469,7 +607,6 @@ impl I64GroupPositions {
     }
 }
 
-/// Mutable aggregation state kept outside Python containers and their critical sections.
 #[derive(Clone, Copy)]
 struct ObjectKeyCacheEntry {
     object: *mut ffi::PyObject,
@@ -922,7 +1059,7 @@ pub(crate) fn group_sum_i64_dict_rows_v1<'py>(
     for (key, total) in groups {
         let row = new_dict_fallible(py)?;
         row.set_item(key_name, key)?;
-        row.set_item(output_name, total)?;
+        set_widened_i64_item(&row, output_name, total)?;
         rows.push(row.unbind());
     }
     let rows = PyList::new(py, rows)?;

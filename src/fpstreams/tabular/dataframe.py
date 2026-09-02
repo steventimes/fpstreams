@@ -84,21 +84,6 @@ def _stable_columnar_opener(frame: Any, table: Callable[[], Any]) -> Callable[[]
     return table if type(frame) is pandas.DataFrame else None
 
 
-def dataframe_row_factory(
-    frame: Any,
-    *,
-    batch_size: int = 65_536,
-    allow_copy: bool = True,
-) -> Callable[[], Iterator[dict[str, Any]]]:
-    """Build a row opener for an object implementing the dataframe interchange protocol."""
-    table, size = _dataframe_table_factory(
-        frame,
-        batch_size=batch_size,
-        allow_copy=allow_copy,
-    )
-    return _dataframe_rows(table, size)
-
-
 def dataframe_source(
     frame: Any,
     *,

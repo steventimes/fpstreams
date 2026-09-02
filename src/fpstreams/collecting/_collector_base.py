@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
+
+from ..runtime.iterators import closing_iterators
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -37,6 +39,7 @@ class Collector(Generic[T, S, R]):
     combine: Callable[[S, S], S] | None = None
     done: Callable[[S], bool] = _never_done
     native: Any | None = None
+    _lifecycle_revision: int = field(init=False, default=0, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Require callable lifecycle hooks and an optional callable state combiner."""
@@ -56,7 +59,7 @@ class Collector(Generic[T, S, R]):
         state = self.initializer()
         completed = self.done(state) if self.done is not _never_done else False
         iterator = iter(values)
-        try:
+        with closing_iterators((iterator,)):
             while not completed:
                 try:
                     value = next(iterator)
@@ -65,11 +68,49 @@ class Collector(Generic[T, S, R]):
                 state = self.step(state, value)
                 if self.done is not _never_done:
                     completed = self.done(state)
-        finally:
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                close()
         return self.finish(state)
+
+
+class _LifecycleSlot:
+    """Increment a private revision when an explicit lifecycle slot is replaced.
+
+    Normal assignment remains rejected by the frozen dataclass. ``object.__setattr__`` is
+    intentionally observable in Python, though, and is used by compatibility tests and advanced
+    callers. Wrapping the generated member descriptor lets optimized consumers notice that rare
+    escape hatch with one integer comparison per row instead of re-validating every function.
+    """
+
+    __slots__ = ("_revision", "_slot")
+
+    def __init__(self, slot: Any, revision: Any) -> None:
+        self._slot = slot
+        self._revision = revision
+
+    def __get__(self, instance: object | None, owner: type[object] | None = None) -> Any:
+        if instance is None:
+            return self
+        return self._slot.__get__(instance, owner)
+
+    def __set__(self, instance: object, value: Any) -> None:
+        self._slot.__set__(instance, value)
+        try:
+            revision = self._revision.__get__(instance, type(instance))
+        except AttributeError:
+            revision = 0
+        self._revision.__set__(instance, revision + 1)
+
+
+# Dataclass initialization and explicit ``object.__setattr__`` both use these descriptors. The
+# generated initializer writes the revision's default last, so newly constructed collectors start
+# at zero while subsequent lifecycle replacement increments monotonically.
+_COLLECTOR_REVISION_SLOT = Collector.__dict__["_lifecycle_revision"]
+for _lifecycle_name in ("initializer", "step", "finish", "combine", "done"):
+    _lifecycle_slot = Collector.__dict__[_lifecycle_name]
+    setattr(
+        Collector,
+        _lifecycle_name,
+        _LifecycleSlot(_lifecycle_slot, _COLLECTOR_REVISION_SLOT),
+    )
 
 
 CollectorItems = tuple[tuple[str, Collector[Any, Any, Any]], ...]

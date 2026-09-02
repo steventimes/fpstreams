@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from threading import RLock
 from typing import TypeVar, cast
@@ -41,6 +41,22 @@ def _append_cleanup_failure(target: BaseException, error: BaseException) -> None
     if target is not error:
         for note in nested_notes:
             target.add_note(note)
+
+
+async def run_async_cleanup(
+    phases: Iterable[Callable[[], Awaitable[None]]],
+    active_error: BaseException | None = None,
+) -> None:
+    """Attempt every async cleanup phase and preserve the active operation failure."""
+    if isinstance(active_error, GeneratorExit):
+        active_error = None
+    errors: list[BaseException] = []
+    for phase in phases:
+        try:
+            await phase()
+        except BaseException as error:
+            errors.append(error)
+    _add_cleanup_failure(active_error, errors)
 
 
 class ResourceRegistry:

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import inspect
-import sys
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from typing import Any
 
 from ..physical.async_plan import AsyncMapNode
 from ..planning.async_utils import close_async_iterators
 from ..runtime.query import QueryRuntime
+from ..runtime.resources import run_async_cleanup
 from ..runtime.tasks import TaskRole
 from .async_queue import CompletionQueue, OrderedResultRing
 
@@ -30,18 +29,13 @@ async def _call(node: AsyncMapNode, item: Any) -> Any:
     return await asyncio.wait_for(invoke(), node.operation.timeout)
 
 
-async def _observe(scope: Any, task: Any) -> None:
-    """Drain a completed task after its done callback has captured the public outcome."""
-    with suppress(BaseException):
-        await scope.take_result(task)
-
-
 async def execute_async_map(
     source: AsyncIterator[Any], node: AsyncMapNode, runtime: QueryRuntime
 ) -> AsyncIterator[Any]:
     """Execute bounded map work with exact ordered or completion-order semantics."""
     operation = node.operation
     scope = runtime.tasks.scope(f"map:{node.logical_ids[0]}", max_tasks=operation.concurrency)
+    active_error: BaseException | None = None
     try:
         if operation.concurrency == 1:
             async for item in source:
@@ -51,13 +45,18 @@ async def execute_async_map(
         completions = CompletionQueue()
         pending: dict[int, Any] = {}
         next_sequence = 0
+        emitted = 0
         source_done = False
-        ring = OrderedResultRing(operation.concurrency) if operation.ordered else None
+        ring = OrderedResultRing(operation.buffer) if operation.ordered else None
 
         async def fill() -> None:
-            """Submit source values only until the public concurrency budget is full."""
+            """Fill active mapper slots without exceeding the submitted-result buffer."""
             nonlocal next_sequence, source_done
-            while not source_done and len(pending) < operation.concurrency:
+            while (
+                not source_done
+                and len(pending) < operation.concurrency
+                and next_sequence - emitted < operation.buffer
+            ):
                 try:
                     item = await anext(source)
                 except StopAsyncIteration:
@@ -73,16 +72,21 @@ async def execute_async_map(
             if not pending:
                 continue
             completion = await completions.get()
-            task = pending[completion.sequence]
-            await _observe(scope, task)
+            task = pending.pop(completion.sequence)
+            scope.release_observed(task, successful=completion.error is None)
             if ring is None:
-                pending.pop(completion.sequence)
+                emitted += 1
                 yield completion.result()
                 continue
             ring.put(completion.sequence, completion)
             while (ready := ring.pop_next()) is not None:
-                pending.pop(ready.sequence)
+                emitted += 1
                 yield ready.result()
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await scope.aclose()
-        await close_async_iterators((source,), active_error=sys.exception())
+        await run_async_cleanup(
+            (scope.aclose, lambda: close_async_iterators((source,))),
+            active_error,
+        )

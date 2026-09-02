@@ -39,7 +39,7 @@ jobs:
           enable-cache: true
       - name: Install and build
         run: |
-          uv sync --group build --group test
+          uv sync --frozen --group build --group test
           uv run maturin develop --release
       - name: Test
         run: uv run pytest -q
@@ -58,7 +58,7 @@ jobs:
       - name: Verify the base install without optional dependencies
         run: >-
           uv run --isolated --frozen --no-default-groups
-          python tools/smoke_release.py --minimal
+          python scripts/smoke_release.py --minimal
 
   platform-smoke:
     if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
@@ -93,27 +93,34 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           enable-cache: true
-      - name: Install all adapters and quality tools
+      - name: Install adapters, quality, and documentation dependencies
         run: |
-          uv sync --frozen --group build --group test --group lint --group type --extra arrow --extra data --extra polars
+          uv sync --frozen --group build --group test --group lint --group type --group docs --extra arrow --extra data --extra polars
           uv run maturin develop --release
-      - name: Exercise adapter and table contracts with warnings as errors
-        run: uv run pytest -q -W error tests/test_release.py tests/test_tabular.py -k 'optional_backend or adapter or table'
       - name: Branch coverage
         run: |
-          uv run pytest --cov=src/fpstreams --cov-branch --cov-report=term-missing --cov-report=json
-          uv run python tools/check_coverage.py coverage.json
+          uv run pytest -W error --cov=src/fpstreams --cov-branch --cov-report=term-missing
+          uv run coverage report --fail-under=85
+          uv run coverage report --include='src/fpstreams/planning/*.py' --fail-under=90
+          uv run coverage report --include='src/fpstreams/execution/native.py' --fail-under=90
+          uv run coverage report --include='src/fpstreams/tabular/spill*.py' --fail-under=90
+          uv run coverage report --include='src/fpstreams/execution/async*.py' --fail-under=85
       - name: Python quality
         run: |
-          uv run ruff check src tests tools benchmark.py
-          uv run ruff format --check src tests tools benchmark.py
+          uv run ruff check src tests scripts benchmarks benchmark.py
+          uv run ruff format --check src tests scripts benchmarks benchmark.py
           uv run mypy src/fpstreams
+          uv run python scripts/check_release_version.py
           uv lock --check
       - name: Rust quality
         run: |
           cargo fmt --manifest-path rust/Cargo.toml -- --check
           cargo test --manifest-path rust/Cargo.toml
           cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - name: Documentation and browser wheel
+        run: |
+          uv run python scripts/build_browser_wheel.py
+          uv run mkdocs build --strict --config-file fpstreams/mkdocs.yml --site-dir /tmp/fpstreams-site
 
   benchmark-quick:
     if: github.event_name == 'pull_request'
@@ -167,7 +174,7 @@ jobs:
           uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-1.json
           uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-2.json
           uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-3.json
-          uv run python tools/compare_benchmarks.py --create-baseline \
+          uv run python -m benchmarks.regression --create-baseline \
             --provenance local_one_shot_unreviewed --output scheduled-local-baseline.json \
             run-1.json run-2.json run-3.json
       - name: Enforce same-run timing and resource consistency
@@ -177,9 +184,9 @@ jobs:
           # A reviewed file enables cross-commit comparison. Until one exists,
           # this fallback only checks a fourth run against this job's local median.
           if [ -f benchmarks/baselines/engine-v2.json ]; then
-            uv run python tools/compare_benchmarks.py benchmarks/baselines/engine-v2.json benchmark-full.json
+            uv run python -m benchmarks.regression benchmarks/baselines/engine-v2.json benchmark-full.json
           else
-            uv run python tools/compare_benchmarks.py scheduled-local-baseline.json benchmark-full.json
+            uv run python -m benchmarks.regression scheduled-local-baseline.json benchmark-full.json
           fi
       - name: Record NumPy and Pandas comparisons
         run: >-
@@ -209,40 +216,29 @@ jobs:
           enable-cache: true
       - name: Build native extension
         run: |
-          uv sync --group build --group test
+          uv sync --frozen --group build --group test
           uv run maturin develop --release
       - name: Static audit
-        run: uv run python tools/audit_free_threaded.py
+        run: >-
+          uv run pytest -q
+          tests/test_release.py::test_rust_sources_declare_free_threading_without_unsafe_shared_state
       - name: Guarded NamedTuple adapter stays GIL-only
-        run: |
-          uv run python - <<'PY'
-          from fpstreams import _native
-
-          factory = _native.standard_namedtuple_record_adapter_v1
-          assert factory(*(None,) * 11) is None
-          PY
-      - name: Native record join snapshot stress
+        run: >-
+          uv run pytest -q
+          tests/test_engine.py::test_standard_namedtuple_adapter_stays_disabled_without_the_gil
+      - name: Native snapshot stress
         env:
           FPSTREAMS_FT_JOIN_ITERATIONS: "500000"
+          FPSTREAMS_FT_GROUP_ITERATIONS: "500000"
+          FPSTREAMS_FT_DICT_GROUP_ITERATIONS: "500000"
         run: >-
           uv run pytest -q
           tests/test_engine.py::test_exact_record_join_snapshot_never_runs_colliding_key_protocol_during_mutation
           tests/test_engine.py::test_exact_record_join_compact_right_snapshot_is_coherent_during_mutation
-      - name: Native tuple-row group snapshot stress
-        env:
-          FPSTREAMS_FT_GROUP_ITERATIONS: "500000"
-        run: >-
-          uv run pytest -q
           tests/test_engine.py::test_exact_list_tuple_row_group_sum_uses_a_coherent_snapshot_during_mutation
-      - name: Native exact-dict group lock stress
-        env:
-          FPSTREAMS_FT_DICT_GROUP_ITERATIONS: "500000"
-        run: >-
-          uv run pytest -q
           tests/test_engine.py::test_exact_dict_group_sum_locks_shape_before_selector_lookup_during_mutation
       - name: Smoke
-        run: uv run python tools/free_threaded_smoke.py --threads 16 --iterations 20 --json free-threaded.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: free-threaded-smoke
-          path: free-threaded.json
+        env:
+          FPSTREAMS_FT_SMOKE_THREADS: "16"
+          FPSTREAMS_FT_SMOKE_ITERATIONS: "20"
+        run: uv run pytest -q tests/test_runtime.py::test_free_threaded_flow_smoke

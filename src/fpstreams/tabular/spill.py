@@ -44,20 +44,24 @@ from .spill_limits import SpillBudget, SpillLimits, raise_spill_limit
 
 _MAX_PARTITIONS = 256
 _MIN_SPILL_FILES = 3
-# The 300k-row/90%-hot prototype used an eight-row admission threshold and a
-# 512-key hot cache: at most seven full records warm a recurring key before
-# compaction.  The 8,192-entry exact admission sketch is the prototype's fixed
-# 16x guard band; refusing new entries at the cap keeps its memory deterministic
-# and prevents hash collisions from changing key identity or equality callbacks.
-# A 256-row prefix auto-colds streams with fewer than one repeated lookup per
-# eight rows.  The 4 KiB key and 256-node flat-row proof caps bound every retained
-# key and eligibility scan; the frozen six-field benchmark remains well inside.
+# Count compaction keeps exact frequency evidence and retained states bounded.
+# Two 256-row windows reject persistently cold streams. Stronger recurrence may
+# earn up to eight windows to reach admission, while a dominant key activates
+# immediately; an active window must then retain at least one row in eight. This
+# admits sustained low-cardinality/skewed streams while retiring to canonical raw
+# spilling when a prefix signal goes stale. Exact keys are tracked without
+# collision-based estimates, and the flat-row proof scans at most 127 fields.
+# String limits are measured in characters; bytes and integers use bytes.
 _HOT_COUNT_ADMISSION = 8
 _HOT_COUNT_ADMISSION_CAPACITY = 8_192
 _HOT_COUNT_CACHE_SIZE = 512
 _HOT_COUNT_MAX_KEY_BYTES = 4 * 1_024
 _HOT_COUNT_SAMPLE_ROWS = 256
-_HOT_COUNT_SAMPLE_REPEAT_DIVISOR = 8
+_HOT_COUNT_COLD_RECHECK_WINDOWS = 2
+_HOT_COUNT_EXTENSION_WINDOWS = 4
+_HOT_COUNT_MAX_SAMPLE_WINDOWS = _HOT_COUNT_ADMISSION
+_HOT_COUNT_DOMINANT_DIVISOR = 2
+_HOT_COUNT_PRODUCTIVITY_DIVISOR = 8
 _PICKLE_PURE_SCAN_LIMIT = 256
 _PICKLE_PURE_VALUES = frozenset({type(None), bool, int, float, str, bytes})
 JoinRow = tuple[int, Any, dict[str, Any] | None]
@@ -87,6 +91,49 @@ class _AdmissionSketch:
         if len(self._counts) < _HOT_COUNT_ADMISSION_CAPACITY:
             self._counts[key] = 1
         return 1
+
+    @property
+    def tracked_keys(self) -> int:
+        """Return the number of exact keys currently retaining frequency evidence."""
+        return len(self._counts)
+
+
+def _sample_predicts_compaction(
+    sketch: _AdmissionSketch,
+    *,
+    observed_rows: int,
+    window_peak: int,
+    window_rows: int,
+) -> bool:
+    """Require amortizable recurrence or a dominant key before retaining rows."""
+    tracked = sketch.tracked_keys
+    amortizable = tracked > 0 and observed_rows >= tracked * _HOT_COUNT_ADMISSION
+    dominant = window_peak * _HOT_COUNT_DOMINANT_DIVISOR > window_rows
+    return amortizable or dominant
+
+
+def _sampling_can_continue(
+    sketch: _AdmissionSketch,
+    *,
+    observed_rows: int,
+    observed_windows: int,
+) -> bool:
+    """Spend more proof work only while recurrence can plausibly reach admission."""
+    if observed_windows >= _HOT_COUNT_MAX_SAMPLE_WINDOWS:
+        return False
+    if observed_windows < _HOT_COUNT_COLD_RECHECK_WINDOWS:
+        return True
+    tracked = sketch.tracked_keys
+    if tracked == 0 or observed_rows < tracked * _HOT_COUNT_DOMINANT_DIVISOR:
+        return False
+    if observed_windows < _HOT_COUNT_EXTENSION_WINDOWS:
+        return True
+    return observed_rows >= tracked * (_HOT_COUNT_ADMISSION // 2)
+
+
+def _active_window_is_productive(*, retained_rows: int, observed_rows: int) -> bool:
+    """Keep an active cache only while its measured retention can repay the proof work."""
+    return retained_rows * _HOT_COUNT_PRODUCTIVITY_DIVISOR >= observed_rows
 
 
 def _exact_primitive_hot_key(key: Any) -> bool:
@@ -178,11 +225,17 @@ def _partition_count_rows(
     writers: _SpillPartitionWriters,
     partitions: int,
 ) -> None:
-    """Write cold rows verbatim and retain only bounded hot count states."""
+    """Adaptively write cold rows verbatim and retain only productive hot count states."""
     sketch = _AdmissionSketch()
+    window_sketch = _AdmissionSketch()
     # Values are [first position, count, canonical rows, canonical frame bytes].
     hot: dict[Any, list[int]] = {}
-    repeat_hits = 0
+    sampling = True
+    sample_rows = 0
+    sample_windows = 0
+    window_rows = 0
+    window_peak = 0
+    retained_rows = 0
     for position, row in enumerate(iterator):
         key = select_key(row)
         bucket = _partition(key, partitions, operation="group_by")
@@ -202,12 +255,29 @@ def _partition_count_rows(
                 partitions=partitions,
             )
             return
-        if position < _HOT_COUNT_SAMPLE_ROWS:
-            if sketch.add(key) > 1:
-                repeat_hits += 1
+        if sampling:
+            sketch.add(key)
+            window_peak = max(window_peak, window_sketch.add(key))
             writers.dump(bucket, raw)
-            if position + 1 == _HOT_COUNT_SAMPLE_ROWS and (
-                repeat_hits * _HOT_COUNT_SAMPLE_REPEAT_DIVISOR < _HOT_COUNT_SAMPLE_ROWS
+            sample_rows += 1
+            window_rows += 1
+            if window_rows < _HOT_COUNT_SAMPLE_ROWS:
+                continue
+            if _sample_predicts_compaction(
+                sketch,
+                observed_rows=sample_rows,
+                window_peak=window_peak,
+                window_rows=window_rows,
+            ):
+                sampling = False
+                window_rows = 0
+                retained_rows = 0
+                continue
+            sample_windows += 1
+            if not _sampling_can_continue(
+                sketch,
+                observed_rows=sample_rows,
+                observed_windows=sample_windows,
             ):
                 _partition_raw_group_rows(
                     iterator,
@@ -217,6 +287,9 @@ def _partition_count_rows(
                     partitions=partitions,
                 )
                 return
+            window_sketch = _AdmissionSketch()
+            window_rows = 0
+            window_peak = 0
             continue
         entry = hot.get(key)
         if entry is not None:
@@ -224,17 +297,33 @@ def _partition_count_rows(
             entry[1] += 1
             entry[2] += 1
             entry[3] += raw_size
-            continue
-        frame = writers.encode(raw)
-        estimate = sketch.add(key)
-        if estimate < _HOT_COUNT_ADMISSION or len(hot) >= _HOT_COUNT_CACHE_SIZE:
-            writers.dump_encoded(bucket, frame)
-            continue
-        entry = [position, 0, 0, 0]
-        hot[key] = entry
-        entry[1] += 1
-        entry[2] += 1
-        entry[3] += len(frame)
+            retained_rows += 1
+        else:
+            frame = writers.encode(raw)
+            estimate = sketch.add(key)
+            if estimate < _HOT_COUNT_ADMISSION or len(hot) >= _HOT_COUNT_CACHE_SIZE:
+                writers.dump_encoded(bucket, frame)
+            else:
+                entry = [position, 1, 1, len(frame)]
+                hot[key] = entry
+                retained_rows += 1
+        window_rows += 1
+        if window_rows == _HOT_COUNT_SAMPLE_ROWS:
+            if not _active_window_is_productive(
+                retained_rows=retained_rows,
+                observed_rows=window_rows,
+            ):
+                _flush_count_partials(hot, writers=writers, partitions=partitions)
+                _partition_raw_group_rows(
+                    iterator,
+                    start_position=position + 1,
+                    select_key=select_key,
+                    writers=writers,
+                    partitions=partitions,
+                )
+                return
+            window_rows = 0
+            retained_rows = 0
 
     _flush_count_partials(hot, writers=writers, partitions=partitions)
 
@@ -254,7 +343,7 @@ def _partition_raw_group_rows(
         writers.dump(bucket, (position, key, row))
 
 
-def _require_file_budget(runtime: QueryRuntime | None, operation: str) -> None:
+def require_spill_file_budget(runtime: QueryRuntime | None, operation: str) -> None:
     """Reject an unusable injected budget before either one-shot source is opened."""
     if runtime is None:
         return
@@ -294,21 +383,10 @@ def _owned_spill_store(
 @contextmanager
 def _closing_iterator(iterator: Iterator[Any]) -> Generator[Iterator[Any], None, None]:
     """Close a partition reader deterministically, including validation failures."""
-    from ..runtime.resources import _add_cleanup_failure
+    from ..runtime.iterators import closing_iterators
 
-    active_error: BaseException | None = None
-    try:
+    with closing_iterators((iterator,)):
         yield iterator
-    except BaseException as error:
-        active_error = error
-        raise
-    finally:
-        close = getattr(iterator, "close", None)
-        if callable(close):
-            try:
-                close()
-            except BaseException as error:
-                _add_cleanup_failure(active_error, [error])
 
 
 def _close_partition_input(
@@ -505,7 +583,7 @@ def spilled_group_aggregate(
     count_spec: tuple[str, str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Partition rows by group key, aggregate bounded leaves, and restore first-seen order."""
-    _require_file_budget(runtime, "group_by")
+    require_spill_file_budget(runtime, "group_by")
     if not keys:
         # Public ``Rows.group_by`` rejects this shape, but the executor keeps the
         # invariant explicit so malformed internal plans fail before opening a source.
@@ -934,7 +1012,7 @@ def spilled_join(
     runtime: QueryRuntime | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Join hash partitions and merge their position-tagged output in stable order."""
-    _require_file_budget(runtime, "join")
+    require_spill_file_budget(runtime, "join")
     with (
         tempfile.TemporaryDirectory(prefix="fpstreams-join-", dir=tempdir) as directory_name,
         _owned_spill_store(Path(directory_name), "join", runtime) as store,

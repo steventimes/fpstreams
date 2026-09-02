@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "fpstreams"
-version = "2.0.0"
-description = "Python-native lazy data pipelines with optional Rust acceleration."
+version = "2.1.0"
+description = "Typed, lazy Python data pipelines with bounded async concurrency and optional Rust, Arrow, and NumPy acceleration."
 readme = "README.md"
 authors = [
   { name = "Steven Yang", email = "stevenyang0316@gmail.com" },
@@ -13,13 +13,30 @@ authors = [
 license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 requires-python = ">=3.11"
-keywords = ["functional", "streams", "pipeline", "data-processing", "rust"]
+keywords = [
+    "apache-arrow",
+    "asyncio",
+    "data-pipelines",
+    "data-processing",
+    "functional-programming",
+    "lazy-evaluation",
+    "numpy",
+    "rust",
+    "stream-processing",
+    "typed-python",
+]
 
 # --- Optional Dependencies ---
 # Users can install these with: pip install fpstreams[test] or fpstreams[async]
@@ -64,6 +81,7 @@ all = [
 [project.urls]
 "Homepage" = "https://github.com/steventimes/fpstreams"
 "Bug Tracker" = "https://github.com/steventimes/fpstreams/issues"
+"Changelog" = "https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md"
 "Documentation" = "https://steventimes.github.io/fpstreams/"
 
 [tool.mypy]
@@ -81,6 +99,7 @@ source = ["src/fpstreams"]
 patch = ["subprocess"]
 
 [tool.coverage.report]
+fail_under = 85
 precision = 2
 show_missing = true
 
@@ -92,6 +111,7 @@ manifest-path = "rust/Cargo.toml"
 python-source = "src"
 module-name = "fpstreams._native"
 features = ["pyo3/abi3-py311", "pyo3/extension-module"]
+include = [{ path = "CHANGELOG.md", format = "sdist" }]
 
 [dependency-groups]
 build = ["maturin>=1.9,<2"]

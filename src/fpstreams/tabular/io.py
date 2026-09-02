@@ -9,8 +9,10 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 
 from ..collecting.collector import _collect_columns
-from ..expressions.selectors import Selector
+from ..errors import SelectionError
+from ..expressions.selectors import Selector, compile_selector
 from ..io_safety import spreadsheet_safe_cell
+from ..runtime.iterators import closing_iterators
 from ..streams.flow import Flow, flow
 from .arrow import (
     _arrow_modules,
@@ -33,6 +35,113 @@ T = TypeVar("T")
 JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 
 
+def _direct_numpy_field_values(
+    iterator: Iterator[Any],
+    field_names: tuple[str, ...],
+    compiled: tuple[Callable[[Any], Any], ...],
+) -> tuple[list[Any], int]:
+    """Select exact dictionary fields into one row-major flat list."""
+    if len(field_names) == 1:
+        name = field_names[0]
+        select = compiled[0]
+        selected_rows: list[Any] = []
+        for row in iterator:
+            if type(row) is not dict:
+                selected_rows.append(select(row))
+                continue
+            try:
+                selected_rows.append(row[name])
+            except (AttributeError, KeyError, TypeError) as error:
+                raise SelectionError(
+                    f"Could not resolve selector {name!r}; failed at {name!r}"
+                ) from error
+        return selected_rows, 1
+
+    if len(field_names) == 2:
+        first_name, second_name = field_names
+        first_select, second_select = compiled
+        selected_rows = []
+        for row in iterator:
+            if type(row) is not dict:
+                selected_rows.append(first_select(row))
+                selected_rows.append(second_select(row))
+                continue
+            try:
+                first = row[first_name]
+            except (AttributeError, KeyError, TypeError) as error:
+                raise SelectionError(
+                    f"Could not resolve selector {first_name!r}; failed at {first_name!r}"
+                ) from error
+            try:
+                second = row[second_name]
+            except (AttributeError, KeyError, TypeError) as error:
+                raise SelectionError(
+                    f"Could not resolve selector {second_name!r}; failed at {second_name!r}"
+                ) from error
+            selected_rows.append(first)
+            selected_rows.append(second)
+        return selected_rows, 2
+
+    selected_rows = []
+    for row in iterator:
+        if type(row) is not dict:
+            for select in compiled:
+                selected_rows.append(select(row))
+            continue
+        for name in field_names:
+            try:
+                selected_rows.append(row[name])
+            except (AttributeError, KeyError, TypeError) as error:
+                raise SelectionError(
+                    f"Could not resolve selector {name!r}; failed at {name!r}"
+                ) from error
+    return selected_rows, len(field_names)
+
+
+def _numpy_matrix_values_from_iterator(
+    iterator: Iterator[Any],
+    selectors: tuple[Selector, ...],
+) -> tuple[list[Any], int]:
+    """Materialize matrix values while the caller owns the opened iterator."""
+    if selectors:
+        compiled = tuple(compile_selector(selector) for selector in selectors)
+        if all(type(selector) is str and "." not in selector for selector in selectors):
+            field_names = cast(tuple[str, ...], selectors)
+            return _direct_numpy_field_values(iterator, field_names, compiled)
+        selected_values = []
+        for row in iterator:
+            for select in compiled:
+                selected_values.append(select(row))
+        return selected_values, len(compiled)
+
+    names: list[str] = []
+    seen: set[str] = set()
+    output: list[Any] = []
+    for row in iterator:
+        record = _record_view(row)
+        previous_width = len(names)
+        for name in record:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+        if len(names) != previous_width:
+            missing = [None] * (len(names) - previous_width)
+            for previous in output:
+                previous.extend(missing)
+        output.append([record.get(name) for name in names])
+    return output, len(names)
+
+
+def _numpy_matrix_values(
+    rows: Iterable[Any],
+    selectors: tuple[Selector, ...],
+) -> tuple[list[Any], int]:
+    """Materialize matrix values and close an iterator opened from public row iteration."""
+    iterator = iter(rows)
+    with closing_iterators((iterator,)):
+        return _numpy_matrix_values_from_iterator(iterator, selectors)
+
+
 class RowsIOMixin(Generic[T]):
     """Collection and streaming sink operations mixed into Rows; calls consume the pipeline."""
 
@@ -48,27 +157,58 @@ class RowsIOMixin(Generic[T]):
         Returns:
             A field-to-list mapping with one aligned entry for every consumed row.
         """
+        from .rows import Rows
+
+        direct_flow = type(self) is Rows and type(self._flow) is Flow
+        if not direct_flow:
+            return _collect_columns(_as_record(row) for row in self)
+
+        def collect_python_rows() -> dict[str, list[Any]]:
+            return self._flow._consume(
+                lambda iterator: _collect_columns(_as_record(row) for row in iterator)
+            )
+
         try:
             pipeline = self._flow._pipeline
         except TypeError:
             pipeline = None
+        if direct_flow and pipeline is not None:
+            from ..execution.numpy_prefix import try_numpy_prefix_columns
+
+            handled, numpy_columns = try_numpy_prefix_columns(pipeline)
+            if handled:
+                return cast(dict[str, list[Any]], numpy_columns)
         if (
-            pipeline is not None
+            direct_flow
+            and pipeline is not None
             and pipeline.engine == "auto"
             and pipeline.parallel is None
             and not pipeline.operations
         ):
+            descriptor = pipeline.source.native_data
+            from ..runtime.failpoints import has_active_failpoints, hit
+            from .numpy import (
+                NumpyRowSource,
+                guarded_numpy_identity_source,
+                numpy_identity_columns,
+            )
+
+            if isinstance(descriptor, NumpyRowSource):
+                guarded = guarded_numpy_identity_source(pipeline.source)
+                if guarded is None:
+                    return collect_python_rows()
+                opened = pipeline.source.open_native(NumpyRowSource)
+                hit("source.open.after")
+                return numpy_identity_columns(opened)
+
             from ..planning.arrow_source import ArrowBatchSource
 
-            descriptor = pipeline.source.native_data
+            if has_active_failpoints():
+                return collect_python_rows()
             if (
                 isinstance(descriptor, ArrowBatchSource)
                 and descriptor.materialized_data is not None
             ):
-                from ..runtime.failpoints import has_active_failpoints
-
-                if has_active_failpoints():
-                    return _collect_columns(_as_record(row) for row in self)
                 pipeline.source.open_native(ArrowBatchSource)
                 columns: dict[str, list[Any]] = {}
                 row_count = 0
@@ -87,7 +227,7 @@ class RowsIOMixin(Generic[T]):
                 finally:
                     _close(batches)
                 return columns if row_count else {}
-        return _collect_columns(_as_record(row) for row in self)
+        return collect_python_rows()
 
     def to_pandas(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
         """Materialize all rows as a pandas DataFrame through bounded Arrow conversion.
@@ -109,6 +249,83 @@ class RowsIOMixin(Generic[T]):
         return self.to_arrow(batch_size=batch_size, schema=schema).to_pandas()
 
     to_df = to_pandas
+
+    def to_numpy(
+        self,
+        *selectors: Selector,
+        dtype: Any = None,
+        copy: bool | None = None,
+    ) -> Any:
+        """Materialize selected record values as a two-dimensional NumPy array.
+
+        Without selectors, mapping fields are aligned in first-seen order and missing fields
+        become ``None``. With selectors, every selector follows the same field, index, path,
+        expression, and ``SelectionError`` behavior as the rest of Rows.
+
+        Args:
+            *selectors: Optional selectors defining output columns in encounter order.
+            dtype: Optional dtype forwarded to NumPy conversion.
+            copy: NumPy copy policy: ``None`` copies only as needed, ``True`` always copies,
+                and ``False`` requests no copy. NumPy 2.x raises when that request cannot be
+                honored; NumPy 1.x treats it as a best-effort preference.
+
+        Returns:
+            A two-dimensional ndarray with one row per consumed record.
+        """
+        from .numpy import (
+            NumpyRowSource,
+            guarded_numpy_identity_source,
+            numpy_array,
+            numpy_identity_array,
+            numpy_module,
+        )
+        from .rows import Rows
+
+        np = numpy_module("to_numpy()")
+        direct_flow = type(self) is Rows and type(self._flow) is Flow
+        if direct_flow and not selectors:
+            try:
+                pipeline = self._flow._pipeline
+            except TypeError:
+                pipeline = None
+            if (
+                pipeline is not None
+                and pipeline.engine == "auto"
+                and pipeline.parallel is None
+                and not pipeline.operations
+                and isinstance(pipeline.source.native_data, NumpyRowSource)
+            ):
+                from ..runtime.failpoints import hit
+
+                guarded = guarded_numpy_identity_source(
+                    pipeline.source,
+                    observers=False,
+                    exact_names=False,
+                )
+                if guarded is not None:
+                    descriptor = pipeline.source.open_native(NumpyRowSource)
+                    hit("source.open.after")
+                    return numpy_identity_array(
+                        np,
+                        descriptor,
+                        dtype=dtype,
+                        copy=copy,
+                    )
+
+        if direct_flow:
+            values, width = self._flow._consume(
+                lambda iterator: _numpy_matrix_values_from_iterator(iterator, selectors)
+            )
+        else:
+            values, width = _numpy_matrix_values(self, selectors)
+        if not values:
+            empty = np.empty((0, width), dtype=dtype)
+            return numpy_array(np, empty, dtype=dtype, copy=copy)
+        array = numpy_array(np, values, dtype=dtype, copy=copy)
+        if selectors:
+            row_count = len(values) // width
+            return array.reshape((row_count, width, *array.shape[1:]))
+        return array
 
     def arrow_batches(self, *, batch_size: int = 65_536, schema: Any = None) -> Flow[Any]:
         """Return a lazy Flow of bounded PyArrow RecordBatch objects.
@@ -154,12 +371,39 @@ class RowsIOMixin(Generic[T]):
             A Table containing every row; direct Arrow sources may reuse native batches.
         """
         size = _positive_size(batch_size)
+        from .rows import Rows
+
+        direct_flow = type(self) is Rows and type(self._flow) is Flow
         try:
             pipeline = self._flow._pipeline
         except TypeError:
             # Joins and aggregates have no source-equivalent linear view. They
             # must be evaluated before Arrow sees their result records.
             pipeline = None
+        if (
+            schema is None
+            and direct_flow
+            and pipeline is not None
+            and pipeline.engine == "auto"
+            and pipeline.parallel is None
+            and not pipeline.operations
+        ):
+            from ..runtime.failpoints import hit
+            from .numpy import (
+                NumpyRowSource,
+                guarded_numpy_identity_source,
+                numpy_identity_arrow_table,
+            )
+
+            descriptor = pipeline.source.native_data
+            if (
+                isinstance(descriptor, NumpyRowSource)
+                and guarded_numpy_identity_source(pipeline.source) is not None
+            ):
+                pa, _dataset, _parquet = _arrow_modules()
+                opened = pipeline.source.open_native(NumpyRowSource)
+                hit("source.open.after")
+                return numpy_identity_arrow_table(pa, opened, batch_size=size)
         if schema is None and pipeline is not None:
             from ..execution.arrow import try_arrow_table
 
@@ -309,40 +553,38 @@ class RowsIOMixin(Generic[T]):
             _require_unique_names(names, operation="to_csv")
 
         iterator = iter(self)
-        try:
-            with open(path, "w", encoding=encoding, newline="") as handle:
-                try:
-                    first = _as_record(next(iterator))
-                except StopIteration:
-                    if names is not None and include_header:
-                        csv.DictWriter(handle, fieldnames=names).writeheader()
-                    return
-                output_names = names or tuple(first)
-                if not output_names:
-                    raise ValueError("cannot infer CSV columns from an empty record")
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=output_names,
-                    extrasaction=extrasaction,
-                )
-                if include_header:
-                    writer.writeheader()
+        with (
+            closing_iterators((iterator,)),
+            open(path, "w", encoding=encoding, newline="") as handle,
+        ):
+            try:
+                first = _as_record(next(iterator))
+            except StopIteration:
+                if names is not None and include_header:
+                    csv.DictWriter(handle, fieldnames=names).writeheader()
+                return
+            output_names = names or tuple(first)
+            if not output_names:
+                raise ValueError("cannot infer CSV columns from an empty record")
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=output_names,
+                extrasaction=extrasaction,
+            )
+            if include_header:
+                writer.writeheader()
+            writer.writerow(
+                {name: spreadsheet_safe_cell(value) for name, value in first.items()}
+                if spreadsheet_safe
+                else first
+            )
+            for row in iterator:
+                record = _as_record(row)
                 writer.writerow(
-                    {name: spreadsheet_safe_cell(value) for name, value in first.items()}
+                    {name: spreadsheet_safe_cell(value) for name, value in record.items()}
                     if spreadsheet_safe
-                    else first
+                    else record
                 )
-                for row in iterator:
-                    record = _as_record(row)
-                    writer.writerow(
-                        {name: spreadsheet_safe_cell(value) for name, value in record.items()}
-                        if spreadsheet_safe
-                        else record
-                    )
-        finally:
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                close()
 
     def to_jsonl(
         self,
@@ -358,8 +600,9 @@ class RowsIOMixin(Generic[T]):
             encoding: Text encoding used to write the destination.
             ensure_ascii: Escape non-ASCII code points when true.
         """
-        with open(path, "w", encoding=encoding) as handle:
-            for row in self:
+        iterator = iter(self)
+        with closing_iterators((iterator,)), open(path, "w", encoding=encoding) as handle:
+            for row in iterator:
                 json.dump(_as_record(row), handle, ensure_ascii=ensure_ascii)
                 handle.write("\n")
 

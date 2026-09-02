@@ -35,14 +35,6 @@ def _positive_size(value: int) -> int:
     return size
 
 
-def is_polars_frame(source: Any) -> bool:
-    """Recognize Polars DataFrame and LazyFrame objects without importing Polars unnecessarily."""
-    if type(source).__module__.partition(".")[0] != "polars":
-        return False
-    pl = polars_module()
-    return isinstance(source, (pl.DataFrame, pl.LazyFrame))
-
-
 def polars_row_factory(
     frame: Any,
     *,
@@ -99,6 +91,8 @@ def polars_source(
     )
 
     if isinstance(frame, pl.DataFrame):
+        if any(dtype == pl.Object for dtype in frame.dtypes):
+            return Source.defer(rows)
 
         def eager_table() -> Any:
             table = frame.to_arrow()

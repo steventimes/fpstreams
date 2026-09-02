@@ -8,17 +8,39 @@ from itertools import filterfalse
 from operator import length_hint
 from typing import Any, cast
 
-from ..expressions.scalar import Expr, FExpr
+from ..expressions.scalar import _compile_scalar_callable
+from ..planning._pair_stages import PairFilterDescriptor, PairMapDescriptor
 from ..planning.sync import FilterOp, GatherOp, MapOp, Operation, TakeOp, TapOp
+from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
 from ._rows_fusion import execute_rows_fusion
-from .sync_ops import apply_operation, close_iterators
+from .sync_ops import apply_operation
 
 _EXACT_SIZED_ITERATORS: tuple[type[Any], ...] = (
     type(iter([])),
     type(iter(())),
     type(iter(range(0))),
 )
+
+
+class _NonClosingIterator:
+    """Delegate pulls without exposing the owned iterator's ``close`` method.
+
+    ``yield from`` otherwise forwards ``close`` to its delegate.  The surrounding
+    ownership context already closes every layer, so this view avoids both a second
+    close and a forwarding generator frame retaining the last emitted value.
+    """
+
+    __slots__ = ("_iterator",)
+
+    def __init__(self, iterator: Iterator[Any]) -> None:
+        self._iterator = iterator
+
+    def __iter__(self) -> _NonClosingIterator:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._iterator)
 
 
 def _fused(
@@ -65,9 +87,7 @@ def _operation_function(
 ) -> Callable[[Any], Any]:
     """Return an operation callback, compiling Expr and FExpr evaluators once."""
     function = operation.predicate if isinstance(operation, FilterOp) else operation.function
-    if isinstance(function, (Expr, FExpr)):
-        return cast(Callable[[Any], Any], function._python_evaluator())
-    return function
+    return cast(Callable[[Any], Any], _compile_scalar_callable(function))
 
 
 def _remember_iterator(stack: list[Iterator[Any]], iterator: Iterator[Any]) -> None:
@@ -92,21 +112,230 @@ def _map_filter_chain(
     operations: tuple[MapOp | FilterOp, ...],
     *,
     eager: bool,
+    fuse_callable_map_filter: bool,
 ) -> Iterator[Any]:
     """Compose callback-only map/filter stages from CPython's lazy C iterators."""
     exact_rows = length_hint(iterator) if type(iterator) in _EXACT_SIZED_ITERATORS else None
     rows = execute_rows_fusion(iterator, operations, exact_rows=exact_rows, eager=eager)
     if rows is not None:
         return rows
+    if (
+        fuse_callable_map_filter
+        and len(operations) == 2
+        and type(first := operations[0]) is MapOp
+        and type(second := operations[1]) is FilterOp
+    ):
+        from ..planning.arrow import _row_stage_descriptor
+        from ..tabular.rows import _DropNullsPlan
+
+        transform = _operation_function(first)
+        predicate = _operation_function(second)
+        if (
+            type(transform) is not PairMapDescriptor
+            and type(predicate) is not PairFilterDescriptor
+            and type(second.predicate) is not _DropNullsPlan
+            and _row_stage_descriptor(first.function) is None
+            and _row_stage_descriptor(second.predicate) is None
+        ):
+            return _map_then_filter(iterator, transform, predicate, second.negate)
     for operation in operations:
         function = _operation_function(operation)
         if isinstance(operation, MapOp):
-            iterator = map(function, iterator)
+            iterator = (
+                _map_pair_side(iterator, function)
+                if type(function) is PairMapDescriptor
+                else map(function, iterator)
+            )
+        elif type(function) is PairFilterDescriptor:
+            iterator = _filter_pair_target(iterator, function, operation.negate)
         elif operation.negate:
             iterator = filterfalse(function, iterator)
         else:
-            iterator = filter(function, iterator)
+            from ..tabular.rows import _planned_drop_nulls_filter
+
+            planned = _planned_drop_nulls_filter(function, iterator)
+            iterator = filter(function, iterator) if planned is None else planned
     return iterator
+
+
+def _map_then_filter(
+    iterator: Iterator[Any],
+    transform: Callable[[Any], Any],
+    predicate: Callable[[Any], Any],
+    negate: bool,
+) -> Iterator[Any]:
+    """Execute one ordinary map/filter pair without stacked iterator frames."""
+    if negate:
+        for item in iterator:
+            try:
+                current = transform(item)
+            except StopIteration:
+                return
+            except BaseException:
+                del item
+                raise
+            del item
+            try:
+                if predicate(current):
+                    del current
+                    continue
+            except StopIteration:
+                return
+            except BaseException:
+                del current
+                raise
+            yield current
+            del current
+        return
+
+    for item in iterator:
+        try:
+            current = transform(item)
+        except StopIteration:
+            return
+        except BaseException:
+            del item
+            raise
+        del item
+        try:
+            if not predicate(current):
+                del current
+                continue
+        except StopIteration:
+            return
+        except BaseException:
+            del current
+            raise
+        yield current
+        del current
+
+
+def _map_pair_side(
+    iterator: Iterator[Any],
+    descriptor: PairMapDescriptor,
+) -> Iterator[tuple[Any, Any]]:
+    """Map selected pair fields without calling the internal adapter function."""
+    callback = descriptor.callback
+    if descriptor.side == "pair":
+        for pair in iterator:
+            try:
+                mapped = callback(pair[0], pair[1])
+            except StopIteration:
+                return
+            del pair
+            yield mapped
+            del mapped
+        return
+
+    callback = _compile_scalar_callable(callback)
+    if descriptor.side == "value":
+        for pair in iterator:
+            try:
+                key = pair[0]
+                value = callback(pair[1])
+            except StopIteration:
+                return
+            del pair
+            yield key, value
+            del key, value
+        return
+
+    for pair in iterator:
+        try:
+            key = callback(pair[0])
+            value = pair[1]
+        except StopIteration:
+            return
+        del pair
+        yield key, value
+        del key, value
+
+
+def _filter_pair_target(  # noqa: C901 - target-local loops remove per-item adapter calls
+    iterator: Iterator[Any],
+    descriptor: PairFilterDescriptor,
+    negate: bool,
+) -> Iterator[Any]:
+    """Filter pairs by selected fields without calling the internal adapter."""
+    callback = descriptor.callback
+    if descriptor.target == "pair":
+        for pair in iterator:
+            try:
+                result = callback(pair[0], pair[1])
+            except StopIteration:
+                return
+            try:
+                if negate if result else not negate:
+                    del result, pair
+                    continue
+            except StopIteration:
+                return
+            except BaseException:
+                del pair, result
+                raise
+            del result
+            yield pair
+            del pair
+        return
+
+    if descriptor.target == "row":
+        for pair in iterator:
+            try:
+                result = callback(pair)
+            except StopIteration:
+                return
+            try:
+                if negate if result else not negate:
+                    del result, pair
+                    continue
+            except StopIteration:
+                return
+            except BaseException:
+                del pair, result
+                raise
+            del result
+            yield pair
+            del pair
+        return
+
+    callback = _compile_scalar_callable(callback)
+    if descriptor.target == "key":
+        for pair in iterator:
+            try:
+                result = callback(pair[0])
+            except StopIteration:
+                return
+            try:
+                if negate if result else not negate:
+                    del result, pair
+                    continue
+            except StopIteration:
+                return
+            except BaseException:
+                del pair, result
+                raise
+            del result
+            yield pair
+            del pair
+        return
+
+    for pair in iterator:
+        try:
+            result = callback(pair[1])
+        except StopIteration:
+            return
+        try:
+            if negate if result else not negate:
+                del result, pair
+                continue
+        except StopIteration:
+            return
+        except BaseException:
+            del pair, result
+            raise
+        del result
+        yield pair
+        del pair
 
 
 @contextmanager
@@ -115,6 +344,7 @@ def open_operations(
     operations: tuple[Operation, ...],
     *,
     runtime: QueryRuntime | None = None,
+    fuse_callable_map_filter: bool = False,
 ) -> Generator[Iterator[Any], None, None]:
     """Build one canonical iterator chain and retain ownership until the caller exits."""
     from ..runtime.failpoints import has_active_failpoints
@@ -123,7 +353,12 @@ def open_operations(
     iterator: Iterator[Any] = _after_pull(source_iterator) if instrumented else source_iterator
     managed_iterators = [source_iterator]
     _remember_iterator(managed_iterators, iterator)
-    try:
+
+    def managed_in_reverse() -> Iterator[Iterator[Any]]:
+        """Read the complete dynamically built ownership stack only at context exit."""
+        yield from reversed(managed_iterators)
+
+    with closing_iterators(managed_in_reverse()):
         index = 0
         while index < len(operations):
             operation = operations[index]
@@ -142,6 +377,7 @@ def open_operations(
                         iterator,
                         cast(tuple[MapOp | FilterOp, ...], fused_operations),
                         eager=not (end < len(operations) and isinstance(operations[end], TakeOp)),
+                        fuse_callable_map_filter=fuse_callable_map_filter,
                     )
                 else:
                     iterator = _fused(iterator, fused_operations, instrumented=instrumented)
@@ -163,8 +399,6 @@ def open_operations(
             _remember_iterator(managed_iterators, iterator)
             index += 1
         yield iterator
-    finally:
-        close_iterators(reversed(managed_iterators))
 
 
 def execute_operations(
@@ -175,4 +409,4 @@ def execute_operations(
 ) -> Iterator[Any]:
     """Execute canonical physical operations without reconstructing a planning object."""
     with open_operations(source_iterator, operations, runtime=runtime) as iterator:
-        yield from iterator
+        yield from _NonClosingIterator(iterator)

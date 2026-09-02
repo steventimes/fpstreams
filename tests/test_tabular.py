@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import gc
+import io
+import json
+import math
+import os
 import random
+import signal
 import sqlite3
 import subprocess
 import sys
+import traceback
 import weakref
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import polars as pl
@@ -23,6 +29,36 @@ import pytest
 
 import fpstreams
 from fpstreams import flow
+
+PROJECT_ROOT = Path(__file__).parents[1]
+
+
+def _run_inline_python(
+    script: str,
+    *arguments: str,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run an isolated Python snippet with consistent text output capture."""
+    return subprocess.run(
+        [sys.executable, "-c", script, *arguments],
+        cwd=cwd,
+        env=env,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _capture_rows_error(query: fpstreams.Rows[object]) -> BaseException:
+    """Materialize one rows query and return its required failure."""
+    try:
+        query.to_list()
+    except BaseException as error:
+        return error
+    raise AssertionError("a missing selector unexpectedly succeeded")
+
 
 # --- Tests consolidated from test_rows_api.py ---
 
@@ -87,6 +123,42 @@ def test_rows_turns_record_etl_into_one_readable_pipeline() -> None:
     ]
 
 
+def test_with_columns_copies_exact_dicts_without_the_generic_record_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from importlib import import_module
+
+    rows_module = import_module("fpstreams.tabular.rows")
+
+    adapted: list[object] = []
+    original_as_record = rows_module._as_record
+
+    def tracked_as_record(row: object) -> dict[str, Any]:
+        adapted.append(row)
+        return original_as_record(row)
+
+    class DictSubclass(dict[str, int]):
+        pass
+
+    exact = {"value": 1}
+    fallback = DictSubclass(value=2)
+    monkeypatch.setattr(rows_module, "_as_record", tracked_as_record)
+
+    result = (
+        fpstreams.rows([exact, fallback])
+        .with_columns(doubled=lambda row: row["value"] * 2)
+        .to_list()
+    )
+
+    assert result == [
+        {"value": 1, "doubled": 2},
+        {"value": 2, "doubled": 4},
+    ]
+    assert adapted == [fallback]
+    assert exact == {"value": 1}
+    assert fallback == {"value": 2}
+
+
 def test_rows_keeps_basic_table_navigation_in_the_same_chain() -> None:
     table = fpstreams.rows([{"id": 1}, {"id": 1}, {"id": 2}]).unique_by("id")
 
@@ -96,6 +168,55 @@ def test_rows_keeps_basic_table_navigation_in_the_same_chain() -> None:
         "a": [1, 2],
         "b": [None, 3],
     }
+
+
+def test_rows_exposes_its_flow_and_plan_without_consuming_one_shot_input() -> None:
+    table = fpstreams.rows(iter([{"id": 1}, {"id": 2}])).select("id")
+    underlying = table.to_flow()
+
+    assert table.to_flow() is underlying
+    assert table.explain("list").to_dict() == underlying.explain("list").to_dict()
+    assert table.to_list() == [{"id": 1}, {"id": 2}]
+
+    with pytest.raises(fpstreams.FlowConsumedError):
+        underlying.to_list()
+
+
+def test_rows_concat_is_lazy_ordered_and_never_aligns_record_schemas() -> None:
+    events: list[str] = []
+
+    def middle() -> Iterator[dict[str, int]]:
+        events.append("middle:open")
+        try:
+            yield {"middle": 2}
+            events.append("middle:tail")
+        finally:
+            events.append("middle:close")
+
+    def last() -> Iterator[dict[str, int]]:
+        events.append("last:open")
+        try:
+            yield {"last": 3}
+        finally:
+            events.append("last:close")
+
+    first = fpstreams.rows([{"first": 1}])
+    query = first.concat(fpstreams.rows(middle()), last()).take(2)
+
+    assert first.concat() is first
+    assert events == []
+    assert query.to_list() == [{"first": 1}, {"middle": 2}]
+    assert events == ["middle:open", "middle:close"]
+
+    with pytest.raises(fpstreams.FlowConsumedError):
+        query.to_list()
+
+    class CustomRows(fpstreams.Rows[dict[str, int]]):
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            yield {"custom": 9}
+
+    custom = CustomRows([{"hidden": 2}])
+    assert first.concat(custom).to_list() == [{"first": 1}, {"custom": 9}]
 
 
 def test_to_columns_consumes_evolving_rows_once_without_retaining_them() -> None:
@@ -183,6 +304,57 @@ def test_identity_arrow_to_columns_preserves_batch_conversion_error_order() -> N
         source.with_engine("python").to_columns()
 
 
+def test_from_columns_is_explicit_across_rows_and_flow_without_reinterpreting_mappings() -> None:
+    """Column mappings opt in explicitly while ordinary mappings keep iterable semantics."""
+    columns = {"id": [1, 2], "label": ["a", "b"]}
+    expected = [{"id": 1, "label": "a"}, {"id": 2, "label": "b"}]
+
+    assert fpstreams.Rows.from_columns(columns).to_list() == expected
+    assert fpstreams.rows.from_columns(columns).to_list() == expected
+    assert fpstreams.flow.from_columns(columns).to_list() == expected
+    assert fpstreams.rows(columns).to_list() == ["id", "label"]
+    assert fpstreams.flow(columns).to_list() == ["id", "label"]
+
+
+def test_from_columns_retains_numpy_buffers_for_existing_arrow_plans() -> None:
+    """Independent columns should enter the mature Arrow planner without a stacked copy."""
+    import numpy as np
+
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode, SourcePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    keys = np.arange(32, dtype=np.int64) % 4
+    values = np.arange(32, dtype=np.int64)
+    source = fpstreams.rows.from_columns({"key": keys, "value": values}, batch_size=7)
+    query = source.aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    physical = compile_query(query._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert isinstance(physical.root.input, SourcePhysicalNode)
+    table = physical.root.input.source.native_data.materialized_data
+    assert table["value"].chunk(0).buffers()[1].address == values.__array_interface__["data"][0]
+    assert query.explain("list").to_dict()["relations"]["candidate"] == "arrow_multi_reduce"
+    assert query.to_list() == [{"rows": 32, "total": 496, "low": 0, "high": 31}]
+
+
+def test_from_columns_validates_its_boundary_before_arrow_planning() -> None:
+    with pytest.raises(TypeError, match=r"from_columns\(\) expects a mapping"):
+        fpstreams.rows.from_columns([("value", [1])])
+    with pytest.raises(TypeError, match="from_columns column names must be strings"):
+        fpstreams.rows.from_columns({0: [1]})
+    with pytest.raises(ValueError, match="from_columns column names cannot be empty"):
+        fpstreams.rows.from_columns({"": [1]})
+    with pytest.raises(pa.ArrowInvalid, match="expected length"):
+        fpstreams.rows.from_columns({"left": [1], "right": [2, 3]})
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        fpstreams.rows.from_columns({"value": [1]}, batch_size=0)
+
+
 def test_column_expressions_remove_row_lambda_noise() -> None:
     orders = [
         {"customer": "Ada", "status": "paid", "amount": 20},
@@ -226,6 +398,269 @@ def test_structured_rows_fusion_preserves_copy_sibling_and_literal_identity() ->
     assert result[0]["sibling"] == 2
     assert result[0]["payload"] is payload
     assert result[0]["marker"] is marker
+
+
+def test_structured_rows_fusion_inlines_callable_with_columns_for_exact_dicts() -> None:
+    """Opaque selectors keep their callback while the surrounding row update is fused."""
+    from fpstreams.execution._rows_fusion import compile_rows_fusion
+    from fpstreams.execution.physical import operations_from_physical_nodes
+    from fpstreams.planning.compiler import compile_query
+
+    calls: list[int] = []
+
+    def next_value(row: dict[str, int]) -> int:
+        calls.append(row["value"])
+        if row["value"] == 2:
+            raise StopIteration("stop callable map")
+        return row["value"] + 10
+
+    query = fpstreams.rows([{"value": 1}]).with_columns(next_value=next_value)._flow
+    physical = compile_query(query._query("list"))
+    operations = operations_from_physical_nodes(physical.nodes)
+    fused = compile_rows_fusion(operations)
+
+    assert fused is not None
+    source = [{"value": 1}, {"value": 2}, {"value": 3}]
+    assert list(fused(iter(source))) == [{"value": 1, "next_value": 11}]
+    assert source == [{"value": 1}, {"value": 2}, {"value": 3}]
+    assert calls == [1, 2]
+
+    class DictSubclass(dict[str, int]):
+        pass
+
+    calls.clear()
+    assert list(fused(iter([DictSubclass(value=2), DictSubclass(value=3)]))) == []
+    assert calls == [2]
+
+
+def test_structured_rows_fusion_binds_external_slots_as_loop_locals() -> None:
+    """Generated hot loops must not index the query slot tuple for every row."""
+    import dis
+
+    from fpstreams.execution._rows_fusion import compile_rows_fusion
+    from fpstreams.execution.physical import operations_from_physical_nodes
+    from fpstreams.planning.compiler import compile_query
+
+    query = fpstreams.rows([{"value": 1}]).select("value")._flow
+    physical = compile_query(query._query("list"))
+    fused = compile_rows_fusion(operations_from_physical_nodes(physical.nodes))
+
+    assert fused is not None
+    assert not any(
+        instruction.opname == "LOAD_GLOBAL" and instruction.argval == "_fpstreams_slots"
+        for instruction in dis.get_instructions(fused)
+    )
+
+
+def test_structured_rows_fusion_preserves_map_exhaustion_and_lookup_translation() -> None:
+    """Exact-row lowering keeps builtin map exhaustion and selector error boundaries."""
+
+    class StopsDuringAdd:
+        def __add__(self, _other: object) -> object:
+            raise StopIteration("operator stopped map")
+
+    stopped = [{"value": StopsDuringAdd()} for _index in range(384)]
+    assert (
+        fpstreams.rows(stopped).with_columns(next_value=fpstreams.col("value") + 1).to_list() == []
+    )
+
+    class CollidingKey:
+        def __hash__(self) -> int:
+            return hash("id")
+
+        def __eq__(self, _other: object) -> bool:
+            raise TypeError("collision equality")
+
+    collision = {CollidingKey(): 1}
+    with pytest.raises(fpstreams.SelectionError) as captured:
+        fpstreams.rows([collision] * 384).select("id").to_list()
+    assert isinstance(captured.value.__cause__, TypeError)
+    assert str(captured.value.__cause__) == "collision equality"
+
+
+def test_retained_direct_select_uses_one_native_pass_only_for_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto projects exact rows natively while forced Python and source records stay untouched."""
+    from fpstreams import _native
+
+    records = [{"id": index, "value": index * 2, "hidden": index + 1} for index in range(2_500)]
+    snapshot = [record.copy() for record in records]
+    query = fpstreams.rows(records).select("id", amount="value")
+    endpoint = _native.select_exact_dict_prefix_v1
+    native_calls = 0
+
+    def tracked(*arguments: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "select_exact_dict_prefix_v1", tracked)
+
+    automatic = query.to_list()
+    canonical = query.with_engine("python").to_list()
+    tuple_result = fpstreams.rows(tuple(records)).select("id", amount="value").to_list()
+
+    assert automatic == canonical
+    assert tuple_result == canonical
+    assert automatic[-1] == {"id": 2_499, "amount": 4_998}
+    assert native_calls == 2
+    assert records == snapshot
+
+    def stopped(*_arguments: object) -> object:
+        raise StopIteration("native select stopped")
+
+    monkeypatch.setattr(_native, "select_exact_dict_prefix_v1", stopped)
+    assert query.to_list() == []
+
+
+def test_retained_direct_select_wraps_source_open_stop_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The direct select sink preserves the canonical generator exhaustion boundary."""
+    records = [{"value": index} for index in range(2_100)]
+    query = fpstreams.rows(records).select("value")
+    source = query._flow._pipeline.source
+    stopped = StopIteration("source opener stopped")
+
+    def stop_opening() -> Iterator[dict[str, int]]:
+        raise stopped
+
+    monkeypatch.setattr(source, "_factory", stop_opening)
+
+    with pytest.raises(RuntimeError, match=r"^generator raised StopIteration$") as captured:
+        query.to_list()
+
+    assert captured.value.__cause__ is stopped
+
+
+def test_retained_direct_select_preserves_boundary_and_missing_field_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed row resumes in Python once; exact missing fields keep SelectionError and cause."""
+    from fpstreams import _native
+
+    class DictSubclass(dict[str, int]):
+        def __getitem__(self, field: str) -> int:
+            fallback_lookups.append(field)
+            return super().__getitem__(field)
+
+    fallback_lookups: list[str] = []
+    mixed: list[dict[str, int]] = [
+        *({"id": index, "value": index + 1} for index in range(2_100)),
+        DictSubclass(id=2_100, value=2_101),
+        {"id": 2_101, "value": 2_102},
+    ]
+    result = fpstreams.rows(mixed).select("id", "value").to_list()
+
+    assert result[-2:] == [
+        {"id": 2_100, "value": 2_101},
+        {"id": 2_101, "value": 2_102},
+    ]
+    assert fallback_lookups == ["id", "value"]
+
+    records = [{"id": index, "value": index} for index in range(2_100)]
+    records[-1] = {"id": 2_099}
+    query = fpstreams.rows(records).select("id", "value")
+    with pytest.raises(fpstreams.SelectionError) as canonical:
+        query.with_engine("python").to_list()
+    with pytest.raises(fpstreams.SelectionError) as automatic:
+        query.to_list()
+
+    assert str(automatic.value) == str(canonical.value)
+    assert type(automatic.value.__cause__) is type(canonical.value.__cause__) is KeyError
+    assert records[-1] == {"id": 2_099}
+    assert callable(_native.select_exact_dict_prefix_v1)
+
+    class StopsLookup:
+        def __hash__(self) -> int:
+            return hash("value")
+
+        def __eq__(self, _other: object) -> bool:
+            raise StopIteration("mapping stopped")
+
+    stopped = [{StopsLookup(): 1} for _index in range(2_100)]
+    assert fpstreams.rows(stopped).select("value").to_list() == []
+
+    class BrokenLookup:
+        def __hash__(self) -> int:
+            return hash("value")
+
+        def __eq__(self, _other: object) -> bool:
+            raise TypeError("broken equality")
+
+    collision = {BrokenLookup(): 1}
+    collision_query = fpstreams.rows([collision] * 2_100).select("value")
+    with pytest.raises(fpstreams.SelectionError) as collision_error:
+        collision_query.to_list()
+    assert isinstance(collision_error.value.__cause__, TypeError)
+    assert str(collision_error.value.__cause__) == "broken equality"
+
+
+def test_retained_direct_select_deopts_for_failpoints_and_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failpoint instrumentation keeps the ordinary Python projection loop active."""
+    from fpstreams import _native
+    from fpstreams.runtime.failpoints import failpoint
+
+    query = fpstreams.rows([{"id": index} for index in range(2_100)]).select("id")
+
+    def forbidden(*_arguments: object) -> object:
+        raise AssertionError("instrumented select must stay on Python")
+
+    monkeypatch.setattr(_native, "select_exact_dict_prefix_v1", forbidden)
+    with failpoint("unrelated.select.transition", RuntimeError("unused")):
+        assert len(query.to_list()) == 2_100
+
+    monkeypatch.undo()
+    execution = query.run_with_report("to_list")
+    assert len(execution.value) == 2_100
+    assert execution.report.compiler_engine == "python"
+    assert execution.report.strategy == "rust_direct"
+
+
+def test_structured_rows_fusion_inlines_cast_and_fill_without_changing_value_rules() -> None:
+    """Cast sees evolving copies while fill keeps callable literals and row expressions distinct."""
+    from fpstreams.execution._rows_fusion import compile_rows_fusion
+    from fpstreams.execution.physical import operations_from_physical_nodes
+    from fpstreams.planning.compiler import compile_query
+
+    def marker() -> str:
+        return "literal callable"
+
+    query = (
+        fpstreams.rows([{"value": "2", "fallback": None}])
+        .cast(value=int)
+        .fill_nulls(fallback=fpstreams.col("value"), marker=marker)
+    )
+    physical = compile_query(query._flow._query("list"))
+    fused = compile_rows_fusion(operations_from_physical_nodes(physical.nodes))
+
+    assert fused is not None
+    source = [{"value": "2", "fallback": None}]
+    assert list(fused(iter(source))) == [{"value": 2, "fallback": 2, "marker": marker}]
+    assert source == [{"value": "2", "fallback": None}]
+
+    class DictSubclass(dict[str, object]):
+        pass
+
+    assert list(fused(iter([DictSubclass(value="3", fallback=None)]))) == [
+        {"value": 3, "fallback": 3, "marker": marker}
+    ]
+
+    calls: list[str] = []
+
+    def convert(value: object) -> int:
+        calls.append(str(value))
+        return int(value)
+
+    with pytest.raises(fpstreams.SelectionError, match="cast column 'missing' is missing"):
+        fpstreams.rows([{"value": "4"}] * 384).cast(
+            value=convert,
+            missing=int,
+        ).to_list()
+    assert calls == ["4"]
 
 
 def test_structured_rows_fusion_preserves_lookup_and_operator_error_boundaries() -> None:
@@ -1521,6 +1956,594 @@ def test_rows_reshapes_columns_and_has_practical_aggregators() -> None:
         fpstreams.rows(wide).unpivot("q1", "q1")
 
 
+def test_rows_min_max_fixed_lane_preserves_protocol_order() -> None:
+    """Two extrema lanes keep distinct reads and canonical protocol ordering."""
+
+    events: list[str] = []
+
+    class Key:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __hash__(self) -> int:
+            events.append(f"hash:{self.label}")
+            return 1
+
+        def __eq__(self, other: object) -> bool:
+            events.append(f"eq:{self.label}:{getattr(other, 'label', '?')}")
+            return isinstance(other, Key)
+
+    class Value:
+        def __init__(self, label: str, number: int) -> None:
+            self.label = label
+            self.number = number
+
+        def __lt__(self, other: Value) -> bool:
+            events.append(f"lt:{self.label}:{other.label}")
+            return self.number < other.number
+
+        def __gt__(self, other: Value) -> bool:
+            events.append(f"gt:{self.label}:{other.label}")
+            return self.number > other.number
+
+    class LoggedRow(Mapping[str, object]):
+        def __init__(self, label: str, key: Key, value: Value) -> None:
+            self.label = label
+            self.values = {"key": key, "value": value}
+
+        def __getitem__(self, name: str) -> object:
+            events.append(f"get:{self.label}:{name}")
+            return self.values[name]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    first_key = Key("k1")
+    equal_key = Key("k2")
+    first_value = Value("v1", 5)
+    second_value = Value("v2", 3)
+    result = (
+        fpstreams.rows(
+            [
+                LoggedRow("r1", first_key, first_value),
+                LoggedRow("r2", equal_key, second_value),
+            ]
+        )
+        .with_engine("python")
+        .group_by("key")
+        .aggregate(low=fpstreams.agg.min("value"), high=fpstreams.agg.max("value"))
+        .to_list()
+    )
+
+    assert len(result) == 1
+    assert result[0]["key"] is first_key
+    assert result[0]["low"] is second_value
+    assert result[0]["high"] is first_value
+    assert events == [
+        "get:r1:key",
+        "hash:k1",
+        "hash:k1",
+        "hash:k1",
+        "get:r1:value",
+        "get:r1:value",
+        "get:r2:key",
+        "hash:k2",
+        "hash:k2",
+        "eq:k1:k2",
+        "get:r2:value",
+        "lt:v2:v1",
+        "get:r2:value",
+        "gt:v2:v1",
+    ]
+
+
+@pytest.mark.parametrize("lane_order", ["min_max", "max_min"])
+def test_rows_min_max_fixed_lane_is_independent_of_keyword_order(
+    lane_order: str,
+) -> None:
+    """Equivalent extrema requests retain results and field order."""
+    aggregations = (
+        {
+            "low": fpstreams.agg.min(1),
+            "high": fpstreams.agg.max(1),
+        }
+        if lane_order == "min_max"
+        else {
+            "high": fpstreams.agg.max(1),
+            "low": fpstreams.agg.min(1),
+        }
+    )
+
+    result = (
+        fpstreams.rows([(1, 5), (1, 3), (2, 7)])
+        .with_engine("python")
+        .group_by(0)
+        .aggregate(**aggregations)
+        .to_list()
+    )
+
+    assert result == [
+        {"key_0": 1, "low": 3, "high": 5},
+        {"key_0": 2, "low": 7, "high": 7},
+    ]
+    assert [*result[0]] == ["key_0", *aggregations]
+
+
+def test_rows_max_min_fixed_lane_preserves_requested_comparison_order() -> None:
+    """The reverse keyword order must evaluate maximum before minimum on every row."""
+    events: list[str] = []
+
+    class Value:
+        def __init__(self, label: str, number: int) -> None:
+            self.label = label
+            self.number = number
+
+        def __lt__(self, other: Value) -> bool:
+            events.append(f"lt:{self.label}:{other.label}")
+            return self.number < other.number
+
+        def __gt__(self, other: Value) -> bool:
+            events.append(f"gt:{self.label}:{other.label}")
+            return self.number > other.number
+
+    class Row(Mapping[str, object]):
+        def __init__(self, label: str, value: Value) -> None:
+            self.label = label
+            self.value = value
+
+        def __getitem__(self, name: str) -> object:
+            events.append(f"get:{self.label}:{name}")
+            return 1 if name == "key" else self.value
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("key", "value"))
+
+        def __len__(self) -> int:
+            return 2
+
+    first = Value("first", 5)
+    second = Value("second", 3)
+    result = (
+        fpstreams.rows([Row("first", first), Row("second", second)])
+        .with_engine("python")
+        .group_by("key")
+        .aggregate(high=fpstreams.agg.max("value"), low=fpstreams.agg.min("value"))
+        .to_list()
+    )
+
+    assert result == [{"key": 1, "high": first, "low": second}]
+    assert events == [
+        "get:first:key",
+        "get:first:value",
+        "get:first:value",
+        "get:second:key",
+        "get:second:value",
+        "gt:second:first",
+        "get:second:value",
+        "lt:second:first",
+    ]
+
+
+def test_rows_min_max_fixed_lane_closes_on_error_and_failpoint() -> None:
+    """Comparison failure and state failpoints stop later reads and close the source."""
+    from fpstreams.runtime.failpoints import failpoint
+
+    events: list[str] = []
+
+    class Value:
+        def __init__(self, label: str, *, fail: bool = False) -> None:
+            self.label = label
+            self.fail = fail
+
+        def __lt__(self, other: Value) -> bool:
+            events.append(f"lt:{self.label}:{other.label}")
+            if self.fail:
+                raise RuntimeError("min comparison")
+            return False
+
+        def __gt__(self, other: Value) -> bool:
+            events.append(f"gt:{self.label}:{other.label}")
+            return False
+
+    class LoggedRow(Mapping[str, object]):
+        def __init__(self, label: str, value: Value) -> None:
+            self.label = label
+            self.value = value
+
+        def __getitem__(self, name: str) -> object:
+            events.append(f"get:{self.label}:{name}")
+            return 1 if name == "key" else self.value
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("key", "value"))
+
+        def __len__(self) -> int:
+            return 2
+
+    def failing_comparison() -> Iterator[Mapping[str, object]]:
+        events.append("open:comparison")
+        try:
+            yield LoggedRow("first", Value("first"))
+            yield LoggedRow("second", Value("second", fail=True))
+        finally:
+            events.append("close:comparison")
+
+    with pytest.raises(RuntimeError, match="min comparison"):
+        (
+            fpstreams.rows(failing_comparison())
+            .with_engine("python")
+            .group_by("key")
+            .aggregate(low=fpstreams.agg.min("value"), high=fpstreams.agg.max("value"))
+            .to_list()
+        )
+    assert events == [
+        "open:comparison",
+        "get:first:key",
+        "get:first:value",
+        "get:first:value",
+        "get:second:key",
+        "get:second:value",
+        "lt:second:first",
+        "close:comparison",
+    ]
+
+    events.clear()
+
+    def instrumented() -> Iterator[Mapping[str, object]]:
+        events.append("open:failpoint")
+        try:
+            yield LoggedRow("instrumented", Value("unused"))
+        finally:
+            events.append("close:failpoint")
+
+    with (
+        failpoint("group.state.create.after", RuntimeError("group transition")),
+        pytest.raises(RuntimeError, match="group transition"),
+    ):
+        (
+            fpstreams.rows(instrumented())
+            .with_engine("python")
+            .group_by("key")
+            .aggregate(low=fpstreams.agg.min("value"), high=fpstreams.agg.max("value"))
+            .to_list()
+        )
+    assert events == [
+        "open:failpoint",
+        "get:instrumented:key",
+        "close:failpoint",
+    ]
+
+
+def test_rows_unpivot_preserves_exact_record_snapshots_and_protocol_fallback() -> None:
+    source = {
+        "account": 7,
+        "region": "west",
+        "january": 10,
+        "february": 20,
+        "march": 30,
+    }
+    reshaped = fpstreams.rows([source]).unpivot(
+        "january",
+        "february",
+        "march",
+        names_to="month",
+        values_to="sales",
+    )
+    iterator = iter(reshaped)
+
+    assert next(iterator) == {
+        "account": 7,
+        "region": "west",
+        "month": "january",
+        "sales": 10,
+    }
+    source["region"] = "changed"
+    source["february"] = 999
+    del source["march"]
+    assert list(iterator) == [
+        {"account": 7, "region": "west", "month": "february", "sales": 20},
+        {"account": 7, "region": "west", "month": "march", "sales": 30},
+    ]
+
+    events: list[str] = []
+
+    class ProtocolMapping(Mapping[str, object]):
+        def __init__(self) -> None:
+            self.values = {"account": 9, "january": 3, "february": 4, "march": 5}
+
+        def __getitem__(self, key: str) -> object:
+            events.append(f"get:{key}")
+            return self.values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            events.append("iter")
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    assert fpstreams.rows([ProtocolMapping()]).unpivot(
+        "january", "february", "march"
+    ).to_list() == [
+        {"account": 9, "variable": "january", "value": 3},
+        {"account": 9, "variable": "february", "value": 4},
+        {"account": 9, "variable": "march", "value": 5},
+    ]
+    assert events == [
+        "iter",
+        "get:account",
+        "get:january",
+        "get:february",
+        "get:march",
+    ]
+
+
+def test_row_expansions_share_one_sealed_terminal_plan_type() -> None:
+    """The list terminal trusts one project plan, not an API-specific type allowlist."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+
+    exploded = fpstreams.rows([{"labels": [1, 2]}]).explode("labels", into="individual_label")
+    unpivoted = fpstreams.rows([{"north": 1, "south": 2, "east": 3}]).unpivot(
+        "north",
+        "south",
+        "east",
+        names_to="territory_axis",
+        values_to="gross_measure",
+    )
+    explode_function = exploded._flow._pipeline.operations[-1].function
+    unpivot_function = unpivoted._flow._pipeline.operations[-1].function
+
+    assert type(explode_function) is type(unpivot_function)
+    assert rows_module._materialized_row_appender(explode_function) is not None
+    assert rows_module._materialized_row_appender(unpivot_function) is not None
+
+    class UntrustedExpansion(type(explode_function)):
+        pass
+
+    spoof = object.__new__(UntrustedExpansion)
+    assert rows_module._materialized_row_appender(spoof) is None
+
+
+def test_materialized_unpivot_keeps_exact_string_rows_on_the_direct_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Row width does not reject proven dictionaries; protocol keys still fall back."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    canonical_calls: list[tuple[str, int]] = []
+    original_explode = rows_module._ExplodeExpansion.__call__
+    original_unpivot = rows_module._UnpivotExpansion.__call__
+
+    def tracked_explode(expansion: object, row: object) -> Iterator[dict[str, object]]:
+        canonical_calls.append(("explode", len(cast(dict[object, object], row))))
+        return original_explode(expansion, row)
+
+    def tracked_unpivot(expansion: object, row: object) -> Iterator[dict[str, object]]:
+        canonical_calls.append(("unpivot", len(cast(dict[object, object], row))))
+        return original_unpivot(expansion, row)
+
+    monkeypatch.setattr(rows_module._ExplodeExpansion, "__call__", tracked_explode)
+    monkeypatch.setattr(rows_module._UnpivotExpansion, "__call__", tracked_unpivot)
+
+    def record(width: int, required: dict[str, object]) -> dict[str, object]:
+        extras = {f"extra_{position}": position for position in range(width - len(required))}
+        return {**required, **extras}
+
+    assert fpstreams.rows([record(16, {"id": 1, "tags": [1, 2]})]).explode("tags").to_list() == [
+        {**record(16, {"id": 1, "tags": [1, 2]}), "tags": 1},
+        {**record(16, {"id": 1, "tags": [1, 2]}), "tags": 2},
+    ]
+    fpstreams.rows([record(17, {"id": 2, "tags": [3]})]).explode("tags").to_list()
+
+    selected = tuple(f"value_{position}" for position in range(8))
+    required = {"id": 3, **{name: position for position, name in enumerate(selected)}}
+    fpstreams.rows([record(16, required)]).unpivot(*selected).to_list()
+    fpstreams.rows([record(17, required)]).unpivot(*selected).to_list()
+
+    many_selected = tuple(f"measure_{position}" for position in range(20))
+    many_required = {
+        "id": 4,
+        **{name: position for position, name in enumerate(many_selected)},
+    }
+    fpstreams.rows([record(25, many_required)]).unpivot(*many_selected).to_list()
+    fpstreams.rows([record(26, many_required)]).unpivot(*many_selected).to_list()
+
+    protocol_key = object()
+    fpstreams.rows([{"id": 5, "left": 10, "right": 20, protocol_key: "preserved"}]).unpivot(
+        "left", "right"
+    ).to_list()
+
+    assert fpstreams.rows([{"id": 7, "left.amount": 50, "right.amount": 60}]).unpivot(
+        "left.amount", "right.amount"
+    ).to_list() == [
+        {"id": 7, "variable": "left.amount", "value": 50},
+        {"id": 7, "variable": "right.amount", "value": 60},
+    ]
+
+    assert canonical_calls == [("unpivot", 4)]
+
+    materialized = (
+        fpstreams.rows([{"id": 6, "left": 30, "right": 40}]).unpivot("left", "right").to_list()
+    )
+    materialized[0]["id"] = "changed"
+    assert materialized[1] == {"id": 6, "variable": "right", "value": 40}
+
+
+def test_materialized_unpivot_sealed_appender_owns_one_shot_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list terminal can batch-expand one claimed source without reopening it."""
+    from fpstreams.runtime.failpoints import failpoint
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original = rows_module._UnpivotExpansion.__call__
+    canonical_calls = 0
+
+    def tracked(expansion: object, row: object) -> Iterator[dict[str, object]]:
+        nonlocal canonical_calls
+        canonical_calls += 1
+        return original(expansion, row)
+
+    monkeypatch.setattr(rows_module._UnpivotExpansion, "__call__", tracked)
+    events: list[str] = []
+
+    def source() -> Iterator[dict[str, int]]:
+        events.append("open")
+        try:
+            yield {"id": 1, "left": 10, "right": 20}
+            yield {"id": 2, "left": 30, "right": 40}
+        finally:
+            events.append("close")
+
+    query = fpstreams.rows(source()).unpivot("left", "right")
+    assert query.to_list() == [
+        {"id": 1, "variable": "left", "value": 10},
+        {"id": 1, "variable": "right", "value": 20},
+        {"id": 2, "variable": "left", "value": 30},
+        {"id": 2, "variable": "right", "value": 40},
+    ]
+    assert events == ["open", "close"]
+    assert canonical_calls == 0
+    with pytest.raises(fpstreams.FlowConsumedError):
+        query.to_list()
+
+    with failpoint("inactive.unpivot.boundary", RuntimeError("unused")):
+        fpstreams.rows([{"id": 3, "left": 50, "right": 60}]).unpivot("left", "right").to_list()
+    assert canonical_calls == 1
+
+
+def test_unpivot_native_prefix_admits_only_safe_materialized_source_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic prefix hook sees retained sequences but never claims a generator."""
+    from fpstreams import _native
+
+    calls: list[type[object]] = []
+
+    def decline(
+        _output: list[object],
+        source: Iterator[object],
+        _columns: tuple[str, ...],
+        _names_to: str,
+        _values_to: str,
+    ) -> None:
+        calls.append(type(source))
+        return None
+
+    monkeypatch.setattr(_native, "unpivot_exact_dict_prefix_v1", decline, raising=False)
+    records = [
+        {"account": 1, "january": 10, "february": 20, "march": 30},
+        {"account": 2, "january": 40, "february": 50, "march": 60},
+    ]
+    expected = [
+        {"account": 1, "month": "january", "amount": 10},
+        {"account": 1, "month": "february", "amount": 20},
+        {"account": 1, "month": "march", "amount": 30},
+        {"account": 2, "month": "january", "amount": 40},
+        {"account": 2, "month": "february", "amount": 50},
+        {"account": 2, "month": "march", "amount": 60},
+    ]
+
+    for source in (records, tuple(records), iter(records), (row for row in records)):
+        assert (
+            fpstreams.rows(source)
+            .unpivot(
+                "january",
+                "february",
+                "march",
+                names_to="month",
+                values_to="amount",
+            )
+            .to_list()
+            == expected
+        )
+
+    assert [kind.__name__ for kind in calls] == [
+        "list_iterator",
+        "tuple_iterator",
+        "list_iterator",
+    ]
+
+
+def test_unpivot_native_decline_resumes_the_same_opened_iterator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native boundary is handed once to Python without reopening or skipping rows."""
+    from fpstreams import _native
+
+    events: list[str] = []
+
+    def boundary(
+        _output: list[object],
+        source: Iterator[object],
+        _columns: tuple[str, ...],
+        _names_to: str,
+        _values_to: str,
+    ) -> tuple[object, bool]:
+        events.append("native")
+        return next(source), False
+
+    monkeypatch.setattr(_native, "unpivot_exact_dict_prefix_v1", boundary, raising=False)
+    records = [
+        {"account": 1, "january": 10, "february": 20},
+        {"account": 2, "january": 30, "february": 40},
+    ]
+
+    assert fpstreams.rows(records).unpivot(
+        "january", "february", names_to="month", values_to="amount"
+    ).to_list() == [
+        {"account": 1, "month": "january", "amount": 10},
+        {"account": 1, "month": "february", "amount": 20},
+        {"account": 2, "month": "january", "amount": 30},
+        {"account": 2, "month": "february", "amount": 40},
+    ]
+    assert events == ["native"]
+
+
+def test_unpivot_native_stop_iteration_keeps_the_generator_error_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An optimization callback cannot leak StopIteration out of a materialized flat-map."""
+    from fpstreams import _native
+
+    failure = StopIteration("signal stop")
+
+    def interrupted(*_arguments: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(_native, "unpivot_exact_dict_prefix_v1", interrupted)
+
+    with pytest.raises(RuntimeError, match=r"^generator raised StopIteration$") as caught:
+        fpstreams.rows([{"account": 1, "january": 10}]).unpivot("january").to_list()
+
+    assert caught.value.__cause__ is failure
+
+
+def test_unpivot_native_prefix_treats_none_as_a_real_python_boundary() -> None:
+    records: list[object] = [
+        {"account": 1, "january": 10},
+        None,
+        {"account": 2, "january": 20},
+    ]
+
+    with pytest.raises(fpstreams.SelectionError, match="NoneType cannot be represented"):
+        fpstreams.rows(records).unpivot("january").to_list()
+
+
+def test_rows_unpivot_reports_missing_and_colliding_nonbenchmark_columns() -> None:
+    with pytest.raises(fpstreams.SelectionError, match=r"\['february', 'march'\]"):
+        fpstreams.rows([{"account": 1, "january": 10}]).unpivot(
+            "january", "february", "march"
+        ).to_list()
+
+    with pytest.raises(fpstreams.DuplicateKeyError, match="output names collide"):
+        fpstreams.rows(
+            [{"account": 1, "month": "existing", "january": 10, "february": 20}]
+        ).unpivot("january", "february", names_to="month").to_list()
+
+
 def test_rows_computes_stable_online_statistics_and_distinct_counts() -> None:
     records = [
         {"team": "a", "score": 1_000_000_000_001.0, "tags": ["x"]},
@@ -1679,6 +2702,184 @@ def test_selected_group_sum_matches_builtin_and_callable_oracles() -> None:
             .to_list()
             == []
         )
+
+
+@pytest.mark.parametrize("scenario", ["pair_reversed", "group_enumerate"])
+def test_closed_kernels_reject_preimport_builtin_pollution(scenario: str) -> None:
+    """A polluted implementation primitive must keep execution on Python semantics."""
+    if scenario == "pair_reversed":
+        body = """
+import builtins
+import numpy  # Load optional dependency internals before applying the narrow pollution.
+
+builtins.reversed = lambda values: values
+import fpstreams
+from fpstreams.planning.pair_i64_expression import lower_pair_i64_row_filter
+
+values = [(index, index % 4) for index in range(128)]
+expression = (fpstreams.col(1) - 1) == 1
+assert lower_pair_i64_row_filter(expression) is None
+automatic = fpstreams.pairs(values).filter_pairs(expression).to_dict(on_duplicate="last")
+canonical = (
+    fpstreams.pairs(values)
+    .filter_pairs(expression)
+    .with_engine("python")
+    .to_dict(on_duplicate="last")
+)
+assert automatic == canonical
+"""
+    else:
+        body = """
+import builtins
+import numpy as np
+
+original_enumerate = builtins.enumerate
+
+def selective_enumerate(values, start=0):
+    if (
+        type(values) is tuple
+        and values
+        and type(values[0]).__module__.startswith("fpstreams.collecting.")
+    ):
+        return original_enumerate((), start)
+    return original_enumerate(values, start)
+
+builtins.enumerate = selective_enumerate
+import fpstreams
+
+query = (
+    fpstreams.rows.from_numpy(
+        np.asarray([[1, 10], [1, 20], [2, 30]], dtype=np.int64),
+        columns=("key", "value"),
+    )
+    .group_by("key")
+    .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+)
+automatic = query.run_with_report("to_list")
+canonical = query.with_engine("python").to_list()
+assert automatic.report.strategy == "planned:python"
+assert automatic.value == canonical == [
+    {"key": 1, "rows": 0, "total": 0},
+    {"key": 2, "rows": 0, "total": 0},
+]
+"""
+    completed = _run_inline_python(body, cwd=PROJECT_ROOT)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_selected_tuple_group_sum_native_decline_replays_protocol_rows_once() -> None:
+    """A late exact-shape decline adds no selector, hash, or addition observations."""
+
+    def evaluate(engine: str) -> tuple[list[dict[str, object]], list[str]]:
+        events: list[str] = []
+
+        class Integer(int):
+            def __hash__(self) -> int:
+                events.append("hash")
+                return int.__hash__(self)
+
+        class Number:
+            def __init__(self, value: int) -> None:
+                self.value = value
+
+            def __radd__(self, left: object) -> int:
+                events.append(f"radd:{left!r}+{self.value}")
+                assert type(left) is int
+                return left + self.value
+
+        class Row(tuple[object, ...]):
+            def __getitem__(self, index: object) -> object:
+                events.append(f"get:{index!r}")
+                return super().__getitem__(index)  # type: ignore[index]
+
+        query = (
+            fpstreams.rows([(1, 2), Row((Integer(1), Number(3)))])
+            .with_engine(engine)
+            .group_by(key=0)
+            .aggregate(total=fpstreams.agg.sum(1))
+        )
+        return query.to_list(), events
+
+    expected, expected_events = evaluate("python")
+    actual, actual_events = evaluate("auto")
+
+    assert actual == expected == [{"key": 1, "total": 5}]
+    assert (
+        actual_events
+        == expected_events
+        == [
+            "get:0",
+            "hash",
+            "hash",
+            "get:1",
+            "radd:2+3",
+        ]
+    )
+
+
+def test_selected_tuple_group_sum_short_row_replays_and_closes_once() -> None:
+    """A late short exact tuple enters one canonical selection-error lifecycle."""
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.streams.flow import Flow
+
+    retained = [(1, 2), (1,)]
+    events: list[str] = []
+
+    def open_rows() -> Iterator[tuple[int, ...]]:
+        events.append("open")
+        try:
+            for index, row in enumerate(retained):
+                events.append(f"pull:{index}")
+                yield row
+        finally:
+            events.append("close")
+
+    source = Source(
+        open_rows,
+        SourceCapabilities(reiterable=True, exact_size=2, ordered=True),
+        native_data=retained,
+    )
+    grouped = fpstreams.Rows(Flow(source)).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
+
+    with pytest.raises(fpstreams.SelectionError) as captured:
+        grouped.to_list()
+
+    assert isinstance(captured.value.__cause__, IndexError)
+    assert events == ["open", "pull:0", "pull:1", "close"]
+
+
+def test_selected_tuple_group_sum_rejects_nonexact_index_selectors_before_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bool and int-subclass selectors retain Python selection and report policy."""
+    from fpstreams import _native
+
+    class Index(int):
+        calls = 0
+
+        def __index__(self) -> int:
+            type(self).calls += 1
+            return int(self)
+
+    def unexpected_native(*_arguments: object) -> object:
+        raise AssertionError("a nonexact selector entered fixed-index native grouping")
+
+    monkeypatch.setattr(_native, "group_sum_i64_rows_v1", unexpected_native)
+    candidates = (
+        (True, 0, [{"key": 1, "total": 30}]),
+        (Index(0), Index(1), [{"key": 10, "total": 1}, {"key": 20, "total": 1}]),
+    )
+    for key_selector, value_selector, expected in candidates:
+        query = (
+            fpstreams.rows(((10, 1), (20, 1)))
+            .group_by(key=key_selector)
+            .aggregate(total=fpstreams.agg.sum(value_selector))
+        )
+        execution = query.run_with_report("to_list")
+        assert execution.value == expected
+        assert execution.report.strategy == "planned:python"
+    assert Index.calls == 0
 
 
 def test_selected_group_sum_rechecks_the_exact_fast_shape_per_row() -> None:
@@ -1963,6 +3164,689 @@ def test_rows_pivots_long_data_with_explicit_duplicate_policy() -> None:
     ]
 
 
+def test_rows_pivot_sparse_columns_preserve_order_and_fill_identity() -> None:
+    """Template-backed sparse output keeps the public index/column layout and fill object."""
+    fill = object()
+
+    result = (
+        fpstreams.rows(
+            [
+                {"site": "north", "rack": 1, "metric": "cpu", "value": 10},
+                {"site": "south", "rack": 2, "metric": "memory", "value": 20},
+                {"site": "north", "rack": 1, "metric": "disk", "value": 30},
+            ]
+        )
+        .pivot(
+            index=("site", "rack"),
+            columns="metric",
+            values="value",
+            fill=fill,
+        )
+        .to_list()
+    )
+
+    assert [tuple(row) for row in result] == [
+        ("site", "rack", "cpu", "memory", "disk"),
+        ("site", "rack", "cpu", "memory", "disk"),
+    ]
+    assert result[0]["memory"] is fill
+    assert result[1]["cpu"] is fill
+    assert result[1]["disk"] is fill
+
+
+def test_rows_pivot_uses_retained_exact_native_kernel_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct replayable source reaches the exact kernel only when pivot execution starts."""
+    from fpstreams import _native
+
+    records = [
+        {"site": 1, "metric": "cpu", "reading": 2},
+        {"site": 1, "metric": "memory", "reading": 3},
+    ]
+    fill = object()
+    result_marker = object()
+    calls: list[tuple[object, ...]] = []
+
+    def native_pivot(*arguments: object) -> list[dict[str, object]]:
+        calls.append(arguments)
+        return [{"site": 1, "cpu": result_marker, "memory": fill}]
+
+    monkeypatch.setattr(_native, "pivot_exact_dict_rows_v1", native_pivot, raising=False)
+    pivoted = fpstreams.rows(records).pivot(
+        index="site",
+        columns="metric",
+        values="reading",
+        fill=fill,
+    )
+
+    assert calls == []
+    assert pivoted.to_list() == [{"site": 1, "cpu": result_marker, "memory": fill}]
+    assert len(calls) == 1
+    assert calls[0][0] is records
+    assert calls[0][1:6] == (("site",), "metric", "reading", ("site",), fill)
+    assert calls[0][6] is fpstreams.DuplicateKeyError
+
+
+def test_rows_pivot_native_decline_reuses_the_unchanged_python_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speculative exact-kernel decline leaves the replayable input for canonical pivot."""
+    from fpstreams import _native
+
+    records = [
+        {"site": 1, "metric": "cpu", "reading": 2},
+        {"site": 2, "metric": "memory", "reading": 3},
+    ]
+    calls = 0
+
+    def decline(*_arguments: object) -> None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(_native, "pivot_exact_dict_rows_v1", decline, raising=False)
+
+    assert fpstreams.rows(records).pivot(
+        index="site",
+        columns="metric",
+        values="reading",
+        fill=0,
+    ).to_list() == [
+        {"site": 1, "cpu": 2, "memory": 0},
+        {"site": 2, "cpu": 0, "memory": 3},
+    ]
+    assert calls == 1
+    assert records == [
+        {"site": 1, "metric": "cpu", "reading": 2},
+        {"site": 2, "metric": "memory", "reading": 3},
+    ]
+
+
+def test_rows_pivot_rechecks_a_live_retained_source_on_every_execution() -> None:
+    """Replayable list pivots observe later row edits and appends instead of caching a snapshot."""
+    records = [{"site": 1, "metric": "cpu", "reading": 2}]
+    pivoted = fpstreams.rows(records).pivot(
+        index="site", columns="metric", values="reading", fill=0
+    )
+
+    assert pivoted.to_list() == [{"site": 1, "cpu": 2}]
+    records[0]["reading"] = 5
+    records.append({"site": 2, "metric": "memory", "reading": 7})
+
+    assert pivoted.to_list() == [
+        {"site": 1, "cpu": 5, "memory": 0},
+        {"site": 2, "cpu": 0, "memory": 7},
+    ]
+
+
+def test_rows_pivot_native_gate_preserves_dynamic_and_instrumented_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python-only requests, upstream work, dynamic globals, and failpoints bypass native pivot."""
+    from fpstreams import _native
+    from fpstreams.runtime.failpoints import failpoint
+
+    records = [{"site": 1, "metric": "cpu", "reading": 2}]
+
+    def unexpected(*_arguments: object) -> object:
+        raise AssertionError("guarded pivot must retain Python execution")
+
+    monkeypatch.setattr(_native, "pivot_exact_dict_rows_v1", unexpected, raising=False)
+
+    assert fpstreams.rows(records).with_engine("python").pivot(
+        index="site", columns="metric", values="reading"
+    ).to_list() == [{"site": 1, "cpu": 2}]
+    assert fpstreams.rows(records).where(lambda _row: True).pivot(
+        index="site", columns="metric", values="reading"
+    ).to_list() == [{"site": 1, "cpu": 2}]
+
+    from fpstreams.streams.flow import Flow
+    from fpstreams.tabular.rows import Rows
+
+    class CustomRows(Rows[dict[str, object]]):
+        def __iter__(self) -> Iterator[dict[str, object]]:
+            return iter([{"site": 2, "metric": "memory", "reading": 3}])
+
+    class CustomFlow(Flow[dict[str, object]]):
+        def __iter__(self) -> Iterator[dict[str, object]]:
+            return iter([{"site": 3, "metric": "disk", "reading": 4}])
+
+    assert CustomRows(records).pivot(
+        index="site", columns="metric", values="reading"
+    ).to_list() == [{"site": 2, "memory": 3}]
+    assert Rows(CustomFlow(records)).pivot(
+        index="site", columns="metric", values="reading"
+    ).to_list() == [{"site": 3, "disk": 4}]
+
+    pivoted = fpstreams.rows(records).pivot(index="site", columns="metric", values="reading")
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "str", lambda _value: "renamed", raising=False)
+    assert pivoted.to_list() == [{"site": 1, "renamed": 2}]
+
+    monkeypatch.delattr(rows_module, "str")
+    failure = RuntimeError("observed source pull")
+    with failpoint("iterator.pull.after", failure), pytest.raises(RuntimeError) as raised:
+        fpstreams.rows(records).pivot(index="site", columns="metric", values="reading").to_list()
+    assert raised.value is failure
+
+
+def test_rows_pivot_handles_general_columns_and_every_duplicate_policy() -> None:
+    readings = [
+        {"device": "alpha", "metric": "cpu", "reading": 3},
+        {"device": "alpha", "metric": "memory", "reading": 5},
+        {"device": "alpha", "metric": "disk", "reading": 7},
+        {"device": "alpha", "metric": "cpu", "reading": 11},
+        {"device": "beta", "metric": "memory", "reading": 13},
+    ]
+    original = [row.copy() for row in readings]
+
+    def pivot(policy: str | Any) -> list[dict[str, object]]:
+        return (
+            fpstreams.rows(readings)
+            .pivot(
+                index="device",
+                columns="metric",
+                values="reading",
+                aggregate=policy,
+                fill=-1,
+            )
+            .to_list()
+        )
+
+    assert pivot("first") == [
+        {"device": "alpha", "cpu": 3, "memory": 5, "disk": 7},
+        {"device": "beta", "cpu": -1, "memory": 13, "disk": -1},
+    ]
+    assert pivot("last")[0]["cpu"] == 11
+    assert pivot("sum")[0]["cpu"] == 14
+    assert pivot(lambda left, right: left * right)[0]["cpu"] == 33
+    with pytest.raises(fpstreams.DuplicateKeyError, match="multiple values for pivot key"):
+        pivot("error")
+    assert readings == original
+
+
+def test_rows_pivot_rechecks_dynamic_aggregate_objects_per_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Construction checks once, while duplicate cells observe later __call__ drift."""
+    events: list[str] = []
+
+    class DriftingReducer:
+        def __call__(self, left: int, right: int) -> int:
+            events.append("reduce")
+            del type(self).__call__
+            return left + right
+
+    reducer = DriftingReducer()
+    canonical_callable = callable
+
+    def tracked_callable(value: object) -> bool:
+        events.append("callable")
+        return canonical_callable(value)
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "callable", tracked_callable, raising=False)
+    pivoted = fpstreams.rows(
+        [
+            {"sensor": 1, "channel": "heat", "reading": 2},
+            {"sensor": 1, "channel": "heat", "reading": 3},
+            {"sensor": 1, "channel": "heat", "reading": 5},
+        ]
+    ).pivot(
+        index="sensor",
+        columns="channel",
+        values="reading",
+        aggregate=reducer,
+    )
+
+    assert events == ["callable"]
+    assert pivoted.to_list() == [{"sensor": 1, "heat": 5}]
+    assert events == ["callable", "callable", "reduce", "callable"]
+
+
+def test_rows_pivot_truth_tests_callable_validation_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The constructor normalizes one dynamic callable result without testing it twice."""
+    events: list[str] = []
+
+    class CallableDecision:
+        def __bool__(self) -> bool:
+            events.append("bool")
+            if len(events) > 1:
+                raise RuntimeError("callable result tested twice")
+            return True
+
+    decision = CallableDecision()
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "callable", lambda _value: decision, raising=False)
+
+    fpstreams.rows([{"sensor": 1, "channel": "heat", "reading": 2}]).pivot(
+        index="sensor",
+        columns="channel",
+        values="reading",
+        aggregate=lambda left, right: left + right,
+    )
+
+    assert events == ["bool"]
+
+
+@pytest.mark.parametrize(
+    ("index_selector", "key_name"),
+    [("sensor", "sensor"), (lambda row: row["sensor"], "key_0")],
+    ids=["direct", "compatible"],
+)
+def test_rows_pivot_exact_reducer_observes_dynamic_callable_global(
+    monkeypatch: pytest.MonkeyPatch,
+    index_selector: object,
+    key_name: str,
+) -> None:
+    """A cached exact function is used only while the module callable remains canonical."""
+    pivoted = fpstreams.rows(
+        [
+            {"sensor": 1, "channel": "heat", "reading": 2},
+            {"sensor": 1, "channel": "heat", "reading": 3},
+        ]
+    ).pivot(
+        index=index_selector,  # type: ignore[arg-type]
+        columns="channel",
+        values="reading",
+        aggregate=lambda left, right: left + right,
+    )
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "callable", lambda _value: False, raising=False)
+
+    assert pivoted.to_list() == [{key_name: 1, "heat": 2}]
+
+
+def test_rows_pivot_nonexact_key_names_keep_construction_and_runtime_hash_order() -> None:
+    """A derived str subclass stays out of the seen-column set specialization."""
+    events: list[str] = []
+
+    class DerivedName(str):
+        def __hash__(self) -> int:
+            events.append("hash")
+            if events.count("hash") == 3:
+                raise RuntimeError("third derived-name hash")
+            return str.__hash__(self)
+
+        def __eq__(self, other: object) -> bool:
+            events.append("eq")
+            return str.__eq__(self, other)
+
+    derived_name = DerivedName("sensor")
+
+    class Selector(str):
+        def split(self, *_args: object, **_options: object) -> list[DerivedName]:
+            return [derived_name]
+
+    def select_value(row: Mapping[str, object]) -> object:
+        events.append("value")
+        return row["reading"]
+
+    pivoted = fpstreams.rows([{"sensor": 1, "channel": "heat", "reading": 2}]).pivot(
+        index=Selector("sensor"),
+        columns="channel",
+        values=select_value,
+    )
+
+    assert events == ["hash", "hash"]
+    with pytest.raises(RuntimeError, match="third derived-name hash"):
+        pivoted.to_list()
+    assert events == ["hash", "hash", "eq", "value", "hash"]
+
+
+def test_rows_pivot_direct_gate_uses_saved_builtin_str_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement module str cannot admit its instances to direct-field containment checks."""
+
+    class Selector(str):
+        def __contains__(self, _value: object) -> bool:
+            raise RuntimeError("replacement selector containment")
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "str", Selector, raising=False)
+
+    fpstreams.rows([{"sensor": 1, "channel": "heat", "reading": 2}]).pivot(
+        index=Selector("sensor"),
+        columns=Selector("channel"),
+        values=Selector("reading"),
+    )
+
+
+@pytest.mark.parametrize("direct_selectors", [False, True], ids=["compatible", "direct"])
+def test_rows_pivot_uses_saved_builtin_str_identity_for_seen_columns(
+    monkeypatch: pytest.MonkeyPatch,
+    direct_selectors: bool,
+) -> None:
+    """A dynamic str result stays on the ordered list path before value selection and hashing."""
+    events: list[str] = []
+
+    class ColumnName(str):
+        def __eq__(self, _other: object) -> bool:
+            events.append("eq")
+            return False
+
+        def __hash__(self) -> int:
+            events.append("hash")
+            raise RuntimeError("column hash")
+
+    class DirectRecord(Mapping[str, object]):
+        def __init__(self) -> None:
+            self.values = {"sensor": 1, "channel": "heat", "reading": 2}
+
+        def __getitem__(self, key: str) -> object:
+            if key == "reading":
+                events.append("value")
+            return self.values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    if direct_selectors:
+        pivoted = fpstreams.rows([DirectRecord()]).pivot(
+            index="sensor",
+            columns="channel",
+            values="reading",
+        )
+    else:
+        record = {"sensor": 1, "channel": "heat", "reading": 2}
+
+        def select_value(row: Mapping[str, object]) -> object:
+            events.append("value")
+            return row["reading"]
+
+        pivoted = fpstreams.rows([record]).pivot(
+            index=lambda row: row["sensor"],
+            columns=lambda row: row["channel"],
+            values=select_value,
+        )
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "str", ColumnName, raising=False)
+    with pytest.raises(RuntimeError, match="column hash"):
+        pivoted.to_list()
+
+    assert events == ["eq", "value", "hash"]
+
+
+def test_rows_pivot_preserves_non_exact_column_name_protocols() -> None:
+    """A str subclass returned by __str__ keeps canonical equality and hash probes."""
+    events: list[str] = []
+
+    class ProtocolColumn(str):
+        def __hash__(self) -> int:
+            events.append("hash")
+            return str.__hash__(self)
+
+        def __eq__(self, other: object) -> bool:
+            events.append(f"eq:{other}")
+            return str.__eq__(self, other)
+
+    class ColumnValue:
+        def __str__(self) -> str:
+            events.append("str")
+            return ProtocolColumn("metric")
+
+    def select_column(row: Mapping[str, object]) -> object:
+        return row["column"]
+
+    for column_selector in ("column", select_column):
+        events.clear()
+        result = (
+            fpstreams.rows([{"id": 1, "column": ColumnValue(), "value": 2}])
+            .pivot(
+                index="id",
+                columns=column_selector,
+                values="value",
+            )
+            .to_list()
+        )
+
+        assert events == ["str", "eq:id", "hash", "hash", "hash", "hash"]
+        assert result == [{"id": 1, "metric": 2}]
+
+
+@pytest.mark.parametrize(
+    ("collision_field", "index"),
+    [
+        ("site", "site"),
+        ("rack", ("site", "rack")),
+        ("metric", ("site", "rack")),
+        ("reading", ("site", "rack")),
+    ],
+)
+def test_rows_pivot_wraps_exact_dict_key_protocol_errors(
+    collision_field: str,
+    index: str | tuple[str, ...],
+) -> None:
+    """Direct field lookup keeps compile_selector's exception translation and order."""
+
+    class CollidingKey:
+        armed = False
+
+        def __hash__(self) -> int:
+            return hash(collision_field)
+
+        def __eq__(self, _other: object) -> bool:
+            if self.armed:
+                raise TypeError(f"collision at {collision_field}")
+            return False
+
+    collision = CollidingKey()
+    record: dict[object, object] = {collision: "unselected"}
+    record.update({"site": "north", "rack": 1, "metric": "cpu", "reading": 2})
+    collision.armed = True
+
+    with pytest.raises(fpstreams.SelectionError, match=rf"failed at '{collision_field}'") as error:
+        fpstreams.rows([record]).pivot(
+            index=index,
+            columns="metric",
+            values="reading",
+        ).to_list()
+
+    assert isinstance(error.value.__cause__, TypeError)
+    assert str(error.value.__cause__) == f"collision at {collision_field}"
+
+
+def test_rows_pivot_does_not_translate_column_stringification_errors() -> None:
+    """Only selector lookup failures become SelectionError, not a value's __str__ error."""
+    failure = KeyError("column formatting failed")
+
+    class ColumnValue:
+        def __str__(self) -> str:
+            raise failure
+
+    with pytest.raises(KeyError) as error:
+        fpstreams.rows([{"id": 1, "metric": ColumnValue(), "reading": 2}]).pivot(
+            index="id",
+            columns="metric",
+            values="reading",
+        ).to_list()
+
+    assert error.value is failure
+
+
+def test_rows_pivot_single_index_preserves_tuple_hash_collisions() -> None:
+    """The direct field path keeps canonical tuple hashing and equality callbacks."""
+    failure = RuntimeError("pivot index equality")
+
+    class CollidingTupleHash:
+        def __init__(self, value_hash: int) -> None:
+            self.value_hash = value_hash
+
+        def __hash__(self) -> int:
+            return self.value_hash
+
+        def __eq__(self, _other: object) -> bool:
+            raise failure
+
+    first = CollidingTupleHash(-8_496_733_470_247_235_670)
+    second = CollidingTupleHash(1_137_828_717_814_758_821)
+    assert hash(first) != hash(second)
+    assert hash((first,)) == hash((second,))
+
+    with pytest.raises(RuntimeError) as error:
+        fpstreams.rows(
+            [
+                {"group": first, "metric": "left", "reading": 1},
+                {"group": second, "metric": "right", "reading": 2},
+            ]
+        ).pivot(index="group", columns="metric", values="reading").to_list()
+
+    assert error.value is failure
+
+
+@pytest.mark.parametrize(
+    ("index_selector", "key_name"),
+    [("habitat", "habitat"), (lambda row: row["habitat"], "key_0")],
+    ids=["direct-field", "callable"],
+)
+def test_rows_pivot_single_index_preserves_dynamic_constructors_and_mapping_protocols(
+    monkeypatch: pytest.MonkeyPatch,
+    index_selector: object,
+    key_name: str,
+) -> None:
+    """Both pivot evaluators keep dynamic globals and Mapping access order."""
+    events: list[str] = []
+
+    class HabitatRecord(Mapping[str, object]):
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
+
+        def __getitem__(self, key: str) -> object:
+            events.append(key)
+            return self.values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    canonical_dict = dict
+    canonical_zip = zip
+
+    def tracked_dict(*args: object, **options: object) -> dict[object, object]:
+        events.append("dict")
+        return canonical_dict(*args, **options)
+
+    def tracked_zip(*iterables: object, **options: object) -> object:
+        events.append("zip")
+        return canonical_zip(*iterables, **options)
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    monkeypatch.setattr(rows_module, "dict", tracked_dict, raising=False)
+    monkeypatch.setattr(rows_module, "zip", tracked_zip, raising=False)
+    records = [
+        HabitatRecord({"habitat": "marsh", "season": "spring", "population": 4}),
+        HabitatRecord({"habitat": "marsh", "season": "autumn", "population": 7}),
+    ]
+
+    assert fpstreams.rows(records).pivot(
+        index=index_selector,  # type: ignore[arg-type]
+        columns="season",
+        values="population",
+        fill=0,
+    ).to_list() == [{key_name: "marsh", "spring": 4, "autumn": 7}]
+    assert events == [
+        "habitat",
+        "season",
+        "population",
+        "habitat",
+        "season",
+        "population",
+        "zip",
+        "dict",
+    ]
+
+
+def test_rows_pivot_preserves_selector_protocols_and_multi_index_order() -> None:
+    events: list[str] = []
+
+    class VirtualDict(dict[str, object]):
+        def __getitem__(self, key: str) -> object:
+            events.append(f"dict:{key}")
+            return super().__getitem__(key)
+
+    class ProtocolMapping(Mapping[str, object]):
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
+
+        def __getitem__(self, key: str) -> object:
+            events.append(f"mapping:{key}")
+            return self.values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    records: list[Mapping[str, object]] = [
+        {"site": "north", "rack": 1, "metric": "cpu", "reading": 2},
+        VirtualDict(site="north", rack=1, metric="memory", reading=4),
+        ProtocolMapping({"site": "south", "rack": 2, "metric": "disk", "reading": 8}),
+    ]
+
+    assert fpstreams.rows(records).pivot(
+        index=("site", "rack"),
+        columns="metric",
+        values="reading",
+        fill=0,
+    ).to_list() == [
+        {"site": "north", "rack": 1, "cpu": 2, "memory": 4, "disk": 0},
+        {"site": "south", "rack": 2, "cpu": 0, "memory": 0, "disk": 8},
+    ]
+    assert events == [
+        "dict:site",
+        "dict:rack",
+        "dict:metric",
+        "dict:reading",
+        "mapping:site",
+        "mapping:rack",
+        "mapping:metric",
+        "mapping:reading",
+    ]
+
+    events.clear()
+    mixed_records: list[Mapping[str, object]] = [
+        {"site": "shared", "rack": 1, "metric": "cpu", "reading": 2},
+        VirtualDict(site="shared", rack=9, metric="memory", reading=4),
+        ProtocolMapping({"site": "other", "rack": 3, "metric": "disk", "reading": 8}),
+    ]
+    assert fpstreams.rows(mixed_records).pivot(
+        index="site", columns="metric", values="reading", fill=0
+    ).to_list() == [
+        {"site": "shared", "cpu": 2, "memory": 4, "disk": 0},
+        {"site": "other", "cpu": 0, "memory": 0, "disk": 8},
+    ]
+    assert events == [
+        "dict:site",
+        "dict:metric",
+        "dict:reading",
+        "mapping:site",
+        "mapping:metric",
+        "mapping:reading",
+    ]
+
+    with pytest.raises(fpstreams.SelectionError, match="failed at 'reading'") as captured:
+        fpstreams.rows([{"site": "north", "metric": "cpu"}]).pivot(
+            index="site", columns="metric", values="reading"
+        ).to_list()
+    assert isinstance(captured.value.__cause__, KeyError)
+
+    with pytest.raises(ValueError, match="collides with an index column"):
+        fpstreams.rows([{"site": "north", "metric": "site", "reading": 1}]).pivot(
+            index="site", columns="metric", values="reading"
+        ).to_list()
+
+
 def test_rows_rejects_ambiguous_output_columns() -> None:
     assert (
         fpstreams.rows([{"id": 1, "value": "left", "value_right": "unused"}])
@@ -1983,6 +3867,88 @@ def test_rows_rejects_ambiguous_output_columns() -> None:
         fpstreams.rows([{"team": "x", "score": 1}]).group_by("team").aggregate(
             team=fpstreams.agg.count()
         )
+
+
+def test_in_memory_join_keeps_source_failure_primary_and_closes_that_source() -> None:
+    primary = ValueError("left source failed")
+
+    class Source(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self.pulls = 0
+            self.close_calls = 0
+
+        def __next__(self) -> dict[str, int]:
+            self.pulls += 1
+            if self.pulls == 1:
+                return {"id": 1}
+            raise primary
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError("left source close failed")
+
+    source = Source()
+    with pytest.raises(ValueError) as captured:
+        fpstreams.rows(source).join([{"id": 1}], on="id").to_list()
+
+    assert source.pulls == 2
+    assert captured.value is primary
+    assert captured.value.__notes__ == ["cleanup failed with OSError: left source close failed"]
+    assert source.close_calls == 1
+
+
+@pytest.mark.parametrize("failing_side", ["left", "right"])
+def test_unique_right_join_keeps_key_failure_primary_when_source_close_fails(
+    failing_side: str,
+) -> None:
+    primary = ValueError(f"{failing_side} key failed")
+
+    class Source(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self.emitted = False
+            self.close_calls = 0
+
+        def __next__(self) -> dict[str, int]:
+            if self.emitted:
+                raise StopIteration
+            self.emitted = True
+            return {"id": 1}
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError(f"{failing_side} source close failed")
+
+    def fail_key(_row: object) -> int:
+        raise primary
+
+    def direct_key(row: dict[str, int]) -> int:
+        return row["id"]
+
+    source = Source()
+    joined = (
+        fpstreams.rows(source).join(
+            [{"id": 1}],
+            left_on=fail_key,
+            right_on=direct_key,
+            validate="m:1",
+        )
+        if failing_side == "left"
+        else fpstreams.rows([{"id": 1}]).join(
+            source,
+            left_on=direct_key,
+            right_on=fail_key,
+            validate="m:1",
+        )
+    ).with_engine("python")
+
+    with pytest.raises(ValueError) as captured:
+        joined.to_list()
+
+    assert captured.value is primary
+    assert captured.value.__notes__ == [
+        f"cleanup failed with OSError: {failing_side} source close failed"
+    ]
+    assert source.close_calls == 1
 
 
 def test_rows_rejects_duplicate_derived_group_and_pivot_keys() -> None:
@@ -2018,6 +3984,217 @@ def test_rows_stream_csv_and_json_lines_round_trips(tmp_path) -> None:
     assert fpstreams.rows.from_jsonl(jsonl_path).to_list() == records
 
 
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
+def test_rows_text_sinks_keep_record_error_primary_when_generator_close_fails(
+    tmp_path: Path,
+    sink: str,
+) -> None:
+    def records() -> Iterator[object]:
+        try:
+            yield object()
+        finally:
+            raise OSError("row source close failed")
+
+    with pytest.raises(fpstreams.SelectionError) as captured:
+        getattr(fpstreams.rows(records()), sink)(tmp_path / sink)
+
+    assert captured.value.__notes__ == ["cleanup failed with OSError: row source close failed"]
+
+
+def test_rows_text_factories_keep_the_v2_path_keyword(tmp_path: Path) -> None:
+    csv_path = tmp_path / "records.csv"
+    csv_path.write_text("id\n1\n", encoding="utf-8")
+    jsonl_path = tmp_path / "records.jsonl"
+    jsonl_path.write_text('{"id": 1}\n', encoding="utf-8")
+
+    assert fpstreams.rows.from_csv(path=csv_path).to_list() == [{"id": "1"}]
+    assert fpstreams.Rows.from_csv(path=csv_path).to_list() == [{"id": "1"}]
+    assert fpstreams.rows.from_jsonl(path=jsonl_path).to_list() == [{"id": 1}]
+    assert fpstreams.Rows.from_jsonl(path=jsonl_path).to_list() == [{"id": 1}]
+
+
+def test_rows_csv_file_handles_and_openers_have_explicit_ownership() -> None:
+    handle = io.StringIO("ignored prefix\nid,name\n1,Ada\n2,Lin\n")
+    assert handle.readline() == "ignored prefix\n"
+    one_shot = fpstreams.rows.from_csv(handle)
+
+    assert one_shot.first() == {"id": "1", "name": "Ada"}
+    assert not handle.closed
+    with pytest.raises(fpstreams.FlowConsumedError):
+        one_shot.to_list()
+
+    opened: list[io.StringIO] = []
+
+    def opener() -> io.StringIO:
+        source = io.StringIO("id,name\n1,Ada\n2,Lin\n")
+        opened.append(source)
+        return source
+
+    replayable = fpstreams.rows.from_csv(opener)
+    expected = [{"id": "1", "name": "Ada"}, {"id": "2", "name": "Lin"}]
+    assert replayable.first() == expected[0]
+    assert opened[-1].closed
+    assert replayable.to_list() == expected
+    assert replayable.to_list() == expected
+    assert len(opened) == 3
+    assert all(source.closed for source in opened)
+
+
+def test_rows_csv_identity_list_direct_sink_is_narrow_and_preserves_pep479(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams.tabular import _text_sources
+
+    path = tmp_path / "identity.csv"
+    path.write_text("id,name\n1,Ada\n2,Lin\n", encoding="utf-8")
+    calls: list[str] = []
+    original = _text_sources.CSVRowSource.materialize
+
+    def tracked(source: _text_sources.CSVRowSource) -> list[dict[str, Any]]:
+        calls.append(source.kind)
+        return original(source)
+
+    monkeypatch.setattr(_text_sources.CSVRowSource, "materialize", tracked)
+    expected = [{"id": "1", "name": "Ada"}, {"id": "2", "name": "Lin"}]
+
+    assert fpstreams.rows.from_csv(path).to_list() == expected
+    assert calls == ["path"]
+    calls.clear()
+    assert fpstreams.rows.from_csv(path).select("id").to_list() == [
+        {"id": "1"},
+        {"id": "2"},
+    ]
+    assert fpstreams.rows.from_csv(path).with_engine("python").to_list() == expected
+    assert calls == []
+
+    def stopped_opener() -> io.StringIO:
+        raise StopIteration("stopped")
+
+    with pytest.raises(RuntimeError, match="generator raised StopIteration"):
+        fpstreams.rows.from_csv(stopped_opener).to_list()
+
+
+def test_rows_csv_direct_sink_revalidates_bound_source_method_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained CSV metadata must not outlive its bound Python opener method."""
+    rows = fpstreams.rows.from_csv(lambda: io.StringIO("value\n1\n"))
+    from fpstreams.tabular import _text_sources
+
+    def replacement(_source: object) -> Iterator[dict[str, str]]:
+        yield {"value": "9"}
+
+    monkeypatch.setattr(
+        _text_sources.CSVRowSource.open_records,
+        "__code__",
+        replacement.__code__,
+    )
+    expected = [{"value": "9"}]
+
+    assert rows.with_engine("python").to_list() == expected
+    assert rows.to_list() == expected
+
+
+def test_rows_csv_identity_list_declines_failpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams.runtime.failpoints import failpoint
+    from fpstreams.tabular import _text_sources
+
+    path = tmp_path / "observed.csv"
+    path.write_text("id\n1\n", encoding="utf-8")
+
+    def unexpected_materialization(_source: _text_sources.CSVRowSource) -> list[dict[str, Any]]:
+        raise AssertionError("instrumented execution must use the canonical pipeline")
+
+    monkeypatch.setattr(_text_sources.CSVRowSource, "materialize", unexpected_materialization)
+    with failpoint("unrelated.transition", RuntimeError("unused")):
+        assert fpstreams.rows.from_csv(path).to_list() == [{"id": "1"}]
+
+    failure = RuntimeError("observed source open")
+    with failpoint("source.open.after", failure), pytest.raises(RuntimeError) as raised:
+        fpstreams.rows.from_csv(path).to_list()
+    assert raised.value is failure
+
+    monkeypatch.undo()
+    execution = fpstreams.rows.from_csv(path).run_with_report("to_list")
+    assert execution.value == [{"id": "1"}]
+    assert execution.report.terminal == "to_list"
+    assert execution.report.compiler_engine == "not_compiled"
+    assert execution.report.strategy == "csv_direct"
+
+
+def test_rows_jsonl_file_handles_and_openers_preserve_byte_limits() -> None:
+    payload = b'{"id":1}\n{"id":2}\n'
+    handle = io.BytesIO(payload)
+    one_shot = fpstreams.rows.from_jsonl(handle, max_record_bytes=9)
+
+    assert one_shot.first() == {"id": 1}
+    assert not handle.closed
+    with pytest.raises(fpstreams.FlowConsumedError):
+        one_shot.to_list()
+
+    opened: list[io.StringIO] = []
+
+    def opener() -> io.StringIO:
+        source = io.StringIO('{"word":"雪"}\n')
+        opened.append(source)
+        return source
+
+    replayable = fpstreams.rows.from_jsonl(opener, max_record_bytes=17)
+    assert replayable.first() == {"word": "雪"}
+    assert opened[-1].closed
+    assert replayable.to_list() == [{"word": "雪"}]
+    assert replayable.to_list() == [{"word": "雪"}]
+    assert len(opened) == 3
+    assert all(source.closed for source in opened)
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "error_type"),
+    [
+        ("csv", "id,id\n1,2\n", fpstreams.DuplicateKeyError),
+        ("jsonl", "{invalid}\n", json.JSONDecodeError),
+    ],
+)
+def test_text_opener_close_failure_is_a_note_on_the_parse_error(
+    kind: str,
+    payload: str,
+    error_type: type[BaseException],
+) -> None:
+    class Handle(io.StringIO):
+        def __init__(self, value: str) -> None:
+            super().__init__(value)
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+            raise OSError("text handle close failed")
+
+    opened: list[Handle] = []
+
+    def opener() -> Handle:
+        handle = Handle(payload)
+        opened.append(handle)
+        return handle
+
+    values = fpstreams.rows.from_csv(opener) if kind == "csv" else fpstreams.rows.from_jsonl(opener)
+    with pytest.raises(error_type) as captured:
+        values.to_list()
+
+    assert captured.value.__notes__ == ["cleanup failed with OSError: text handle close failed"]
+    assert len(opened) == 1
+    assert opened[0].close_calls == 1
+
+    truncated_unicode = io.BytesIO('{"word":"雪"}\n'.encode())
+    with pytest.raises(fpstreams.BufferLimitError, match="max_record_bytes"):
+        fpstreams.rows.from_jsonl(truncated_unicode, max_record_bytes=10).to_list()
+    assert not truncated_unicode.closed
+
+
 def test_scan_csv_is_reusable_typed_and_keeps_from_csv_string_semantics(tmp_path: Path) -> None:
     """The Arrow scanner is explicit, so the established CSV adapter stays compatible."""
     import pyarrow.csv as pacsv
@@ -2037,7 +4214,10 @@ def test_scan_csv_is_reusable_typed_and_keeps_from_csv_string_semantics(tmp_path
         "name": "Ada",
         "active": "true",
     }
-    strings = pacsv.ConvertOptions(default_column_type=pa.string())
+    # Explicit column types exercise the same option path on every supported PyArrow release.
+    strings = pacsv.ConvertOptions(
+        column_types={name: pa.string() for name in ("id", "name", "active")}
+    )
     assert fpstreams.rows.scan_csv(path, convert_options=strings).first() == {
         "id": "1",
         "name": "Ada",
@@ -2286,6 +4466,225 @@ def test_jsonl_record_limit_counts_bytes_before_decoding(tmp_path) -> None:
         fpstreams.rows.from_jsonl(path, max_record_bytes=len(payload) - 1).to_list()
 
 
+def test_unbounded_jsonl_path_uses_incremental_text_decoding(tmp_path: Path) -> None:
+    """Multibyte newline encodings must not be split by a binary readline boundary."""
+    path = tmp_path / "utf16.jsonl"
+    path.write_text('{"word":"雪"}\n{"word":"月"}\n', encoding="utf-16")
+
+    assert fpstreams.rows.from_jsonl(path, encoding="utf-16", max_record_bytes=None).to_list() == [
+        {"word": "雪"},
+        {"word": "月"},
+    ]
+
+
+def test_jsonl_multibyte_newlines_work_for_binary_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wide binary sources preserve byte bounds, record edges, and handle ownership."""
+    first_line = '{"word":"雪\u010a\u0a01"}\n'
+    second_line = '{"word":"月"}\n'
+    expected = [{"word": "雪\u010a\u0a01"}, {"word": "月"}]
+    original_open = open
+    path_handles: list[Any] = []
+
+    def tracked_open(*args: Any, **kwargs: Any) -> Any:
+        handle = original_open(*args, **kwargs)
+        path_handles.append(handle)
+        return handle
+
+    monkeypatch.setattr("builtins.open", tracked_open)
+
+    for encoding, width in (("utf-16", 2), ("utf-32", 4)):
+        payload = (first_line + second_line).encode(encoding)
+        first_record_bytes = width + len(first_line.encode(f"{encoding}-le"))
+        second_record_bytes = len(second_line.encode(f"{encoding}-le"))
+        assert len(payload) == first_record_bytes + second_record_bytes
+        assert first_record_bytes > second_record_bytes
+        path = tmp_path / f"{encoding}.jsonl"
+        path.write_bytes(payload)
+
+        for record_limit in (None, first_record_bytes):
+            assert (
+                fpstreams.rows.from_jsonl(
+                    path,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                ).to_list()
+                == expected
+            )
+
+            direct = io.BytesIO(payload)
+            assert (
+                fpstreams.rows.from_jsonl(
+                    direct,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                ).to_list()
+                == expected
+            )
+            assert not direct.closed
+
+            opened: list[io.BytesIO] = []
+
+            def opener(
+                payload: bytes = payload,
+                opened: list[io.BytesIO] = opened,
+            ) -> io.BytesIO:
+                handle = io.BytesIO(payload)
+                opened.append(handle)
+                return handle
+
+            assert (
+                fpstreams.rows.from_jsonl(
+                    opener,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                ).to_list()
+                == expected
+            )
+            assert len(opened) == 1
+            assert opened[0].closed
+
+            short_path_handle_count = len(path_handles)
+            assert (
+                fpstreams.rows.from_jsonl(
+                    path,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                )
+                .take(1)
+                .to_list()
+                == expected[:1]
+            )
+            assert len(path_handles) == short_path_handle_count + 1
+            assert path_handles[-1].closed
+
+            direct = io.BytesIO(payload)
+            assert (
+                fpstreams.rows.from_jsonl(
+                    direct,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                )
+                .take(1)
+                .to_list()
+                == expected[:1]
+            )
+            assert not direct.closed
+            assert direct.tell() == first_record_bytes
+
+            assert (
+                fpstreams.rows.from_jsonl(
+                    opener,
+                    encoding=encoding,
+                    max_record_bytes=record_limit,
+                )
+                .take(1)
+                .to_list()
+                == expected[:1]
+            )
+            assert len(opened) == 2
+            assert opened[-1].closed
+
+        with pytest.raises(fpstreams.BufferLimitError, match="max_record_bytes"):
+            fpstreams.rows.from_jsonl(
+                path,
+                encoding=encoding,
+                max_record_bytes=first_record_bytes - 1,
+            ).to_list()
+
+        direct = io.BytesIO(payload)
+        with pytest.raises(fpstreams.BufferLimitError, match="max_record_bytes"):
+            fpstreams.rows.from_jsonl(
+                direct,
+                encoding=encoding,
+                max_record_bytes=first_record_bytes - 1,
+            ).to_list()
+        assert not direct.closed
+
+    assert path_handles
+    assert all(handle.closed for handle in path_handles)
+
+
+def test_jsonl_extra_data_error_matches_the_standard_decoder() -> None:
+    """A line fast path must preserve JSON's narrow trailing-whitespace rules."""
+    line = '{"id":1} \v\n'
+    with pytest.raises(json.JSONDecodeError) as expected:
+        json.JSONDecoder().decode(line)
+    with pytest.raises(json.JSONDecodeError) as actual:
+        fpstreams.rows.from_jsonl(io.StringIO(line), max_record_bytes=None).to_list()
+
+    assert (actual.value.msg, actual.value.pos, actual.value.lineno, actual.value.colno) == (
+        expected.value.msg,
+        expected.value.pos,
+        expected.value.lineno,
+        expected.value.colno,
+    )
+
+
+def test_unbounded_jsonl_text_handle_does_not_reencode_records() -> None:
+    """Without a byte limit, decoded text should go directly to the JSON decoder."""
+
+    class DecodedLine(str):
+        def encode(self, *_args: object, **_kwargs: object) -> bytes:
+            raise AssertionError("an unbounded text record must not be encoded again")
+
+    class TextHandle:
+        def __init__(self) -> None:
+            self.lines = [DecodedLine('{"id":1}\n')]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.lines)
+
+        def readline(self, _size: int = -1) -> str:
+            return self.lines.pop(0) if self.lines else ""
+
+    assert fpstreams.rows.from_jsonl(TextHandle(), max_record_bytes=None).to_list() == [{"id": 1}]
+
+
+def test_jsonl_reuses_one_strict_decoder_per_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decoder setup is per file scan, not repeated for every physical record."""
+    path = tmp_path / "decoder.jsonl"
+    path.write_text('\n{"word":"café"}\n{"nested":{"id":2}}\n', encoding="latin-1")
+    original_decoder = json.JSONDecoder
+    constructed: list[None] = []
+
+    class TrackingDecoder(original_decoder):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            constructed.append(None)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(json, "JSONDecoder", TrackingDecoder)
+    source = fpstreams.rows.from_jsonl(path, encoding="latin-1")
+
+    assert source.to_list() == [{"word": "café"}, {"nested": {"id": 2}}]
+    assert len(constructed) == 1
+    assert source.to_list() == [{"word": "café"}, {"nested": {"id": 2}}]
+    assert len(constructed) == 2
+
+
+def test_jsonl_short_circuit_closes_the_bounded_binary_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "close.jsonl"
+    path.write_text('{"id":1}\n{"id":2}\n', encoding="utf-8")
+    original_open = open
+    opened: list[Any] = []
+
+    def tracked_open(*args: Any, **kwargs: Any) -> Any:
+        handle = original_open(*args, **kwargs)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr("builtins.open", tracked_open)
+
+    assert fpstreams.rows.from_jsonl(path).take(1).to_list() == [{"id": 1}]
+    assert len(opened) == 1
+    assert opened[0].closed
+
+
 def test_jsonl_record_limit_is_validated_before_opening_the_file(tmp_path) -> None:
     missing = tmp_path / "missing.jsonl"
 
@@ -2390,6 +4789,99 @@ def test_rows_clean_nested_records_in_one_readable_pipeline() -> None:
     assert records[0]["tags"] == ["new", "paid"]
 
 
+def test_rows_cast_copies_exact_dicts_without_the_generic_record_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The common dictionary path stays direct while record subclasses retain protocol handling."""
+    from importlib import import_module
+
+    rows_module = import_module("fpstreams.tabular.rows")
+
+    original_as_record = rows_module._as_record
+    adapted: list[object] = []
+
+    def tracked_as_record(row: object) -> dict[str, Any]:
+        adapted.append(row)
+        return original_as_record(row)
+
+    class DictSubclass(dict[str, object]):
+        pass
+
+    exact: dict[str, object] = {"id": "1", "amount": "2.5"}
+    fallback = DictSubclass(id="2", amount="3.5")
+    monkeypatch.setattr(rows_module, "_as_record", tracked_as_record)
+
+    result = fpstreams.rows([exact, fallback]).cast(id=int, amount=float).to_list()
+
+    assert result == [{"id": 1, "amount": 2.5}, {"id": 2, "amount": 3.5}]
+    assert adapted == [fallback]
+    assert exact == {"id": "1", "amount": "2.5"}
+    assert fallback == {"id": "2", "amount": "3.5"}
+
+
+def test_rows_fill_nulls_keeps_literals_direct_and_expressions_dynamic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Literal replacements avoid expression dispatch while RowExpr values remain dynamic."""
+    from importlib import import_module
+
+    from fpstreams.expressions.row import RowExpr
+
+    rows_module = import_module("fpstreams.tabular.rows")
+    original_as_record = rows_module._as_record
+    original_call = RowExpr.__call__
+    adapted: list[object] = []
+    evaluated: list[RowExpr] = []
+
+    def tracked_as_record(row: object) -> dict[str, Any]:
+        adapted.append(row)
+        return original_as_record(row)
+
+    def tracked_call(expression: RowExpr, row: object) -> object:
+        evaluated.append(expression)
+        return original_call(expression, row)
+
+    class DictSubclass(dict[str, object]):
+        pass
+
+    marker: list[int] = []
+
+    def callable_literal() -> str:
+        return "literal"
+
+    dynamic = fpstreams.col("seed") + 1
+    exact: dict[str, object] = {
+        "seed": 1,
+        "literal": None,
+        "callable": None,
+        "dynamic": None,
+    }
+    fallback = DictSubclass(seed=2, literal=None, callable=None, dynamic=None)
+    monkeypatch.setattr(rows_module, "_as_record", tracked_as_record)
+    monkeypatch.setattr(RowExpr, "__call__", tracked_call)
+
+    result = (
+        fpstreams.rows([exact, fallback])
+        .fill_nulls(
+            literal=marker,
+            callable=callable_literal,
+            dynamic=dynamic,
+        )
+        .to_list()
+    )
+
+    assert result == [
+        {"seed": 1, "literal": marker, "callable": callable_literal, "dynamic": 2},
+        {"seed": 2, "literal": marker, "callable": callable_literal, "dynamic": 3},
+    ]
+    assert result[0]["literal"] is result[1]["literal"] is marker
+    assert result[0]["callable"] is result[1]["callable"] is callable_literal
+    assert adapted == [fallback]
+    assert evaluated == [dynamic, dynamic]
+    assert exact["literal"] is None
+    assert fallback["literal"] is None
+
+
 def test_drop_nulls_supports_any_all_and_heterogeneous_rows() -> None:
     records = [
         {"a": 1, "b": 2},
@@ -2404,6 +4896,538 @@ def test_drop_nulls_supports_any_all_and_heterogeneous_rows() -> None:
 
     with pytest.raises(ValueError, match="how"):
         fpstreams.rows(records).drop_nulls(how="some")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_count", [2, 3, 4, 5])
+@pytest.mark.parametrize("how", ["any", "all"])
+def test_drop_nulls_direct_field_counts_preserve_policy(
+    field_count: int,
+    how: str,
+) -> None:
+    """Specialized common widths and the generic wider loop share one null policy."""
+    fields = tuple(f"field_{index}" for index in range(field_count))
+    complete = dict.fromkeys(fields, 1)
+    first_missing = {**complete, fields[0]: None}
+    last_missing = {**complete, fields[-1]: None}
+    all_missing = dict.fromkeys(fields)
+    records = [complete, first_missing, last_missing, all_missing]
+    expected = [complete] if how == "any" else records[:-1]
+
+    assert (
+        fpstreams.rows(records)
+        .drop_nulls(
+            *fields,
+            how=cast(Any, how),
+        )
+        .to_list()
+        == expected
+    )
+
+
+def test_drop_nulls_direct_field_fast_path_preserves_protocol_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only exact dictionaries with exact top-level strings bypass selector dispatch."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    canonical_compile = rows_module.compile_selector
+    calls: list[tuple[object, type[object]]] = []
+
+    def tracked_compile(selector: object):
+        select = canonical_compile(selector)
+
+        def tracked_select(row: object) -> object:
+            calls.append((selector, type(row)))
+            return select(row)
+
+        return tracked_select
+
+    class VirtualDict(dict[str, object]):
+        def __getitem__(self, key: str) -> object:
+            if key == "nullable":
+                return 1
+            return super().__getitem__(key)
+
+    class LoggedMapping(Mapping[str, object]):
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __getitem__(self, key: str) -> object:
+            if key != "nullable":
+                raise KeyError(key)
+            return self.value
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("nullable",))
+
+        def __len__(self) -> int:
+            return 1
+
+    monkeypatch.setattr(rows_module, "compile_selector", tracked_compile)
+    exact_kept = {"nullable": 1}
+    exact_missing: dict[str, object] = {}
+    virtual = VirtualDict(nullable=None)
+    mapping = LoggedMapping(None)
+
+    result = (
+        fpstreams.rows([exact_kept, exact_missing, virtual, mapping])
+        .drop_nulls("nullable")
+        .to_list()
+    )
+
+    assert result == [exact_kept, virtual]
+    assert calls == [("nullable", VirtualDict), ("nullable", LoggedMapping)]
+
+    class FieldName(str):
+        pass
+
+    calls.clear()
+    field = FieldName("nullable")
+    assert fpstreams.rows([exact_kept]).drop_nulls(field).to_list() == [exact_kept]
+    assert calls == [(field, dict)]
+
+    calls.clear()
+    nested_rows = [{"nested": {}}, {"nested": {"nullable": 1}}]
+    assert fpstreams.rows(nested_rows).drop_nulls("nested.nullable").to_list() == [nested_rows[1]]
+    assert calls == [("nested.nullable", dict), ("nested.nullable", dict)]
+
+    calls.clear()
+    selected_values: list[object] = []
+
+    def custom_selector(row: Mapping[str, object]) -> object:
+        value = row.get("nullable")
+        selected_values.append(value)
+        return value
+
+    assert fpstreams.rows([exact_missing, exact_kept]).drop_nulls(custom_selector).to_list() == [
+        exact_kept
+    ]
+    assert calls == [(custom_selector, dict), (custom_selector, dict)]
+    assert selected_values == [None, 1]
+
+
+def test_drop_nulls_single_field_exposes_only_its_sealed_materialized_sink() -> None:
+    """Only the project-owned one-field plan may bypass the lazy filter iterator."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+
+    single = fpstreams.rows([{"nullable": 1}]).drop_nulls("nullable")
+    multiple = fpstreams.rows([{"left": 1, "right": 2}]).drop_nulls("left", "right")
+    dynamic = fpstreams.rows([{"nullable": 1}]).drop_nulls(lambda row: row["nullable"])
+
+    single_predicate = single.to_flow()._pipeline.operations[0].predicate
+    multiple_predicate = multiple.to_flow()._pipeline.operations[0].predicate
+    dynamic_predicate = dynamic.to_flow()._pipeline.operations[0].predicate
+
+    assert rows_module._materialized_drop_nulls_appender(single_predicate) is not None
+    assert rows_module._materialized_drop_nulls_appender(multiple_predicate) is None
+    assert rows_module._materialized_drop_nulls_appender(dynamic_predicate) is None
+
+
+def test_retained_drop_nulls_uses_native_prefix_only_for_auto_and_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto filters retained exact rows natively without changing forced-Python execution."""
+    from fpstreams import _native
+
+    records = [{"id": index, "nullable": None if index % 5 == 0 else index} for index in range(600)]
+    expected = [row for row in records if row["nullable"] is not None]
+    query = fpstreams.rows(records).drop_nulls("nullable")
+    endpoint = _native.drop_nulls_exact_dict_prefix_v1
+    native_calls = 0
+
+    def tracked(*arguments: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "drop_nulls_exact_dict_prefix_v1", tracked)
+
+    automatic = query.to_list()
+    canonical = query.with_engine("python").to_list()
+    tuple_result = fpstreams.rows(tuple(records)).drop_nulls("nullable").to_list()
+    small = fpstreams.rows(records[:128]).drop_nulls("nullable").to_list()
+    execution = query.run_with_report("to_list")
+
+    assert automatic == canonical == tuple_result == expected
+    assert small == [row for row in records[:128] if row["nullable"] is not None]
+    assert all(actual is original for actual, original in zip(automatic, expected, strict=True))
+    assert native_calls == 3
+    assert execution.value == expected
+    assert execution.report.compiler_engine == "python"
+    assert execution.report.strategy == "rust_direct"
+
+
+def test_retained_drop_nulls_native_prefix_preserves_mixed_row_protocol_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first non-exact dictionary resumes one canonical Python suffix."""
+    from fpstreams import _native
+
+    lookups: list[str] = []
+
+    class VirtualDict(dict[str, object]):
+        def __getitem__(self, field: str) -> object:
+            lookups.append(field)
+            if field == "nullable":
+                return 1
+            return super().__getitem__(field)
+
+    prefix = [{"id": index, "nullable": None if index % 5 == 0 else index} for index in range(512)]
+    boundary = VirtualDict(id=512, nullable=None)
+    missing: dict[str, object] = {"id": 513}
+    tail = {"id": 514, "nullable": 514}
+    records = [*prefix, boundary, missing, tail]
+    endpoint = _native.drop_nulls_exact_dict_prefix_v1
+    native_calls = 0
+
+    def tracked(*arguments: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "drop_nulls_exact_dict_prefix_v1", tracked)
+
+    execution = fpstreams.rows(records).drop_nulls("nullable").run_with_report("to_list")
+    expected = [row for row in prefix if row["nullable"] is not None] + [boundary, tail]
+
+    assert execution.value == expected
+    assert all(
+        actual is original for actual, original in zip(execution.value, expected, strict=True)
+    )
+    assert lookups == ["nullable"]
+    assert native_calls == 1
+    assert execution.report.strategy == "rust_python_hybrid"
+
+
+def test_retained_drop_nulls_native_prefix_matches_lookup_exception_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Suppressed lookup failures, PEP 479, and ordinary errors match the Python sink."""
+    from fpstreams import _native
+
+    class Trap:
+        def __init__(self, failure_type: type[BaseException]) -> None:
+            self.failure_type = failure_type
+
+        def __hash__(self) -> int:
+            return hash("nullable")
+
+        def __eq__(self, _other: object) -> bool:
+            raise self.failure_type("lookup failed")
+
+    endpoint = _native.drop_nulls_exact_dict_prefix_v1
+    native_calls = 0
+
+    def tracked(*arguments: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "drop_nulls_exact_dict_prefix_v1", tracked)
+
+    suppressed = {Trap(TypeError): 1}
+    assert fpstreams.rows([suppressed] * 512).drop_nulls("nullable").to_list() == []
+
+    stopped = {Trap(StopIteration): 1}
+    with pytest.raises(RuntimeError, match="generator raised StopIteration") as converted:
+        fpstreams.rows([stopped] * 512).drop_nulls("nullable").to_list()
+    assert isinstance(converted.value.__cause__, StopIteration)
+
+    failed = {Trap(ValueError): 1}
+    with pytest.raises(ValueError, match="lookup failed"):
+        fpstreams.rows([failed] * 512).drop_nulls("nullable").to_list()
+
+    assert native_calls == 3
+
+
+def test_retained_drop_nulls_native_prefix_deopts_for_failpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active failpoints retain the canonical Python drop-null loop."""
+    from fpstreams import _native
+    from fpstreams.runtime.failpoints import failpoint
+
+    records = [{"nullable": index} for index in range(600)]
+    query = fpstreams.rows(records).drop_nulls("nullable")
+
+    def forbidden(*_arguments: object) -> object:
+        raise AssertionError("instrumented drop_nulls must stay on Python")
+
+    monkeypatch.setattr(_native, "drop_nulls_exact_dict_prefix_v1", forbidden)
+    with failpoint("unrelated.drop_nulls.transition", RuntimeError("unused")):
+        assert query.to_list() == records
+
+
+def test_drop_nulls_materialized_sink_ignores_a_replaced_iter_builtin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical for-loop does not consult a module-level iter replacement."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    records = [{"nullable": 1}]
+    query = fpstreams.rows(records).drop_nulls("nullable")
+
+    monkeypatch.setattr(rows_module, "iter", lambda _source: iter(()), raising=False)
+
+    assert query.to_list() == records
+
+
+def test_drop_nulls_cleanup_stop_iteration_keeps_generator_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup StopIteration remains the canonical PEP 479 RuntimeError."""
+    from fpstreams.planning.source import Source
+
+    query = fpstreams.rows([{"nullable": 1}]).drop_nulls("nullable")
+
+    class ClosingIterator(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self._source = iter(({"nullable": 1},))
+
+        def __next__(self) -> dict[str, int]:
+            return next(self._source)
+
+        def close(self) -> None:
+            raise StopIteration("close stopped")
+
+    monkeypatch.setattr(Source, "open", lambda _source: ClosingIterator())
+
+    with pytest.raises(RuntimeError, match="generator raised StopIteration") as caught:
+        query.to_list()
+    assert isinstance(caught.value.__cause__, StopIteration)
+
+
+def test_drop_nulls_uses_one_sealed_lazy_filter_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical execution recognizes the project plan without one call per exact row."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    calls = 0
+    original = rows_module._DropNullsPlan.__call__
+
+    def tracked(plan: object, row: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(plan, row)
+
+    monkeypatch.setattr(rows_module._DropNullsPlan, "__call__", tracked)
+    records = [
+        {"left": 1, "right": 2},
+        {"left": None, "right": 3},
+        {"left": 4, "right": None},
+    ]
+
+    assert fpstreams.rows(records).drop_nulls("left", "right").select("left").to_list() == [
+        {"left": 1}
+    ]
+    assert calls == 0
+
+
+def test_select_then_drop_nulls_keeps_the_sealed_filter_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preceding row map must not turn the sealed null plan back into a callback."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+
+    def unexpected_callback(_plan: object, _row: object) -> bool:
+        raise AssertionError("sealed drop_nulls plan ran through its adapter")
+
+    monkeypatch.setattr(rows_module._DropNullsPlan, "__call__", unexpected_callback)
+    query = fpstreams.rows([{"value": 1}, {"value": None}]).select("value").drop_nulls("value")
+
+    assert query.to_list() == [{"value": 1}]
+
+
+def test_drop_nulls_whole_record_uses_one_sealed_lazy_filter_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whole-record null policies avoid one callback and two generators per exact row."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    records = [{"left": 1, "right": 2}, {"left": None, "right": 3}]
+    query = fpstreams.rows(records).drop_nulls()
+    operation = query.to_flow()._pipeline.operations[0]
+
+    assert type(operation.predicate) is rows_module._DropNullsPlan
+
+    calls = 0
+    original = rows_module._DropNullsPlan.__call__
+
+    def tracked(plan: object, row: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(plan, row)
+
+    monkeypatch.setattr(rows_module._DropNullsPlan, "__call__", tracked)
+
+    assert query.to_list() == [records[0]]
+    assert calls == 0
+
+
+def test_drop_nulls_whole_record_rechecks_any_after_source_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source-time replacement keeps ownership of the whole-record null policy."""
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    calls = 0
+
+    def replacement(_values: Iterable[object]) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    def open_source() -> Iterator[dict[str, object]]:
+        monkeypatch.setattr(rows_module, "any", replacement, raising=False)
+        return iter(({"nullable": None},))
+
+    source = Source(open_source, SourceCapabilities(reiterable=True, exact_size=1))
+
+    assert fpstreams.Flow(source).rows().drop_nulls().to_list() == [{"nullable": None}]
+    assert calls == 1
+
+
+def test_drop_nulls_whole_record_rechecks_record_conversion_before_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live record converter remains authoritative over whole-record filtering."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    calls: list[object] = []
+    query = fpstreams.rows([{"kept": 1}]).drop_nulls()
+
+    def replacement(row: object) -> dict[str, object]:
+        calls.append(row)
+        return {"replaced": None}
+
+    monkeypatch.setattr(rows_module, "_as_record", replacement)
+
+    assert query.to_list() == []
+    assert calls == [{"kept": 1}]
+
+
+def test_drop_nulls_direct_fields_preserve_observable_dictionary_lookup() -> None:
+    """A custom key reaches the established lookup path exactly once."""
+    events: list[str] = []
+
+    class Trap:
+        def __hash__(self) -> int:
+            return hash("selected")
+
+        def __eq__(self, other: object) -> bool:
+            events.append(f"eq:{other}")
+            return other == "selected"
+
+    first = {"selected": 1}
+    custom_key = Trap()
+    observed = {custom_key: 2}
+    last = {"selected": 3}
+
+    result = fpstreams.rows([first, observed, last]).drop_nulls("selected").to_list()
+
+    assert len(result) == 3
+    assert result[0] is first
+    assert result[1] is observed
+    assert result[2] is last
+    assert events == ["eq:selected"]
+
+
+def test_drop_nulls_rechecks_operation_opener_after_source_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live canonical operation opener remains authoritative after source effects."""
+    from contextlib import contextmanager
+
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    terminal_module = sys.modules["fpstreams.streams.flow_terminals"]
+    calls = 0
+
+    @contextmanager
+    def replacement(
+        source: Iterator[object],
+        operations: tuple[object, ...],
+        **keywords: object,
+    ) -> Iterator[Iterator[object]]:
+        nonlocal calls
+        calls += 1
+        del source, operations, keywords
+        yield iter(())
+
+    def open_source() -> Iterator[dict[str, int]]:
+        monkeypatch.setattr(terminal_module, "open_operations", replacement)
+        return iter(({"a": 1},))
+
+    source = Source(open_source, SourceCapabilities(reiterable=True, exact_size=1))
+
+    assert fpstreams.Flow(source).rows().drop_nulls("a").to_list() == []
+    assert calls == 1
+
+
+@pytest.mark.parametrize("failure_type", [AttributeError, KeyError, TypeError])
+def test_drop_nulls_direct_fields_treat_selector_lookup_failures_as_missing(
+    failure_type: type[Exception],
+) -> None:
+    """Exact-dict lookup matches compile_selector when a stored key owns equality."""
+
+    class FieldName(str):
+        pass
+
+    def evaluate(
+        names: tuple[str, ...], how: str, *, direct: bool
+    ) -> tuple[list[dict[object, object]], list[str], dict[object, object]]:
+        events: list[str] = []
+
+        class Trap:
+            def __hash__(self) -> int:
+                return hash("missing")
+
+            def __eq__(self, other: object) -> bool:
+                events.append(f"eq:{other}")
+                raise failure_type("trap equality")
+
+        row: dict[object, object] = {Trap(): 1, "present": 2}
+        selectors = names if direct else tuple(FieldName(name) for name in names)
+        result = (
+            fpstreams.rows([row])
+            .drop_nulls(
+                *selectors,
+                how=cast(Any, how),
+            )
+            .to_list()
+        )
+        return result, events, row
+
+    for names, how, retained, expected_events in (
+        (("missing",), "any", False, ["eq:missing"]),
+        (("missing", "present"), "any", False, ["eq:missing"]),
+        (("missing", "present"), "all", True, ["eq:missing"]),
+        (("present", "missing"), "all", True, []),
+    ):
+        for direct in (True, False):
+            result, events, row = evaluate(names, how, direct=direct)
+            assert bool(result) is retained
+            if retained:
+                assert result[0] is row
+            assert events == expected_events
+
+
+@pytest.mark.parametrize("selectors", [(), ("nullable",)])
+def test_drop_nulls_fast_path_stays_lazy_and_closes_after_take(
+    selectors: tuple[str, ...],
+) -> None:
+    events: list[tuple[str, int | None]] = []
+
+    def records() -> Iterator[dict[str, int | None]]:
+        try:
+            for value in (None, 1, 2):
+                events.append(("pull", value))
+                yield {"nullable": value}
+        finally:
+            events.append(("close", None))
+
+    query = fpstreams.rows(records()).drop_nulls(*selectors).take(1)
+
+    assert events == []
+    assert query.to_list() == [{"nullable": 1}]
+    assert events == [("pull", None), ("pull", 1), ("close", None)]
 
 
 def test_explode_is_lazy_closes_upstream_and_rejects_ambiguous_values() -> None:
@@ -2437,6 +5461,263 @@ def test_explode_is_lazy_closes_upstream_and_rejects_ambiguous_values() -> None:
         fpstreams.rows([{"tags": "abc"}]).explode("tags").to_list()
 
 
+def test_explode_exact_dict_sink_preserves_owned_outputs_and_record_protocol_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact dictionaries use owned snapshots while other records retain conversion."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    canonical_as_record = rows_module._as_record
+    events: list[tuple[str, object]] = []
+
+    def tracked_as_record(row: object) -> dict[str, object]:
+        events.append(("convert", type(row)))
+        return canonical_as_record(row)
+
+    monkeypatch.setattr(rows_module, "_as_record", tracked_as_record)
+
+    source = {"id": 1, "tags": [10, 20]}
+    result = fpstreams.rows([source]).explode("tags").to_list()
+
+    assert result == [{"id": 1, "tags": 10}, {"id": 1, "tags": 20}]
+    assert source == {"id": 1, "tags": [10, 20]}
+    assert events == []
+    assert result[0] is not source
+    assert result[0] is not result[1]
+    result[0]["id"] = 99
+    assert result[1]["id"] == 1
+
+    events.clear()
+    mutating_source: dict[str, object] = {"state": "initial"}
+
+    class MutatingValues:
+        def __iter__(self) -> Iterator[int]:
+            events.append(("iterate:first", mutating_source["state"]))
+            mutating_source["state"] = "after-first"
+            yield 1
+            events.append(("iterate:second", mutating_source["state"]))
+            mutating_source["state"] = "after-second"
+            yield 2
+
+    mutating_source["tags"] = MutatingValues()
+    assert fpstreams.rows([mutating_source]).explode("tags").to_list() == [
+        {"state": "initial", "tags": 1},
+        {"state": "initial", "tags": 2},
+    ]
+    assert events == [
+        ("iterate:first", "initial"),
+        ("iterate:second", "after-first"),
+    ]
+    assert mutating_source["state"] == "after-second"
+
+    events.clear()
+    nested = {"payload": {"tags": [1, 2]}}
+    assert fpstreams.rows([nested]).explode("payload.tags", into="tag").to_list() == [
+        {"payload": {"tags": [1, 2]}, "tag": 1},
+        {"payload": {"tags": [1, 2]}, "tag": 2},
+    ]
+    assert events == []
+
+    events.clear()
+
+    def select_tags(row: Mapping[str, object]) -> object:
+        events.append(("select", type(row)))
+        return row["tags"]
+
+    assert fpstreams.rows([source]).explode(select_tags, into="tag").to_list() == [
+        {"id": 1, "tags": [10, 20], "tag": 10},
+        {"id": 1, "tags": [10, 20], "tag": 20},
+    ]
+    assert events == [("select", dict)]
+
+    class DictSubclass(dict[str, object]):
+        pass
+
+    class CustomMapping(Mapping[str, object]):
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
+
+        def __getitem__(self, key: str) -> object:
+            return self.values[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self.values)
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+    events.clear()
+    subclass = DictSubclass(tags=[1])
+    mapping = CustomMapping({"tags": [2]})
+    assert fpstreams.rows([subclass, mapping]).explode("tags").to_list() == [
+        {"tags": 1},
+        {"tags": 2},
+    ]
+    assert events == [("convert", DictSubclass), ("convert", CustomMapping)]
+
+
+def test_materialized_explode_reuses_its_snapshot_without_aliasing_outputs() -> None:
+    """The exact-dict sink avoids a redundant copy while retaining owned results."""
+    source = {"id": 1, "tags": [10, 20]}
+    query = fpstreams.rows([source]).explode("tags")
+    expansion = query._flow._pipeline.operations[-1].function
+    output: list[dict[str, object]] = []
+    copy_calls = 0
+
+    def profile(_frame: object, event: str, argument: object) -> None:
+        nonlocal copy_calls
+        if (
+            event == "c_call"
+            and getattr(argument, "__name__", None) == "copy"
+            and type(getattr(argument, "__self__", None)) is dict
+        ):
+            copy_calls += 1
+
+    previous_profile = sys.getprofile()
+    try:
+        sys.setprofile(profile)
+        expansion.extend_materialized(output, iter([source]))
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert copy_calls == 2
+    assert output == [{"id": 1, "tags": 10}, {"id": 1, "tags": 20}]
+    assert output[0] is not source
+    assert output[0] is not output[1]
+    output[0]["id"] = 99
+    assert output[1]["id"] == 1
+
+
+def test_materialized_explode_keeps_partial_output_when_field_assignment_raises() -> None:
+    """A later output-field error preserves earlier owned rows and the original exception."""
+    failure = RuntimeError("second output failed")
+
+    class RaisingName(str):
+        calls = 0
+
+        def __hash__(self) -> int:
+            self.calls += 1
+            if self.calls == 2:
+                raise failure
+            return super().__hash__()
+
+    source = {"id": 1, "tags": [10, 20]}
+    query = fpstreams.rows([source]).explode("tags", into=RaisingName("tag"))
+    expansion = query._flow._pipeline.operations[-1].function
+    output: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeError) as captured:
+        expansion.extend_materialized(output, iter([source]))
+
+    assert captured.value is failure
+    assert output == [{"id": 1, "tags": [10, 20], "tag": 10}]
+    assert output[0] is not source
+    source["id"] = 99
+    assert output[0]["id"] == 1
+
+
+def test_materialized_explode_keeps_overwritten_snapshot_values_alive() -> None:
+    """An `into` overwrite retains the original snapshot until its row finishes expanding."""
+
+    class Marker:
+        pass
+
+    marker = Marker()
+    reference = weakref.ref(marker)
+    source: dict[str, object] = {"replaced": marker}
+    del marker
+    retained_during_iteration: list[bool] = []
+
+    class Values:
+        def __iter__(self) -> Iterator[int]:
+            yield 10
+            source.pop("replaced")
+            gc.collect()
+            retained_during_iteration.append(reference() is not None)
+            yield 20
+
+    source["tags"] = Values()
+    assert fpstreams.rows([source]).explode("tags", into="replaced").to_list() == [
+        {"tags": source["tags"], "replaced": 10},
+        {"tags": source["tags"], "replaced": 20},
+    ]
+
+    assert retained_during_iteration == [True]
+    gc.collect()
+    assert reference() is None
+
+
+def test_explode_direct_field_bypasses_generated_selector_for_exact_dicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fully materialized exact dictionaries read top-level fields without a callback frame."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    selected_rows: list[object] = []
+
+    def compile_tracked(selector: object) -> Any:
+        compiled = original_compile(selector)
+
+        def tracked(row: object) -> object:
+            selected_rows.append(row)
+            return compiled(row)
+
+        return tracked
+
+    class DictSubclass(dict[str, object]):
+        pass
+
+    exact = {"id": 1, "tags": [10]}
+    fallback = DictSubclass(id=2, tags=[20])
+    monkeypatch.setattr(rows_module, "compile_selector", compile_tracked)
+
+    assert fpstreams.rows([exact, fallback]).explode("tags").to_list() == [
+        {"id": 1, "tags": 10},
+        {"id": 2, "tags": 20},
+    ]
+    assert selected_rows == [fallback]
+
+
+def test_explode_snapshots_an_input_row_before_yielding_any_outputs() -> None:
+    """Mutating the source between pulls cannot leak into later expanded records."""
+    source = {"id": 1, "tags": [10, 20]}
+    expanded = iter(fpstreams.rows([source]).explode("tags"))
+
+    assert next(expanded) == {"id": 1, "tags": 10}
+    source["id"] = 99
+    assert next(expanded) == {"id": 1, "tags": 20}
+
+
+def test_explode_custom_output_name_cannot_mutate_between_materialized_copies() -> None:
+    source = {"id": 1, "tags": [10, 20]}
+
+    class MutatingName(str):
+        def __hash__(self) -> int:
+            source["id"] = 99
+            return super().__hash__()
+
+    assert fpstreams.rows([source]).explode("tags", into=MutatingName("tag")).to_list() == [
+        {"id": 1, "tags": [10, 20], "tag": 10},
+        {"id": 1, "tags": [10, 20], "tag": 20},
+    ]
+
+    holder: dict[str, dict[object, object]] = {}
+
+    class MutatingKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other: object) -> bool:
+            holder["row"]["id"] = 99
+            return super().__eq__(other)
+
+    protocol_key = MutatingKey("tags")
+    protocol_row: dict[object, object] = {"id": 1, protocol_key: [30, 40]}
+    holder["row"] = protocol_row
+    assert fpstreams.rows([protocol_row]).explode("tags").to_list() == [
+        {"id": 1, "tags": 30},
+        {"id": 1, "tags": 40},
+    ]
+
+
 def test_unnest_and_coalesce_never_hide_collisions_or_extra_work() -> None:
     calls: list[str] = []
     first = fpstreams.RowExpr(lambda row: calls.append("first") or row["first"], "first")
@@ -2452,11 +5733,436 @@ def test_unnest_and_coalesce_never_hide_collisions_or_extra_work() -> None:
         fpstreams.coalesce()
 
     with pytest.raises(fpstreams.DuplicateKeyError, match="collides"):
-        fpstreams.rows([{"name": "outer", "profile": {"name": "inner"}}]).unnest(
+        fpstreams.rows([{"name": "outer", "profile": {"name": "inner"}}] * 64).unnest(
             "profile"
         ).to_list()
     with pytest.raises(fpstreams.SelectionError, match="missing"):
-        fpstreams.rows([{"id": 1}]).unnest("profile").to_list()
+        fpstreams.rows([{"id": 1}] * 64).unnest("profile").to_list()
+
+
+def test_unnest_native_prefix_replays_one_protocol_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compatible prefix stays native while the first protocol row is processed once."""
+    from types import MappingProxyType
+
+    from fpstreams import _native
+
+    endpoint = _native.unnest_exact_dict_prefix_v1
+    boundaries: list[tuple[int, object, bool]] = []
+
+    def tracked(
+        output: list[object],
+        source: Iterator[object],
+        column: str,
+        prefix: str,
+    ) -> tuple[object | None, bool] | None:
+        result = endpoint(output, source, column, prefix)
+        if result is not None:
+            boundaries.append((len(output), result[0], result[1]))
+        return result
+
+    monkeypatch.setattr(_native, "unnest_exact_dict_prefix_v1", tracked)
+    assert fpstreams.rows([{"id": 0, "profile": {"label": "small"}}]).unnest(
+        "profile", prefix="nested_"
+    ).to_list() == [{"id": 0, "nested_label": "small"}]
+    assert boundaries == []
+
+    boundary = MappingProxyType({"id": 2, "profile": {"label": "second"}})
+    prefix_rows: list[object] = [
+        {"id": index, "profile": {"label": f"prefix-{index}"}} for index in range(64)
+    ]
+    records: list[object] = [
+        *prefix_rows,
+        boundary,
+        {"id": 3, "profile": {"label": "third"}},
+    ]
+
+    assert fpstreams.rows(records).unnest("profile", prefix="nested_").to_list() == [
+        *[{"id": index, "nested_label": f"prefix-{index}"} for index in range(64)],
+        {"id": 2, "nested_label": "second"},
+        {"id": 3, "nested_label": "third"},
+    ]
+    assert boundaries == [(64, boundary, False)]
+
+
+def test_unnest_native_prefix_is_used_only_by_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forced Python keeps the canonical iterator without crossing into Rust."""
+    from fpstreams import _native
+
+    endpoint = _native.unnest_exact_dict_prefix_v1
+    native_calls = 0
+
+    def tracked(*arguments: object) -> object:
+        nonlocal native_calls
+        native_calls += 1
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "unnest_exact_dict_prefix_v1", tracked)
+    records = [
+        {"id": index, "profile": {"left": index + 1, "right": index + 2}} for index in range(256)
+    ]
+    query = fpstreams.rows(records).unnest("profile", prefix="nested_")
+
+    automatic = query.to_list()
+    canonical = query.with_engine("python").to_list()
+
+    assert automatic == canonical
+    assert native_calls == 1
+
+
+def test_unnest_materialization_releases_protocol_values_before_next_source_pull() -> None:
+    """A callback temporary must die before a live list iterator asks for its next row."""
+
+    def consume(*, materialized: bool) -> tuple[list[dict[str, Any]], list[str]]:
+        source: list[dict[str, Any]] = []
+        events: list[str] = []
+        row: dict[str, Any] = {}
+
+        class NestedRecord:
+            def _asdict(self) -> dict[str, str]:
+                events.append("asdict")
+                row.pop("profile")
+                return {"label": "first"}
+
+            def __del__(self) -> None:
+                events.append("del")
+                source.append({"id": 2, "profile": {"label": "appended"}})
+
+        row.update(id=1, profile=NestedRecord())
+        source.append(row)
+        query = fpstreams.rows(source).unnest("profile", prefix="nested_").with_engine("python")
+        result = query.to_list() if materialized else list(query)
+        return result, events
+
+    expected = [
+        {"id": 1, "nested_label": "first"},
+        {"id": 2, "nested_label": "appended"},
+    ]
+    assert consume(materialized=False) == (expected, ["asdict", "del"])
+    assert consume(materialized=True) == (expected, ["asdict", "del"])
+
+
+def test_unnest_materialization_preserves_freed_callback_local_events() -> None:
+    """A freed PEP 669 local event on the canonical callback must force canonical execution."""
+    monitoring = getattr(sys, "monitoring", None)
+    if monitoring is None:
+        pytest.skip("sys.monitoring requires Python 3.12+")
+    if sys.version_info[:2] not in {(3, 12), (3, 13)}:
+        pytest.skip("free_tool_id preserves local monitoring only on Python 3.12/3.13")
+
+    tool_id = next(
+        (
+            candidate
+            for candidate in range(monitoring.OPTIMIZER_ID + 1)
+            if monitoring.get_tool(candidate) is None
+        ),
+        None,
+    )
+    if tool_id is None:
+        pytest.skip("no free sys.monitoring tool id")
+
+    query = (
+        fpstreams.rows([{"id": 1, "profile": {"label": "first"}}])
+        .unnest("profile", prefix="nested_")
+        .with_engine("python")
+    )
+    callback = query._flow._pipeline.operations[0].function
+    callback_code = callback.__code__
+    observed: list[str] = []
+
+    def observe(code: object, _instruction_offset: int) -> None:
+        if code is callback_code:
+            observed.append("PY_START")
+
+    event = monitoring.events.PY_START
+    monitoring.use_tool_id(tool_id, "fpstreams unnest materialization regression")
+    monitoring.register_callback(tool_id, event, observe)
+    monitoring.set_local_events(tool_id, callback_code, event)
+    monitoring.free_tool_id(tool_id)
+    try:
+        assert list(query) == [{"id": 1, "nested_label": "first"}]
+        assert observed == ["PY_START"]
+        observed.clear()
+        assert query.to_list() == [{"id": 1, "nested_label": "first"}]
+    finally:
+        monitoring.use_tool_id(tool_id, "fpstreams unnest materialization cleanup")
+        monitoring.set_local_events(tool_id, callback_code, 0)
+        monitoring.register_callback(tool_id, event, None)
+        monitoring.free_tool_id(tool_id)
+
+    assert observed == ["PY_START"]
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        {"id": 2},
+        {"id": 2, "nested_label": "outer", "profile": {"label": "inner"}},
+        {"id": 2, "profile": {object(): "protocol key"}},
+        {object(): "protocol key", "profile": {"label": "inner"}},
+        {"id": 2, "profile": [("label", "mapping protocol")]},
+    ],
+)
+@pytest.mark.parametrize("container", [list, tuple])
+def test_unnest_native_prefix_returns_atomic_unprocessed_boundary(
+    boundary: object,
+    container: Callable[[Iterable[object]], Iterable[object]],
+) -> None:
+    """Missing, colliding, and noncanonical rows leave no partial native result."""
+    from fpstreams import _native
+
+    first = {"id": 1, "profile": {"label": "first"}}
+    tail = {"id": 3, "profile": {"label": "third"}}
+    source = iter(container([first, boundary, tail]))
+    output: list[object] = []
+
+    result = _native.unnest_exact_dict_prefix_v1(output, source, "profile", "nested_")
+
+    assert result is not None
+    assert result[0] is boundary
+    assert result[1] is False
+    assert output == [{"id": 1, "nested_label": "first"}]
+    assert next(source) is tail
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="SIGALRM is unavailable")
+@pytest.mark.parametrize("wide_part", ["outer", "nested"])
+def test_unnest_native_wide_row_checks_signals_before_append(wide_part: str) -> None:
+    """A pending signal interrupts either dictionary scan while its private row is atomic."""
+    from fpstreams import _native
+
+    wide = {f"field_{index}": index for index in range(250_000)}
+    row = {"profile": wide} if wide_part == "nested" else {"profile": {}, **wide}
+    tail = object()
+    source = iter([row, tail])
+    output: list[object] = []
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    class WideRowSignal(Exception):
+        pass
+
+    def interrupt(_signum: int, _frame: object) -> None:
+        raise WideRowSignal
+
+    signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 0.001 if wide_part == "outer" else 0.005)
+    try:
+        with pytest.raises(WideRowSignal):
+            _native.unnest_exact_dict_prefix_v1(output, source, "profile", "")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert output == []
+    assert next(source) is tail
+
+
+@pytest.mark.parametrize("container", [list, tuple])
+@pytest.mark.parametrize(
+    ("prefix", "name"),
+    [
+        ("", ""),
+        ("", "x"),
+        ("", "é"),
+        ("", "\0"),
+        ("", "漢"),
+        ("", "💩"),
+        ("", "\ud800"),
+        ("", "x" * 31),
+        ("", "漢" * 32),
+        ("", "💩" * 33),
+        ("", "\ud800" * 127),
+        ("é", ""),
+        ("nested_", "label"),
+    ],
+)
+def test_unnest_native_keys_match_fstring_storage_and_identity(
+    prefix: str,
+    name: str,
+    container: Callable[[Iterable[object]], Iterable[object]],
+) -> None:
+    """Generated keys keep BUILD_STRING value, width, and fresh-object behavior."""
+    from fpstreams import _native
+
+    rows = container({"profile": {name: index}} for index in range(3))
+    output: list[dict[str, int]] = []
+
+    result = _native.unnest_exact_dict_prefix_v1(output, iter(rows), "profile", prefix)
+
+    assert result == (None, True)
+    actual = [next(iter(row)) for row in output]
+    expected = [f"{prefix}{name}" for _index in output]
+    assert actual == expected
+    assert [type(key) for key in actual] == [type(key) for key in expected]
+    assert [sys.getsizeof(key) for key in actual] == [sys.getsizeof(key) for key in expected]
+    assert [key is prefix for key in actual] == [key is prefix for key in expected]
+    assert [key is name for key in actual] == [key is name for key in expected]
+    assert [left is right for left in actual for right in actual] == [
+        left is right for left in expected for right in expected
+    ]
+
+
+class _UnnestEffectMapping(Mapping[str, int]):
+    """Expose one observable callback while converting a nested Mapping."""
+
+    def __init__(self, effect: Callable[[], None]) -> None:
+        self._effect = effect
+
+    def __iter__(self) -> Iterator[str]:
+        self._effect()
+        return iter(("x",))
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, key: str) -> int:
+        if key != "x":
+            raise KeyError(key)
+        return 1
+
+
+def _unnest_test_callback(query: object) -> Any:
+    """Read the retained callback from one test query."""
+    return cast(Any, query)._flow._pipeline.operations[0].function
+
+
+def _unnest_prefix_cell(callback: Any) -> Any:
+    """Find the prefix cell without depending on closure ordering."""
+    return dict(
+        zip(
+            callback.__code__.co_freevars,
+            callback.__closure__ or (),
+            strict=True,
+        )
+    )["prefix"]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_unnest_protocol_boundary_preserves_live_closure(engine: str) -> None:
+    """A protocol row can change the prefix observed by itself and the canonical tail."""
+    source: list[dict[str, Any]] = [
+        {"id": index, "profile": {"x": index}} for index in range(1_024)
+    ]
+    query = fpstreams.rows(source).unnest("profile", prefix="old_").with_engine(engine)
+    prefix_cell = _unnest_prefix_cell(_unnest_test_callback(query))
+
+    def mutate_prefix() -> None:
+        prefix_cell.cell_contents = "new_"
+
+    source.extend(
+        [
+            {"id": 1_024, "profile": _UnnestEffectMapping(mutate_prefix)},
+            {"id": 1_025, "profile": {"x": 1_025}},
+        ]
+    )
+    result = query.to_list()
+
+    assert result[:2] == [{"id": 0, "old_x": 0}, {"id": 1, "old_x": 1}]
+    assert result[-2:] == [
+        {"id": 1_024, "new_x": 1},
+        {"id": 1_025, "new_x": 1_025},
+    ]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_unnest_protocol_boundary_preserves_new_trace_observer(engine: str) -> None:
+    """Tracing enabled by a Mapping observes every later canonical callback."""
+    source: list[dict[str, Any]] = [
+        {"id": index, "profile": {"x": index}} for index in range(1_024)
+    ]
+    query = fpstreams.rows(source).unnest("profile", prefix="nested_").with_engine(engine)
+    callback_code = _unnest_test_callback(query).__code__
+    observed: list[int] = []
+    previous_trace = sys.gettrace()
+
+    def trace(frame: Any, event: str, _argument: object) -> Any:
+        if event == "call" and frame.f_code is callback_code:
+            observed.append(cast(dict[str, int], frame.f_locals["row"])["id"])
+        return trace
+
+    def enable_trace() -> None:
+        sys.settrace(trace)
+
+    source.append({"id": 1_024, "profile": _UnnestEffectMapping(enable_trace)})
+    source.extend({"id": index, "profile": {"x": index}} for index in range(1_025, 1_088))
+    try:
+        result = query.to_list()
+    finally:
+        sys.settrace(previous_trace)
+
+    assert len(result) == 1_088
+    assert observed == list(range(1_025, 1_088))
+
+
+def test_unnest_direct_sink_emits_no_function_code_audit_events() -> None:
+    """Runtime provenance uses the repository's non-audited function-code reader."""
+    program = r"""
+import json
+import os
+import sys
+from importlib import import_module
+
+import fpstreams
+
+rows_module = import_module("fpstreams.tabular.rows")
+
+query = fpstreams.rows([{"profile": {"x": index}} for index in range(1_024)]).unnest("profile")
+events = []
+targets = {
+    id(query._flow._pipeline.operations[0].function),
+    id(rows_module._append_materialized_unnest),
+    id(rows_module._materialized_unnest_spec),
+}
+
+def audit(name, arguments):
+    if (
+        name == "object.__getattr__"
+        and len(arguments) > 1
+        and arguments[1] == "__code__"
+        and id(arguments[0]) in targets
+    ):
+        events.append(name)
+
+sys.addaudithook(audit)
+if os.environ["FPSTREAMS_AUDIT_MODE"] == "direct":
+    query.to_list()
+else:
+    list(query)
+print(json.dumps(events))
+"""
+    observed: dict[str, list[str]] = {}
+    for mode in ("canonical", "direct"):
+        environment = dict(os.environ)
+        environment["FPSTREAMS_AUDIT_MODE"] = mode
+        completed = _run_inline_python(program, check=True, env=environment)
+        observed[mode] = cast(list[str], json.loads(completed.stdout))
+
+    assert observed == {"canonical": [], "direct": []}
+
+
+@pytest.mark.parametrize("source_size", [2, 64])
+def test_unnest_materialization_preserves_map_stop_iteration(source_size: int) -> None:
+    """Protocol StopIteration must end a map and retain its already-emitted prefix."""
+
+    class StoppingRecord:
+        def _asdict(self) -> dict[str, object]:
+            raise StopIteration("record conversion stopped")
+
+    source: list[object] = [
+        {"id": 0, "profile": {"label": "first"}},
+        StoppingRecord(),
+    ]
+    source.extend(
+        {"id": index, "profile": {"label": f"tail-{index}"}} for index in range(2, source_size)
+    )
+    expected = [{"id": 0, "nested_label": "first"}]
+    query = fpstreams.rows(source).unnest("profile", prefix="nested_")
+
+    assert list(query) == expected
+    assert query.to_list() == expected
 
 
 @pytest.mark.parametrize("how", ["inner", "left", "right", "full", "semi", "anti"])
@@ -3648,6 +7354,187 @@ def test_direct_columnar_global_reduction_is_visible_to_the_guarded_planner(
     assert relation["guarded"] is True
 
 
+@pytest.mark.parametrize("adapter", ["arrow", "record_batch", "dataframe", "polars"])
+def test_direct_columnar_global_multi_aggregate_never_boxes_rows(
+    monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    """Closed global lanes should share one guarded columnar input without row boxing."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode, SourcePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    data = {"value": [2, 3, -1], "payload": [20, 30, -10]}
+    if adapter == "arrow":
+        source = fpstreams.rows.from_arrow(pa.table(data), batch_size=1)
+    elif adapter == "record_batch":
+        source = fpstreams.rows.from_arrow(pa.record_batch(data), batch_size=1)
+    elif adapter == "dataframe":
+        source = fpstreams.rows.from_dataframe(pd.DataFrame(data), batch_size=1)
+    else:
+        source = fpstreams.rows.from_polars(pl.DataFrame(data), batch_size=1)
+    aggregated = source.aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert isinstance(physical.root.input, SourcePhysicalNode)
+    marker = physical.root.arrow_i64_sum
+    assert marker is not None
+    assert [(lane.output_name, lane.kind, lane.value_field) for lane in marker.lanes] == [
+        ("rows", "count", None),
+        ("total", "sum", "value"),
+        ("low", "min", "value"),
+        ("high", "max", "value"),
+    ]
+    relation = aggregated._flow.explain("list").to_dict()["relations"]
+    assert relation["candidate"] == "arrow_multi_reduce"
+    assert relation["guarded"] is True
+    input_source = physical.root.input.source
+    open_source = Source.open
+
+    def reject_row_source(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("columnar global multi aggregate must not open Python rows")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_row_source)
+
+    assert aggregated.to_list() == [{"rows": 3, "total": 4, "low": -1, "high": 3}]
+
+
+@pytest.mark.parametrize("adapter", ["table", "reader"])
+def test_arrow_global_multi_aggregate_preserves_wide_sums_and_reports_columnar(
+    adapter: str,
+) -> None:
+    """Repeated exact lanes retain Python integers and expose the strategy that ran."""
+    maximum = 2**63 - 1
+    table = pa.table({"value": [maximum, 1], "other": [-4, 7]})
+    source = (
+        table
+        if adapter == "table"
+        else pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=1))
+    )
+    query = fpstreams.rows.from_arrow(source).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        repeated=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("other"),
+    )
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [
+        {
+            "rows": 2,
+            "total": 2**63,
+            "repeated": 2**63,
+            "low": 1,
+            "high": 7,
+        }
+    ]
+    assert execution.report.strategy == "arrow_direct"
+    assert "Arrow" in execution.report.reason
+
+
+def test_eager_dataframe_global_multi_fallback_reuses_one_arrow_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dtype decline should not convert the same eager frame to Arrow twice."""
+    frame = pd.DataFrame({"value": pd.Series([2, 3], dtype="int32")})
+    query = fpstreams.rows.from_dataframe(frame).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+    )
+    table = pa.table
+    conversions = 0
+
+    def tracked_table(source: object, *args: object, **kwargs: object) -> object:
+        nonlocal conversions
+        if source is frame:
+            conversions += 1
+        return table(source, *args, **kwargs)
+
+    monkeypatch.setattr(pa, "table", tracked_table)
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [{"rows": 2, "total": 5, "low": 2}]
+    assert conversions == 1
+    assert execution.report.strategy == "planned:python"
+
+
+@pytest.mark.parametrize("adapter", ["table", "reader"])
+def test_arrow_global_multi_nulls_preserve_row_major_error_order(adapter: str) -> None:
+    """A nullable lane must not overtake an earlier canonical collector failure."""
+    table = pa.table(
+        {
+            "minimum": pa.array([1, None], type=pa.int64()),
+            "total": pa.array([None, 2], type=pa.int64()),
+        }
+    )
+
+    def aggregate(engine: str) -> object:
+        source = (
+            table
+            if adapter == "table"
+            else pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        )
+        return (
+            fpstreams.rows.from_arrow(source)
+            .with_engine(engine)
+            .aggregate(
+                minimum=fpstreams.agg.min("minimum"),
+                total=fpstreams.agg.sum("total"),
+            )
+            .to_list()
+        )
+
+    with pytest.raises(TypeError) as automatic:
+        aggregate("auto")
+    with pytest.raises(TypeError) as canonical:
+        aggregate("python")
+
+    assert str(automatic.value) == str(canonical.value)
+
+
+@pytest.mark.parametrize("adapter", ["table", "reader"])
+def test_arrow_global_multi_preserves_empty_missing_selector_timing(adapter: str) -> None:
+    """Missing fields stay harmless on empty input and fail on the first real row."""
+    empty = pa.table({"present": pa.array([], type=pa.int64())})
+    aggregation = dict(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("missing"),
+        low=fpstreams.agg.min("missing"),
+        high=fpstreams.agg.max("missing"),
+    )
+
+    empty_source = (
+        empty
+        if adapter == "table"
+        else pa.RecordBatchReader.from_batches(empty.schema, empty.to_batches())
+    )
+    assert fpstreams.rows.from_arrow(empty_source).aggregate(**aggregation).to_list() == [
+        {"rows": 0, "total": 0, "low": None, "high": None}
+    ]
+
+    present = pa.table({"present": [1]})
+    present_source = (
+        present
+        if adapter == "table"
+        else pa.RecordBatchReader.from_batches(present.schema, present.to_batches())
+    )
+    with pytest.raises(fpstreams.SelectionError) as error:
+        fpstreams.rows.from_arrow(present_source).aggregate(**aggregation).to_list()
+    assert str(error.value) == "Could not resolve selector 'missing'; failed at 'missing'"
+    assert isinstance(error.value.__cause__, KeyError)
+
+
 @pytest.mark.parametrize("source_kind", ["list", "tuple", "arrow", "record_batch"])
 def test_direct_exact_size_global_count_never_opens_its_source(
     monkeypatch: pytest.MonkeyPatch, source_kind: str
@@ -3685,6 +7572,1530 @@ def test_direct_exact_size_global_count_never_opens_its_source(
     monkeypatch.setattr(Source, "open", reject_source)
 
     assert aggregated.to_list() == [{"rows": 3}]
+
+
+@pytest.mark.parametrize("source_kind", ["list", "tuple"])
+def test_direct_native_record_global_sum_never_opens_python_rows(
+    monkeypatch: pytest.MonkeyPatch, source_kind: str
+) -> None:
+    """A direct exact-record i64 sum should reduce its retained source in native code."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode, SourcePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    records = [
+        {"gross_total": 2, "label": "a"},
+        {"gross_total": 3, "label": "b"},
+        {"gross_total": -1, "label": "c"},
+    ]
+    source = fpstreams.rows(records if source_kind == "list" else tuple(records))
+    aggregated = source.aggregate(total=fpstreams.agg.sum("gross_total"))
+    physical = compile_query(aggregated._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert isinstance(physical.root.input, SourcePhysicalNode)
+    assert physical.root.native_record_i64_sum is not None
+    relation = aggregated._flow.explain("list").to_dict()["relations"]
+    assert relation["candidate"] == "native_reduce"
+    assert relation["guarded"] is True
+    input_source = physical.root.input.source
+    open_source = Source.open
+
+    def reject_row_source(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("native global sum must not open Python rows")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_row_source)
+
+    assert aggregated.to_list() == [{"total": 4}]
+
+
+@pytest.mark.parametrize("source_kind", ["list", "tuple"])
+@pytest.mark.parametrize("row_kind", ["dict", "tuple"])
+def test_direct_native_multi_global_aggregate_never_opens_python_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+    row_kind: str,
+) -> None:
+    """Closed exact-i64 lanes should reduce one retained source in one native scan."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode, SourcePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    if row_kind == "dict":
+        records: list[object] = [
+            {"left": 2, "right": 9},
+            {"left": 3, "right": -4},
+            {"left": -1, "right": 7},
+        ] * 64
+        sum_field = bytes((108, 101, 102, 116)).decode()
+        max_field = bytes((108, 101, 102, 116)).decode()
+        assert sum_field == max_field == "left" and sum_field is not max_field
+        total = fpstreams.agg.sum(sum_field)
+        low = fpstreams.agg.min("right")
+        high = fpstreams.agg.max(max_field)
+    else:
+        records = [(2, 9), (3, -4), (-1, 7)] * 64
+        total = fpstreams.agg.sum(0)
+        low = fpstreams.agg.min(1)
+        high = fpstreams.agg.max(0)
+    retained = records if source_kind == "list" else tuple(records)
+    aggregated = fpstreams.rows(retained).aggregate(
+        rows=fpstreams.agg.count(),
+        total=total,
+        low=low,
+        high=high,
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert isinstance(physical.root.input, SourcePhysicalNode)
+    marker = physical.root.native_multi_i64
+    assert marker is not None
+    assert marker.row_kind == row_kind
+    assert tuple(lane.kind for lane in marker.lanes) == ("count", "sum", "min", "max")
+    assert physical.root.native_record_i64_sum is None
+    relation = aggregated.explain("list").to_dict()["relations"]
+    assert relation["candidate"] == "native_multi_reduce"
+    assert relation["guarded"] is True
+    input_source = physical.root.input.source
+    open_source = Source.open
+
+    def reject_row_source(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("native global aggregate must not open Python rows")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_row_source)
+
+    execution = aggregated.run_with_report("to_list")
+
+    assert execution.value == [{"rows": 192, "total": 256, "low": -4, "high": 3}]
+    assert execution.report.compiler_engine == "python"
+    assert execution.report.strategy == "rust_direct"
+
+
+@pytest.mark.parametrize("size", [127, 128])
+def test_native_multi_global_aggregate_uses_a_measured_small_source_threshold(size: int) -> None:
+    """Auto planning pays the native fixed cost only after its generic crossover."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    records = [(index, -index) for index in range(size)]
+    aggregated = fpstreams.rows(records).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum(0),
+        low=fpstreams.agg.min(1),
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert (physical.root.native_multi_i64 is not None) is (size == 128)
+    assert aggregated.to_list() == [{"rows": size, "total": sum(range(size)), "low": -(size - 1)}]
+
+
+def test_native_multi_global_aggregate_abi_preserves_closed_lane_semantics() -> None:
+    """The optional ABI keeps lane order, wide sums, extrema identity, and empty values."""
+    from fpstreams import _native
+
+    first_low = int("-1000")
+    equal_low = int("-1000")
+    assert first_low is not equal_low
+    maximum = 2**63 - 1
+    dict_lanes = (
+        (0, None, "rows"),
+        (1, "amount", "total"),
+        (2, "low", "low"),
+        (3, "high", "high"),
+    )
+    dict_result = _native.global_multi_i64_dict_rows_v1(
+        [
+            {"amount": maximum, "low": first_low, "high": -5},
+            {"amount": maximum, "low": equal_low, "high": 8},
+        ],
+        dict_lanes,
+    )
+    assert dict_result == {
+        "rows": 2,
+        "total": maximum * 2,
+        "low": first_low,
+        "high": 8,
+    }
+    assert dict_result["low"] is first_low
+    assert _native.global_multi_i64_dict_rows_v1([], dict_lanes) == {
+        "rows": 0,
+        "total": 0,
+        "low": None,
+        "high": None,
+    }
+
+    tuple_lanes = (
+        (0, None, "rows"),
+        (1, -2, "total"),
+        (2, -1, "low"),
+        (3, 0, "high"),
+    )
+    assert _native.global_multi_i64_rows_v1([(2, 9), (3, -4), (-1, 7)], tuple_lanes) == {
+        "rows": 3,
+        "total": 4,
+        "low": -4,
+        "high": 3,
+    }
+    assert _native.global_multi_i64_rows_v1((), tuple_lanes) == {
+        "rows": 0,
+        "total": 0,
+        "low": None,
+        "high": None,
+    }
+
+
+def test_native_multi_global_aggregate_abi_declines_without_protocol_dispatch() -> None:
+    """Speculative exact-record rejection must not call user equality or integer hooks."""
+    from fpstreams import _native
+
+    class Trap:
+        calls = 0
+
+        def __hash__(self) -> int:
+            return hash("value")
+
+        def __eq__(self, _other: object) -> bool:
+            type(self).calls += 1
+            raise AssertionError("speculative lookup touched custom equality")
+
+    class Record(dict[str, object]):
+        pass
+
+    dict_lanes = ((0, None, "rows"), (1, "value", "total"))
+    trap = Trap()
+    assert _native.global_multi_i64_dict_rows_v1([{trap: 1}], dict_lanes) is None
+    assert Trap.calls == 0
+    for source in (
+        [{"value": True}],
+        [{"value": 2**100}],
+        [{"missing": 1}],
+        [Record(value=1)],
+    ):
+        assert _native.global_multi_i64_dict_rows_v1(source, dict_lanes) is None
+
+    class Integer(int):
+        pass
+
+    tuple_lanes = ((0, None, "rows"), (1, 0, "total"))
+    for source in ([(True,)], [(2**100,)], [(Integer(1),)], [object()]):
+        assert _native.global_multi_i64_rows_v1(source, tuple_lanes) is None
+
+
+def test_native_multi_global_aggregate_decline_reopens_one_canonical_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native type decline leaves the retained input untouched for the Python result."""
+    from fpstreams import _native
+
+    records = [{"value": True}, {"value": 2**100}] * 64
+    calls: list[tuple[object, object]] = []
+
+    def decline(source: object, lanes: object) -> None:
+        calls.append((source, lanes))
+        return None
+
+    monkeypatch.setattr(
+        _native,
+        "global_multi_i64_dict_rows_v1",
+        decline,
+        raising=False,
+    )
+
+    assert fpstreams.rows(records).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+    ).to_list() == [{"rows": 128, "total": 64 * (1 + 2**100), "low": True}]
+    assert len(calls) == 1
+    assert calls[0][0] is records
+
+
+def test_native_multi_global_aggregate_keeps_the_single_sum_abi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The narrower established single-sum kernel remains the preferred control path."""
+    from fpstreams import _native
+
+    records = [{"value": 2}, {"value": 3}]
+    calls: list[object] = []
+    old_kernel = _native.global_sum_i64_dict_rows_v1
+
+    def tracked_single(source: object, field: str) -> int | None:
+        calls.append(source)
+        return old_kernel(source, field)
+
+    def unexpected_multi(_source: object, _lanes: object) -> object:
+        raise AssertionError("single sum reached the generic global aggregate kernel")
+
+    monkeypatch.setattr(_native, "global_sum_i64_dict_rows_v1", tracked_single)
+    monkeypatch.setattr(
+        _native,
+        "global_multi_i64_dict_rows_v1",
+        unexpected_multi,
+        raising=False,
+    )
+
+    assert fpstreams.rows(records).aggregate(total=fpstreams.agg.sum("value")).to_list() == [
+        {"total": 5}
+    ]
+    assert calls == [records]
+
+
+def test_native_multi_global_aggregate_revalidates_live_collectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compiled shortcut must yield to a collector whose transition code changed."""
+    from fpstreams import _native
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.planning.compiler import compile_query
+
+    rows = fpstreams.agg.count()
+    total = fpstreams.agg.sum("value")
+    aggregated = fpstreams.rows([{"value": 2}, {"value": 3}] * 64).aggregate(
+        rows=rows,
+        total=total,
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+
+    def step_factory() -> Callable[[int, dict[str, int]], int]:
+        def select(row: dict[str, int]) -> int:
+            return row["value"]
+
+        def step(current: int, row: dict[str, int]) -> int:
+            return current + select(row) * 9
+
+        return step
+
+    def unexpected_kernel(_source: object, _lanes: object) -> object:
+        raise AssertionError("a stale global aggregate reached native execution")
+
+    monkeypatch.setattr(total.step, "__code__", step_factory().__code__)
+    monkeypatch.setattr(_native, "global_multi_i64_dict_rows_v1", unexpected_kernel)
+
+    assert list(execute_physical(physical)) == [{"rows": 128, "total": 2_880}]
+
+
+def test_python_global_aggregate_observes_done_mutated_on_first_pull() -> None:
+    """The no-early-stop fast path must notice a done hook installed by its source."""
+    events: list[str] = []
+    total = fpstreams.agg.sum("value")
+
+    def replacement_done(state: int) -> bool:
+        events.append(f"done:{state}")
+        return state >= 2
+
+    def records() -> Iterator[dict[str, int]]:
+        try:
+            events.append("mutate:done")
+            object.__setattr__(total, "done", replacement_done)
+            events.append("pull:2")
+            yield {"value": 2}
+            events.append("pull:3")
+            yield {"value": 3}
+        finally:
+            events.append("close")
+
+    aggregated = fpstreams.rows(records()).with_engine("python").aggregate(total=total)
+
+    assert aggregated.to_list() == [{"total": 2}]
+    assert events == ["mutate:done", "pull:2", "done:2", "close"]
+
+
+@pytest.mark.parametrize("execution_path", ["direct", "executor", "report"])
+@pytest.mark.parametrize(
+    ("mutation_boundary", "expected_total", "expected_events"),
+    [
+        (
+            "first_pull",
+            50,
+            ["mutate:step", "pull:2", "step:2", "pull:3", "step:3", "close"],
+        ),
+        (
+            "between_batches",
+            32,
+            ["pull:2", "mutate:step", "pull:3", "step:3", "close"],
+        ),
+        (
+            "source_exhaustion",
+            50,
+            ["pull:2", "pull:3", "mutate:finish", "close", "finish"],
+        ),
+    ],
+)
+def test_arrow_reader_global_aggregate_observes_lifecycle_mutations(
+    execution_path: str,
+    mutation_boundary: str,
+    expected_total: int,
+    expected_events: list[str],
+) -> None:
+    """A claimed reader must retain live collector hooks across every lazy pull."""
+    events: list[str] = []
+    total = fpstreams.agg.sum("value")
+    first = pa.record_batch({"value": pa.array([2], type=pa.int64())})
+    second = pa.record_batch({"value": pa.array([3], type=pa.int64())})
+
+    def replacement_step(state: int, row: dict[str, int]) -> int:
+        value = row["value"]
+        events.append(f"step:{value}")
+        return state + value * 10
+
+    def replacement_finish(state: int) -> int:
+        events.append("finish")
+        return state * 10
+
+    def batches() -> Iterator[pa.RecordBatch]:
+        try:
+            if mutation_boundary == "first_pull":
+                events.append("mutate:step")
+                object.__setattr__(total, "step", replacement_step)
+            events.append("pull:2")
+            yield first
+            if mutation_boundary == "between_batches":
+                events.append("mutate:step")
+                object.__setattr__(total, "step", replacement_step)
+            events.append("pull:3")
+            yield second
+            if mutation_boundary == "source_exhaustion":
+                events.append("mutate:finish")
+                object.__setattr__(total, "finish", replacement_finish)
+        finally:
+            events.append("close")
+
+    reader = pa.RecordBatchReader.from_batches(first.schema, batches())
+    aggregated = fpstreams.rows.from_arrow(reader).aggregate(
+        total=total,
+        rows=fpstreams.agg.count(),
+    )
+
+    if execution_path == "direct":
+        result = aggregated.to_list()
+    elif execution_path == "executor":
+        result = list(aggregated)
+    else:
+        execution = aggregated.run_with_report("to_list")
+        result = execution.value
+        assert execution.report.strategy == "planned:python"
+
+    assert result == [{"total": expected_total, "rows": 2}]
+    assert events == expected_events
+    assert events.count("close") == 1
+
+
+def test_empty_arrow_reader_global_aggregate_observes_tail_finish() -> None:
+    """An empty claimed reader still applies a finisher replaced at source exhaustion."""
+    events: list[str] = []
+    total = fpstreams.agg.sum("value")
+    schema = pa.schema([("value", pa.int64())])
+
+    def replacement_finish(state: int) -> int:
+        events.append("finish")
+        return state + 7
+
+    def batches() -> Iterator[pa.RecordBatch]:
+        try:
+            events.append("mutate:finish")
+            object.__setattr__(total, "finish", replacement_finish)
+            return
+            yield  # pragma: no cover - retain the generator's Arrow batch type.
+        finally:
+            events.append("close")
+
+    reader = pa.RecordBatchReader.from_batches(schema, batches())
+    aggregated = fpstreams.rows.from_arrow(reader).aggregate(
+        total=total,
+        rows=fpstreams.agg.count(),
+    )
+
+    assert aggregated.to_list() == [{"total": 7, "rows": 0}]
+    assert events == ["mutate:finish", "close", "finish"]
+
+
+def test_dataframe_global_aggregate_observes_lifecycle_mutated_during_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delayed dataframe conversion may replace collector hooks before its first row."""
+    events: list[str] = []
+    total = fpstreams.agg.sum("value")
+    original_table = pa.table
+
+    def replacement_step(state: int, row: dict[str, int]) -> int:
+        value = row["value"]
+        events.append(f"step:{value}")
+        return state + value * 10
+
+    def observed_table(*args: object, **kwargs: object) -> pa.Table:
+        events.append("open:mutate-step")
+        object.__setattr__(total, "step", replacement_step)
+        return original_table(*args, **kwargs)
+
+    aggregated = fpstreams.rows.from_dataframe(pd.DataFrame({"value": [2, 3]})).aggregate(
+        total=total,
+        rows=fpstreams.agg.count(),
+    )
+    monkeypatch.setattr(pa, "table", observed_table)
+
+    assert aggregated.to_list() == [{"total": 50, "rows": 2}]
+    assert events == ["open:mutate-step", "step:2", "step:3"]
+
+
+def test_parquet_global_count_observes_lifecycle_mutated_during_metadata_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata counting must yield when opening the same source changes its collector."""
+    target = tmp_path / "global-count-lifecycle.parquet"
+    pq.write_table(pa.table({"value": [2, 3]}), target)
+    events: list[str] = []
+    rows = fpstreams.agg.count()
+    original_dataset = ds.dataset
+
+    def replacement_step(state: int, _row: object) -> int:
+        events.append("step")
+        return state + 10
+
+    def observed_dataset(*args: object, **kwargs: object) -> ds.Dataset:
+        events.append("open:mutate-step")
+        object.__setattr__(rows, "step", replacement_step)
+        return original_dataset(*args, **kwargs)
+
+    aggregated = fpstreams.rows.from_parquet(target).aggregate(rows=rows)
+    monkeypatch.setattr(ds, "dataset", observed_dataset)
+
+    assert aggregated.to_list() == [{"rows": 20}]
+    assert events == ["open:mutate-step", "step", "step"]
+
+
+@pytest.mark.parametrize("replacement", ["callback", "other_source"])
+def test_parquet_global_count_declines_unbound_metadata_openers(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    """A metadata counter must remain bound to the same canonical local-path source."""
+    from dataclasses import replace
+
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+
+    target = tmp_path / "global-count-bound.parquet"
+    other_target = tmp_path / "global-count-other.parquet"
+    pq.write_table(pa.table({"value": [2, 3]}), target)
+    pq.write_table(pa.table({"value": [7, 8, 9]}), other_target)
+    source = fpstreams.rows.from_parquet(target)
+    owner = source._flow._pipeline.source
+    descriptor = owner.native_data
+    assert isinstance(descriptor, ArrowBatchSource)
+    callback_calls: list[None] = []
+
+    if replacement == "callback":
+
+        def unbound_count() -> int:
+            callback_calls.append(None)
+            return 99
+
+        owner.native_data = replace(descriptor, count_opener=unbound_count)
+    else:
+        other_descriptor = fpstreams.rows.from_parquet(
+            other_target
+        )._flow._pipeline.source.native_data
+        assert isinstance(other_descriptor, ArrowBatchSource)
+        owner.native_data = other_descriptor
+
+    assert source.aggregate(rows=fpstreams.agg.count()).to_list() == [{"rows": 2}]
+    assert callback_calls == []
+
+
+def test_python_global_aggregate_keeps_primary_error_when_close_fails() -> None:
+    """Iterator cleanup must annotate rather than replace an active collector failure."""
+
+    class Values(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self.pulled = False
+            self.close_calls = 0
+
+        def __iter__(self) -> Values:
+            return self
+
+        def __next__(self) -> dict[str, int]:
+            if self.pulled:
+                raise StopIteration
+            self.pulled = True
+            return {"value": 2}
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError("secondary close")
+
+    def failing_step(_state: int, _row: object) -> int:
+        raise ValueError("primary step")
+
+    values = Values()
+    aggregated = (
+        fpstreams.rows(values)
+        .with_engine("python")
+        .aggregate(total=fpstreams.Aggregator(lambda: 0, failing_step))
+    )
+
+    with pytest.raises(ValueError, match="primary step") as captured:
+        aggregated.to_list()
+    assert captured.value.__notes__ == ["cleanup failed with OSError: secondary close"]
+    assert values.close_calls == 1
+
+
+def test_native_multi_global_aggregate_preserves_failpoint_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instrumented execution stays on the canonical source transition path."""
+    from fpstreams import _native
+    from fpstreams.runtime.failpoints import failpoint
+
+    def unexpected_kernel(_source: object, _lanes: object) -> object:
+        raise AssertionError("an instrumented global aggregate reached native execution")
+
+    monkeypatch.setattr(_native, "global_multi_i64_dict_rows_v1", unexpected_kernel)
+    aggregated = fpstreams.rows([{"value": 2}, {"value": 3}] * 64).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+    )
+
+    with (
+        failpoint("source.open.after", RuntimeError("canonical global multi aggregate")),
+        pytest.raises(RuntimeError, match="canonical global multi aggregate"),
+    ):
+        aggregated.to_list()
+
+
+def test_direct_numpy_global_aggregate_never_opens_python_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct integer lanes must reduce the retained ndarray without forwarding or boxing."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import relational
+    from fpstreams.streams import flow_terminals
+
+    matrix = np.asarray([[9, 2], [8, -3], [7, 4], [6, 1]] * 16, dtype=np.int64)
+    aggregated = fpstreams.rows.from_numpy(matrix, columns=("id", "value")).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    relation = aggregated.explain("list").to_dict()["relations"]
+
+    assert relation["candidate"] == "numpy_reduce"
+    assert relation["guarded"] is True
+
+    def forbidden_collector(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("NumPy global aggregate must not collect Python rows")
+
+    def forbidden_executor(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("NumPy global aggregate must not enter the forwarding runtime")
+
+    monkeypatch.setattr(relational, "run_collector_program", forbidden_collector)
+    monkeypatch.setattr(flow_terminals, "execute_physical", forbidden_executor)
+
+    execution = aggregated.run_with_report("to_list")
+
+    assert execution.value == [{"rows": 64, "total": 64, "low": -3, "high": 4}]
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_direct_numpy_global_list_preserves_exact_count_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A count-only matrix keeps the cheaper trusted-cardinality shortcut."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import relational
+
+    aggregated = fpstreams.rows.from_numpy(
+        np.arange(64, dtype=np.int64).reshape(-1, 1),
+        columns=("value",),
+    ).aggregate(rows=fpstreams.agg.count())
+
+    def forbidden_numpy(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("exact NumPy count must not enter the reduction kernel")
+
+    monkeypatch.setattr(relational, "_numpy_global_aggregate", forbidden_numpy)
+
+    assert aggregated.to_list() == [{"rows": 64}]
+
+
+@pytest.mark.parametrize("dtype_name", ["int64", "float64"])
+def test_direct_numpy_global_sum_and_mean_preserve_chunked_order(
+    monkeypatch: pytest.MonkeyPatch,
+    dtype_name: str,
+) -> None:
+    """Columnar sum/mean lanes must continue one state across bounded chunks."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import relational
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    if dtype_name == "int64":
+        raw = [2**53, 1, -(2**53), 3, -7, 11] * 11
+    else:
+        raw = [1e16, 1.0, -1e16, 3.0, -0.0, 5e-324] * 11
+    matrix = np.asarray(raw, dtype=dtype_name).reshape(-1, 1)
+    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
+    automatic = source.aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        mean=fpstreams.agg.mean("value"),
+        duplicate_mean=fpstreams.agg.mean("value"),
+    )
+    canonical = source.with_engine("python").aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        mean=fpstreams.agg.mean("value"),
+        duplicate_mean=fpstreams.agg.mean("value"),
+    )
+    plan = compile_query(automatic._flow._query("list"))
+
+    assert isinstance(plan.root, GlobalAggregatePhysicalNode)
+    assert plan.root.numpy_global is not None
+    expected = canonical.to_list()
+
+    def forbidden_collector(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("NumPy sum/mean must not collect Python rows")
+
+    monkeypatch.setattr(relational, "_NUMPY_GLOBAL_CHUNK_ROWS", 7)
+    monkeypatch.setattr(relational, "run_collector_program", forbidden_collector)
+
+    assert automatic.to_list() == expected
+
+
+def test_compiled_numpy_mean_revalidates_statistics_globals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compiled mean must deopt when OnlineStatistics would resolve new globals."""
+    import builtins
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.collecting.aggregation import native_group_aggregation
+    from fpstreams.collecting.statistics import OnlineStatistics
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    mean = fpstreams.agg.mean("value")
+    source = fpstreams.rows.from_numpy(
+        np.arange(64, dtype=np.int64).reshape(-1, 1),
+        columns=("value",),
+    )
+    automatic = source.aggregate(mean=mean)
+    canonical = source.with_engine("python").aggregate(mean=mean)
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    assert isinstance(automatic_plan.root, GlobalAggregatePhysicalNode)
+    assert automatic_plan.root.numpy_global is not None
+
+    def doubled_float(value: object) -> float:
+        return builtins.float(value) * 2.0
+
+    monkeypatch.setitem(OnlineStatistics.accept.__globals__, "float", doubled_float)
+
+    assert native_group_aggregation(mean) is None
+    assert (
+        list(execute_physical(automatic_plan))
+        == list(execute_physical(canonical_plan))
+        == [{"mean": 63.0}]
+    )
+
+
+@pytest.mark.parametrize("changed_dtype", ["int32", ">i8"])
+def test_compiled_numpy_global_mean_revalidates_live_dtype(
+    changed_dtype: str,
+) -> None:
+    """A retained matrix must still satisfy the planner's exact mean layout at execution."""
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.planning.compiler import compile_query
+
+    matrix = np.arange(32, dtype=np.int64).reshape(-1, 1)
+    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
+    automatic = source.aggregate(
+        total=fpstreams.agg.sum("value"),
+        mean=fpstreams.agg.mean("value"),
+    )
+    canonical = source.with_engine("python").aggregate(
+        total=fpstreams.agg.sum("value"),
+        mean=fpstreams.agg.mean("value"),
+    )
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        matrix.dtype = np.dtype(changed_dtype)
+        matrix.shape = (-1, 1)
+
+    assert list(execute_physical(automatic_plan)) == list(execute_physical(canonical_plan))
+
+
+def test_compiled_numpy_integer_extrema_revalidate_float_dtype() -> None:
+    """Integer min/max lanes must deopt instead of acquiring NumPy's NaN semantics."""
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.planning.compiler import compile_query
+
+    matrix = np.arange(32, dtype=np.int64).reshape(-1, 1)
+    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
+    automatic = source.aggregate(
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    canonical = source.with_engine("python").aggregate(
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        matrix.dtype = np.float64
+    matrix[:4, 0] = [1.0, np.nan, -0.0, 2.0]
+    matrix[4:, 0] = 1.0
+
+    expected = [{"low": -0.0, "high": 2.0}]
+    assert list(execute_physical(canonical_plan)) == expected
+    assert list(execute_physical(automatic_plan)) == expected
+
+
+@pytest.mark.parametrize("mutation", ["kind", "selector"])
+def test_group_aggregation_marker_metadata_is_bound_to_its_step(
+    mutation: str,
+) -> None:
+    """Frozen-marker bypasses cannot relabel the operator or its captured selector."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.collecting.aggregation import native_group_aggregation
+
+    aggregation = fpstreams.agg.mean("value") if mutation == "kind" else fpstreams.agg.sum("value")
+    hint = native_group_aggregation(aggregation)
+    assert hint is not None
+    object.__setattr__(hint, mutation, "max" if mutation == "kind" else "other")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 1, 10], [1, 2, 20], [1, 4, 40], [1, 5, 50]] * 8),
+        columns=("key", "value", "other"),
+    )
+    automatic = source.group_by("key").aggregate(result=aggregation)
+    canonical = source.with_engine("python").group_by("key").aggregate(result=aggregation)
+    expected = [{"key": 1, "result": 3.0 if mutation == "kind" else 96}]
+
+    assert native_group_aggregation(aggregation) is None
+    assert canonical.to_list() == expected
+    assert automatic.to_list() == expected
+
+
+@pytest.mark.parametrize("mutation", ["setattr", "slot"])
+def test_compiled_numpy_mean_revalidates_statistics_type_layout(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """The direct mean lane requires the state type's original write boundaries."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.collecting.aggregation import native_group_aggregation
+    from fpstreams.collecting.statistics import OnlineStatistics
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.planning.compiler import compile_query
+
+    mean = fpstreams.agg.mean("value")
+    query = fpstreams.rows.from_numpy(
+        np.arange(32, dtype=np.int64).reshape(-1, 1),
+        columns=("value",),
+    ).aggregate(mean=mean)
+    plan = compile_query(query._flow._query("list"))
+
+    if mutation == "setattr":
+
+        def observed_setattr(_self: object, _name: str, _value: object) -> None:
+            raise RuntimeError("observed statistics setattr")
+
+        monkeypatch.setattr(OnlineStatistics, "__setattr__", observed_setattr)
+        error = RuntimeError
+    else:
+        monkeypatch.setattr(OnlineStatistics, "total", 123.0)
+        error = AttributeError
+
+    assert native_group_aggregation(mean) is None
+    with pytest.raises(error):
+        list(execute_physical(plan))
+
+
+def test_numpy_global_endpoint_probe_does_not_observe_live_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Internal Rust endpoint validation must not expose a new builtin callback boundary."""
+    import builtins
+
+    np = pytest.importorskip("numpy")
+    from fpstreams import _native
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.planning.compiler import compile_query
+
+    query = fpstreams.rows.from_numpy(
+        np.arange(32, dtype=np.float64).reshape(-1, 1),
+        columns=("value",),
+    ).aggregate(total=fpstreams.agg.sum("value"), mean=fpstreams.agg.mean("value"))
+    plan = compile_query(query._flow._query("list"))
+    canonical_callable = builtins.callable
+    endpoints = (_native.update_sum_f64_buffer_v1, _native.update_mean_f64_buffer_v1)
+
+    def observed_callable(value: object) -> bool:
+        if any(value is endpoint for endpoint in endpoints):
+            raise RuntimeError("endpoint callable observed")
+        return canonical_callable(value)
+
+    monkeypatch.setattr(builtins, "callable", observed_callable)
+
+    assert list(execute_physical(plan)) == [{"total": 496.0, "mean": 15.5}]
+
+    def unexpected_endpoint(*_args: object) -> object:
+        raise AssertionError("a replacement endpoint must not run")
+
+    monkeypatch.setattr(_native, "update_mean_f64_buffer_v1", unexpected_endpoint)
+    assert list(execute_physical(plan)) == [{"total": 496.0, "mean": 15.5}]
+
+
+def test_numpy_global_aggregate_preserves_live_shape_errors() -> None:
+    """Planning must not replace the canonical error for a retained array changed to 0-D."""
+    np = pytest.importorskip("numpy")
+
+    matrix = np.asarray([[2]], dtype=np.int64)
+    aggregated = fpstreams.rows.from_numpy(matrix, columns=("value",)).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+    )
+    matrix.resize((), refcheck=False)
+
+    with pytest.raises(ValueError, match="changed to 0 dimensions"):
+        aggregated.to_list()
+
+
+@pytest.mark.parametrize("mode", ["global", "grouped"])
+@pytest.mark.parametrize("mutation", ["sum", "count"])
+def test_compiled_numpy_aggregate_revalidates_live_aggregators(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    mutation: str,
+) -> None:
+    """A compiled NumPy choice must decline when a retained collector changes later."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.physical.relational import (
+        GlobalAggregatePhysicalNode,
+        GroupAggregatePhysicalNode,
+    )
+    from fpstreams.planning.compiler import compile_query
+
+    rows = fpstreams.agg.count()
+    total = fpstreams.agg.sum("value")
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[index % 2, 1] for index in range(32)], dtype=np.int64),
+        columns=("key", "value"),
+    )
+    if mode == "global":
+        automatic = source.aggregate(rows=rows, total=total)
+        canonical = source.with_engine("python").aggregate(rows=rows, total=total)
+    else:
+        automatic = source.group_by("key").aggregate(rows=rows, total=total)
+        canonical = source.with_engine("python").group_by("key").aggregate(rows=rows, total=total)
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    node_type = GlobalAggregatePhysicalNode if mode == "global" else GroupAggregatePhysicalNode
+    assert isinstance(automatic_plan.root, node_type)
+    assert isinstance(canonical_plan.root, node_type)
+    if mode == "global":
+        assert automatic_plan.root.numpy_global is not None
+        assert canonical_plan.root.numpy_global is None
+    else:
+        assert automatic_plan.root.numpy_group is not None
+        assert canonical_plan.root.numpy_group is None
+
+    if mutation == "sum":
+
+        def step_factory() -> Callable[[int, dict[str, int]], int]:
+            def select(row: dict[str, int]) -> int:
+                return row["value"]
+
+            def step(current: int, row: dict[str, int]) -> int:
+                return current + select(row) * 9
+
+            return step
+
+        monkeypatch.setattr(total.step, "__code__", step_factory().__code__)
+        expected_global = [{"rows": 32, "total": 288}]
+        expected_grouped = [
+            {"key": 0, "rows": 16, "total": 144},
+            {"key": 1, "rows": 16, "total": 144},
+        ]
+    else:
+
+        def count_step(current: int, _row: object) -> int:
+            return current + 9
+
+        monkeypatch.setattr(rows.step, "__code__", count_step.__code__)
+        expected_global = [{"rows": 288, "total": 32}]
+        expected_grouped = [
+            {"key": 0, "rows": 144, "total": 16},
+            {"key": 1, "rows": 144, "total": 16},
+        ]
+
+    expected = expected_global if mode == "global" else expected_grouped
+    assert list(execute_physical(canonical_plan)) == expected
+    assert list(execute_physical(automatic_plan)) == expected
+
+
+def test_compiled_numpy_count_revalidates_before_exact_size_shortcut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale count lifecycle must decline the earlier exact-cardinality shortcut."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    rows = fpstreams.agg.count()
+    source = fpstreams.rows.from_numpy(
+        np.ones((32, 1), dtype=np.int64),
+        columns=("value",),
+    )
+    automatic = source.aggregate(rows=rows)
+    canonical = source.with_engine("python").aggregate(rows=rows)
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    assert isinstance(automatic_plan.root, GlobalAggregatePhysicalNode)
+    assert automatic_plan.root.exact_count_name == "rows"
+
+    def count_step(current: int, _row: object) -> int:
+        return current + 9
+
+    monkeypatch.setattr(rows.step, "__code__", count_step.__code__)
+
+    assert list(execute_physical(canonical_plan)) == [{"rows": 288}]
+    assert list(execute_physical(automatic_plan)) == [{"rows": 288}]
+
+
+@pytest.mark.parametrize("kind", ["min", "max"])
+def test_compiled_numpy_extreme_revalidates_lifecycle_globals(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    """A live lifecycle globals change must invalidate a compiled NumPy extreme."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    extreme = getattr(fpstreams.agg, kind)("value")
+    source = fpstreams.rows.from_numpy(
+        np.zeros((32, 1), dtype=np.int64),
+        columns=("value",),
+    )
+    automatic = source.aggregate(result=extreme)
+    canonical = source.with_engine("python").aggregate(result=extreme)
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    assert isinstance(automatic_plan.root, GlobalAggregatePhysicalNode)
+    assert automatic_plan.root.numpy_global is not None
+
+    monkeypatch.setitem(extreme.finish.__globals__, "_MISSING", 0)
+
+    assert list(execute_physical(canonical_plan)) == [{"result": None}]
+    assert list(execute_physical(automatic_plan)) == [{"result": None}]
+
+
+def test_numpy_global_aggregate_deopts_after_source_factory_code_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained NumPy metadata must not outlive the Python opener that describes it."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.physical import execute_physical
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    table = fpstreams.rows.from_numpy(
+        np.ones((32, 1), dtype=np.int64),
+        columns=("value",),
+    )
+    source = table._flow._pipeline.source
+    automatic = table.aggregate(total=fpstreams.agg.sum("value"))
+    canonical = table.with_engine("python").aggregate(total=fpstreams.agg.sum("value"))
+    automatic_plan = compile_query(automatic._flow._query("list"))
+    canonical_plan = compile_query(canonical._flow._query("list"))
+
+    assert isinstance(automatic_plan.root, GlobalAggregatePhysicalNode)
+    assert automatic_plan.root.numpy_global is not None
+
+    def replacement_factory() -> Callable[[], Iterator[dict[str, int]]]:
+        names = ("value",)
+        values = [9] * 32
+
+        def replacement() -> Iterator[dict[str, int]]:
+            return iter({names[0]: 9} for _index in range(32 if values is not None else 0))
+
+        return replacement
+
+    replacement = replacement_factory()
+    monkeypatch.setattr(source._factory, "__code__", replacement.__code__)
+
+    assert "candidate" not in automatic.explain("list").to_dict()["relations"]
+    assert (
+        list(execute_physical(automatic_plan))
+        == list(execute_physical(canonical_plan))
+        == [{"total": 288}]
+    )
+
+
+@pytest.mark.parametrize("mode", ["global", "grouped"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["selector_closure", "selector_code", "selector_inner_closure", "step_code"],
+)
+def test_numpy_aggregates_deopt_after_mutated_group_sum_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    mutation: str,
+) -> None:
+    """A mutated factory sum must execute its live Python selector and step."""
+    np = pytest.importorskip("numpy")
+
+    total = fpstreams.agg.sum("value")
+    closure = dict(
+        zip(
+            total.step.__code__.co_freevars,
+            total.step.__closure__ or (),
+            strict=True,
+        )
+    )
+    if mutation == "selector_closure":
+        monkeypatch.setattr(
+            closure["select"],
+            "cell_contents",
+            lambda row: row["value"] * 3,
+        )
+        expected_global = [{"total": 96}]
+        expected_grouped = [
+            {"key": 0, "total": 48},
+            {"key": 1, "total": 48},
+        ]
+    elif mutation == "selector_code":
+
+        def selector_factory() -> Callable[[dict[str, int]], int]:
+            selector = "value"
+
+            def replacement(row: dict[str, int]) -> int:
+                return row[selector] * 4
+
+            return replacement
+
+        replacement_selector = selector_factory()
+        select = closure["select"].cell_contents
+        monkeypatch.setattr(select, "__code__", replacement_selector.__code__)
+        expected_global = [{"total": 128}]
+        expected_grouped = [
+            {"key": 0, "total": 64},
+            {"key": 1, "total": 64},
+        ]
+    elif mutation == "selector_inner_closure":
+        select = closure["select"].cell_contents
+        select_closure = dict(
+            zip(
+                select.__code__.co_freevars,
+                select.__closure__ or (),
+                strict=True,
+            )
+        )
+        monkeypatch.setattr(select_closure["selector"], "cell_contents", "other")
+        expected_global = [{"total": 96}]
+        expected_grouped = [
+            {"key": 0, "total": 48},
+            {"key": 1, "total": 48},
+        ]
+    else:
+
+        def replacement_factory() -> Callable[[int, dict[str, int]], int]:
+            def select(row: dict[str, int]) -> int:
+                return row["value"]
+
+            def replacement(current: int, row: dict[str, int]) -> int:
+                return current + select(row) * 2
+
+            return replacement
+
+        replacement = replacement_factory()
+        monkeypatch.setattr(total.step, "__code__", replacement.__code__)
+        expected_global = [{"total": 64}]
+        expected_grouped = [
+            {"key": 0, "total": 32},
+            {"key": 1, "total": 32},
+        ]
+
+    matrix = np.asarray([[index % 2, 1, 3] for index in range(32)], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("key", "value", "other"))
+    if mode == "global":
+        automatic = source.aggregate(total=total).to_list()
+        canonical = source.with_engine("python").aggregate(total=total).to_list()
+        expected = expected_global
+    else:
+        automatic = source.group_by("key").aggregate(total=total).to_list()
+        canonical = source.with_engine("python").group_by("key").aggregate(total=total).to_list()
+        expected = expected_grouped
+
+    assert canonical == expected
+    assert automatic == expected
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "expected_global", "expected_grouped"),
+    [
+        ("initializer", 42, 26),
+        ("step", 64, 32),
+        ("finish", 96, 48),
+        ("combine", 32, 16),
+        ("done", 32, 16),
+    ],
+)
+def test_group_sum_deopts_after_any_lifecycle_code_change(
+    monkeypatch: pytest.MonkeyPatch,
+    lifecycle: str,
+    expected_global: int,
+    expected_grouped: int,
+) -> None:
+    """All five factory lifecycle functions must retain their original Python code."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.collecting.aggregation import native_group_aggregation
+
+    total = fpstreams.agg.sum("value")
+
+    def initializer() -> int:
+        return 10
+
+    def step_factory() -> Callable[[int, dict[str, int]], int]:
+        def select(row: dict[str, int]) -> int:
+            return row["value"]
+
+        def step(current: int, row: dict[str, int]) -> int:
+            return current + select(row) * 2
+
+        return step
+
+    def finish(current: int) -> int:
+        return current * 3
+
+    def combine(left: int, right: int) -> int:
+        return left + right + 100
+
+    def done(_current: int) -> bool:
+        return True
+
+    replacement = {
+        "initializer": initializer,
+        "step": step_factory(),
+        "finish": finish,
+        "combine": combine,
+        "done": done,
+    }[lifecycle]
+    target = getattr(total, lifecycle)
+    monkeypatch.setattr(target, "__code__", replacement.__code__)
+
+    matrix = np.asarray([[index % 2, 1] for index in range(32)], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+    automatic_global = source.aggregate(total=total)
+    canonical_global = source.with_engine("python").aggregate(total=total)
+    automatic_grouped = source.group_by("key").aggregate(total=total)
+    canonical_grouped = source.with_engine("python").group_by("key").aggregate(total=total)
+
+    assert native_group_aggregation(total) is None
+    assert "candidate" not in automatic_grouped.explain("list").to_dict()["relations"]
+    assert canonical_global.to_list() == [{"total": expected_global}]
+    assert automatic_global.to_list() == [{"total": expected_global}]
+    expected_groups = [
+        {"key": 0, "total": expected_grouped},
+        {"key": 1, "total": expected_grouped},
+    ]
+    assert canonical_grouped.to_list() == expected_groups
+    assert automatic_grouped.to_list() == expected_groups
+
+
+def test_numpy_aggregates_safely_deopt_for_an_empty_selector_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An emptied live selector cell must raise canonically after lowering declines."""
+    np = pytest.importorskip("numpy")
+
+    total = fpstreams.agg.sum("value")
+    closure = dict(
+        zip(
+            total.step.__code__.co_freevars,
+            total.step.__closure__ or (),
+            strict=True,
+        )
+    )
+    monkeypatch.delattr(closure["select"], "cell_contents")
+    matrix = np.ones((32, 1), dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
+
+    for engine in ("auto", "python"):
+        with pytest.raises(NameError, match="free variable 'select'"):
+            source.with_engine(engine).aggregate(total=total).to_list()
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "expected"),
+    [
+        ("initializer", 42),
+        ("step", 64),
+        ("finish", 96),
+        ("combine", 32),
+        ("done", 32),
+    ],
+)
+def test_project_count_deopts_after_any_lifecycle_code_change(
+    monkeypatch: pytest.MonkeyPatch,
+    lifecycle: str,
+    expected: int,
+) -> None:
+    """Every project-owned count lifecycle must retain its factory code identity."""
+    np = pytest.importorskip("numpy")
+
+    rows = fpstreams.agg.count()
+
+    def initializer() -> int:
+        return 10
+
+    def step(current: int, _row: object) -> int:
+        return current + 2
+
+    def finish(current: int) -> int:
+        return current * 3
+
+    def combine(left: int, right: int) -> int:
+        return left + right + 100
+
+    def done(_current: int) -> bool:
+        return True
+
+    replacement = {
+        "initializer": initializer,
+        "step": step,
+        "finish": finish,
+        "combine": combine,
+        "done": done,
+    }[lifecycle]
+    target = getattr(rows, lifecycle)
+    monkeypatch.setattr(target, "__code__", replacement.__code__)
+
+    matrix = np.ones((32, 1), dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
+    automatic = source.aggregate(rows=rows)
+    canonical = source.with_engine("python").aggregate(rows=rows)
+    relation = automatic.explain("list").to_dict()["relations"]
+
+    assert "candidate" not in relation
+    assert canonical.to_list() == [{"rows": expected}]
+    assert automatic.to_list() == [{"rows": expected}]
+
+
+@pytest.mark.parametrize("mode", ["global", "grouped"])
+def test_numpy_aggregates_deopt_after_mutated_project_count_code(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """A mutated project count step must not retain exact or NumPy lowering."""
+    np = pytest.importorskip("numpy")
+
+    rows = fpstreams.agg.count()
+
+    def replacement(current: int, _row: object) -> int:
+        return current + 2
+
+    monkeypatch.setattr(rows.step, "__code__", replacement.__code__)
+    matrix = np.asarray([[index % 2, 1] for index in range(32)], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+    if mode == "global":
+        automatic = source.aggregate(rows=rows, total=fpstreams.agg.sum("value")).to_list()
+        canonical = (
+            source.with_engine("python")
+            .aggregate(rows=rows, total=fpstreams.agg.sum("value"))
+            .to_list()
+        )
+        expected = [{"rows": 64, "total": 32}]
+    else:
+        automatic = (
+            source.group_by("key").aggregate(rows=rows, total=fpstreams.agg.sum("value")).to_list()
+        )
+        canonical = (
+            source.with_engine("python")
+            .group_by("key")
+            .aggregate(rows=rows, total=fpstreams.agg.sum("value"))
+            .to_list()
+        )
+        expected = [
+            {"key": 0, "rows": 32, "total": 16},
+            {"key": 1, "rows": 32, "total": 16},
+        ]
+
+    assert canonical == expected
+    assert automatic == expected
+
+
+def test_native_record_global_sum_decline_reopens_canonical_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A semantics guard rejection must leave the retained source clean for Python fallback."""
+    from fpstreams import _native
+
+    calls: list[tuple[object, str]] = []
+
+    def decline(source: object, field: str) -> None:
+        calls.append((source, field))
+        return None
+
+    records = [{"value": True}, {"value": 2**100}]
+    monkeypatch.setattr(_native, "global_sum_i64_dict_rows_v1", decline, raising=False)
+
+    assert fpstreams.rows(records).aggregate(total=fpstreams.agg.sum("value")).to_list() == [
+        {"total": 1 + 2**100}
+    ]
+    assert calls == [(records, "value")]
+
+
+def test_native_record_global_sum_abi_declines_protocol_sensitive_values() -> None:
+    """The optional ABI must reject unsafe shapes before invoking Python protocols."""
+    from fpstreams import _native
+
+    class Record(dict[str, object]):
+        pass
+
+    class Field(str):
+        pass
+
+    class RecordMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            return 1
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("value",))
+
+        def __len__(self) -> int:
+            return 1
+
+    class Trap:
+        calls = 0
+
+        def __hash__(self) -> int:
+            return hash("value")
+
+        def __eq__(self, _other: object) -> bool:
+            type(self).calls += 1
+            raise AssertionError("speculative lookup touched custom equality")
+
+    kernel = _native.global_sum_i64_dict_rows_v1
+    maximum = 2**63 - 1
+    assert kernel([{"value": 2}, {"value": 3}, {"value": -1}], "value") == 4
+    assert kernel(({"value": maximum}, {"value": maximum}), "value") == maximum * 2
+    for source in (
+        [{"value": True}],
+        [{"value": 2**100}],
+        [{"value": None}],
+        [{"missing": 1}],
+        [Record(value=1)],
+        [RecordMapping()],
+        ({"value": 1} for _ in range(1)),
+    ):
+        assert kernel(source, "value") is None
+    assert kernel([{"value": 1}], Field("value")) is None
+
+    trap = Trap()
+    assert kernel([{trap: 1}], "value") is None
+    assert Trap.calls == 0
+
+
+def test_native_record_global_sum_fallback_runs_mapping_protocols_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Speculative rejection must not duplicate Mapping or dict-subclass effects."""
+    from fpstreams import _native
+
+    effects: list[tuple[str, str]] = []
+
+    class Record(dict[str, int]):
+        def __getitem__(self, field: str) -> int:
+            effects.append(("dict", field))
+            return super().__getitem__(field)
+
+    class RecordMapping(Mapping[str, int]):
+        def __getitem__(self, field: str) -> int:
+            effects.append(("mapping", field))
+            return 3
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(("value",))
+
+        def __len__(self) -> int:
+            return 1
+
+    kernel = _native.global_sum_i64_dict_rows_v1
+    kernel_calls: list[object] = []
+
+    def tracked_kernel(source: object, field: str) -> int | None:
+        kernel_calls.append(source)
+        return kernel(source, field)
+
+    monkeypatch.setattr(_native, "global_sum_i64_dict_rows_v1", tracked_kernel)
+    dict_records = [Record(value=2)]
+    mapping_records = [RecordMapping()]
+
+    assert fpstreams.rows(dict_records).aggregate(total=fpstreams.agg.sum("value")).to_list() == [
+        {"total": 2}
+    ]
+    assert fpstreams.rows(mapping_records).aggregate(
+        total=fpstreams.agg.sum("value")
+    ).to_list() == [{"total": 3}]
+    assert kernel_calls == [dict_records, mapping_records]
+    assert effects == [("dict", "value"), ("mapping", "value")]
+
+
+def test_native_record_global_sum_declines_one_shot_and_instrumented_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One-shot ownership and failpoint observation stay on the canonical row executor."""
+    from fpstreams import _native
+    from fpstreams.runtime.failpoints import failpoint
+
+    def unexpected_kernel(_source: object, _field: str) -> int | None:
+        raise AssertionError("protocol-sensitive source reached the native global sum")
+
+    monkeypatch.setattr(_native, "global_sum_i64_dict_rows_v1", unexpected_kernel)
+    one_shot = fpstreams.rows(iter(({"value": 2}, {"value": 3}))).aggregate(
+        total=fpstreams.agg.sum("value")
+    )
+    assert one_shot.to_list() == [{"total": 5}]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        one_shot.to_list()
+
+    automatic = fpstreams.rows([{"value": 2}, {"value": 3}]).aggregate(
+        total=fpstreams.agg.sum("value")
+    )
+    with (
+        failpoint("source.open.after", RuntimeError("canonical record global sum")),
+        pytest.raises(RuntimeError, match="canonical record global sum"),
+    ):
+        automatic.to_list()
 
 
 def test_direct_parquet_global_count_uses_metadata_terminal(
@@ -3843,6 +9254,179 @@ def test_arrow_reader_global_sum_streams_without_boxing_and_consumes_once(
     with pytest.raises(fpstreams.FlowConsumedError):
         aggregated.to_list()
     assert provider.calls == 1
+
+
+def test_arrow_c_stream_global_multi_aggregate_never_boxes_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-shot C stream should reduce closed global lanes directly from its batches."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    table = pa.table(
+        {
+            "value": pa.chunked_array([[2, 3], [-1, 7]], type=pa.int64()),
+            "payload": pa.chunked_array([[20, 30], [-10, 70]], type=pa.int64()),
+        }
+    )
+
+    class StreamProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+            self.calls += 1
+            return table.__arrow_c_stream__(requested_schema)
+
+    def reject_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("Arrow reader global multi aggregate must not box rows")
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    provider = StreamProvider()
+    aggregated = fpstreams.rows.from_arrow(provider, batch_size=2).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("payload"),
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert physical.root.arrow_i64_sum is not None
+    assert aggregated.to_list() == [{"rows": 4, "total": 11, "low": -1, "high": 70}]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        aggregated.to_list()
+    assert provider.calls == 1
+
+
+def test_arrow_reader_global_multi_owns_batches_and_merges_wide_values() -> None:
+    """One-shot global lanes skip empty batches, merge bigints, close, and consume once."""
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    maximum = 2**63 - 1
+    empty = pa.record_batch(
+        {
+            "value": pa.array([], type=pa.int64()),
+            "other": pa.array([], type=pa.int64()),
+        }
+    )
+    first = pa.record_batch({"value": [maximum], "other": [4]})
+    final = pa.record_batch({"value": [1], "other": [9]})
+    events: list[str] = []
+    batches = _TrackedArrowBatches((empty, first, empty, final), events)
+
+    def open_batches() -> Iterator[pa.RecordBatch]:
+        events.append("open")
+        return batches
+
+    descriptor = ArrowBatchSource(
+        open_batches,
+        "reader",
+        65_536,
+        first.schema,
+        False,
+    )
+
+    def forbidden_rows() -> Iterator[dict[str, int]]:
+        raise AssertionError("Arrow reader global multi must not open Python rows")
+        yield
+
+    source = Source(
+        forbidden_rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("other"),
+    )
+
+    assert aggregated.to_list() == [{"rows": 2, "total": 2**63, "low": 1, "high": 9}]
+    assert events == ["open", "pull:0", "pull:1", "pull:2", "pull:3", "stop", "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        aggregated.to_list()
+    assert events == ["open", "pull:0", "pull:1", "pull:2", "pull:3", "stop", "close"]
+
+
+def test_arrow_reader_global_multi_compute_decline_keeps_claimed_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late kernel decline folds only that batch and continues the claimed reader."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_compute = imported("pyarrow.compute")
+    record_batches = (
+        pa.record_batch({"value": [2, 3]}),
+        pa.record_batch({"value": [5, -1]}),
+        pa.record_batch({"value": [7]}),
+    )
+    events: list[str] = []
+    batches = _TrackedArrowBatches(record_batches, events)
+    min_max_calls = 0
+
+    class RejectingCompute:
+        @staticmethod
+        def min_max(values: object) -> object:
+            nonlocal min_max_calls
+            min_max_calls += 1
+            if min_max_calls == 2:
+                raise NotImplementedError("incremental global decline")
+            return actual_compute.min_max(values)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_compute, name)
+
+    def import_backend(name: str) -> object:
+        return RejectingCompute() if name == "pyarrow.compute" else imported(name)
+
+    def open_batches() -> Iterator[pa.RecordBatch]:
+        events.append("open")
+        return batches
+
+    descriptor = ArrowBatchSource(
+        open_batches,
+        "reader",
+        65_536,
+        record_batches[0].schema,
+        False,
+    )
+
+    def forbidden_rows() -> Iterator[dict[str, int]]:
+        raise AssertionError("claimed Arrow reader must not reopen Python rows")
+        yield
+
+    def reject_boxing(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("claimed Arrow reader fallback must not box whole rows")
+
+    source = Source(
+        forbidden_rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_boxing)
+
+    assert aggregated.to_list() == [{"rows": 5, "total": 16, "low": -1, "high": 7}]
+    assert min_max_calls == 3
+    assert events == ["open", "pull:0", "pull:1", "pull:2", "stop", "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        aggregated.to_list()
+    assert min_max_calls == 3
+    assert events == ["open", "pull:0", "pull:1", "pull:2", "stop", "close"]
 
 
 @pytest.mark.parametrize("adapter", ["table", "reader"])
@@ -4433,10 +10017,9 @@ def test_direct_columnar_global_sum_is_rejected_for_protocol_sensitive_shapes() 
     direct = fpstreams.rows.from_arrow(table)
     candidates = (
         direct.with_engine("python").aggregate(total=fpstreams.agg.sum("value")),
-        direct.select("value").aggregate(total=fpstreams.agg.sum("value")),
+        direct.select("value").aggregate(first=fpstreams.agg.first("value")),
         direct.aggregate(total=fpstreams.agg.sum(lambda row: row["value"])),
         direct.aggregate(total=fpstreams.agg.sum("nested.value")),
-        direct.aggregate(total=fpstreams.agg.sum("value"), rows=fpstreams.agg.count()),
         fpstreams.rows.from_polars(pl.DataFrame({"value": [2, 3]}).lazy()).aggregate(
             total=fpstreams.agg.sum("value")
         ),
@@ -4445,6 +10028,41 @@ def test_direct_columnar_global_sum_is_rejected_for_protocol_sensitive_shapes() 
         physical = compile_query(candidate._flow._query("list"))
         assert isinstance(physical.root, GlobalAggregatePhysicalNode)
         assert physical.root.arrow_i64_sum is None
+
+
+def test_arrow_global_aggregate_revalidates_captured_source_function_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained Arrow metadata must not outlive a captured row opener function."""
+    rows = fpstreams.rows.from_arrow(pa.table({"value": [1] * 32}))
+    source_factory = rows._flow._pipeline.source._factory
+    closure = dict(
+        zip(
+            source_factory.__code__.co_freevars,
+            source_factory.__closure__ or (),
+            strict=True,
+        )
+    )
+    captured_rows = closure["rows"].cell_contents
+
+    def replacement_factory() -> Callable[[], Iterator[dict[str, int]]]:
+        descriptor = object()
+        source = object()
+
+        def replacement() -> Iterator[dict[str, int]]:
+            if descriptor is source:
+                return
+            yield from ({"value": 9} for _index in range(32))
+
+        return replacement
+
+    monkeypatch.setattr(captured_rows, "__code__", replacement_factory().__code__)
+    expected = [{"total": 288}]
+
+    assert (
+        rows.with_engine("python").aggregate(total=fpstreams.agg.sum("value")).to_list() == expected
+    )
+    assert rows.aggregate(total=fpstreams.agg.sum("value")).to_list() == expected
 
 
 def test_direct_arrow_global_sum_preserves_empty_fallback_and_bigint_semantics() -> None:
@@ -4691,6 +10309,254 @@ def test_guarded_columnar_filter_count_never_opens_python_rows(
     assert filtered.count() == 2
 
 
+@pytest.mark.parametrize(
+    ("prefix_shape", "expected"),
+    [
+        ("filter", 4),
+        ("select", 5),
+        ("filter_select", 4),
+        ("two_filters", 3),
+    ],
+)
+def test_safe_arrow_prefix_global_count_never_opens_python_input_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    prefix_shape: str,
+    expected: int,
+) -> None:
+    """A closed count should reuse every table-safe retained Arrow prefix."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    source = fpstreams.rows.from_arrow(
+        pa.table(
+            {
+                "key": [2, 1, 2, 3, 1],
+                "value": [4, 7, 3, 99, 2],
+                "flag": [True, True, True, False, True],
+            }
+        ),
+        batch_size=2,
+    )
+    input_source = source._flow._pipeline.source
+    if prefix_shape != "select":
+        source = source.where(fpstreams.col("flag") == True)  # noqa: E712
+    if prefix_shape == "two_filters":
+        source = source.where(fpstreams.col("value") >= 3)
+    if prefix_shape in {"select", "filter_select"}:
+        source = source.select("key", "value")
+    aggregated = source.aggregate(rows=fpstreams.agg.count())
+    physical = compile_query(aggregated._flow._query("list"))
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert physical.root.arrow_count_name == "rows"
+    open_source = Source.open
+
+    def reject_arrow_row_open(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("safe Arrow prefix/global count opened Python input rows")
+        return open_source(candidate)
+
+    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("safe Arrow prefix/global count boxed a Python input row")
+
+    def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
+        raise AssertionError("safe Arrow prefix/global count boxed projected Python rows")
+
+    monkeypatch.setattr(Source, "open", reject_arrow_row_open)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
+
+    assert aggregated.to_list() == [{"rows": expected}]
+    assert aggregated.to_list() == [{"rows": expected}]
+
+
+def test_arrow_prefix_global_count_preserves_projection_and_reader_boundaries() -> None:
+    """Count keeps empty projection semantics and never claims a one-shot reader prefix."""
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+
+    empty = fpstreams.rows.from_arrow(pa.table({"present": pa.array([], pa.int64())}))
+    assert empty.select("missing").aggregate(rows=fpstreams.agg.count()).to_list() == [{"rows": 0}]
+
+    nonempty = fpstreams.rows.from_arrow(pa.table({"present": [1]}))
+    automatic = nonempty.select("missing").aggregate(rows=fpstreams.agg.count())
+    canonical = (
+        nonempty.select("missing").with_engine("python").aggregate(rows=fpstreams.agg.count())
+    )
+    with pytest.raises(fpstreams.SelectionError) as canonical_error:
+        canonical.to_list()
+    with pytest.raises(fpstreams.SelectionError) as automatic_error:
+        automatic.to_list()
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+    reader = pa.RecordBatchReader.from_batches(
+        pa.schema([("value", pa.int64())]),
+        [pa.record_batch({"value": [1, 2, 3]})],
+    )
+    one_shot = (
+        fpstreams.rows.from_arrow(reader)
+        .where(fpstreams.col("value") >= 2)
+        .aggregate(rows=fpstreams.agg.count())
+    )
+    physical = compile_query(one_shot._flow._query("list"))
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert physical.root.arrow_count_name is None
+    assert one_shot.to_list() == [{"rows": 2}]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        one_shot.to_list()
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [("sum", 16), ("min", 2), ("max", 7), ("last", 2)],
+)
+def test_safe_arrow_prefix_global_reduction_never_opens_python_input_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    expected: int,
+) -> None:
+    """Total int64 reductions should consume a safe retained prefix columnarly."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.physical.relational import GlobalAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    source = fpstreams.rows.from_arrow(
+        pa.table(
+            {
+                "value": [4, 7, 3, 99, 2],
+                "flag": [True, True, True, False, True],
+            }
+        ),
+        batch_size=2,
+    )
+    input_source = source._flow._pipeline.source
+    aggregated = (
+        source.where(fpstreams.col("flag") == True)  # noqa: E712
+        .select(amount="value")
+        .aggregate(result=getattr(fpstreams.agg, kind)("amount"))
+    )
+    physical = compile_query(aggregated._flow._query("list"))
+    assert isinstance(physical.root, GlobalAggregatePhysicalNode)
+    assert physical.root.arrow_i64_sum is not None
+    assert physical.root.arrow_i64_sum.kind == kind
+    open_source = Source.open
+
+    def reject_arrow_row_open(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("safe Arrow prefix/global reduction opened Python input rows")
+        return open_source(candidate)
+
+    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("safe Arrow prefix/global reduction boxed a Python input row")
+
+    def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
+        raise AssertionError("safe Arrow prefix/global reduction boxed projected Python rows")
+
+    monkeypatch.setattr(Source, "open", reject_arrow_row_open)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
+
+    assert aggregated.to_list() == [{"result": expected}]
+
+
+def test_arrow_prefix_global_reduction_preserves_earlier_aggregate_error() -> None:
+    """A later prefix error must not replace an earlier streaming reduction error."""
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    batches = (
+        pa.record_batch(
+            {
+                "value": pa.array([None], type=pa.int64()),
+                "flag": pa.array([1], type=pa.int64()),
+            }
+        ),
+        pa.record_batch(
+            {
+                "value": pa.array([1], type=pa.int64()),
+                "flag": pa.array([None], type=pa.int64()),
+            }
+        ),
+    )
+    table = pa.Table.from_batches(batches)
+
+    def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], list[str]]:
+        events: list[str] = []
+
+        def open_batches() -> Iterator[pa.RecordBatch]:
+            events.append("open")
+            return _TrackedArrowBatches(batches, events)
+
+        descriptor = ArrowBatchSource(
+            open_batches,
+            "table",
+            1,
+            table.schema,
+            True,
+            materialized_data=table,
+        )
+
+        def rows() -> Iterator[dict[str, object]]:
+            opened = descriptor.open_batches()
+            try:
+                for batch in opened:
+                    yield from arrow_adapter.batch_to_rows(batch)
+            finally:
+                opened.close()  # type: ignore[attr-defined]
+
+        source = Source(
+            rows,
+            SourceCapabilities(reiterable=True, exact_size=2),
+            native_data=descriptor,
+        )
+        values = fpstreams.Rows(fpstreams.Flow(source)).where(fpstreams.col("flag") >= 0)
+        if engine == "python":
+            values = values.with_engine("python")
+        return values.aggregate(total=fpstreams.agg.sum("value")), events
+
+    canonical, canonical_events = build("python")
+    with pytest.raises(TypeError) as canonical_error:
+        canonical.to_list()
+
+    automatic, automatic_events = build("auto")
+    with pytest.raises(TypeError) as automatic_error:
+        automatic.to_list()
+
+    assert str(automatic_error.value) == str(canonical_error.value)
+    assert canonical_events == ["open", "pull:0", "close"]
+    assert automatic_events == canonical_events
+
+
+def test_arrow_prefix_global_reduction_falls_back_on_its_claimed_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late kernel decline must not reopen an already materialized prefix."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.planning.source import Source
+
+    source = fpstreams.rows.from_arrow(pa.table({"value": [2, 3, 4], "flag": [True, False, True]}))
+    input_source = source._flow._pipeline.source
+    aggregated = (
+        source.where(fpstreams.col("flag") == True)  # noqa: E712
+        .select(amount="value")
+        .aggregate(total=fpstreams.agg.sum("amount"))
+    )
+    open_source = Source.open
+
+    def reject_arrow_row_open(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("claimed Arrow global reduction reopened its source")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_arrow_row_open)
+    monkeypatch.setattr(relational_execution, "_reduce_arrow_table", lambda *_args: None)
+
+    assert aggregated.to_list() == [{"total": 6}]
+
+
 @pytest.mark.parametrize("adapter", ["dataframe", "polars"])
 def test_guarded_eager_frame_identity_count_never_opens_python_rows(
     monkeypatch: pytest.MonkeyPatch, adapter: str
@@ -4835,6 +10701,460 @@ def test_guarded_file_filter_count_stays_columnar(
     assert source.where(fpstreams.col("value") >= 3).count() == 2
 
 
+@pytest.mark.parametrize(
+    ("prefix_shape", "expected"),
+    [
+        ("filter", [{"key": 2, "total": 7}, {"key": 1, "total": 9}]),
+        (
+            "select",
+            [
+                {"key": 2, "total": 7},
+                {"key": 1, "total": 9},
+                {"key": 3, "total": 99},
+            ],
+        ),
+        ("filter_select", [{"key": 2, "total": 7}, {"key": 1, "total": 9}]),
+        ("two_filters", [{"key": 2, "total": 7}, {"key": 1, "total": 7}]),
+    ],
+)
+def test_safe_arrow_prefix_group_never_opens_python_input_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    prefix_shape: str,
+    expected: list[dict[str, int]],
+) -> None:
+    """Every table-safe Arrow prefix should hand columns directly to grouping."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.planning.source import Source
+
+    table = pa.table(
+        {
+            "key": [2, 1, 2, 3, 1],
+            "value": [4, 7, 3, 99, 2],
+            "flag": [True, True, True, False, True],
+        }
+    )
+    source = fpstreams.rows.from_arrow(table, batch_size=2)
+    input_source = source._flow._pipeline.source
+    if prefix_shape != "select":
+        source = source.where(
+            fpstreams.col("flag") == True  # noqa: E712 - builds a primitive RowExpr
+        )
+    if prefix_shape == "two_filters":
+        source = source.where(fpstreams.col("value") >= 3)
+    if prefix_shape in {"select", "filter_select"}:
+        source = source.select("key", "value")
+    grouped = source.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+    open_source = Source.open
+
+    def reject_arrow_row_open(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("safe Arrow filter/select/group opened Python input rows")
+        return open_source(candidate)
+
+    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("safe Arrow filter/select/group boxed a Python input row")
+
+    def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
+        raise AssertionError("safe Arrow select/group boxed projected Python rows")
+
+    monkeypatch.setattr(Source, "open", reject_arrow_row_open)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
+
+    assert grouped.to_list() == expected
+
+
+def test_safe_arrow_prefix_group_keeps_closed_aggregate_lanes_columnar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count, sum, min, and max should consume a safe filtered table without row boxing."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.planning.source import Source
+
+    source = fpstreams.rows.from_arrow(
+        pa.table(
+            {
+                "key": [2, 1, 2, 3, 1],
+                "value": [4, 7, 3, 99, 2],
+                "flag": [True, True, True, False, True],
+            }
+        ),
+        batch_size=2,
+    )
+    input_source = source._flow._pipeline.source
+    grouped = (
+        source.where(fpstreams.col("flag") == True)  # noqa: E712
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            minimum=fpstreams.agg.min("value"),
+            maximum=fpstreams.agg.max("value"),
+        )
+    )
+    open_source = Source.open
+
+    def reject_arrow_row_open(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("safe Arrow aggregate opened Python input rows")
+        return open_source(candidate)
+
+    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("safe Arrow aggregate boxed a Python input row")
+
+    monkeypatch.setattr(Source, "open", reject_arrow_row_open)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+
+    assert grouped.to_list() == [
+        {"key": 2, "rows": 2, "total": 7, "minimum": 3, "maximum": 4},
+        {"key": 1, "rows": 2, "total": 9, "minimum": 2, "maximum": 7},
+    ]
+
+
+def test_arrow_prefix_group_preserves_earlier_group_error_and_source_boundary() -> None:
+    """A later prefix error must not replace an earlier streaming aggregate error."""
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    batches = (
+        pa.record_batch(
+            {
+                "key": pa.array([1], type=pa.int64()),
+                "value": pa.array([None], type=pa.int64()),
+                "flag": pa.array([1], type=pa.int64()),
+            }
+        ),
+        pa.record_batch(
+            {
+                "key": pa.array([2], type=pa.int64()),
+                "value": pa.array([1], type=pa.int64()),
+                "flag": pa.array([None], type=pa.int64()),
+            }
+        ),
+    )
+    table = pa.Table.from_batches(batches)
+
+    def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], list[str]]:
+        events: list[str] = []
+
+        def open_batches() -> Iterator[pa.RecordBatch]:
+            events.append("open")
+            return _TrackedArrowBatches(batches, events)
+
+        descriptor = ArrowBatchSource(
+            open_batches,
+            "table",
+            1,
+            table.schema,
+            True,
+            materialized_data=table,
+        )
+
+        def rows() -> Iterator[dict[str, object]]:
+            opened = descriptor.open_batches()
+            try:
+                for batch in opened:
+                    yield from arrow_adapter.batch_to_rows(batch)
+            finally:
+                opened.close()  # type: ignore[attr-defined]
+
+        source = Source(
+            rows,
+            SourceCapabilities(reiterable=True, exact_size=2),
+            native_data=descriptor,
+        )
+        values = fpstreams.Rows(fpstreams.Flow(source)).where(fpstreams.col("flag") >= 0)
+        if engine == "python":
+            values = values.with_engine("python")
+        grouped = values.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+        return grouped, events
+
+    canonical, canonical_events = build("python")
+    with pytest.raises(TypeError) as canonical_error:
+        canonical.to_list()
+
+    automatic, automatic_events = build("auto")
+    with pytest.raises(TypeError) as automatic_error:
+        automatic.to_list()
+
+    assert str(automatic_error.value) == str(canonical_error.value)
+    assert canonical_events == ["open", "pull:0", "close"]
+    assert automatic_events == canonical_events
+
+
+def test_arrow_prefix_group_declines_noncanonical_key_schema_before_claim() -> None:
+    """A mixed logical Arrow key should keep Python grouping without schema re-inference."""
+    keys = pa.UnionArray.from_dense(
+        pa.array([0, 1], type=pa.int8()),
+        pa.array([0, 0], type=pa.int32()),
+        [pa.array([1], type=pa.int64()), pa.array(["x"], type=pa.string())],
+        field_names=["integer", "string"],
+        type_codes=[0, 1],
+    )
+    source = fpstreams.rows.from_arrow(
+        pa.table({"key": keys, "value": pa.array([2, 3], type=pa.int64())}),
+        batch_size=1,
+    ).select("key", "value")
+    grouped = source.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+    expected = [{"key": 1, "total": 2}, {"key": "x", "total": 3}]
+
+    assert grouped.with_engine("python").to_list() == expected
+    assert grouped.to_list() == expected
+
+
+def test_arrow_prefix_group_preserves_unused_dense_union_rows() -> None:
+    """An unused mixed column must not force a claimed table through schema inference."""
+    unused = pa.UnionArray.from_dense(
+        pa.array([0, 1], type=pa.int8()),
+        pa.array([0, 0], type=pa.int32()),
+        [pa.array([1], type=pa.int64()), pa.array(["x"], type=pa.string())],
+        field_names=["integer", "string"],
+        type_codes=[0, 1],
+    )
+    source = fpstreams.rows.from_arrow(
+        pa.table({"key": [1, 1], "value": [2, 3], "unused": unused}),
+        batch_size=1,
+    )
+    grouped = (
+        source.where(fpstreams.col("value") >= 0)
+        .select("key", "value")
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+    )
+    expected = [{"key": 1, "total": 5}]
+
+    assert grouped.with_engine("python").to_list() == expected
+    assert grouped.to_list() == expected
+
+
+@pytest.mark.parametrize("terminal", ["group", "count", "sum"])
+def test_arrow_prefix_relations_preserve_unused_invalid_utf8(terminal: str) -> None:
+    """A fast relational terminal must still observe source row-conversion errors."""
+    invalid_utf8 = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    table = pa.Table.from_arrays(
+        [pa.array([1]), pa.array([2]), invalid_utf8],
+        names=["key", "value", "unused"],
+    )
+
+    def build(engine: str) -> fpstreams.Rows[dict[str, object]]:
+        source = fpstreams.rows.from_arrow(table, batch_size=1)
+        if engine == "python":
+            source = source.with_engine("python")
+        values = source.where(fpstreams.col("value") >= 0)
+        if terminal == "group":
+            return values.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+        if terminal == "count":
+            return values.aggregate(rows=fpstreams.agg.count())
+        return values.aggregate(total=fpstreams.agg.sum("value"))
+
+    with pytest.raises(UnicodeDecodeError) as canonical_error:
+        build("python").to_list()
+    with pytest.raises(UnicodeDecodeError) as automatic_error:
+        build("auto").to_list()
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+
+@pytest.mark.parametrize("terminal", ["group", "sum", "last"])
+def test_arrow_prefix_relations_preserve_late_non_null_schema_anchor(terminal: str) -> None:
+    """A null-only first batch must not trap later values in an inferred null schema."""
+    table = pa.table(
+        {
+            "key": pa.array([None, None, 1], type=pa.int64()),
+            "value": [2, 3, 4],
+            "flag": [True, True, True],
+        }
+    )
+
+    def build(engine: str) -> fpstreams.Rows[dict[str, object]]:
+        source = fpstreams.rows.from_arrow(table, batch_size=2)
+        if engine == "python":
+            source = source.with_engine("python")
+        values = source.where(fpstreams.col("flag") == True)  # noqa: E712
+        if terminal == "group":
+            return values.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+        return values.aggregate(result=getattr(fpstreams.agg, terminal)("value"))
+
+    canonical = build("python").to_list()
+    assert build("auto").to_list() == canonical
+
+
+@pytest.mark.parametrize("adapter", ["table", "reader"])
+@pytest.mark.parametrize(
+    "terminal",
+    ["group", "count", "sum", "min", "max", "first", "last"],
+)
+def test_direct_arrow_relations_preserve_unused_invalid_utf8(
+    adapter: str,
+    terminal: str,
+) -> None:
+    """Direct Arrow kernels must observe conversion errors in each consumed source batch."""
+    invalid_utf8 = pa.array([b"\xff", b"ok"], type=pa.binary()).view(pa.string())
+    table = pa.Table.from_arrays(
+        [pa.array([1, 1]), pa.array([2, 3]), invalid_utf8],
+        names=["key", "value", "unused"],
+    )
+
+    def build(engine: str) -> fpstreams.Rows[dict[str, object]]:
+        source_data: object
+        if adapter == "table":
+            source_data = table
+        else:
+            source_data = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        source = fpstreams.rows.from_arrow(source_data, batch_size=1)
+        if engine == "python":
+            source = source.with_engine("python")
+        if terminal == "group":
+            return source.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+        if terminal == "count":
+            return source.aggregate(result=fpstreams.agg.count())
+        return source.aggregate(result=getattr(fpstreams.agg, terminal)("value"))
+
+    with pytest.raises(UnicodeDecodeError) as canonical_error:
+        build("python").to_list()
+    with pytest.raises(UnicodeDecodeError) as automatic_error:
+        build("auto").to_list()
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+
+@pytest.mark.parametrize("terminal", ["list", "first", "count"])
+def test_arrow_projection_preserves_unused_invalid_utf8(terminal: str) -> None:
+    """Projection and cardinality kernels must observe source row-conversion errors."""
+    invalid_utf8 = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    table = pa.Table.from_arrays(
+        [pa.array([1]), invalid_utf8],
+        names=["value", "unused"],
+    )
+
+    def run(engine: str) -> object:
+        values = fpstreams.rows.from_arrow(table, batch_size=1).select("value")
+        if engine == "python":
+            values = values.with_engine("python")
+        if terminal == "list":
+            return values.to_list()
+        return getattr(values, terminal)()
+
+    with pytest.raises(UnicodeDecodeError) as canonical_error:
+        run("python")
+    with pytest.raises(UnicodeDecodeError) as automatic_error:
+        run("auto")
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+
+def test_arrow_projection_first_does_not_validate_an_unpulled_later_batch() -> None:
+    """A conversion guard must retain first()'s batch-level source short circuit."""
+    late_invalid_utf8 = pa.array([b"ok", b"\xff"], type=pa.binary()).view(pa.string())
+    table = pa.Table.from_arrays(
+        [pa.array([1, 2]), late_invalid_utf8],
+        names=["value", "unused"],
+    )
+
+    def run(engine: str) -> object:
+        values = fpstreams.rows.from_arrow(table, batch_size=1).select("value")
+        return values.with_engine(engine).first()
+
+    assert run("python") == {"value": 1}
+    assert run("auto") == {"value": 1}
+
+
+def test_polars_object_group_prefix_keeps_python_key_objects() -> None:
+    """Polars Object keys must not become Arrow pointer bytes during grouped execution."""
+
+    @dataclass(frozen=True)
+    class Key:
+        value: int
+
+    frame = pl.DataFrame(
+        {
+            "key": pl.Series("key", [Key(1), Key(1), Key(2)], dtype=pl.Object),
+            "value": [2, 3, 4],
+        }
+    )
+    grouped = (
+        fpstreams.rows.from_polars(frame)
+        .select("key", "value")
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+    )
+    expected = [{"key": Key(1), "total": 5}, {"key": Key(2), "total": 4}]
+
+    assert grouped.with_engine("python").to_list() == expected
+    assert grouped.to_list() == expected
+
+
+def test_arrow_prefix_group_does_not_swallow_output_name_hash_errors() -> None:
+    """Python output-key protocol errors must propagate instead of triggering a retry."""
+
+    class Name(str):
+        def __new__(cls, value: str, fail_at: int) -> Name:
+            item = super().__new__(cls, value)
+            item.calls = 0
+            item.fail_at = fail_at
+            return item
+
+        def __hash__(self) -> int:
+            self.calls += 1
+            if self.calls == self.fail_at:
+                raise TypeError(f"hash failure {self}")
+            return super().__hash__()
+
+    def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], Name]:
+        key_name = Name("group", 6)
+        total_name = Name("total", 99)
+        source = fpstreams.rows.from_arrow(pa.table({"key": [1, 1], "value": [2, 3]})).select(
+            "key", "value"
+        )
+        if engine == "python":
+            source = source.with_engine("python")
+        grouped = source.group_by(**{key_name: "key"}).aggregate(
+            **{total_name: fpstreams.agg.sum("value")}
+        )
+        return grouped, key_name
+
+    canonical, canonical_name = build("python")
+    with pytest.raises(TypeError, match="hash failure group"):
+        canonical.to_list()
+    assert canonical_name.calls == 6
+
+    automatic, automatic_name = build("auto")
+    with pytest.raises(TypeError, match="hash failure group"):
+        automatic.to_list()
+    assert automatic_name.calls == 6
+
+
+def test_direct_arrow_global_does_not_swallow_output_name_hash_errors() -> None:
+    """A result-key error is not an Arrow compute decline and must not replay input."""
+
+    class Name(str):
+        def __new__(cls, value: str) -> Name:
+            item = super().__new__(cls, value)
+            item.calls = 0
+            return item
+
+        def __hash__(self) -> int:
+            self.calls += 1
+            if self.calls == 3:
+                raise TypeError("global output hash failure")
+            return super().__hash__()
+
+    def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], Name]:
+        output_name = Name("total")
+        source = fpstreams.rows.from_arrow(pa.table({"value": [2, 3]}))
+        if engine == "python":
+            source = source.with_engine("python")
+        return source.aggregate(**{output_name: fpstreams.agg.sum("value")}), output_name
+
+    canonical, canonical_name = build("python")
+    with pytest.raises(TypeError, match="global output hash failure"):
+        canonical.to_list()
+    assert canonical_name.calls == 3
+
+    automatic, automatic_name = build("auto")
+    with pytest.raises(TypeError, match="global output hash failure"):
+        automatic.to_list()
+    assert automatic_name.calls == 3
+
+
 def test_direct_arrow_group_sum_is_visible_only_for_the_guarded_plan_shape() -> None:
     """Only direct replayable Arrow fields earn the speculative columnar marker."""
     from fpstreams.physical.relational import ArrowGroupSumSpec, GroupAggregatePhysicalNode
@@ -4866,13 +11186,15 @@ def test_direct_arrow_group_sum_is_visible_only_for_the_guarded_plan_shape() -> 
     candidates = (
         direct.with_engine("python"),
         fpstreams.rows.from_arrow(table)
-        .select("key", "value")
-        .group_by("key")
-        .aggregate(total=fpstreams.agg.sum("value")),
-        fpstreams.rows.from_arrow(table)
         .group_by("key")
         .aggregate(total=fpstreams.agg.sum(lambda row: row["value"])),
         fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .spill(2)
+        .aggregate(total=fpstreams.agg.sum("value")),
+        fpstreams.rows.from_arrow(table)
+        .where(fpstreams.col("key") >= 1)
+        .select("key", "value")
         .group_by("key")
         .spill(2)
         .aggregate(total=fpstreams.agg.sum("value")),
@@ -5367,6 +11689,305 @@ def test_arrow_reader_group_sum_merges_batches_without_boxing_and_closes() -> No
         grouped.to_list()
 
 
+def test_arrow_reader_group_multi_merges_batches_without_boxing_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closed reader lanes merge exact partials in global first-seen order."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.physical.relational import ArrowGroupAggregateSpec, GroupAggregatePhysicalNode
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
+    maximum = 2**63 - 1
+    batches = (
+        pa.record_batch(
+            {
+                "key": [2, 1, 2],
+                "value": [maximum, 7, 11],
+                "other": [5, 9, 4],
+            }
+        ),
+        pa.record_batch(
+            {
+                "key": [3, 1, 4, 2],
+                "value": [-4, 2, 8, maximum],
+                "other": [3, 12, 1, 6],
+            }
+        ),
+    )
+    events: list[str] = []
+    opened = _TrackedArrowBatches(batches, events)
+    descriptor = ArrowBatchSource(
+        lambda: opened,
+        "reader",
+        65_536,
+        batches[0].schema,
+        False,
+    )
+
+    def forbidden_rows() -> Iterator[dict[str, int]]:
+        raise AssertionError("guarded reader multi-group must not open Python rows")
+        yield
+
+    def forbidden_batch_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("guarded reader multi-group must not box Arrow rows")
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_batch_rows)
+    source = Source(
+        forbidden_rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    grouped = (
+        fpstreams.Rows(fpstreams.Flow(source))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("other"),
+        )
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    assert isinstance(physical.root, GroupAggregatePhysicalNode)
+    assert isinstance(physical.root.arrow_i64_sum, ArrowGroupAggregateSpec)
+
+    assert grouped.to_list() == [
+        {"key": 2, "rows": 3, "total": maximum * 2 + 11, "low": 11, "high": 6},
+        {"key": 1, "rows": 2, "total": 9, "low": 2, "high": 12},
+        {"key": 3, "rows": 1, "total": -4, "low": -4, "high": 3},
+        {"key": 4, "rows": 1, "total": 8, "low": 8, "high": 1},
+    ]
+    assert events == ["pull:0", "pull:1", "stop", "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        grouped.to_list()
+
+
+def test_arrow_reader_group_multi_null_stops_before_later_batches_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claimed nullable batch keeps row-major lane errors and stops pulling."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
+    batches = (
+        pa.record_batch({"key": [1, 2], "value": [2, 3]}),
+        pa.record_batch({"key": [1, 1], "value": pa.array([4, None], type=pa.int64())}),
+        pa.record_batch({"key": [1], "value": [99]}),
+    )
+    events: list[str] = []
+    opened = _TrackedArrowBatches(batches, events)
+    descriptor = ArrowBatchSource(
+        lambda: opened,
+        "reader",
+        65_536,
+        batches[0].schema,
+        False,
+    )
+
+    def rows() -> Iterator[dict[str, object]]:
+        iterator = descriptor.open_batches()
+        try:
+            for batch in iterator:
+                yield from arrow_adapter.batch_to_rows(batch)
+        finally:
+            iterator.close()
+
+    source = Source(
+        rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    grouped = (
+        fpstreams.Rows(fpstreams.Flow(source))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+        )
+    )
+
+    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("nullable reader multi-group must stay inside its claimed batch")
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    with pytest.raises(TypeError, match="unsupported operand type"):
+        grouped.to_list()
+    assert events == ["pull:0", "pull:1", "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        grouped.to_list()
+
+
+def test_arrow_reader_group_multi_compute_decline_continues_from_claimed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recoverable multi-lane kernel decline switches the same reader to scalar folding."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
+    batches = (
+        pa.record_batch({"key": [2, 1, 2], "value": [5, 7, 11]}),
+        pa.record_batch({"key": [3, 1], "value": [-4, 2]}),
+        pa.record_batch({"key": [4, 2], "value": [8, 3]}),
+    )
+    reader = pa.RecordBatchReader.from_batches(batches[0].schema, batches)
+    original = relational_execution._try_arrow_retained_group_aggregate
+    calls = 0
+
+    def decline_second(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return None
+        return original(*args, **kwargs)
+
+    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("claimed reader decline must not reopen Python rows")
+
+    monkeypatch.setattr(
+        relational_execution,
+        "_try_arrow_retained_group_aggregate",
+        decline_second,
+    )
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    grouped = (
+        fpstreams.rows.from_arrow(reader)
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+    )
+
+    assert grouped.to_list() == [
+        {"key": 2, "rows": 3, "total": 19, "low": 3, "high": 11},
+        {"key": 1, "rows": 2, "total": 9, "low": 2, "high": 7},
+        {"key": 3, "rows": 1, "total": -4, "low": -4, "high": -4},
+        {"key": 4, "rows": 1, "total": 8, "low": 8, "high": 8},
+    ]
+    assert calls == 2
+
+
+def test_arrow_reader_group_multi_high_cardinality_resumes_canonical_claimed_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A costly partial-group shape falls back without reopening its one-shot source."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_CARDINALITY_SAMPLE_ROWS", 1)
+    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MAX_DISTINCT_RATIO", 0.0)
+    batches = (
+        pa.record_batch({"key": [3, 1, 2], "value": [5, 7, 11]}),
+        pa.record_batch({"key": [4, 1], "value": [-4, 2]}),
+    )
+    events: list[str] = []
+    opened = _TrackedArrowBatches(batches, events)
+    descriptor = ArrowBatchSource(
+        lambda: opened,
+        "reader",
+        65_536,
+        batches[0].schema,
+        False,
+    )
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(batch: object) -> list[dict[str, object]]:
+        converted.append(batch.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(batch)
+
+    def forbidden_partial(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("high-cardinality reader must skip Arrow partial grouping")
+
+    def forbidden_rows() -> Iterator[dict[str, int]]:
+        raise AssertionError("claimed reader fallback must not reopen its source")
+        yield
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    monkeypatch.setattr(
+        relational_execution,
+        "_try_arrow_retained_group_aggregate",
+        forbidden_partial,
+    )
+    source = Source(
+        forbidden_rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    grouped = (
+        fpstreams.Rows(fpstreams.Flow(source))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+        )
+    )
+
+    assert grouped.to_list() == [
+        {"key": 3, "rows": 1, "total": 5, "low": 5},
+        {"key": 1, "rows": 2, "total": 9, "low": 2},
+        {"key": 2, "rows": 1, "total": 11, "low": 11},
+        {"key": 4, "rows": 1, "total": -4, "low": -4},
+    ]
+    assert converted == [3, 2]
+    assert events == ["pull:0", "pull:1", "stop", "close"]
+
+
+def test_arrow_reader_group_multi_unsupported_schema_falls_back_before_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-int64 value lane is rejected before the one-shot reader is opened natively."""
+    from fpstreams.physical.relational import GroupAggregatePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    batch = pa.record_batch(
+        {
+            "key": pa.array([1, 1], type=pa.int64()),
+            "value": pa.array([2, 3], type=pa.int32()),
+        }
+    )
+    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(current: object) -> list[dict[str, object]]:
+        converted.append(current.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(current)
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    grouped = (
+        fpstreams.rows.from_arrow(reader)
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+        )
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    assert isinstance(physical.root, GroupAggregatePhysicalNode)
+    assert physical.root.arrow_i64_sum is None
+
+    assert grouped.to_list() == [{"key": 1, "rows": 2, "total": 5, "low": 2}]
+    assert converted == [2]
+
+
 def test_arrow_reader_group_sum_preserves_cross_batch_python_bigints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5838,6 +12459,208 @@ def test_eager_columnar_frame_group_sum_never_opens_python_rows(
 
 
 @pytest.mark.parametrize("adapter", ["dataframe", "polars"])
+def test_eager_columnar_group_decline_reuses_its_canonical_table(
+    monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    """A safe table conversion should not be repeated after a group-kernel decline."""
+    from fpstreams.planning.source import Source
+
+    data = {"key": [1.5, 2.5, 1.5], "value": [2, 3, 4]}
+    source = (
+        fpstreams.rows.from_dataframe(pd.DataFrame(data))
+        if adapter == "dataframe"
+        else fpstreams.rows.from_polars(pl.DataFrame(data))
+    )
+    input_source = source._flow._pipeline.source
+    grouped = source.group_by("key").aggregate(rows=fpstreams.agg.count())
+    open_source = Source.open
+
+    def reject_second_conversion(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("declined eager group reopened its converted source")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_second_conversion)
+
+    assert grouped.to_list() == [{"key": 1.5, "rows": 2}, {"key": 2.5, "rows": 1}]
+
+
+@pytest.mark.parametrize("adapter", ["dataframe", "polars"])
+def test_eager_columnar_global_decline_reuses_its_selected_table(
+    monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    """A non-i64 reduction should not reconvert unrelated eager-frame columns."""
+    from fpstreams.planning.source import Source
+
+    data = {"value": [1.5, 2.5, -1.0], "unused": ["a", "b", "c"]}
+    source = (
+        fpstreams.rows.from_dataframe(pd.DataFrame(data), batch_size=2)
+        if adapter == "dataframe"
+        else fpstreams.rows.from_polars(pl.DataFrame(data), batch_size=2)
+    )
+    input_source = source._flow._pipeline.source
+    aggregated = source.aggregate(total=fpstreams.agg.sum("value"))
+    open_source = Source.open
+
+    def reject_second_conversion(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("declined eager reduction reopened its converted source")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_second_conversion)
+
+    assert aggregated.to_list() == [{"total": 3.0}]
+
+
+def test_eager_columnar_global_decline_preserves_nested_conversion_errors() -> None:
+    """Selected-column reuse must decline when an unused nested row cannot convert."""
+    invalid_text = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    nested = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), invalid_text)
+    frame = pd.DataFrame(
+        {
+            "value": [7.0],
+            "unused": pd.Series(pd.arrays.ArrowExtensionArray(nested)),
+        }
+    )
+
+    def run(engine: str) -> list[dict[str, object]]:
+        values = fpstreams.rows.from_dataframe(frame)
+        if engine == "python":
+            values = values.with_engine("python")
+        return values.aggregate(total=fpstreams.agg.sum("value")).to_list()
+
+    with pytest.raises(UnicodeDecodeError) as canonical_error:
+        run("python")
+    with pytest.raises(UnicodeDecodeError) as automatic_error:
+        run("auto")
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+
+def test_eager_pandas_nested_global_decline_reuses_one_arrow_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid nonprimitive pandas column must not be converted again after decline."""
+    values = pd.arrays.ArrowExtensionArray(pa.array([[1], [2]], type=pa.list_(pa.int64())))
+    frame = pd.DataFrame({"value": pd.Series(values)})
+    array_type = type(values)
+    arrow_array = array_type.__arrow_array__
+    calls = 0
+
+    def tracked(self: object, type: object = None) -> object:
+        nonlocal calls
+        calls += 1
+        return arrow_array(self, type=type)
+
+    monkeypatch.setattr(array_type, "__arrow_array__", tracked)
+
+    result = (
+        fpstreams.rows.from_dataframe(frame).aggregate(first=fpstreams.agg.first("value")).to_list()
+    )
+
+    assert result == [{"first": [1]}]
+    assert calls == 1
+
+
+def test_eager_pandas_missing_global_selector_reuses_one_arrow_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing selector must fail against the first converted pandas snapshot."""
+    values = pd.arrays.ArrowExtensionArray(pa.array([[1]], type=pa.list_(pa.int64())))
+    frame = pd.DataFrame({"other": pd.Series(values)})
+    array_type = type(values)
+    arrow_array = array_type.__arrow_array__
+    calls = 0
+
+    def tracked(self: object, type: object = None) -> object:
+        nonlocal calls
+        calls += 1
+        return arrow_array(self, type=type)
+
+    monkeypatch.setattr(array_type, "__arrow_array__", tracked)
+    aggregated = fpstreams.rows.from_dataframe(frame).aggregate(total=fpstreams.agg.sum("missing"))
+
+    with pytest.raises(fpstreams.SelectionError):
+        aggregated.to_list()
+    assert calls == 1
+
+
+@pytest.mark.parametrize("multi_lane", [False, True])
+def test_eager_pandas_nested_group_decline_reuses_one_arrow_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    multi_lane: bool,
+) -> None:
+    """Both pandas group plans must retain the first converted table snapshot."""
+    unused = pd.arrays.ArrowExtensionArray(pa.array([[1], [2]], type=pa.list_(pa.int64())))
+    frame = pd.DataFrame(
+        {
+            "key": [1, 1],
+            "value": [2, 3],
+            "unused": pd.Series(unused),
+        }
+    )
+    array_type = type(unused)
+    arrow_array = array_type.__arrow_array__
+    calls = 0
+
+    def tracked(self: object, type: object = None) -> object:
+        nonlocal calls
+        calls += 1
+        return arrow_array(self, type=type)
+
+    monkeypatch.setattr(array_type, "__arrow_array__", tracked)
+    grouped = fpstreams.rows.from_dataframe(frame).group_by("key")
+    result = (
+        grouped.aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        if multi_lane
+        else grouped.aggregate(total=fpstreams.agg.sum("value"))
+    ).to_list()
+
+    expected = {"key": 1, "total": 5}
+    if multi_lane:
+        expected["rows"] = 2
+    assert result == [expected]
+    assert calls == 1
+
+
+@pytest.mark.parametrize("multi_lane", [False, True])
+def test_eager_pandas_post_guard_group_decline_reuses_one_arrow_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    multi_lane: bool,
+) -> None:
+    """A supported table snapshot remains canonical after a later group guard declines."""
+    unused = pd.arrays.ArrowExtensionArray(pa.array([1, 2], type=pa.int64()))
+    frame = pd.DataFrame(
+        {
+            "key": [1.5, 1.5],
+            "value": [2, 3],
+            "unused": pd.Series(unused),
+        }
+    )
+    array_type = type(unused)
+    arrow_array = array_type.__arrow_array__
+    calls = 0
+
+    def tracked(self: object, type: object = None) -> object:
+        nonlocal calls
+        calls += 1
+        return arrow_array(self, type=type)
+
+    monkeypatch.setattr(array_type, "__arrow_array__", tracked)
+    grouped = fpstreams.rows.from_dataframe(frame).group_by("key")
+    result = (
+        grouped.aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        if multi_lane
+        else grouped.aggregate(total=fpstreams.agg.sum("value"))
+    ).to_list()
+
+    expected = {"key": 1.5, "total": 5}
+    if multi_lane:
+        expected["rows"] = 2
+    assert result == [expected]
+    assert calls == 1
+
+
+@pytest.mark.parametrize("adapter", ["dataframe", "polars"])
 def test_eager_columnar_frame_group_sum_preserves_float_key_adapter_semantics(adapter: str) -> None:
     """Unsupported float keys retain each adapter's established NaN/null conversion."""
     from math import isnan
@@ -5882,6 +12705,565 @@ def test_arrow_i64_group_sum_stays_columnar_and_preserves_first_seen_order(
         {"key": 1, "total": 9},
         {"key": 2, "total": -4},
     ]
+
+
+@pytest.mark.parametrize("as_batch", [False, True])
+def test_arrow_i64_group_multi_aggregate_stays_columnar_and_preserves_order(
+    monkeypatch: pytest.MonkeyPatch, as_batch: bool
+) -> None:
+    """Removing multi-lane Arrow grouping must expose forbidden input-row boxing."""
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("guarded Arrow multi-aggregation must not materialize input rows")
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    table = pa.table(
+        {
+            "key": [3, 1, 3, 2, 1],
+            "value": [5, 7, 11, -4, 2],
+            "other": [9, 4, 3, 8, 6],
+        }
+    )
+    source = table.to_batches()[0] if as_batch else table
+
+    assert (
+        fpstreams.rows.from_arrow(source, batch_size=1)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("other"),
+        )
+        .to_list()
+    ) == [
+        {"key": 3, "n": 2, "total": 16, "low": 5, "high": 9},
+        {"key": 1, "n": 2, "total": 9, "low": 2, "high": 6},
+        {"key": 2, "n": 1, "total": -4, "low": -4, "high": 8},
+    ]
+
+
+@pytest.mark.parametrize("adapter", ["dataframe", "polars"])
+def test_eager_columnar_frame_group_multi_aggregate_never_boxes_rows(
+    monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    """Removing eager-frame planning must expose forbidden Arrow batch conversion."""
+    from fpstreams.physical.relational import GroupAggregatePhysicalNode, SourcePhysicalNode
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    data = {"key": [2, 1, 2], "value": [4, 7, 3]}
+    source = (
+        fpstreams.rows.from_dataframe(pd.DataFrame(data), batch_size=1)
+        if adapter == "dataframe"
+        else fpstreams.rows.from_polars(pl.DataFrame(data), batch_size=1)
+    )
+    grouped = source.group_by("key").aggregate(
+        n=fpstreams.agg.count(),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    assert isinstance(physical.root, GroupAggregatePhysicalNode)
+    assert isinstance(physical.root.input, SourcePhysicalNode)
+    input_source = physical.root.input.source
+    open_source = Source.open
+
+    def reject_row_source(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("eager frame multi-aggregation entered Python rows")
+        return open_source(candidate)
+
+    monkeypatch.setattr(Source, "open", reject_row_source)
+
+    assert grouped.to_list() == [
+        {"key": 2, "n": 2, "low": 3, "high": 4},
+        {"key": 1, "n": 1, "low": 7, "high": 7},
+    ]
+
+
+def test_arrow_group_multi_aggregate_empty_input_skips_missing_selectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty retained table must finish before schema validation or row conversion."""
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("empty Arrow multi-aggregation opened Python rows")
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    empty = pa.table({"present": pa.array([], type=pa.int64())})
+
+    assert (
+        fpstreams.rows.from_arrow(empty)
+        .group_by("missing_key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("missing_value"),
+            low=fpstreams.agg.min("missing_value"),
+            high=fpstreams.agg.max("missing_value"),
+        )
+        .to_list()
+    ) == []
+
+
+def test_arrow_group_multi_aggregate_reuses_one_value_and_widens_each_sum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated value lanes must stay columnar without exposing int64 sum overflow."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_compute = imported("pyarrow.compute")
+    reorder_calls: list[str] = []
+
+    class TrackingCompute:
+        def index_in(self, *args: object, **kwargs: object) -> object:
+            reorder_calls.append("index_in")
+            return actual_compute.index_in(*args, **kwargs)
+
+        def take(self, *args: object, **kwargs: object) -> object:
+            reorder_calls.append("take")
+            return actual_compute.take(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_compute, name)
+
+    def import_backend(name: str) -> object:
+        return TrackingCompute() if name == "pyarrow.compute" else imported(name)
+
+    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("wide Arrow multi-aggregation opened Python rows")
+
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    maximum = 2**63 - 1
+    table = pa.table(
+        {
+            "key": pa.array([None, None, 1, 1], type=pa.int64()),
+            "value": [maximum, 1, -4, 7],
+        }
+    )
+
+    assert (
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            repeated=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+        .to_list()
+    ) == [
+        {
+            "key": None,
+            "n": 2,
+            "total": 2**63,
+            "repeated": 2**63,
+            "low": 1,
+            "high": maximum,
+        },
+        {"key": 1, "n": 2, "total": 3, "repeated": 3, "low": -4, "high": 7},
+    ]
+    assert reorder_calls == []
+
+
+def test_arrow_group_multi_aggregate_keeps_dictionary_key_safety_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dictionary keys retain their validated logical-key path instead of index matching."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_compute = imported("pyarrow.compute")
+
+    class GuardedCompute:
+        @staticmethod
+        def index_in(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("dictionary keys must not use Arrow index matching")
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_compute, name)
+
+    def import_backend(name: str) -> object:
+        return GuardedCompute() if name == "pyarrow.compute" else imported(name)
+
+    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("dictionary grouping must not materialize input rows")
+
+    dictionary_keys = pa.DictionaryArray.from_arrays(
+        pa.array([2, 0, 2, 1, 0], type=pa.int8()),
+        pa.array(["a", "b", "c"]),
+    )
+    table = pa.table({"key": dictionary_keys, "value": [4, 7, 3, -2, 5]})
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+
+    assert (
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+        .to_list()
+    ) == [
+        {"key": "c", "n": 2, "total": 7, "low": 3, "high": 4},
+        {"key": "a", "n": 2, "total": 12, "low": 5, "high": 7},
+        {"key": "b", "n": 1, "total": -2, "low": -2, "high": -2},
+    ]
+
+
+def test_arrow_group_multi_aggregate_preserves_nonexact_output_name_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arrow schema names must not erase observable ``str`` subclass identities."""
+    from fpstreams.execution import relational as relational_execution
+
+    class OutputName(str):
+        pass
+
+    key_name = OutputName("group")
+    total_name = OutputName("total")
+
+    def forbidden_arrays(*_arguments: object, **_options: object) -> list[object]:
+        raise AssertionError("non-exact output names must keep Python dictionary materialization")
+
+    monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
+    monkeypatch.setattr(relational_execution, "_arrow_group_lane_arrays", forbidden_arrays)
+    result = (
+        fpstreams.rows.from_arrow(pa.table({"key": [2, 1, 2], "value": [4, 7, 3]}))
+        .group_by(**{key_name: "key"})
+        .aggregate(**{total_name: fpstreams.agg.sum("value"), "low": fpstreams.agg.min("value")})
+        .to_list()
+    )
+
+    assert result == [
+        {"group": 2, "total": 7, "low": 3},
+        {"group": 1, "total": 7, "low": 7},
+    ]
+    assert next(name for name in result[0] if name == key_name) is key_name
+    assert next(name for name in result[0] if name == total_name) is total_name
+
+
+def test_arrow_group_multi_aggregate_extension_key_keeps_canonical_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extension keys remain on row execution instead of entering scalar Arrow grouping."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    class WrappedIntType(pa.ExtensionType):
+        def __init__(self) -> None:
+            super().__init__(pa.int64(), "fpstreams.test.wrapped_int")
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(
+            cls, _storage_type: pa.DataType, _serialized: bytes
+        ) -> WrappedIntType:
+            return cls()
+
+    keys = pa.ExtensionArray.from_storage(
+        WrappedIntType(),
+        pa.array([2, 1, 2], type=pa.int64()),
+    )
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(batch: object) -> list[dict[str, object]]:
+        converted.append(batch.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(batch)
+
+    def forbidden_arrays(*_arguments: object, **_options: object) -> list[object]:
+        raise AssertionError("extension keys must not reach grouped Arrow materialization")
+
+    monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
+    monkeypatch.setattr(relational_execution, "_arrow_group_lane_arrays", forbidden_arrays)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+
+    assert (
+        fpstreams.rows.from_arrow(pa.table({"key": keys, "value": [4, 7, 3]}))
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        .to_list()
+    ) == [
+        {"key": 2, "n": 2, "total": 7},
+        {"key": 1, "n": 1, "total": 7},
+    ]
+    assert converted == [3]
+
+
+def test_arrow_group_multi_aggregate_rejects_non_i64_values_before_compute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Float lanes retain canonical Python arithmetic rather than Arrow semantics."""
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(batch: object) -> list[dict[str, object]]:
+        converted.append(batch.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(batch)
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    table = pa.table({"key": [1, 1], "value": [2.5, 3.5]})
+
+    assert (
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+        .to_list()
+    ) == [{"key": 1, "n": 2, "total": 6.0, "low": 2.5, "high": 3.5}]
+    assert converted == [2]
+
+
+def test_arrow_group_multi_aggregate_rejects_null_values_before_compute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A null int64 lane must use the canonical selected-value state machine."""
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(batch: object) -> list[dict[str, object]]:
+        converted.append(batch.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(batch)
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    table = pa.table({"key": [1], "value": pa.array([None], type=pa.int64())})
+
+    assert (
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+        .to_list()
+    ) == [{"key": 1, "n": 1, "low": None, "high": None}]
+    assert converted == [1]
+
+
+def test_arrow_group_multi_aggregate_planner_keeps_strict_source_and_lane_boundaries(
+    tmp_path: Path,
+) -> None:
+    """Only schema-proven readers cross the strict source and lane boundaries."""
+    from fpstreams.physical.relational import (
+        ArrowGroupAggregateSpec,
+        GroupAggregatePhysicalNode,
+    )
+    from fpstreams.planning.compiler import compile_query
+
+    table = pa.table({"key": [1, 1], "value": [2, 3]})
+    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+    csv_path = tmp_path / "multi-group.csv"
+    csv_path.write_text("key,value\n1,2\n1,3\n", encoding="utf-8")
+    reader_grouped = (
+        fpstreams.rows.from_arrow(reader)
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), low=fpstreams.agg.min("value"))
+    )
+    reader_physical = compile_query(reader_grouped._flow._query("list"))
+    assert isinstance(reader_physical.root, GroupAggregatePhysicalNode)
+    assert isinstance(reader_physical.root.arrow_i64_sum, ArrowGroupAggregateSpec)
+    assert reader_grouped.to_list() == [{"key": 1, "n": 2, "low": 2}]
+
+    unsupported = (
+        fpstreams.rows.scan_csv(csv_path)
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), low=fpstreams.agg.min("value")),
+        fpstreams.rows.from_arrow(table)
+        .group_by(lambda row: row["key"])
+        .aggregate(n=fpstreams.agg.count(), low=fpstreams.agg.min("value")),
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), first=fpstreams.agg.first("value")),
+    )
+
+    for grouped in unsupported:
+        physical = compile_query(grouped._flow._query("list"))
+        assert isinstance(physical.root, GroupAggregatePhysicalNode)
+        assert physical.root.arrow_i64_sum is None
+
+
+@pytest.mark.parametrize(
+    "error_type", [ArithmeticError, NotImplementedError, TypeError, ValueError]
+)
+def test_arrow_group_multi_aggregate_backend_decline_reopens_canonical_rows(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    """Expected Arrow rejections leave the retained source clean for row fallback."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_compute = imported("pyarrow.compute")
+    converted: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    class RejectingCompute:
+        def min_max(self, _values: object) -> object:
+            raise error_type("decline")
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_compute, name)
+
+    def import_backend(name: str) -> object:
+        return RejectingCompute() if name == "pyarrow.compute" else imported(name)
+
+    def tracked(batch: object) -> list[dict[str, object]]:
+        converted.append(batch.num_rows)  # type: ignore[attr-defined]
+        return convert_rows(batch)
+
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+
+    assert (
+        fpstreams.rows.from_arrow(pa.table({"key": [1, 1], "value": [2, 3]}))
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        .to_list()
+    ) == [{"key": 1, "n": 2, "total": 5}]
+    assert converted == [2]
+
+
+def test_arrow_group_multi_aggregate_memory_error_never_reopens_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allocation failure propagates instead of masquerading as an unsupported kernel."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_compute = imported("pyarrow.compute")
+
+    class FailingCompute:
+        def min_max(self, _values: object) -> object:
+            raise MemoryError("multi-group allocation")
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_compute, name)
+
+    def import_backend(name: str) -> object:
+        return FailingCompute() if name == "pyarrow.compute" else imported(name)
+
+    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("MemoryError must not reopen the canonical row source")
+
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    grouped = (
+        fpstreams.rows.from_arrow(pa.table({"key": [1], "value": [2]}))
+        .group_by("key")
+        .aggregate(n=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+
+    with pytest.raises(MemoryError, match="multi-group allocation"):
+        grouped.to_list()
+
+
+def test_arrow_group_multi_aggregate_uses_named_columns_across_arrow_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend that returns aggregate columns before the key must remain correct."""
+    from fpstreams.execution import relational as relational_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    imported = relational_execution.import_module
+    actual_arrow = imported("pyarrow")
+    aggregate_requests: list[tuple[object, str]] = []
+    materialized_names: list[tuple[str, ...]] = []
+
+    class ReorderedGroupBy:
+        def __init__(self, delegate: object) -> None:
+            self._delegate = delegate
+
+        def aggregate(self, requests: list[tuple[object, str]]) -> object:
+            aggregate_requests.extend(requests)
+            grouped = self._delegate.aggregate(requests)  # type: ignore[attr-defined]
+            key_index = grouped.schema.get_field_index("__fpstreams_group_key")
+            order = [index for index in range(grouped.num_columns) if index != key_index] + [
+                key_index
+            ]
+            return grouped.select(order)
+
+    class ReorderedTable:
+        def __init__(self, delegate: object) -> None:
+            self._delegate = delegate
+
+        def group_by(self, *args: object, **kwargs: object) -> ReorderedGroupBy:
+            return ReorderedGroupBy(self._delegate.group_by(*args, **kwargs))  # type: ignore[attr-defined]
+
+    class TrackingTableMeta(type):
+        def __instancecheck__(cls, instance: object) -> bool:
+            return isinstance(instance, actual_arrow.Table)
+
+    class TrackingTable(metaclass=TrackingTableMeta):
+        @staticmethod
+        def from_arrays(arrays: list[object], *, names: list[str]) -> object:
+            materialized_names.append(tuple(names))
+            return actual_arrow.Table.from_arrays(arrays, names=names)
+
+    class ReorderedArrow:
+        Table = TrackingTable
+        RecordBatch = actual_arrow.RecordBatch
+        types = actual_arrow.types
+
+        @staticmethod
+        def table(*args: object, **kwargs: object) -> ReorderedTable:
+            return ReorderedTable(actual_arrow.table(*args, **kwargs))
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(actual_arrow, name)
+
+    def import_backend(name: str) -> object:
+        return ReorderedArrow() if name == "pyarrow" else imported(name)
+
+    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("version-compatible Arrow grouping must not box rows")
+
+    monkeypatch.setattr(relational_execution, "import_module", import_backend)
+    monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    table = pa.table({"key": [2, 1, 2], "value": [4, 7, 3]})
+
+    assert (
+        fpstreams.rows.from_arrow(table)
+        .group_by("key")
+        .aggregate(
+            n=fpstreams.agg.count(),
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+        .to_list()
+    ) == [
+        {"key": 2, "n": 2, "rows": 2, "total": 7, "low": 3, "high": 4},
+        {"key": 1, "n": 1, "rows": 1, "total": 7, "low": 7, "high": 7},
+    ]
+    assert aggregate_requests.count(([], "count_all")) == 1
+    assert materialized_names == [("key", "n", "rows", "total", "low", "high")]
 
 
 @pytest.mark.parametrize("as_batch", [False, True])
@@ -6724,6 +14106,567 @@ def test_arrow_prefix_memory_error_still_propagates(
 
     with pytest.raises(MemoryError, match="prefix allocation"):
         query.to_list()
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [
+        ("sum", 10),
+        ("min", 1),
+        ("max", 4),
+        ("mean", 2.5),
+        ("variance", 5 / 3),
+        ("std", math.sqrt(5 / 3)),
+    ],
+)
+def test_arrow_scalar_reductions_consume_a_safe_columnar_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+    expected: object,
+) -> None:
+    """Full-scan scalar terminals should keep a proven Arrow map on its columnar path."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.planning.compiler import compile_query
+    from fpstreams.planning.source import Source
+
+    query = fpstreams.flow.from_arrow(
+        pa.table({"value": [1, 2, 3, 4], "unused": [9, 8, 7, 6]}),
+        batch_size=2,
+    ).map(fpstreams.col("value"))
+    input_source = query._pipeline.source
+    compiled_terminal = "statistics" if terminal in {"mean", "variance", "std"} else terminal
+    physical = compile_query(
+        query._query(compiled_terminal, 0) if terminal == "sum" else query._query(compiled_terminal)
+    )
+    assert physical.backend_payload is not None
+    assert physical.backend_payload.arrow_prefix is not None
+
+    source_open = Source.open
+
+    def reject_python_rows(candidate: Source[object]) -> Iterator[object]:
+        if candidate is input_source:
+            raise AssertionError("safe scalar reduction opened Python Arrow rows")
+        return source_open(candidate)
+
+    def reject_full_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("safe scalar reduction boxed full Arrow rows")
+
+    if terminal != "mean":
+        monkeypatch.setattr(Source, "open", reject_python_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_full_rows)
+
+    if terminal == "mean":
+        execution = query.run_with_report("mean")
+        result = execution.value
+        assert execution.report.strategy == "arrow_direct"
+    else:
+        result = getattr(query, terminal)()
+    if isinstance(expected, float):
+        assert result == pytest.approx(expected)
+    else:
+        assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [("sum", 4), ("min", -1), ("max", 3)],
+)
+def test_arrow_i64_scalar_reductions_do_not_stream_python_scalars(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+    expected: int,
+) -> None:
+    """Exact i64 terminals should reduce Arrow batches without yielding each scalar."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    def reject_scalar_prefix(*_args: object) -> Iterator[object]:
+        raise AssertionError("exact i64 reduction streamed a Python scalar prefix")
+
+    def reject_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("exact i64 reduction boxed Python rows")
+
+    monkeypatch.setattr(arrow_execution, "_execute_batch_program", reject_scalar_prefix)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    query = fpstreams.flow.from_arrow(
+        pa.table(
+            {
+                "value": pa.array([2, 3, -1], type=pa.int64()),
+                "unused": [20, 30, -10],
+            }
+        ),
+        batch_size=1,
+    ).map(fpstreams.col("value"))
+
+    assert getattr(query, terminal)() == expected
+
+
+@pytest.mark.parametrize("terminal", ["sum", "min", "max", "mean", "variance", "std"])
+def test_arrow_scalar_reductions_report_their_columnar_strategy(terminal: str) -> None:
+    """Public execution reports must identify the Arrow route that actually ran."""
+    query = fpstreams.flow.from_arrow(
+        pa.table({"value": pa.array([2, 3, -1], type=pa.int64())})
+    ).map(fpstreams.col("value"))
+
+    execution = query.run_with_report(terminal)
+
+    assert execution.report.strategy == "arrow_direct"
+    assert "Arrow" in execution.report.reason
+
+
+@pytest.mark.parametrize("adapter", ["record_batch", "reader"])
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [("sum", 4), ("min", -1), ("max", 3)],
+)
+def test_arrow_i64_scalar_reductions_cover_record_batches_and_readers(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: str,
+    terminal: str,
+    expected: int,
+) -> None:
+    """Record batches and one-shot readers should use the same exact i64 reduction."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.tabular import arrow as arrow_adapter
+
+    batch = pa.record_batch({"value": pa.array([2, 3, -1], type=pa.int64())})
+    source = (
+        batch
+        if adapter == "record_batch"
+        else pa.RecordBatchReader.from_batches(batch.schema, [batch])
+    )
+
+    def reject_scalar_prefix(*_args: object) -> Iterator[object]:
+        raise AssertionError("exact i64 reduction streamed a Python scalar prefix")
+
+    def reject_rows(_batch: object) -> list[dict[str, object]]:
+        raise AssertionError("exact i64 reduction boxed Python rows")
+
+    monkeypatch.setattr(arrow_execution, "_execute_batch_program", reject_scalar_prefix)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    query = fpstreams.flow.from_arrow(source, batch_size=1).map(fpstreams.col("value"))
+
+    assert getattr(query, terminal)() == expected
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [("sum", 8_256), ("min", 0), ("max", 128)],
+)
+def test_arrow_i64_scalar_reduction_backend_decline_reopens_retained_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+    expected: int,
+) -> None:
+    """A recoverable retained-table kernel error should use the canonical prefix once."""
+    from fpstreams.execution import arrow as arrow_execution
+
+    pa_module, pc_module = arrow_execution._arrow_modules()
+
+    class RejectingCompute:
+        def min_max(self, _values: object) -> object:
+            raise ValueError("retained reduction decline")
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(pc_module, name)
+
+    monkeypatch.setattr(arrow_execution, "_arrow_modules", lambda: (pa_module, RejectingCompute()))
+    query = fpstreams.flow.from_arrow(
+        pa.table({"value": pa.array(range(129), type=pa.int64())})
+    ).map(fpstreams.col("value"))
+
+    assert getattr(query, terminal)() == expected
+
+
+@pytest.mark.parametrize("terminal", ["sum", "min", "max"])
+def test_arrow_i64_reader_reduction_propagates_after_claim_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+) -> None:
+    """A claimed one-shot reader must close and expose its reduction backend error."""
+    from fpstreams.execution import arrow as arrow_execution
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    events: list[str] = []
+    batch = pa.record_batch({"value": pa.array(range(129), type=pa.int64())})
+    descriptor = ArrowBatchSource(
+        lambda: _TrackedArrowBatches([batch], events),
+        "reader",
+        65_536,
+        batch.schema,
+        False,
+    )
+
+    def forbidden_rows() -> Iterator[dict[str, int]]:
+        raise AssertionError("claimed reader reduction reopened Python rows")
+        yield
+
+    pa_module, pc_module = arrow_execution._arrow_modules()
+
+    class RejectingCompute:
+        def min_max(self, _values: object) -> object:
+            raise ValueError("reader reduction failure")
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(pc_module, name)
+
+    monkeypatch.setattr(arrow_execution, "_arrow_modules", lambda: (pa_module, RejectingCompute()))
+    query = fpstreams.Flow(
+        Source(
+            forbidden_rows,
+            SourceCapabilities(reiterable=False, exact_size=None),
+            native_data=descriptor,
+        )
+    ).map(fpstreams.col("value"))
+
+    with pytest.raises(ValueError, match="reader reduction failure"):
+        getattr(query, terminal)()
+    assert events == ["pull:0", "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        getattr(query, terminal)()
+
+
+@pytest.mark.parametrize(
+    ("terminal", "error_type"),
+    [
+        ("sum", UnicodeDecodeError),
+        ("min", fpstreams.EmptyFlowError),
+        ("max", fpstreams.EmptyFlowError),
+        ("mean", UnicodeDecodeError),
+    ],
+)
+def test_arrow_i64_reader_reduction_preserves_source_value_error_handling(
+    terminal: str,
+    error_type: type[Exception],
+) -> None:
+    """Claimed reduction must retain each terminal's public source-error translation."""
+    invalid_utf8 = pa.array([b"\xff"], type=pa.binary()).view(pa.string())
+    batch = pa.record_batch({"value": pa.array([7], type=pa.int64()), "unused": invalid_utf8})
+
+    def run(engine: str) -> object:
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+        query = fpstreams.flow.from_arrow(reader).map(fpstreams.col("value"))
+        return getattr(query.with_engine(engine), terminal)()
+
+    with pytest.raises(error_type) as canonical_error:
+        run("python")
+    with pytest.raises(error_type) as automatic_error:
+        run("auto")
+    assert str(automatic_error.value) == str(canonical_error.value)
+
+
+@pytest.mark.parametrize(
+    ("arrow_type", "items", "expected"),
+    [
+        (pa.int64(), [2**53 + 1, -(2**53)], 0.0),
+        (pa.float64(), [1e16, 1.0, -1e16], 1.0 / 3.0),
+    ],
+)
+def test_direct_arrow_mean_preserves_cross_batch_compensation_without_row_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    arrow_type: pa.DataType,
+    items: list[int] | list[float],
+    expected: float,
+) -> None:
+    """A direct numeric field mean should retain one compensated state across batches."""
+    from fpstreams.execution import arrow as arrow_execution
+
+    batches = [pa.record_batch({"value": pa.array([value], type=arrow_type)}) for value in items]
+
+    def reject_row_execution(*_args: object, **_kwargs: object) -> Iterator[object]:
+        raise AssertionError("direct Arrow mean must not execute the row-oriented prefix")
+
+    monkeypatch.setattr(arrow_execution, "execute_with_arrow_prefix", reject_row_execution)
+    values = fpstreams.flow.from_arrow(pa.Table.from_batches(batches), batch_size=1).map(
+        fpstreams.col("value")
+    )
+
+    assert values.mean() == expected
+
+
+@pytest.mark.parametrize("arrow_type", [pa.int64(), pa.float64()])
+def test_direct_arrow_mean_preserves_empty_and_null_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+    arrow_type: pa.DataType,
+) -> None:
+    """The batch kernel must retain the public empty and null-value outcomes."""
+    from fpstreams.execution import arrow as arrow_execution
+
+    def reject_row_execution(*_args: object, **_kwargs: object) -> Iterator[object]:
+        raise AssertionError("direct Arrow mean must not execute the row-oriented prefix")
+
+    monkeypatch.setattr(arrow_execution, "execute_with_arrow_prefix", reject_row_execution)
+    empty = fpstreams.flow.from_arrow(pa.table({"value": pa.array([], type=arrow_type)})).map(
+        fpstreams.col("value")
+    )
+    containing_null = fpstreams.flow.from_arrow(
+        pa.table({"value": pa.array([1, None], type=arrow_type)})
+    ).map(fpstreams.col("value"))
+
+    assert empty.mean() is None
+    with pytest.raises(TypeError, match="statistics require real numeric values"):
+        containing_null.mean()
+
+
+def test_direct_arrow_mean_missing_native_endpoint_falls_back_before_reader_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older native module must leave a one-shot Arrow reader available to Python."""
+    from fpstreams import _native
+
+    monkeypatch.setattr(_native, "update_mean_i64_buffer_v1", None)
+    batch = pa.record_batch({"value": pa.array([1, 2, 3], type=pa.int64())})
+    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+    values = fpstreams.flow.from_arrow(reader).map(fpstreams.col("value"))
+
+    assert values.mean() == 2.0
+
+
+@pytest.mark.parametrize("dependency", ["abs", "isfinite"])
+def test_direct_arrow_mean_preserves_dynamic_compensated_mean_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    dependency: str,
+) -> None:
+    """Replacing a Python mean dependency must deopt the direct Arrow kernel."""
+    import builtins
+    from types import SimpleNamespace
+
+    from fpstreams.collecting import statistics as statistics_module
+
+    table = pa.table({"value": pa.array([1.0, 2.0], type=pa.float64())})
+    automatic = fpstreams.flow.from_arrow(table).map(fpstreams.col("value"))
+    canonical = automatic.with_engine("python")
+
+    def observed(_value: object) -> object:
+        raise RuntimeError(f"observed {dependency}")
+
+    if dependency == "abs":
+        monkeypatch.setattr(builtins, "abs", observed)
+    else:
+        monkeypatch.setattr(statistics_module, "math", SimpleNamespace(isfinite=observed))
+
+    with pytest.raises(RuntimeError, match=f"observed {dependency}"):
+        canonical.mean()
+    with pytest.raises(RuntimeError, match=f"observed {dependency}"):
+        automatic.mean()
+
+
+@pytest.mark.parametrize(
+    ("terminal", "error_type"),
+    [
+        ("sum", ValueError),
+        ("min", fpstreams.EmptyFlowError),
+        ("max", fpstreams.EmptyFlowError),
+        ("mean", ValueError),
+    ],
+)
+def test_arrow_i64_reader_reduction_preserves_late_pull_value_error(
+    terminal: str,
+    error_type: type[Exception],
+) -> None:
+    """A later reader pull failure keeps terminal translation, closure, and consumption."""
+    from fpstreams.planning.arrow_source import ArrowBatchSource, batch_to_rows
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    batch = pa.record_batch({"value": pa.array([7], type=pa.int64())})
+
+    def build(engine: str) -> tuple[fpstreams.Flow[object], list[str]]:
+        events: list[str] = []
+
+        class LatePullFailure:
+            def __init__(self) -> None:
+                self.pulls = 0
+
+            def __iter__(self) -> LatePullFailure:
+                return self
+
+            def __next__(self) -> object:
+                index = self.pulls
+                self.pulls += 1
+                events.append(f"pull:{index}")
+                if index == 0:
+                    return batch
+                raise ValueError("reader pull failure")
+
+            def close(self) -> None:
+                events.append("close")
+
+        descriptor = ArrowBatchSource(
+            LatePullFailure,
+            "reader",
+            65_536,
+            batch.schema,
+            False,
+        )
+
+        def rows() -> Iterator[dict[str, object]]:
+            batches = descriptor.open_batches()
+            try:
+                for current in batches:
+                    yield from batch_to_rows(current)
+            finally:
+                batches.close()  # type: ignore[attr-defined]
+
+        source = Source(
+            rows,
+            SourceCapabilities(reiterable=False, exact_size=None),
+            native_data=descriptor,
+        )
+        return fpstreams.Flow(source).map(fpstreams.col("value")).with_engine(engine), events
+
+    canonical, canonical_events = build("python")
+    with pytest.raises(error_type) as canonical_error:
+        getattr(canonical, terminal)()
+    assert canonical_events == ["pull:0", "pull:1", "close"]
+
+    automatic, automatic_events = build("auto")
+    with pytest.raises(error_type) as automatic_error:
+        getattr(automatic, terminal)()
+    assert str(automatic_error.value) == str(canonical_error.value)
+    assert automatic_events == canonical_events
+    with pytest.raises(fpstreams.FlowConsumedError):
+        getattr(automatic, terminal)()
+    assert automatic_events == canonical_events
+
+
+@pytest.mark.parametrize(
+    ("terminal", "error_type"),
+    [
+        ("sum", ValueError),
+        ("min", fpstreams.EmptyFlowError),
+        ("max", fpstreams.EmptyFlowError),
+        ("mean", ValueError),
+    ],
+)
+def test_arrow_i64_reader_reduction_preserves_synchronous_opener_value_error(
+    terminal: str,
+    error_type: type[Exception],
+) -> None:
+    """A synchronous reader opener failure retains translation and spends the source once."""
+    from fpstreams.planning.arrow_source import ArrowBatchSource, batch_to_rows
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    schema = pa.schema([pa.field("value", pa.int64())])
+
+    def build(engine: str) -> tuple[fpstreams.Flow[object], list[str]]:
+        events: list[str] = []
+
+        def open_batches() -> Iterator[object]:
+            events.append("open")
+            raise ValueError("reader opener failure")
+
+        descriptor = ArrowBatchSource(
+            open_batches,
+            "reader",
+            65_536,
+            schema,
+            False,
+        )
+
+        def rows() -> Iterator[dict[str, object]]:
+            batches = descriptor.open_batches()
+            try:
+                for batch in batches:
+                    yield from batch_to_rows(batch)
+            finally:
+                batches.close()  # type: ignore[attr-defined]
+
+        source = Source(
+            rows,
+            SourceCapabilities(reiterable=False, exact_size=None),
+            native_data=descriptor,
+        )
+        return fpstreams.Flow(source).map(fpstreams.col("value")).with_engine(engine), events
+
+    canonical, canonical_events = build("python")
+    with pytest.raises(error_type) as canonical_error:
+        getattr(canonical, terminal)()
+    assert canonical_events == ["open"]
+
+    automatic, automatic_events = build("auto")
+    with pytest.raises(error_type) as automatic_error:
+        getattr(automatic, terminal)()
+    assert str(automatic_error.value) == str(canonical_error.value)
+    assert automatic_events == canonical_events
+    with pytest.raises(fpstreams.FlowConsumedError):
+        getattr(automatic, terminal)()
+    assert automatic_events == canonical_events
+
+
+def test_arrow_scalar_reduction_prefix_rejects_non_total_or_parallel_shapes() -> None:
+    """Reduction pushdown must not batch-evaluate filters, arithmetic, or parallel work."""
+    from fpstreams.planning.compiler import compile_query
+
+    source = fpstreams.flow.from_arrow(pa.table({"value": [1, 2, 3]}))
+    rejected = (
+        source.map(fpstreams.col("value") + 1),
+        source.filter(fpstreams.col("value") > 1).map(fpstreams.col("value")),
+        source.parallel(backend="thread", workers=1).map(fpstreams.col("value")),
+        source.with_engine("python").map(fpstreams.col("value")),
+    )
+
+    for query in rejected:
+        physical = compile_query(query._query("sum", 0))
+        assert physical.backend_payload is not None
+        assert physical.backend_payload.arrow_prefix is None
+
+    direct = source.map(fpstreams.col("value"))
+    invalid_start = compile_query(direct._query("sum", ""))
+    assert invalid_start.backend_payload is not None
+    assert invalid_start.backend_payload.arrow_prefix is None
+
+
+@pytest.mark.parametrize("source_kind", ["list", "forced_list", "arrow", "forced_arrow"])
+def test_arrow_scalar_reduction_planning_does_not_probe_opaque_non_arrow_callables(
+    source_kind: str,
+) -> None:
+    """Declined reduction planning must not execute user-defined attribute access."""
+
+    class Probe:
+        def __getattribute__(self, name: str) -> object:
+            if name == "_node":
+                raise RuntimeError("planning touched _node")
+            return object.__getattribute__(self, name)
+
+        def __call__(self, _value: object) -> object:
+            raise AssertionError("an empty flow must not invoke its mapper")
+
+    if source_kind in {"list", "forced_list"}:
+        source = fpstreams.flow([])
+        if source_kind == "forced_list":
+            source = source.with_engine("python")
+    else:
+        source = fpstreams.flow.from_arrow(pa.table({"value": pa.array([], type=pa.int64())}))
+        if source_kind == "forced_arrow":
+            source = source.with_engine("python")
+
+    assert source.map(Probe()).sum() == 0
+
+
+def test_arrow_scalar_reduction_prefix_preserves_empty_missing_and_null_semantics() -> None:
+    """Runtime guards keep direct-field reduction behavior identical to Python rows."""
+    empty = fpstreams.flow.from_arrow(pa.table({"present": pa.array([], type=pa.int64())})).map(
+        fpstreams.col("missing")
+    )
+    assert empty.sum() == 0
+    assert empty.mean() is None
+
+    missing = fpstreams.flow.from_arrow(pa.table({"present": [1]})).map(fpstreams.col("missing"))
+    with pytest.raises(fpstreams.SelectionError) as automatic_error:
+        missing.sum()
+    with pytest.raises(fpstreams.SelectionError) as python_error:
+        missing.with_engine("python").sum()
+    assert str(automatic_error.value) == str(python_error.value)
+
+    nullable = fpstreams.flow.from_arrow(
+        pa.table({"value": pa.array([None, 1], type=pa.int64())})
+    ).map(fpstreams.col("value"))
+    with pytest.raises(TypeError) as automatic_null_error:
+        nullable.sum()
+    with pytest.raises(TypeError) as python_null_error:
+        nullable.with_engine("python").sum()
+    assert str(automatic_null_error.value) == str(python_null_error.value)
 
 
 @pytest.mark.parametrize("name", ["arrow.reader.after", "arrow.batch.after"])
@@ -8416,6 +16359,1596 @@ def test_rows_factory_recognizes_eager_dataframe_protocols() -> None:
     assert pandas_source.to_arrow().column_names == ["id", "label"]
 
 
+def test_numpy_adapter_is_explicit_lazy_and_replayable() -> None:
+    np = pytest.importorskip("numpy")
+
+    source = np.asarray([[1, 2], [3, 4]])
+    table = fpstreams.rows.from_numpy(source)
+
+    source[0, 0] = 10
+    assert table.to_list() == [
+        {"0": 10, "1": 2},
+        {"0": 3, "1": 4},
+    ]
+    source[1, 1] = 40
+    assert table.to_list() == [
+        {"0": 10, "1": 2},
+        {"0": 3, "1": 40},
+    ]
+    assert table._flow._pipeline.source.capabilities.exact_size == 2
+    assert table._flow._pipeline.source.capabilities.reiterable is True
+
+    nested = [[1, 2]]
+    converted = fpstreams.flow.from_numpy(nested, columns=["left", "right"])
+    nested[0][0] = 99
+    assert converted.select("left", "right").to_list() == [{"left": 1, "right": 2}]
+
+
+def test_identity_numpy_to_list_skips_executor_forwarding_with_fresh_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact Rows and Flow collect canonical fresh dictionaries at the source boundary."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.streams import flow_terminals
+
+    values = np.asarray([[1, 2], [1, 2]], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(values, columns=("left", "right"))
+
+    def reject_forwarding(*_arguments: object, **_options: object) -> Iterator[object]:
+        raise AssertionError("identity NumPy to_list must not enter executor forwarding")
+
+    monkeypatch.setattr(flow_terminals, "execute_physical", reject_forwarding)
+
+    row_values = source.to_list()
+    flow_values = source.to_flow().to_list()
+
+    assert (
+        row_values
+        == flow_values
+        == [
+            {"left": 1, "right": 2},
+            {"left": 1, "right": 2},
+        ]
+    )
+    assert row_values[0] is not row_values[1]
+    assert row_values[0] is not flow_values[0]
+
+
+@pytest.mark.parametrize("width", [2, 8])
+def test_numpy_identity_rows_boxes_values_in_bounded_matrix_batches(width: int) -> None:
+    """The eager identity sink avoids both per-row ndarray calls and one giant snapshot."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular.numpy import (
+        _NUMPY_IDENTITY_ROW_BATCH_SIZE,
+        NumpyRowSource,
+        numpy_identity_rows,
+    )
+
+    batch_size = _NUMPY_IDENTITY_ROW_BATCH_SIZE
+    values = np.arange((batch_size + 3) * width, dtype=np.int64).reshape(-1, width)
+    converted_batches: list[int] = []
+
+    class TrackingMatrix:
+        ndim = 2
+        shape = values.shape
+
+        def __iter__(self) -> Iterator[object]:
+            raise AssertionError("identity collection must not convert one ndarray row at a time")
+
+        def __getitem__(self, selected: slice) -> object:
+            assert isinstance(selected, slice)
+            batch = values[selected]
+            converted_batches.append(len(batch))
+            return batch
+
+    names = tuple(f"c{index}" for index in range(width))
+    result = numpy_identity_rows(NumpyRowSource(TrackingMatrix(), names))
+
+    assert converted_batches == [batch_size, 3]
+    assert len(result) == batch_size + 3
+    assert result[0] == dict(zip(names, range(width), strict=True))
+    last_start = (batch_size + 2) * width
+    assert result[-1] == dict(zip(names, range(last_start, last_start + width), strict=True))
+
+    class EmptyBatch:
+        def tolist(self) -> list[object]:
+            return []
+
+    class StalledMatrix:
+        ndim = 2
+        shape = (1, 1)
+
+        def __getitem__(self, _selected: slice) -> EmptyBatch:
+            return EmptyBatch()
+
+    with pytest.raises(ValueError, match="row count changed during iteration"):
+        numpy_identity_rows(NumpyRowSource(StalledMatrix(), ("value",)))
+
+
+def test_numpy_identity_rows_preserves_layout_dtype_and_object_identity() -> None:
+    """Batched boxing keeps ndarray ordering, scalar conversion, and opaque object identity."""
+    np = pytest.importorskip("numpy")
+
+    for dtype in (np.int64, np.float64):
+        base = np.arange(80, dtype=dtype).reshape(10, 8)
+        if dtype is np.float64:
+            base = base / 3
+        matrices = (
+            base.copy(order="C"),
+            np.asfortranarray(base),
+            base[:, ::2],
+            base[::-1, 3::-1],
+        )
+        for matrix in matrices:
+            for width in range(1, matrix.shape[1] + 1):
+                values = matrix[:, :width]
+                names = tuple(f"c{index}" for index in range(width))
+                expected = [dict(zip(names, row, strict=True)) for row in values.tolist()]
+                source = fpstreams.rows.from_numpy(values, columns=names)
+                assert source.to_list() == expected
+                assert source.with_engine("python").to_list() == expected
+
+    protocol_calls: list[str] = []
+
+    class OpaqueValue:
+        def __int__(self) -> int:
+            protocol_calls.append("int")
+            raise AssertionError("object ndarray values must not be coerced")
+
+        def __float__(self) -> float:
+            protocol_calls.append("float")
+            raise AssertionError("object ndarray values must not be coerced")
+
+        def __index__(self) -> int:
+            protocol_calls.append("index")
+            raise AssertionError("object ndarray values must not be coerced")
+
+        def __iter__(self) -> Iterator[object]:
+            protocol_calls.append("iter")
+            raise AssertionError("object ndarray values must stay opaque")
+
+    markers = [[OpaqueValue() for _ in range(8)] for _ in range(3)]
+    objects = np.empty((3, 8), dtype=object)
+    for row_index, row in enumerate(markers):
+        objects[row_index] = row
+    names = tuple(f"c{index}" for index in range(8))
+    records = fpstreams.rows.from_numpy(objects, columns=names).to_list()
+
+    assert protocol_calls == []
+    for row_index, record in enumerate(records):
+        assert all(
+            record[name] is markers[row_index][column_index]
+            for column_index, name in enumerate(names)
+        )
+    for width in range(1, 9):
+        assert fpstreams.rows.from_numpy(np.empty((0, width))).to_list() == []
+
+
+def test_numpy_native_record_assembly_covers_identity_and_projected_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private column batches bypass both Python record builders when the ABI is genuine."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_prefix
+    from fpstreams.tabular import numpy as numpy_adapter
+
+    values = np.arange(520 * 5, dtype=np.int64).reshape(520, 5)
+    names = tuple(f"c{index}" for index in range(5))
+    source = fpstreams.rows.from_numpy(values, columns=names)
+
+    def reject_python_builder(*_arguments: object, **_options: object) -> object:
+        raise AssertionError("genuine native record assembly must own this private batch")
+
+    monkeypatch.setattr(numpy_adapter, "_materialize_numpy_identity_batch", reject_python_builder)
+    monkeypatch.setattr(numpy_prefix, "_records_from_columns", reject_python_builder)
+
+    assert source.to_list() == [dict(zip(names, row, strict=True)) for row in values.tolist()]
+    assert source.select("c0", "c2", "c4").to_list() == [
+        {"c0": row[0], "c2": row[2], "c4": row[4]} for row in values.tolist()
+    ]
+
+
+def test_numpy_record_assembly_rejects_replaced_native_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Python replacement cannot inherit the trusted private-column boundary."""
+    np = pytest.importorskip("numpy")
+    from fpstreams import _native
+
+    calls = 0
+
+    def replaced(*_arguments: object) -> list[dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(_native, "records_from_exact_columns_v1", replaced)
+    values = np.arange(30, dtype=np.int64).reshape(10, 3)
+    source = fpstreams.rows.from_numpy(values, columns=("left", "middle", "right"))
+
+    assert source.to_list() == [
+        {"left": row[0], "middle": row[1], "right": row[2]} for row in values.tolist()
+    ]
+    assert source.select("left", "right").to_list() == [
+        {"left": row[0], "right": row[2]} for row in values.tolist()
+    ]
+    assert calls == 0
+
+
+def test_numpy_identity_rows_releases_partial_batches_after_memory_error() -> None:
+    """A failed later batch cannot leak the already boxed partial result."""
+    from fpstreams.tabular.numpy import (
+        _NUMPY_IDENTITY_ROW_BATCH_SIZE,
+        NumpyRowSource,
+        numpy_identity_rows,
+    )
+
+    references: list[weakref.ReferenceType[object]] = []
+    calls = 0
+
+    class Marker:
+        pass
+
+    class ConvertedBatch:
+        def tolist(self) -> list[list[Marker]]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise MemoryError("second NumPy row batch")
+            rows = [[Marker(), Marker()] for _ in range(_NUMPY_IDENTITY_ROW_BATCH_SIZE)]
+            references.extend(weakref.ref(value) for row in rows for value in row)
+            return rows
+
+    class FailingMatrix:
+        ndim = 2
+        shape = (_NUMPY_IDENTITY_ROW_BATCH_SIZE + 1, 2)
+
+        def __getitem__(self, _selected: slice) -> ConvertedBatch:
+            return ConvertedBatch()
+
+    try:
+        numpy_identity_rows(NumpyRowSource(FailingMatrix(), ("left", "right")))
+    except MemoryError as error:
+        assert str(error) == "second NumPy row batch"
+        frames = error.__traceback__
+        error.__traceback__ = None
+        if frames is not None:
+            traceback.clear_frames(frames)
+        del frames
+    else:  # pragma: no cover - the synthetic second batch always fails
+        raise AssertionError("the synthetic second batch did not fail")
+
+    gc.collect()
+    assert references
+    assert all(reference() is None for reference in references)
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires POSIX interval timers")
+def test_numpy_to_list_matches_live_signal_mutation_and_resize_boundaries() -> None:
+    """Auto batching and canonical iteration agree on signal-time growth and shape changes."""
+    row_count = 100_000
+
+    def consume(
+        engine: str, action: str
+    ) -> tuple[list[dict[str, int]] | None, BaseException | None]:
+        np = pytest.importorskip("numpy")
+        values = np.zeros((row_count, 2), dtype=np.int64)
+        source = fpstreams.rows.from_numpy(values, columns=("left", "right")).with_engine(engine)
+        fired = False
+
+        def mutate(_signal_number: int, _frame: object) -> None:
+            nonlocal fired
+            fired = True
+            if action == "mutate":
+                values[-1] = (7, 9)
+            elif action == "grow":
+                values.resize((row_count + 1, 2), refcheck=False)
+                values[-1] = (7, 9)
+            elif action == "shrink":
+                values.resize((row_count - 1, 2), refcheck=False)
+            else:
+                values.resize((values.size,), refcheck=False)
+
+        previous_handler = signal.signal(signal.SIGALRM, mutate)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        signal.setitimer(signal.ITIMER_REAL, 0.001)
+        try:
+            try:
+                result = source.to_list()
+            except BaseException as error:
+                result = None
+                captured = error
+            else:
+                captured = None
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            signal.signal(signal.SIGALRM, previous_handler)
+        assert fired
+        return result, captured
+
+    for action in ("mutate", "grow", "shrink", "reshape"):
+        canonical = consume("python", action)
+        automatic = consume("auto", action)
+        if action == "reshape":
+            assert canonical[0] is automatic[0] is None
+            assert [type(canonical[1]), type(automatic[1])] == [ValueError, ValueError]
+            assert (
+                str(canonical[1])
+                == str(automatic[1])
+                == ("from_numpy() retained array changed to 1 dimensions during iteration")
+            )
+        else:
+            assert canonical[1] is automatic[1] is None
+            assert automatic[0] == canonical[0]
+            expected_rows = row_count + (1 if action == "grow" else -1 if action == "shrink" else 0)
+            assert automatic[0] is not None
+            assert len(automatic[0]) == expected_rows
+            if action in {"mutate", "grow"}:
+                assert automatic[0][-1] == {"left": 7, "right": 9}
+
+
+def test_numpy_identity_sinks_deopt_on_free_threaded_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutable ndarray batching stays behind the GIL-build boundary."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular import numpy as numpy_adapter
+
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: False, raising=False)
+
+    def reject_direct(_source: object) -> list[dict[str, object]]:
+        raise AssertionError("free-threaded Python must retain canonical ndarray iteration")
+
+    monkeypatch.setattr(numpy_adapter, "numpy_identity_rows", reject_direct)
+    names = tuple(f"c{index}" for index in range(8))
+    values = np.arange(8, dtype=np.int64).reshape(1, 8)
+    source = fpstreams.rows.from_numpy(values, columns=names)
+    execution = source.run_with_report("to_list")
+
+    assert execution.value == [dict(zip(names, range(8), strict=True))]
+    assert execution.report.strategy == "planned:python"
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires POSIX interval timers")
+def test_numpy_direct_row_paths_deopt_while_an_interval_timer_is_active() -> None:
+    """Identity, safe-prefix, and grouped sinks share one conservative timer gate."""
+    np = pytest.importorskip("numpy")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2], [1, 3]], dtype=np.int64),
+        columns=("key", "value"),
+    )
+    queries = (
+        source,
+        source.where(fpstreams.col("value") >= 2).select("key"),
+        source.group_by("key").aggregate(total=fpstreams.agg.sum("value")),
+    )
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.setitimer(signal.ITIMER_REAL, 60.0)
+    try:
+        executions = tuple(query.run_with_report("to_list") for query in queries)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+    assert [execution.value for execution in executions] == [
+        [{"key": 1, "value": 2}, {"key": 1, "value": 3}],
+        [{"key": 1}, {"key": 1}],
+        [{"key": 1, "total": 5}],
+    ]
+    assert [execution.report.strategy for execution in executions] == [
+        "planned:python",
+        "planned:python",
+        "planned:python",
+    ]
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="requires a user signal")
+def test_numpy_direct_row_paths_ignore_an_idle_custom_signal_handler() -> None:
+    """Installing an unrelated handler alone must not disable columnar execution."""
+    np = pytest.importorskip("numpy")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2], [1, 3]], dtype=np.int64),
+        columns=("key", "value"),
+    )
+    queries = (
+        source,
+        source.where(fpstreams.col("value") >= 2).select("key"),
+        source.group_by("key").aggregate(total=fpstreams.agg.sum("value")),
+    )
+    previous_handler = signal.signal(signal.SIGUSR1, lambda *_arguments: None)
+    try:
+        executions = tuple(query.run_with_report("to_list") for query in queries)
+    finally:
+        signal.signal(signal.SIGUSR1, previous_handler)
+
+    assert [execution.value for execution in executions] == [
+        [{"key": 1, "value": 2}, {"key": 1, "value": 3}],
+        [{"key": 1}, {"key": 1}],
+        [{"key": 1, "total": 5}],
+    ]
+    assert [execution.report.strategy for execution in executions] == [
+        "numpy_direct",
+        "numpy_direct",
+        "numpy_direct",
+    ]
+
+
+def test_identity_numpy_to_list_reports_its_real_direct_strategy() -> None:
+    """Reported NumPy identity collection names the source-level route it executed."""
+    np = pytest.importorskip("numpy")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2], [3, 4]], dtype=np.int64),
+        columns=("left", "right"),
+    )
+
+    rows_execution = source.run_with_report("to_list")
+    flow_execution = source.to_flow().run_with_report("to_list")
+
+    assert (
+        rows_execution.value
+        == flow_execution.value
+        == [
+            {"left": 1, "right": 2},
+            {"left": 3, "right": 4},
+        ]
+    )
+    assert rows_execution.report.compiler_engine == "python"
+    assert flow_execution.report.compiler_engine == "python"
+    assert rows_execution.report.strategy == "numpy_direct"
+    assert flow_execution.report.strategy == "numpy_direct"
+
+
+@pytest.mark.parametrize("width", [5, 6, 7, 8])
+def test_wide_identity_numpy_to_list_uses_the_bounded_direct_strategy(width: int) -> None:
+    """Common wider records share the bounded source-level identity collector."""
+    np = pytest.importorskip("numpy")
+
+    names = tuple(f"c{index}" for index in range(width))
+    values = np.arange(width * 2, dtype=np.int64).reshape(2, width)
+    execution = fpstreams.rows.from_numpy(values, columns=names).run_with_report("to_list")
+
+    assert execution.value == [dict(zip(names, row, strict=True)) for row in values.tolist()]
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_wider_identity_numpy_to_list_keeps_the_canonical_fallback() -> None:
+    """Unbounded schema specialization stops after the common eight-column range."""
+    np = pytest.importorskip("numpy")
+
+    names = tuple(f"c{index}" for index in range(9))
+    values = np.arange(18, dtype=np.int64).reshape(2, 9)
+    execution = fpstreams.rows.from_numpy(values, columns=names).run_with_report("to_list")
+
+    assert execution.value == [dict(zip(names, row, strict=True)) for row in values.tolist()]
+    assert execution.report.strategy == "planned:python"
+
+
+def test_numpy_to_list_subclasses_keep_their_canonical_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows iteration and Flow execution subclasses both bypass the retained direct sink."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.streams.flow import Flow
+    from fpstreams.tabular import numpy as numpy_adapter
+    from fpstreams.tabular.rows import Rows
+
+    marker = {"left": 9, "right": 10}
+
+    class CustomRows(Rows[dict[str, int]]):
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            return iter((marker,))
+
+    class CustomFlow(Flow[dict[str, int]]):
+        pass
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2]], dtype=np.int64),
+        columns=("left", "right"),
+    )
+    custom_rows = CustomRows(source._flow)
+    custom_flow = CustomFlow(source._flow._pipeline.source)
+
+    def reject_direct(_source: object) -> list[dict[str, object]]:
+        raise AssertionError("Flow subclasses must stay on canonical physical execution")
+
+    monkeypatch.setattr(numpy_adapter, "numpy_identity_rows", reject_direct)
+
+    assert custom_rows.to_list() == [marker]
+    assert custom_flow.to_list() == [{"left": 1, "right": 2}]
+
+
+def test_identity_numpy_to_list_declines_python_operations_and_failpoints() -> None:
+    """Only an uninstrumented auto identity plan may collect retained NumPy rows directly."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.runtime.failpoints import failpoint
+
+    values = np.asarray([[1, 2], [3, 4]], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(values, columns=("left", "right"))
+
+    forced = source.with_engine("python").run_with_report("to_list")
+    assert forced.value == [{"left": 1, "right": 2}, {"left": 3, "right": 4}]
+    assert forced.report.strategy == "planned:python"
+    assert source.select("left").to_list() == [{"left": 1}, {"left": 3}]
+
+    failure = RuntimeError("observed NumPy source open")
+    with (
+        failpoint("source.open.after", failure),
+        pytest.raises(RuntimeError, match="observed NumPy source open") as captured,
+    ):
+        source.to_list()
+    assert captured.value is failure
+
+
+@pytest.mark.parametrize("name", ["min", "max"])
+def test_numpy_identity_rows_keep_internal_extrema_stable(name: str) -> None:
+    """Batch bounds use canonical helpers that the Python row source never resolves."""
+    import builtins
+
+    np = pytest.importorskip("numpy")
+    rows = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2], [3, 4]], dtype=np.int64),
+        columns=("left", "right"),
+    )
+    original = getattr(builtins, name)
+    try:
+        setattr(builtins, name, lambda *_args, **_kwargs: False)
+        execution = rows.run_with_report("to_list")
+    finally:
+        setattr(builtins, name, original)
+
+    assert execution.value == [{"left": 1, "right": 2}, {"left": 3, "right": 4}]
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_prefix_snapshots_selection_error_before_lazy_import() -> None:
+    """Lazy prefix loading must keep the exception class bound by eager selectors."""
+    completed = _run_inline_python(
+        """
+import sys
+import fpstreams
+import fpstreams.errors as errors
+
+selection_error_type = errors.SelectionError
+assert "fpstreams.execution.numpy_prefix" not in sys.modules
+
+class ReplacedSelectionError(selection_error_type):
+    pass
+
+errors.SelectionError = ReplacedSelectionError
+
+import numpy as np
+rows = fpstreams.rows.from_numpy(
+    np.asarray([[1]], dtype=np.int64),
+    columns=("value",),
+)
+automatic = rows.select("missing")
+canonical = rows.with_engine("python").select("missing")
+
+def capture_error(query):
+    try:
+        query.to_list()
+    except BaseException as error:
+        return error
+    raise AssertionError("missing selector unexpectedly succeeded")
+
+canonical_error = capture_error(canonical)
+automatic_error = capture_error(automatic)
+assert type(automatic_error) is type(canonical_error) is selection_error_type
+assert str(automatic_error) == str(canonical_error)
+"""
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_numpy_kernels_do_not_execute_lazy_typing_casts() -> None:
+    """Runtime kernels should not depend on a typing-only helper captured during lazy import."""
+    completed = _run_inline_python(
+        """
+import sys
+import typing
+import fpstreams
+import numpy as np
+
+rows = fpstreams.rows.from_numpy(
+    np.asarray([[1, 2], [1, 3]], dtype=np.int64),
+    columns=("key", "value"),
+)
+computed_auto = rows.with_columns(next=fpstreams.col("value") + 1)
+computed_python = rows.with_engine("python").with_columns(next=fpstreams.col("value") + 1)
+group_auto = rows.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+group_python = rows.with_engine("python").group_by("key").aggregate(
+    total=fpstreams.agg.sum("value")
+)
+assert "fpstreams.execution.numpy_prefix" not in sys.modules
+assert "fpstreams.execution.numpy_group" not in sys.modules
+
+original_cast = typing.cast
+def changed_cast(target, value):
+    if getattr(target, "__origin__", None) is list:
+        return []
+    if getattr(target, "__name__", None) == "NumpyGroupAggregateSpec":
+        raise RuntimeError("typing.cast reached grouped execution")
+    return original_cast(target, value)
+
+typing.cast = changed_cast
+try:
+    expected_computed = computed_python.to_list()
+    expected_grouped = group_python.to_list()
+    first_computed = computed_auto.run_with_report("to_list")
+    computed = computed_auto.run_with_report("to_list")
+    grouped = group_auto.run_with_report("to_list")
+finally:
+    typing.cast = original_cast
+
+assert computed.value == expected_computed
+assert grouped.value == expected_grouped
+assert first_computed.report.strategy == "planned:python"
+assert computed.report.strategy == "numpy_direct"
+assert grouped.report.strategy == "numpy_direct"
+"""
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_numpy_identity_source_declines_replaced_instance_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained NumPy metadata cannot outrank a replaced live source factory."""
+    np = pytest.importorskip("numpy")
+
+    query = fpstreams.rows.from_numpy(
+        np.asarray([[1], [2]], dtype=np.int64),
+        columns=("value",),
+    )
+    source = query._flow._pipeline.source
+    opens = 0
+
+    def replacement() -> Iterator[dict[str, int]]:
+        nonlocal opens
+        opens += 1
+        return iter(({"value": 9},))
+
+    monkeypatch.setattr(source, "_factory", replacement)
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [{"value": 9}]
+    assert execution.report.strategy == "planned:python"
+    assert opens == 1
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires POSIX interval timers")
+def test_numpy_identity_to_numpy_copy_false_ignores_row_observers() -> None:
+    """Row observers and unused column protocols cannot change ndarray copy semantics."""
+    np = pytest.importorskip("numpy")
+
+    class ArmedColumn(str):
+        calls = 0
+
+        def __hash__(self) -> int:
+            type(self).calls += 1
+            return super().__hash__()
+
+    values = np.asarray([[1, 2], [3, 4]], dtype=np.int64)
+    name = ArmedColumn("left")
+    rows = fpstreams.rows.from_numpy(values, columns=(name, "right"))
+    ArmedColumn.calls = 0
+
+    def trace(_frame: object, _event: str, _argument: object) -> object:
+        return trace
+
+    previous_trace = sys.gettrace()
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    sys.settrace(trace)
+    signal.setitimer(signal.ITIMER_REAL, 60.0)
+    try:
+        result = rows.to_numpy(copy=False)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        sys.settrace(previous_trace)
+
+    assert np.shares_memory(result, values)
+    assert ArmedColumn.calls == 0
+
+
+def test_identity_numpy_to_columns_never_boxes_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retained matrix should transpose its Python values without row dictionaries."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular import io as tabular_io
+
+    values = np.asarray(
+        [[1, float("nan"), "first"], [2, -0.0, None]],
+        dtype=object,
+    )
+    source = fpstreams.rows.from_numpy(values, columns=("id", "score", "label"))
+
+    def reject_rows(_row: object) -> dict[str, object]:
+        raise AssertionError("identity NumPy to_columns must not box rows")
+
+    monkeypatch.setattr(tabular_io, "_as_record", reject_rows)
+
+    columns = source.to_columns()
+
+    assert list(columns) == ["id", "score", "label"]
+    assert columns["id"] == [1, 2]
+    assert math.isnan(columns["score"][0])
+    assert math.copysign(1.0, columns["score"][1]) == -1.0
+    assert columns["label"] == ["first", None]
+
+
+def test_identity_numpy_arrow_materializers_never_box_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arrow and pandas sinks should share the retained matrix column conversion."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular import io as tabular_io
+
+    values = np.asarray([[1.25, 2.5], [3.5, float("nan")]], dtype=np.float32)
+    source = fpstreams.rows.from_numpy(values, columns=("left", "right"))
+
+    def reject_rows(_row: object) -> Mapping[str, object]:
+        raise AssertionError("identity NumPy Arrow sinks must not box rows")
+
+    monkeypatch.setattr(tabular_io, "_record_view", reject_rows)
+
+    table = source.to_arrow(batch_size=1)
+    frame = source.to_pandas(batch_size=1)
+
+    assert table.schema == pa.schema([("left", pa.float64()), ("right", pa.float64())])
+    assert [batch.num_rows for batch in table.to_batches()] == [1, 1]
+    assert table.column("left").to_pylist() == [1.25, 3.5]
+    assert table.column("right")[0].as_py() == 2.5
+    assert math.isnan(table.column("right")[1].as_py())
+    assert list(frame.columns) == ["left", "right"]
+    assert frame["left"].tolist() == [1.25, 3.5]
+    assert math.isnan(frame["right"].iloc[1])
+
+
+def test_numpy_arrow_resize_after_first_batch_has_one_adapter_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto and Python scans should reject a live dimensionality change identically."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular import arrow as arrow_adapter
+    from fpstreams.tabular import io as tabular_io
+
+    def resizing_arrow_modules(values: object) -> Callable[[], tuple[object, object, object]]:
+        resized = False
+
+        class RecordBatchProxy:
+            @staticmethod
+            def from_pydict(columns: object, schema: object = None) -> pa.RecordBatch:
+                nonlocal resized
+                batch = pa.RecordBatch.from_pydict(columns, schema=schema)
+                if not resized:
+                    resized = True
+                    values.resize((values.size,), refcheck=False)  # type: ignore[attr-defined]
+                return batch
+
+        class PyArrowProxy:
+            RecordBatch = RecordBatchProxy
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(pa, name)
+
+        proxy = PyArrowProxy()
+
+        def modules() -> tuple[object, object, object]:
+            return proxy, ds, pq
+
+        return modules
+
+    errors: list[BaseException] = []
+    for engine in ("auto", "python"):
+        values = np.asarray([[1, 2], [3, 4]], dtype=np.int64)
+        source = fpstreams.rows.from_numpy(values, columns=("left", "right")).with_engine(engine)
+        arrow_modules = resizing_arrow_modules(values)
+
+        monkeypatch.setattr(tabular_io, "_arrow_modules", arrow_modules)
+        monkeypatch.setattr(arrow_adapter, "_arrow_modules", arrow_modules)
+
+        try:
+            source.to_arrow(batch_size=1)
+        except BaseException as error:
+            errors.append(error)
+        else:
+            raise AssertionError(f"{engine} scan accepted a retained 2D-to-1D resize")
+
+        values.resize((2, 2), refcheck=False)
+        assert source.to_arrow(batch_size=1).to_pylist() == [
+            {"left": 1, "right": 2},
+            {"left": 3, "right": 4},
+        ]
+
+    assert [type(error) for error in errors] == [ValueError, ValueError]
+    assert [str(error) for error in errors] == [
+        "from_numpy() retained array changed to 1 dimensions during iteration",
+        "from_numpy() retained array changed to 1 dimensions during iteration",
+    ]
+
+
+def test_numpy_to_list_resize_after_sink_entry_has_one_adapter_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct and forced-Python list sinks reject the same live dimensionality change."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular import numpy as numpy_adapter
+
+    canonical_width = numpy_adapter._retained_numpy_width
+    errors: list[BaseException] = []
+    for engine in ("auto", "python"):
+        names = tuple(f"c{index}" for index in range(8))
+        values = np.arange(16, dtype=np.int64).reshape(2, 8)
+        source = fpstreams.rows.from_numpy(values, columns=names).with_engine(engine)
+        resized = False
+
+        def resize_after_entry(matrix: object, names: tuple[str, ...]) -> int:
+            nonlocal resized
+            width = canonical_width(matrix, names)
+            if not resized:
+                resized = True
+                matrix.resize((matrix.size,), refcheck=False)  # type: ignore[attr-defined]
+            return width
+
+        monkeypatch.setattr(numpy_adapter, "_retained_numpy_width", resize_after_entry)
+        try:
+            source.to_list()
+        except BaseException as error:
+            errors.append(error)
+        else:
+            raise AssertionError(f"{engine} list accepted a retained 2D-to-1D resize")
+
+        monkeypatch.setattr(numpy_adapter, "_retained_numpy_width", canonical_width)
+        values.resize((2, 8), refcheck=False)
+        assert source.to_list() == [dict(zip(names, row, strict=True)) for row in values.tolist()]
+
+    assert [type(error) for error in errors] == [ValueError, ValueError]
+    assert [str(error) for error in errors] == [
+        "from_numpy() retained array changed to 1 dimensions during iteration",
+        "from_numpy() retained array changed to 1 dimensions during iteration",
+    ]
+
+
+def test_numpy_group_deopts_after_executor_builtin_alias_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Group kernels cannot observe a replaced executor integer constructor."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group
+
+    source = (
+        fpstreams.rows.from_numpy(
+            np.asarray([[1, 10], [1, 20], [2, 30]], dtype=np.int64),
+            columns=("key", "value"),
+        )
+        .group_by("key")
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+    first = source.run_with_report("to_list")
+    assert first.report.strategy == "numpy_direct"
+
+    def unexpected(*_arguments: object, **_keywords: object) -> object:
+        raise AssertionError("replaced executor int reached NumPy grouping")
+
+    monkeypatch.setattr(numpy_group, "_BUILTIN_INT", unexpected)
+    execution = source.run_with_report("to_list")
+
+    assert execution.value == [
+        {"key": 1, "rows": 2, "total": 30},
+        {"key": 2, "rows": 1, "total": 30},
+    ]
+    assert execution.report.strategy == "planned:python"
+
+
+def test_numpy_with_columns_compiles_before_reusing_its_cached_direct_plan() -> None:
+    """Fresh lazy expressions compile canonically once before a later direct execution."""
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1], [2]], dtype=np.int64),
+        columns=("value",),
+    ).with_columns(score=fpstreams.col("value") + 1)
+
+    first = source.run_with_report("to_list")
+    second = source.run_with_report("to_list")
+
+    assert (
+        first.value
+        == second.value
+        == [
+            {"value": 1, "score": 2},
+            {"value": 2, "score": 3},
+        ]
+    )
+    assert first.report.strategy == "planned:python"
+    assert second.report.strategy == "numpy_direct"
+
+
+def test_flow_from_numpy_adapts_one_dimensional_scalars_lazily() -> None:
+    """A 1D explicit adapter must stay live and emit ordinary Python scalar values."""
+    np = pytest.importorskip("numpy")
+
+    source = np.asarray([1, 2, 3], dtype=np.int64)
+    pipeline = fpstreams.flow.from_numpy(source)
+
+    source[1] = 20
+    assert pipeline.to_list() == [1, 20, 3]
+    assert all(type(value) is int for value in pipeline)
+    source.resize((4,), refcheck=False)
+    source[3] = 40
+    assert pipeline.count() == 4
+    assert pipeline.with_engine("python").to_list() == [1, 20, 3, 40]
+
+    source.resize((2, 2), refcheck=False)
+    with pytest.raises(ValueError, match="changed to 2 dimensions"):
+        pipeline.count()
+
+    with pytest.raises(ValueError, match=r"columns.*two-dimensional"):
+        fpstreams.flow.from_numpy(np.arange(2), columns=("value",))
+
+
+def test_flow_from_numpy_i64_supports_exact_native_full_scan_terminals() -> None:
+    """The buffer kernel must preserve Python integers and statistical results."""
+    np = pytest.importorskip("numpy")
+
+    maximum = 2**63 - 1
+    wide_source = np.asarray([maximum, maximum], dtype=np.int64)
+    wide = fpstreams.flow.from_numpy(wide_source).with_engine("native")
+    assert wide.sum() == 2 * maximum
+    assert type(wide.sum()) is int
+    assert wide.aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum()) == {
+        "rows": 2,
+        "total": 2 * maximum,
+    }
+    assert wide.min() == maximum
+    assert wide.max() == maximum
+    wide_source[0] = -maximum
+    assert wide.sum() == 0
+
+    statistics = fpstreams.flow.from_numpy(np.asarray([1, 2, 3, 4], dtype=np.int64)).with_engine(
+        "native"
+    )
+    assert statistics.mean() == 2.5
+    assert statistics.variance() == pytest.approx(5 / 3)
+    assert statistics.std() == pytest.approx((5 / 3) ** 0.5)
+
+    empty = fpstreams.flow.from_numpy(np.asarray([], dtype=np.int64)).with_engine("native")
+    assert empty.sum() == 0
+    assert empty.mean() is None
+    assert empty.variance() is None
+    with pytest.raises(fpstreams.EmptyFlowError):
+        empty.min()
+
+    automatic = fpstreams.flow.from_numpy(np.arange(32, dtype=np.int64))
+    assert automatic.explain("sum").to_dict()["selected_engine"] == "native"
+    assert automatic.explain("list").to_dict()["selected_engine"] == "native"
+    assert automatic.to_list() == list(range(32))
+
+    from fpstreams.runtime.failpoints import failpoint
+
+    failure = RuntimeError("instrumented NumPy source")
+    with failpoint("source.open.after", failure), pytest.raises(RuntimeError) as captured:
+        automatic.sum()
+    assert captured.value is failure
+
+
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+def test_flow_from_numpy_terminal_planning_classifies_buffer_once(
+    monkeypatch: pytest.MonkeyPatch,
+    dtype: str,
+) -> None:
+    """One engine decision should not repeatedly revalidate one retained buffer."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.planning import native
+
+    pipeline = fpstreams.flow.from_numpy(np.arange(32, dtype=dtype))
+    original = native._numpy_buffer_kind
+    calls = 0
+
+    def counted_buffer_kind(source: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(native, "_numpy_buffer_kind", counted_buffer_kind)
+
+    decision = native.select_terminal_engine(pipeline._pipeline, "sum")
+
+    assert decision.engine == "native"
+    assert calls == 1
+
+
+@pytest.mark.parametrize("engine", ["auto", "native"])
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+def test_flow_from_numpy_operation_planning_classifies_buffer_once(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: str,
+    dtype: str,
+) -> None:
+    """A fused decision should reuse its validated buffer kind throughout planning."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.planning import native
+
+    expression = fpstreams.item + 1 if dtype == "int64" else fpstreams.fitem + 1.0
+    pipeline = (
+        fpstreams.flow.from_numpy(np.arange(32, dtype=dtype)).map(expression).with_engine(engine)
+    )
+    original = native._numpy_buffer_kind
+    calls = 0
+
+    def counted_buffer_kind(source: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(native, "_numpy_buffer_kind", counted_buffer_kind)
+
+    decision = native.select_terminal_engine(pipeline._pipeline, "sum")
+
+    assert decision.engine == "native"
+    assert calls == 1
+
+
+def test_flow_from_numpy_i64_identity_min_max_use_numpy_direct_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact identity extrema may skip planning without widening NumPy semantics."""
+    np = pytest.importorskip("numpy")
+
+    values = np.asarray(
+        [2**63 - 1, -7, -(2**63), 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12],
+        dtype=np.int64,
+    )
+    pipeline = fpstreams.flow.from_numpy(values)
+    tiny = fpstreams.flow.from_numpy(np.asarray([2, 1], dtype=np.int64))
+
+    minimum = pipeline.run_with_report("min")
+    maximum = pipeline.run_with_report("max")
+
+    assert minimum.value == -(2**63)
+    assert maximum.value == 2**63 - 1
+    assert type(minimum.value) is type(maximum.value) is int
+    assert minimum.report.compiler_engine == maximum.report.compiler_engine == "not_compiled"
+    assert minimum.report.strategy == maximum.report.strategy == "numpy_direct"
+
+    forced = pipeline.with_engine("python").run_with_report("min")
+    transformed = pipeline.map(fpstreams.item + 0).run_with_report("max")
+    strided = fpstreams.flow.from_numpy(values[::2]).run_with_report("min")
+
+    assert forced.value == strided.value == -(2**63)
+    assert transformed.value == 2**63 - 1
+    assert forced.report.strategy != "numpy_direct"
+    assert transformed.report.strategy != "numpy_direct"
+    assert strided.report.strategy != "numpy_direct"
+
+    empty = fpstreams.flow.from_numpy(np.asarray([], dtype=np.int64))
+    with pytest.raises(fpstreams.EmptyFlowError, match=r"min\(\)") as empty_failure:
+        empty.min()
+    assert isinstance(empty_failure.value.__context__, ValueError)
+    assert empty_failure.value.__suppress_context__ is True
+
+    from fpstreams.runtime.failpoints import failpoint
+
+    failure = RuntimeError("instrumented NumPy min")
+    with failpoint("source.open.after", failure), pytest.raises(RuntimeError) as captured:
+        pipeline.min()
+    assert captured.value is failure
+
+    from fpstreams.runtime import failpoints as failpoints_module
+
+    def replaced_hit(name: str) -> None:
+        raise RuntimeError(f"replaced hit:{name}")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(failpoints_module, "hit", replaced_hit)
+        with pytest.raises(RuntimeError, match=r"replaced hit:source.open.after"):
+            tiny.min()
+
+    import builtins
+
+    for terminal in ("min", "max"):
+        message = f"replaced builtin {terminal}"
+
+        def replaced(*_args: object, _message: str = message, **_kwargs: object) -> object:
+            raise RuntimeError(_message)
+
+        captured_builtin: BaseException | None = None
+        with monkeypatch.context() as scoped:
+            scoped.setattr(builtins, terminal, replaced)
+            try:
+                getattr(tiny, terminal)()
+            except BaseException as error:
+                captured_builtin = error
+        assert type(captured_builtin) is RuntimeError
+        assert str(captured_builtin) == message
+
+    from fpstreams.tabular.numpy import NumpyColumnSource
+
+    def replaced_len(_source: object) -> int:
+        raise RuntimeError("replaced NumPy column length")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(NumpyColumnSource, "__len__", replaced_len)
+        with pytest.raises(RuntimeError, match="replaced NumPy column length"):
+            pipeline.min()
+
+    def replaced_size(_source: object) -> int:
+        raise RuntimeError("replaced exact size")
+
+    from fpstreams.planning.source import Source
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Source, "current_exact_size", replaced_size)
+        with pytest.raises(RuntimeError, match="replaced exact size"):
+            pipeline.min()
+
+    rebound = fpstreams.flow.from_numpy(np.asarray([0, 1], dtype=np.int64))
+    rebound_source = rebound._logical_plan.root.source  # type: ignore[attr-defined]
+    rebound_source.native_data = NumpyColumnSource(np.asarray([101, 102], dtype=np.int64))
+    rebound_execution = rebound.run_with_report("min")
+    assert rebound_execution.value == 0
+    assert rebound_execution.report.strategy != "numpy_direct"
+
+    from fpstreams.streams import flow_terminals
+
+    with (
+        monkeypatch.context() as scoped,
+        failpoint("source.open.after", RuntimeError("active patched failpoint")),
+    ):
+        scoped.setattr(flow_terminals, "has_active_failpoints", lambda: False)
+        with pytest.raises(RuntimeError, match="active patched failpoint"):
+            tiny.min()
+
+
+def test_flow_from_numpy_i64_fuses_expression_pipelines() -> None:
+    """A numeric buffer source should compose with ordinary native map/filter stages."""
+    np = pytest.importorskip("numpy")
+
+    source = np.arange(16, dtype=np.int64)
+    pipeline = (
+        fpstreams.flow.from_numpy(source)
+        .map(fpstreams.item * 3 + 1)
+        .filter(fpstreams.item % 2 == 0)
+    )
+
+    expected = [4, 10, 16, 22, 28, 34, 40, 46]
+    assert pipeline.with_engine("native").to_list() == expected
+    assert pipeline.with_engine("native").sum() == 200
+    assert pipeline.explain("sum").to_dict()["selected_engine"] == "native"
+    movement = pipeline.explain("list").to_dict()["data_movement"]
+    assert movement["scans_source"] is True
+    assert movement["copies_source"] is True
+
+    source[0] = 3
+    assert pipeline.with_engine("native").to_list() == [10, *expected]
+
+    overflowing = fpstreams.flow.from_numpy(np.asarray([2**62, *([0] * 7)], dtype=np.int64)).map(
+        fpstreams.item * 4
+    )
+    assert overflowing.to_list() == [2**64, *([0] * 7)]
+    with pytest.raises(OverflowError):
+        overflowing.with_engine("native").to_list()
+
+    short_circuiting = fpstreams.flow.from_numpy(np.asarray([2, 0], dtype=np.int64)).map(
+        10 // fpstreams.item
+    )
+    assert short_circuiting.first() == 5
+    assert short_circuiting.aggregate(first=fpstreams.agg.first()) == {"first": 5}
+    with pytest.raises(fpstreams.NativeUnsupportedError, match="short-circuiting"):
+        short_circuiting.with_engine("native").first()
+    with pytest.raises(fpstreams.NativeUnsupportedError, match="short-circuiting"):
+        short_circuiting.with_engine("native").aggregate(first=fpstreams.agg.first())
+
+
+def test_flow_from_numpy_non_native_i64_layout_stays_on_the_python_path() -> None:
+    """Strided and opposite-endian arrays must not be silently copied into the buffer kernel."""
+    np = pytest.importorskip("numpy")
+
+    strided = np.arange(64, dtype=np.int64)[::2]
+    pipeline = fpstreams.flow.from_numpy(strided)
+    assert pipeline.to_list() == list(range(0, 64, 2))
+    assert pipeline.explain("sum").to_dict()["selected_engine"] == "python"
+    with pytest.raises(fpstreams.NativeUnsupportedError):
+        pipeline.with_engine("native").sum()
+
+    storage = np.arange(8 * 33 + 1, dtype=np.uint8)
+    unaligned = storage[1:].view(np.int64)
+    unaligned_flow = fpstreams.flow.from_numpy(unaligned)
+    assert unaligned.flags.c_contiguous and not unaligned.flags.aligned
+    assert unaligned_flow.explain("sum").to_dict()["selected_engine"] == "python"
+    with pytest.raises(fpstreams.NativeUnsupportedError):
+        unaligned_flow.with_engine("native").sum()
+
+    opposite_dtype = ">i8" if sys.byteorder == "little" else "<i8"
+    opposite = np.asarray([1, 2, 3], dtype=opposite_dtype)
+    assert fpstreams.flow.from_numpy(opposite).sum() == 6
+
+    from fpstreams import _native
+
+    with pytest.raises(TypeError, match="native-endian"):
+        _native.aggregate_i64_buffer_masked_v1(opposite, [], 1 << 1)
+
+
+def test_flow_from_numpy_f64_preserves_python_full_scan_terminal_semantics() -> None:
+    """A float buffer fast path must keep Python numeric and empty-flow contracts."""
+    np = pytest.importorskip("numpy")
+
+    cancellation_values = np.asarray([1e16, 1.0, -1e16], dtype=np.float64)
+    cancellation = fpstreams.flow.from_numpy(cancellation_values)
+    expected_sum = cancellation.with_engine("python").sum()
+    assert cancellation.explain("list").to_dict()["selected_engine"] == "python"
+    assert cancellation.with_engine("native").to_list() == cancellation_values.tolist()
+    assert cancellation.with_engine("native").sum() == expected_sum
+    assert cancellation.with_engine("native").mean() == cancellation.with_engine("python").mean()
+    assert cancellation.with_engine("native").variance() == pytest.approx(
+        cancellation.with_engine("python").variance()
+    )
+
+    aggregate_cancellation = fpstreams.flow.from_numpy(
+        np.asarray([1e16, 1.0, -1e16, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    )
+    expected_total = aggregate_cancellation.with_engine("python").aggregate(
+        total=fpstreams.agg.sum()
+    )
+    automatic_total = aggregate_cancellation.aggregate(total=fpstreams.agg.sum())
+    assert automatic_total == expected_total
+    assert type(automatic_total["total"]) is float
+    mixed_total = aggregate_cancellation.with_engine("native").aggregate(
+        total=fpstreams.agg.sum(), minimum=fpstreams.agg.min()
+    )
+    assert mixed_total == aggregate_cancellation.with_engine("python").aggregate(
+        total=fpstreams.agg.sum(), minimum=fpstreams.agg.min()
+    )
+    assert type(mixed_total["total"]) is float
+
+    automatic = fpstreams.flow.from_numpy(np.arange(32, dtype=np.float64))
+    assert automatic.explain("list").to_dict()["selected_engine"] == "native"
+    assert automatic.to_list() == np.arange(32, dtype=np.float64).tolist()
+
+    empty = fpstreams.flow.from_numpy(np.asarray([], dtype=np.float64)).with_engine("native")
+    assert empty.sum() == 0
+    assert type(empty.sum()) is int
+    assert empty.aggregate(total=fpstreams.agg.sum()) == {"total": 0}
+    assert type(empty.aggregate(total=fpstreams.agg.sum())["total"]) is int
+    assert empty.mean() is None
+    assert empty.variance() is None
+
+    filtered_empty = fpstreams.flow.from_numpy(np.arange(16, dtype=np.float64)).filter(
+        fpstreams.fitem < 0.0
+    )
+    assert filtered_empty.with_engine("native").sum() == 0
+    assert type(filtered_empty.with_engine("native").sum()) is int
+    assert filtered_empty.with_engine("native").aggregate(total=fpstreams.agg.sum()) == {"total": 0}
+    assert (
+        type(filtered_empty.with_engine("native").aggregate(total=fpstreams.agg.sum())["total"])
+        is int
+    )
+
+    nan = float("nan")
+    leading_nan = fpstreams.flow.from_numpy(np.asarray([nan, 1.0], dtype=np.float64)).with_engine(
+        "native"
+    )
+    assert math.isnan(leading_nan.min())
+    assert math.isnan(leading_nan.max())
+
+    signed_zero = fpstreams.flow.from_numpy(np.asarray([-0.0, 0.0], dtype=np.float64)).with_engine(
+        "native"
+    )
+    assert math.copysign(1.0, signed_zero.min()) == -1.0
+    assert math.copysign(1.0, signed_zero.max()) == -1.0
+
+
+def test_flow_from_numpy_f64_fuses_expression_pipelines_without_layout_coercion() -> None:
+    """Float expressions should reuse the generic kernel only for exact contiguous buffers."""
+    np = pytest.importorskip("numpy")
+
+    source = np.arange(32, dtype=np.float64)
+    pipeline = (
+        fpstreams.flow.from_numpy(source)
+        .map(fpstreams.fitem * 1.5 + 0.25)
+        .filter(fpstreams.fitem > 20.0)
+    )
+    expected = pipeline.with_engine("python").to_list()
+    assert pipeline.with_engine("native").to_list() == expected
+    assert pipeline.count() == len(expected)
+    assert pipeline.with_engine("native").count() == len(expected)
+    assert pipeline.aggregate(rows=fpstreams.agg.count()) == {"rows": len(expected)}
+    assert pipeline.with_engine("native").sum() == pipeline.with_engine("python").sum()
+    assert pipeline.explain("sum").to_dict()["selected_engine"] == "native"
+
+    source[31] = 64.0
+    assert pipeline.with_engine("native").to_list() == pipeline.with_engine("python").to_list()
+
+    strided = fpstreams.flow.from_numpy(np.arange(64, dtype=np.float64)[::2])
+    assert strided.explain("sum").to_dict()["selected_engine"] == "python"
+    with pytest.raises(fpstreams.NativeUnsupportedError):
+        strided.with_engine("native").sum()
+
+    opposite_dtype = ">f8" if sys.byteorder == "little" else "<f8"
+    opposite = fpstreams.flow.from_numpy(np.asarray([1.0, 2.0, 3.0], dtype=opposite_dtype))
+    assert opposite.sum() == 6.0
+    assert opposite.explain("sum").to_dict()["selected_engine"] == "python"
+
+
+def test_numpy_adapter_count_tracks_a_resized_retained_array() -> None:
+    """Live ndarray row cardinality stays aligned with lazy iteration and explain output."""
+    np = pytest.importorskip("numpy")
+
+    source = np.asarray([[1], [2]])
+    table = fpstreams.rows.from_numpy(source, columns=["value"])
+    assert table.count() == 2
+
+    source.resize((3, 1), refcheck=False)
+    source[2, 0] = 3
+
+    assert table.count() == 3
+    assert table.to_list() == [{"value": 1}, {"value": 2}, {"value": 3}]
+    explanation = table.explain("count").to_dict()
+    assert explanation["source"]["exact_size"] == 3
+    assert explanation["semantics"]["output"]["cardinality"] == {
+        "kind": "exact",
+        "value": 3,
+    }
+
+    source.resize((1, 3), refcheck=False)
+    with pytest.raises(ValueError, match="retained array width changed"):
+        table.count()
+    with pytest.raises(ValueError, match="retained array width changed"):
+        table.explain("count")
+    with pytest.raises(ValueError, match="retained array width changed"):
+        table.to_list()
+
+    changing = np.array([[0, 1], [2, 3]])
+    iterator = iter(fpstreams.rows.from_numpy(changing, columns=("left", "right")))
+    assert next(iterator) == {"left": 0, "right": 1}
+    changing.resize((2, 3), refcheck=False)
+    with pytest.raises(ValueError, match="width changed during iteration"):
+        next(iterator)
+
+
+def test_numpy_adapter_validates_shape_and_column_names() -> None:
+    np = pytest.importorskip("numpy")
+
+    with pytest.raises(ValueError, match="two-dimensional"):
+        fpstreams.rows.from_numpy(np.asarray([1, 2]))
+    with pytest.raises(ValueError, match="2 columns"):
+        fpstreams.rows.from_numpy(np.asarray([[1, 2]]), columns=["only"])
+    with pytest.raises(fpstreams.DuplicateKeyError, match="duplicate column 'value'"):
+        fpstreams.rows.from_numpy(
+            np.asarray([[1, 2]]),
+            columns=["value", "value"],
+        )
+    with pytest.raises(TypeError, match="column names must be strings"):
+        fpstreams.rows.from_numpy(np.asarray([[1]]), columns=[0])
+    with pytest.raises(ValueError, match="column names cannot be empty"):
+        fpstreams.rows.from_numpy(np.asarray([[1]]), columns=[""])
+
+
+def test_rows_to_numpy_preserves_selectors_dtype_and_empty_shapes() -> None:
+    np = pytest.importorskip("numpy")
+
+    table = fpstreams.rows([{"a": 1}, {"a": 2, "b": 3}])
+    matrix = table.to_numpy(dtype=object)
+    selected = fpstreams.rows([{"a": 1, "b": None}, {"a": 2, "b": 3}]).to_numpy(
+        "b",
+        lambda row: row["a"] * 10,
+        dtype=object,
+    )
+
+    assert matrix.shape == (2, 2)
+    assert matrix.tolist() == [[1, None], [2, 3]]
+    assert selected.shape == (2, 2)
+    assert selected.dtype == np.dtype("object")
+    assert selected.tolist() == [[None, 10], [3, 20]]
+    empty = fpstreams.rows([]).to_numpy()
+    typed_empty = fpstreams.rows([]).to_numpy("a", "b", dtype=np.int16)
+    retained_empty = fpstreams.rows.from_numpy(np.empty((0, 3), dtype=np.float32)).to_numpy()
+    assert empty.shape == (0, 0)
+    assert empty.dtype == np.dtype("float64")
+    assert typed_empty.shape == (0, 2)
+    assert typed_empty.dtype == np.dtype("int16")
+    assert retained_empty.shape == (0, 3)
+    assert retained_empty.dtype == np.dtype("float32")
+
+    with pytest.raises(fpstreams.SelectionError, match="missing"):
+        fpstreams.rows([{"a": 1}]).to_numpy("missing")
+
+
+def test_rows_materializers_consume_the_flow_directly_without_bypassing_subclasses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical Rows skip iterator forwarding while custom iteration remains authoritative."""
+    from fpstreams.streams.flow import Flow
+    from fpstreams.tabular.rows import Rows
+
+    np = pytest.importorskip("numpy")
+
+    consume_calls = 0
+    original_consume = Flow._consume
+
+    def tracked_consume(self: Flow[Any], consumer: Any) -> Any:
+        nonlocal consume_calls
+        consume_calls += 1
+        return original_consume(self, consumer)
+
+    monkeypatch.setattr(Flow, "_consume", tracked_consume)
+
+    regular = fpstreams.rows([{"a": 1}])
+    assert regular.to_numpy("a").tolist() == [[1]]
+    assert consume_calls == 1
+    assert regular.to_columns() == {"a": [1]}
+    assert consume_calls == 2
+
+    class CustomRows(Rows[dict[str, int]]):
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            return iter(({"a": 9},))
+
+    class CustomFlow(Flow[dict[str, int]]):
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            return iter(({"a": 9},))
+
+    assert CustomRows([{"a": 2}]).to_numpy("a").tolist() == [[9]]
+    assert CustomRows([{"a": 2}]).to_columns() == {"a": [9]}
+
+    numpy_backed = fpstreams.rows.from_numpy(np.asarray([[1]]), columns=("a",))
+    assert CustomRows(numpy_backed._flow).to_numpy().tolist() == [[9]]
+
+    pa = pytest.importorskip("pyarrow")
+    arrow_backed = fpstreams.rows.from_arrow(pa.table({"a": [1]}))
+    assert CustomRows(arrow_backed._flow).to_columns() == {"a": [9]}
+
+    flow_backed = Rows(CustomFlow([{"a": 1}]))
+    assert flow_backed.to_numpy("a").tolist() == [[9]]
+    assert flow_backed.to_columns() == {"a": [9]}
+
+    class OpaqueRows(CustomRows):
+        def __getattribute__(self, name: str) -> Any:
+            if name == "_flow":
+                raise AssertionError("custom iteration must not inspect the backing flow")
+            return super().__getattribute__(name)
+
+    opaque = OpaqueRows([{"a": 1}])
+    assert opaque.to_numpy("a").tolist() == [[9]]
+    assert opaque.to_columns() == {"a": [9]}
+    assert consume_calls == 2
+
+
+@pytest.mark.parametrize("materializer", ["pairs", "rows_numpy"])
+def test_custom_materializers_keep_primary_failure_when_iterator_close_fails(
+    materializer: str,
+) -> None:
+    """Custom public iteration remains owned without replacing its primary failure."""
+    from fpstreams.streams.pairs import Pairs
+    from fpstreams.tabular.rows import Rows
+
+    primary = ValueError("materializer failed")
+
+    class FailingIterator(Iterator[Any]):
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def __next__(self) -> Any:
+            raise primary
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError("custom iterator close failed")
+
+    iterator = FailingIterator()
+    if materializer == "pairs":
+
+        class CustomPairs(Pairs[int, int]):
+            def __iter__(self) -> Iterator[tuple[int, int]]:
+                return cast(Iterator[tuple[int, int]], iterator)
+
+        materialize = CustomPairs(fpstreams.flow([])).to_dict
+    else:
+        pytest.importorskip("numpy")
+
+        class CustomRows(Rows[dict[str, int]]):
+            def __iter__(self) -> Iterator[dict[str, int]]:
+                return cast(Iterator[dict[str, int]], iterator)
+
+        def materialize_rows() -> Any:
+            return CustomRows([]).to_numpy("value")
+
+        materialize = materialize_rows
+
+    with pytest.raises(ValueError) as captured:
+        materialize()
+
+    assert captured.value is primary
+    assert captured.value.__notes__ == ["cleanup failed with OSError: custom iterator close failed"]
+    assert iterator.close_calls == 1
+
+
+def test_rows_to_numpy_direct_fields_bypass_generated_selectors_for_exact_dicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact dictionaries use the direct field path while mixed rows retain fallback semantics."""
+    from fpstreams.tabular import io as tabular_io
+
+    original_compile = tabular_io.compile_selector
+    selected_rows: list[object] = []
+
+    def compile_tracked(selector: object) -> Any:
+        compiled = original_compile(selector)  # type: ignore[arg-type]
+
+        def tracked(row: object) -> object:
+            selected_rows.append(row)
+            return compiled(row)
+
+        return tracked
+
+    class DictSubclass(dict[str, int]):
+        pass
+
+    exact = {"a": 1, "b": 2, "c": 3}
+    fallback = DictSubclass(a=4, b=5, c=6)
+    monkeypatch.setattr(tabular_io, "compile_selector", compile_tracked)
+
+    matrix = fpstreams.rows([exact, fallback]).to_numpy("a", "b", "c")
+
+    assert matrix.tolist() == [[1, 2, 3], [4, 5, 6]]
+    assert selected_rows == [fallback, fallback, fallback]
+
+    class CollidingKey:
+        def __hash__(self) -> int:
+            return hash("b")
+
+        def __eq__(self, _other: object) -> bool:
+            raise TypeError("broken key equality")
+
+    with pytest.raises(fpstreams.SelectionError, match="'b'") as captured:
+        fpstreams.rows([{"a": 1, CollidingKey(): 2}]).to_numpy("a", "b")
+    assert isinstance(captured.value.__cause__, TypeError)
+
+
+def test_rows_to_numpy_direct_fields_preserve_nested_dtype_shapes() -> None:
+    """Direct selectors retain the list-of-rows input contract passed to NumPy."""
+    np = pytest.importorskip("numpy")
+    records = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+    structured_dtype = np.dtype([("left", "i4"), ("right", "i4")])
+    subarray_dtype = np.dtype(("i4", (2,)))
+
+    direct_structured = fpstreams.rows(records).to_numpy("a", "b", dtype=structured_dtype)
+    fallback_structured = fpstreams.rows(records).to_numpy(
+        lambda row: row["a"], lambda row: row["b"], dtype=structured_dtype
+    )
+    direct_subarray = fpstreams.rows(records).to_numpy("a", dtype=subarray_dtype)
+    fallback_subarray = fpstreams.rows(records).to_numpy(lambda row: row["a"], dtype=subarray_dtype)
+
+    assert direct_structured.shape == fallback_structured.shape == (2, 2)
+    assert direct_structured.dtype == fallback_structured.dtype
+    assert direct_structured.tolist() == fallback_structured.tolist()
+    assert direct_subarray.shape == fallback_subarray.shape == (2, 1, 2)
+    assert direct_subarray.dtype == fallback_subarray.dtype
+    assert direct_subarray.tolist() == fallback_subarray.tolist()
+
+
+def test_rows_to_numpy_obeys_numpy_two_copy_modes() -> None:
+    np = pytest.importorskip("numpy")
+
+    source = np.asarray([[1, 2], [3, 4]], dtype=np.int64)
+    table = fpstreams.rows.from_numpy(source, columns=["a", "b"])
+
+    reused = table.to_numpy(copy=None)
+    required_view = table.to_numpy(copy=False)
+    copied = table.to_numpy(copy=True)
+
+    assert np.shares_memory(reused, source)
+    assert np.shares_memory(required_view, source)
+    assert not np.shares_memory(copied, source)
+    with pytest.raises(ValueError, match="copy"):
+        table.to_numpy(dtype=np.float64, copy=False)
+    with pytest.raises(ValueError, match="copy"):
+        fpstreams.rows([{"a": 1}]).to_numpy(copy=False)
+
+
 def test_polars_lazyframe_stays_lazy_batched_and_reiterable() -> None:
     executions: list[int] = []
 
@@ -8571,6 +18104,29 @@ def test_db_source_rejects_ambiguous_columns_and_still_closes() -> None:
     assert connection._cursor.closed and connection.closed
 
 
+def test_db_source_cleanup_failure_ignores_an_ambient_outer_exception() -> None:
+    class FailingCursor(_ReadCursor):
+        def __init__(self) -> None:
+            super().__init__(("value",), ((1,),))
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError("cursor close failed")
+
+    cursor = FailingCursor()
+    connection = _ReadConnection(cursor)
+    try:
+        raise ValueError("outer")
+    except ValueError as outer:
+        with pytest.raises(OSError, match="cursor close failed"):
+            fpstreams.rows.from_db(lambda: connection, "select 1").take(1).to_list()
+        assert getattr(outer, "__notes__", ()) == ()
+
+    assert cursor.close_calls == 1
+    assert connection.closed
+
+
 def test_db_sink_batches_commits_rolls_back_and_closes_upstream() -> None:
     cursor = _WriteCursor()
     connection = _WriteConnection(cursor)
@@ -8609,6 +18165,49 @@ def test_db_sink_batches_commits_rolls_back_and_closes_upstream() -> None:
     assert failed.commits == 0 and failed.rollbacks == 1
     assert failed_cursor.closed and failed.closed
     assert events == ["open", "close"]
+
+
+def test_rows_to_db_closes_database_handles_when_source_close_raises_base_exception() -> None:
+    class Source(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self.emitted = False
+            self.close_calls = 0
+
+        def __next__(self) -> dict[str, int]:
+            if self.emitted:
+                raise StopIteration
+            self.emitted = True
+            return {"id": 1}
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise KeyboardInterrupt("source close interrupted")
+
+    class DirectRows(fpstreams.Rows[dict[str, int]]):
+        def __init__(self, source: Source) -> None:
+            self.source = source
+
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            return self.source
+
+    source = Source()
+    cursor = _WriteCursor()
+    connection = _WriteConnection(cursor)
+
+    try:
+        raise ValueError("outer")
+    except ValueError as outer:
+        with pytest.raises(KeyboardInterrupt, match="source close interrupted"):
+            DirectRows(source).to_db(
+                lambda: connection,
+                "insert into events values (?)",
+                parameters=lambda row: (row["id"],),
+                batch_size=1,
+            )
+        assert getattr(outer, "__notes__", ()) == ()
+
+    assert source.close_calls == 1
+    assert cursor.closed and connection.closed
 
 
 def test_sqlite_table_sink_and_query_source_form_a_concise_round_trip(tmp_path: Path) -> None:
@@ -8708,6 +18307,97 @@ def test_sqlite_sink_rolls_back_batches_and_schema_changes_on_error(tmp_path: Pa
         assert connection.execute(
             "select count(*) from sqlite_master where type = 'table' and name = 'drift'"
         ).fetchone() == (0,)
+
+
+def test_sqlite_sink_preserves_primary_error_and_attempts_every_cleanup(  # noqa: C901
+    tmp_path: Path, monkeypatch
+) -> None:
+    primary = ValueError("row pull failed")
+    events: list[str] = []
+
+    class Source(Iterator[dict[str, int]]):
+        def __init__(self) -> None:
+            self.emitted = False
+            self.close_calls = 0
+
+        def __next__(self) -> dict[str, int]:
+            if self.emitted:
+                raise primary
+            self.emitted = True
+            return {"id": 1}
+
+        def close(self) -> None:
+            self.close_calls += 1
+            events.append("source.close")
+            raise OSError("source close failed")
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def execute(self, _statement: str, _parameters: object = None) -> None:
+            return None
+
+        def fetchone(self) -> None:
+            return None
+
+        def executemany(self, _statement: str, _values: object) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_calls += 1
+            events.append("cursor.close")
+            raise KeyError("cursor close failed")
+
+    class Connection:
+        def __init__(self, cursor: Cursor) -> None:
+            self._cursor = cursor
+            self.rollback_calls = 0
+            self.close_calls = 0
+
+        def cursor(self) -> Cursor:
+            return self._cursor
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+            events.append("rollback")
+            raise RuntimeError("rollback failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            events.append("connection.close")
+            raise LookupError("connection close failed")
+
+    from fpstreams.tabular import sqlite_sink
+
+    source = Source()
+    cursor = Cursor()
+    connection = Connection(cursor)
+    monkeypatch.setattr(sqlite_sink.sqlite3, "connect", lambda *_args, **_kwargs: connection)
+
+    class DirectRows(fpstreams.Rows[dict[str, int]]):
+        def __init__(self) -> None:
+            pass
+
+        def __iter__(self) -> Iterator[dict[str, int]]:
+            return source
+
+    with pytest.raises(ValueError) as captured:
+        DirectRows().to_sqlite(tmp_path / "unused.db", "events", batch_size=1)
+
+    assert captured.value is primary
+    assert captured.value.__notes__ == [
+        "cleanup failed: RuntimeError: rollback failed",
+        "cleanup failed: OSError: source close failed",
+        "cleanup failed: KeyError: 'cursor close failed'",
+        "cleanup failed: LookupError: connection close failed",
+    ]
+    assert events == ["rollback", "source.close", "cursor.close", "connection.close"]
+    assert source.close_calls == cursor.close_calls == connection.close_calls == 1
+    assert connection.rollback_calls == 1
 
 
 def test_sql_interfaces_reject_ambiguous_or_unbounded_configuration(tmp_path: Path) -> None:
@@ -9206,3 +18896,2065 @@ def test_retained_arrow_unique_join_invalid_utf8_keeps_canonical_error_priority(
         execute("auto")
     assert str(automatic.value) == str(canonical.value)
     assert "found duplicate 1" in str(automatic.value)
+
+
+def test_rows_run_with_report_keeps_the_rows_terminal_surface() -> None:
+    source = fpstreams.rows([{"value": 1}, {"value": 2}])
+
+    execution = source.select("value").run_with_report("to_list")
+
+    assert execution.value == [{"value": 1}, {"value": 2}]
+    assert execution.report.terminal == "to_list"
+    assert execution.report.strategy == "planned:python"
+
+
+def test_numpy_group_planner_marks_only_direct_integer_columnar_shapes() -> None:
+    """Planning should expose the bounded NumPy candidate without widening its contract."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.physical.relational import (
+        GroupAggregatePhysicalNode,
+        NumpyGroupAggregateSpec,
+    )
+    from fpstreams.planning.compiler import compile_query
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2], [1, 3]], dtype=np.int64),
+        columns=("key", "value"),
+    )
+    grouped = source.group_by("key").aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    assert isinstance(physical.root, GroupAggregatePhysicalNode)
+    assert isinstance(physical.root.numpy_group, NumpyGroupAggregateSpec)
+    assert tuple(lane.kind for lane in physical.root.numpy_group.lanes) == (
+        "count",
+        "sum",
+        "min",
+        "max",
+    )
+
+    unsupported = (
+        source.with_engine("python").group_by("key").aggregate(total=fpstreams.agg.sum("value")),
+        source.group_by(lambda row: row["key"]).aggregate(total=fpstreams.agg.sum("value")),
+        fpstreams.rows.from_numpy(
+            np.asarray([[1.0, 2.0]], dtype=np.float64),
+            columns=("key", "value"),
+        )
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value")),
+    )
+    for query in unsupported:
+        fallback = compile_query(query._flow._query("list"))
+        assert isinstance(fallback.root, GroupAggregatePhysicalNode)
+        assert fallback.root.numpy_group is None
+
+
+def test_numpy_group_aggregate_is_bounded_columnar_single_pass_and_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One chunk factorization should feed every lane and preserve first-seen order."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    matrix = np.asarray(
+        [[2, 4], [1, -7], [2, 3], [3, 9], [1, 5], [2, -8], [3, 1]],
+        dtype=np.int64,
+    )
+    source = fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+    query = source.group_by("key").aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+        total_again=fpstreams.agg.sum("value"),
+        low=fpstreams.agg.min("value"),
+        high=fpstreams.agg.max("value"),
+    )
+    original_factorization = numpy_group._factorize_numpy_group_keys
+    chunk_sizes: list[int] = []
+
+    def bounded_factorization(module: object, values: object) -> object:
+        chunk_sizes.append(len(values))  # type: ignore[arg-type]
+        assert len(values) <= 3  # type: ignore[arg-type]
+        return original_factorization(module, values)
+
+    def forbidden_rows(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("supported NumPy grouping must not enter the row executor")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 3)
+    monkeypatch.setattr(relational, "_execute_python_group_values", forbidden_rows)
+    monkeypatch.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+    monkeypatch.setattr(numpy_group, "_factorize_numpy_group_keys", bounded_factorization)
+    execution = query.run_with_report("to_list")
+
+    expected = [
+        {"key": 2, "rows": 3, "total": -1, "total_again": -1, "low": -8, "high": 4},
+        {"key": 1, "rows": 2, "total": -2, "total_again": -2, "low": -7, "high": 5},
+        {"key": 3, "rows": 2, "total": 10, "total_again": 10, "low": 1, "high": 9},
+    ]
+    assert execution.value == expected
+    assert chunk_sizes == [3, 3]
+    assert execution.report.strategy == "numpy_direct"
+    chunk_sizes.clear()
+    assert list(query) == expected
+    assert chunk_sizes == [3, 3]
+
+
+def test_numpy_group_native_state_reduces_i64_chunks_without_numpy_factorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One stable native scan should serve repeated lanes and multiple bounded chunks."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    matrix = np.asarray(
+        [
+            [2, 4],
+            [1, -7],
+            [2, 3],
+            [3, 9],
+            [1, 5],
+            [2, -8],
+            [3, 1],
+        ],
+        dtype=np.int64,
+    )
+    query = (
+        fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            total_again=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+    )
+
+    def forbidden_factorization(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("exact i64 chunks should use the native grouped state")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 3)
+    monkeypatch.setattr(
+        numpy_group,
+        "_factorize_numpy_group_keys",
+        forbidden_factorization,
+    )
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [
+        {"key": 2, "rows": 3, "total": -1, "total_again": -1, "low": -8, "high": 4},
+        {"key": 1, "rows": 2, "total": -2, "total_again": -2, "low": -7, "high": 5},
+        {"key": 3, "rows": 2, "total": 10, "total_again": 10, "low": 1, "high": 9},
+    ]
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_group_native_state_reads_strided_source_columns_without_v1_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The GIL build should aggregate direct column views without a packed intermediate."""
+    np = pytest.importorskip("numpy")
+    from fpstreams import _native
+    from fpstreams.execution import relational
+
+    matrix = np.asarray(
+        [
+            [2, 40, 4],
+            [1, 70, -7],
+            [2, 30, 3],
+            [3, 90, 9],
+            [1, 50, 5],
+            [2, 80, -8],
+            [3, 10, 1],
+        ],
+        dtype=np.int64,
+    )
+    query = (
+        fpstreams.rows.from_numpy(matrix, columns=("key", "payload", "value"))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+    )
+    real_partial = _native.numpy_group_strided_partial_v2
+    observed_strides: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+
+    def tracked_partial(keys: object, values: object, mask: int) -> object:
+        observed_strides.append((keys.strides, values.strides))  # type: ignore[attr-defined]
+        return real_partial(keys, values, mask)
+
+    def forbidden_v1(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the GIL build should not repack stable NumPy columns")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 3)
+    monkeypatch.setattr(_native, "numpy_group_partial_v1", forbidden_v1)
+    monkeypatch.setattr(_native, "numpy_group_strided_partial_v2", tracked_partial)
+
+    assert query.to_list() == [
+        {"key": 2, "rows": 3, "total": -1, "low": -8, "high": 4},
+        {"key": 1, "rows": 2, "total": -2, "low": -7, "high": 5},
+        {"key": 3, "rows": 2, "total": 10, "low": 1, "high": 9},
+    ]
+    assert observed_strides == [((24,), (24,)), ((24,), (24,)), ((24,), (24,))]
+
+
+def test_numpy_group_native_partial_commits_only_after_live_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shortened retained matrix must discard and recompute its pending native chunk."""
+    np = pytest.importorskip("numpy")
+    from fpstreams import _native
+    from fpstreams.execution import numpy_group, relational
+
+    live = np.asarray([[2, 10], [1, 20], [3, 30]], dtype=np.int64)
+    query = (
+        fpstreams.rows.from_numpy(live, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+            low=fpstreams.agg.min("value"),
+            high=fpstreams.agg.max("value"),
+        )
+    )
+    real_partial = _native.numpy_group_strided_partial_v2
+    real_commit = _native.numpy_group_commit_v1
+    partial_sizes: list[int] = []
+    commits = 0
+
+    def shrinking_partial(keys: object, values: object, mask: int) -> object:
+        partial = real_partial(keys, values, mask)
+        partial_sizes.append(len(keys))  # type: ignore[arg-type]
+        if len(partial_sizes) == 1:
+            live.resize((2, 2), refcheck=False)
+        return partial
+
+    def tracked_commit(state: object, partial: object) -> None:
+        nonlocal commits
+        commits += 1
+        real_commit(state, partial)
+
+    def forbidden_factorization(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a stable retry should remain in the native grouped state")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 3)
+    monkeypatch.setattr(_native, "numpy_group_strided_partial_v2", shrinking_partial)
+    monkeypatch.setattr(_native, "numpy_group_commit_v1", tracked_commit)
+    monkeypatch.setattr(
+        numpy_group,
+        "_factorize_numpy_group_keys",
+        forbidden_factorization,
+    )
+
+    assert query.to_list() == [
+        {"key": 2, "rows": 1, "total": 10, "low": 10, "high": 10},
+        {"key": 1, "rows": 1, "total": 20, "low": 20, "high": 20},
+    ]
+    assert partial_sizes == [3, 2]
+    assert commits == 1
+
+
+def test_numpy_group_native_decline_discards_state_and_restarts_numpy_from_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later ABI decline must not leak already committed native rows into fallback."""
+    np = pytest.importorskip("numpy")
+    from fpstreams import _native
+    from fpstreams.execution import numpy_group, relational
+
+    matrix = np.asarray(
+        [[2, 10], [1, 20], [2, 30], [3, 40], [1, 50], [3, 60]],
+        dtype=np.int64,
+    )
+    query = (
+        fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+    )
+    real_partial = _native.numpy_group_strided_partial_v2
+    original_factorization = numpy_group._factorize_numpy_group_keys
+    partial_sizes: list[int] = []
+    fallback_chunks: list[tuple[int, ...]] = []
+
+    def declining_partial(keys: object, values: object, mask: int) -> object:
+        partial_sizes.append(len(keys))  # type: ignore[arg-type]
+        if len(partial_sizes) == 2:
+            return None
+        return real_partial(keys, values, mask)
+
+    def tracked_factorization(module: object, keys: object) -> object:
+        fallback_chunks.append(tuple(int(key) for key in keys))  # type: ignore[union-attr]
+        return original_factorization(module, keys)
+
+    def forbidden_finalize(_state: object) -> object:
+        raise AssertionError("a declined native state must never be finalized")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 3)
+    monkeypatch.setattr(_native, "numpy_group_strided_partial_v2", declining_partial)
+    monkeypatch.setattr(_native, "numpy_group_finalize_v1", forbidden_finalize)
+    monkeypatch.setattr(
+        numpy_group,
+        "_factorize_numpy_group_keys",
+        tracked_factorization,
+    )
+
+    assert query.to_list() == [
+        {"key": 2, "total": 40},
+        {"key": 1, "total": 70},
+        {"key": 3, "total": 100},
+    ]
+    assert partial_sizes == [3, 3]
+    assert fallback_chunks == [(2, 1, 2), (3, 1, 3)]
+
+
+def test_numpy_group_reuses_only_a_closed_compact_domain_with_a_count_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Holes, missing counts, and wide domains must retain full factorization."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    original_factorization = numpy_group._factorize_numpy_group_keys
+
+    def factorized_chunks(
+        keys: list[int],
+        *,
+        include_count: bool,
+        chunk_rows: int = 4,
+    ) -> tuple[list[tuple[int, ...]], list[dict[str, object]]]:
+        matrix = np.column_stack(
+            (np.asarray(keys, dtype=np.int64), np.arange(len(keys), dtype=np.int64))
+        )
+        source = fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+        if include_count:
+            query = source.group_by("key").aggregate(
+                rows=fpstreams.agg.count(),
+                total=fpstreams.agg.sum("value"),
+            )
+        else:
+            query = source.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+        chunks: list[tuple[int, ...]] = []
+
+        def tracked_factorization(module: object, values: object) -> object:
+            chunks.append(tuple(int(value) for value in values))  # type: ignore[union-attr]
+            return original_factorization(module, values)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", chunk_rows)
+            scoped.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+            scoped.setattr(
+                numpy_group,
+                "_factorize_numpy_group_keys",
+                tracked_factorization,
+            )
+            result = query.to_list()
+        return chunks, result
+
+    hole_chunks, hole_result = factorized_chunks(
+        [0, 2, 0, 2, 0, 1, 2, 0, 2, 1, 0, 2],
+        include_count=True,
+    )
+    assert hole_chunks == [(0, 2, 0, 2), (0, 1, 2, 0)]
+    assert hole_result == [
+        {"key": 0, "rows": 5, "total": 23},
+        {"key": 2, "rows": 5, "total": 29},
+        {"key": 1, "rows": 2, "total": 14},
+    ]
+
+    no_count_chunks, no_count_result = factorized_chunks(
+        [0, 1, 0, 1, 1, 0, 1, 0],
+        include_count=False,
+    )
+    assert no_count_chunks == [(0, 1, 0, 1), (1, 0, 1, 0)]
+    assert no_count_result == [
+        {"key": 0, "total": 14},
+        {"key": 1, "total": 14},
+    ]
+
+    high_cardinality_chunks, high_cardinality_result = factorized_chunks(
+        [0, 100, 200, 300, 300, 200, 100, 0],
+        include_count=True,
+    )
+    assert high_cardinality_chunks == [
+        (0, 100, 200, 300),
+        (300, 200, 100, 0),
+    ]
+    assert high_cardinality_result == [
+        {"key": 0, "rows": 2, "total": 7},
+        {"key": 100, "rows": 2, "total": 7},
+        {"key": 200, "rows": 2, "total": 7},
+        {"key": 300, "rows": 2, "total": 7},
+    ]
+
+    tail_chunks, tail_result = factorized_chunks(
+        [index % 65 for index in range(1_040)] + [0],
+        include_count=True,
+        chunk_rows=1_040,
+    )
+    assert [len(chunk) for chunk in tail_chunks] == [1_040, 1]
+    assert tail_chunks[-1] == (0,)
+    assert tail_result[0] == {"key": 0, "rows": 17, "total": 8_840}
+
+
+def test_numpy_group_closed_domain_reuse_covers_fixed_width_integer_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Known dense codes remain exact at signed, unsigned, boolean, and endian edges."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    opposite = ">" if sys.byteorder == "little" else "<"
+    cases = (
+        (np.dtype(np.int64), -(2**63), -(2**63) + 1),
+        (np.dtype(np.uint64), 2**64 - 2, 2**64 - 1),
+        (np.dtype(np.bool_), False, True),
+        (np.dtype(f"{opposite}i8"), -(2**63), -(2**63) + 1),
+        (np.dtype(f"{opposite}u8"), 2**64 - 2, 2**64 - 1),
+    )
+    original_factorization = numpy_group._factorize_numpy_group_keys
+
+    def tracking_factorization(sizes: list[int]) -> object:
+        def tracked(module: object, values: object) -> object:
+            sizes.append(len(values))  # type: ignore[arg-type]
+            return original_factorization(module, values)
+
+        return tracked
+
+    for dtype, lower, upper in cases:
+        matrix = np.empty((8, 2), dtype=dtype)
+        matrix[:, 0] = [upper, lower, upper, lower, lower, upper, lower, upper]
+        matrix[:, 1] = True if dtype.kind == "b" else 1
+        query = (
+            fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+            .group_by("key")
+            .aggregate(
+                rows=fpstreams.agg.count(),
+                total=fpstreams.agg.sum("value"),
+                low=fpstreams.agg.min("value"),
+                high=fpstreams.agg.max("value"),
+            )
+        )
+        factorized_sizes: list[int] = []
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 4)
+            scoped.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+            scoped.setattr(
+                numpy_group,
+                "_factorize_numpy_group_keys",
+                tracking_factorization(factorized_sizes),
+            )
+            result = query.to_list()
+
+        unit = True if dtype.kind == "b" else 1
+        assert factorized_sizes == [4]
+        assert result == [
+            {"key": upper, "rows": 4, "total": 4, "low": unit, "high": unit},
+            {"key": lower, "rows": 4, "total": 4, "low": unit, "high": unit},
+        ]
+        expected_key_type = bool if dtype.kind == "b" else int
+        assert all(type(row["key"]) is expected_key_type for row in result)
+
+
+def test_numpy_group_single_chunk_does_not_build_an_unused_dense_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal chunk keeps the original factorizer without a state-only rescan."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    matrix = np.asarray([[1, 2], [0, 3], [1, 4], [0, 5]], dtype=np.int64)
+    query = (
+        fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+
+    def forbidden_domain(*_args: object) -> object:
+        raise AssertionError("the final chunk cannot reuse newly discovered state")
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", len(matrix))
+    monkeypatch.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+    monkeypatch.setattr(numpy_group, "_closed_numpy_group_domain", forbidden_domain)
+
+    assert query.to_list() == [
+        {"key": 1, "rows": 2, "total": 6},
+        {"key": 0, "rows": 2, "total": 8},
+    ]
+
+
+def test_numpy_group_closed_domain_rechecks_a_shrinking_live_array(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dense-state reuse must recompute a partial chunk after retained-array shrinkage."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    live = np.asarray(
+        [[1, 10], [0, 1], [1, 20], [0, 2], [1, 30], [0, 3], [1, 40], [0, 4]],
+        dtype=np.int64,
+    )
+    query = (
+        fpstreams.rows.from_numpy(live, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+    original_reuse = numpy_group._factorize_closed_numpy_group_domain
+    reuse_sizes: list[int] = []
+
+    def shrink_after_reuse(module: object, values: object, domain: object) -> object:
+        result = original_reuse(module, values, domain)  # type: ignore[arg-type]
+        reuse_sizes.append(len(values))  # type: ignore[arg-type]
+        if len(reuse_sizes) == 1:
+            live.resize((6, 2), refcheck=False)
+        return result
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 4)
+    monkeypatch.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+    monkeypatch.setattr(
+        numpy_group,
+        "_factorize_closed_numpy_group_domain",
+        shrink_after_reuse,
+    )
+
+    assert query.to_list() == [
+        {"key": 1, "rows": 3, "total": 60},
+        {"key": 0, "rows": 3, "total": 6},
+    ]
+    assert reuse_sizes == [4, 2]
+
+
+def test_numpy_group_closed_domain_discards_speculative_state_after_regrowth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shrink retry cannot reuse removed keys to reorder a subsequently grown tail."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    live = np.asarray(
+        [
+            [3, 30],
+            [0, 0],
+            [1, 10],
+            [2, 20],
+            [3, 31],
+            [0, 1],
+            [1, 11],
+            [2, 21],
+        ],
+        dtype=np.int64,
+    )
+    query = (
+        fpstreams.rows.from_numpy(live, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+    original_factorization = numpy_group._factorize_numpy_group_keys
+    calls = 0
+
+    def resize_between_retries(module: object, values: object) -> object:
+        nonlocal calls
+        result = original_factorization(module, values)
+        calls += 1
+        if calls == 1:
+            live.resize((2, 2), refcheck=False)
+        elif calls == 2:
+            live.resize((4, 2), refcheck=False)
+            live[2:] = [[2, 200], [1, 100]]
+        return result
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 4)
+    monkeypatch.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+    monkeypatch.setattr(
+        numpy_group,
+        "_factorize_numpy_group_keys",
+        resize_between_retries,
+    )
+
+    assert query.to_list() == [
+        {"key": 3, "rows": 1, "total": 30},
+        {"key": 0, "rows": 1, "total": 0},
+        {"key": 2, "rows": 1, "total": 200},
+        {"key": 1, "rows": 1, "total": 100},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("names", "values", "expected"),
+    [
+        (
+            ("left", "right"),
+            [[10, 20], [30, 40]],
+            [
+                {"key": 2, "left": 10, "right": 30},
+                {"key": 1, "left": 20, "right": 40},
+            ],
+        ),
+        (
+            ("first", "second", "third"),
+            [[10, 20], [30, 40], [50, 60]],
+            [
+                {"key": 2, "first": 10, "second": 30, "third": 50},
+                {"key": 1, "first": 20, "second": 40, "third": 60},
+            ],
+        ),
+        (
+            ("first", "second", "third", "fourth"),
+            [[10, 20], [30, 40], [50, 60], [70, 80]],
+            [
+                {
+                    "key": 2,
+                    "first": 10,
+                    "second": 30,
+                    "third": 50,
+                    "fourth": 70,
+                },
+                {
+                    "key": 1,
+                    "first": 20,
+                    "second": 40,
+                    "third": 60,
+                    "fourth": 80,
+                },
+            ],
+        ),
+    ],
+)
+def test_numpy_group_fixed_width_materialization_reads_lane_metadata_once(
+    names: tuple[str, ...],
+    values: list[list[int]],
+    expected: list[dict[str, int]],
+) -> None:
+    """Two-to-four-lane output must not rescan lane metadata for every group."""
+    from fpstreams.execution.numpy_group import _materialize_numpy_group_rows
+    from fpstreams.physical.relational import NumpyGroupLaneSpec
+
+    class CountingLaneStates(list[list[int]]):
+        iterations = 0
+
+        def __iter__(self) -> Iterator[list[int]]:
+            self.iterations += 1
+            return super().__iter__()
+
+    lane_states = CountingLaneStates(values)
+    lanes = tuple(NumpyGroupLaneSpec(name, "sum", "value") for name in names)
+
+    result = _materialize_numpy_group_rows([2, 1], lane_states, "key", lanes)
+
+    assert result == expected
+    assert lane_states.iterations == 0
+
+
+def test_numpy_group_aggregate_keeps_python_integer_and_boolean_semantics() -> None:
+    """Chunk partials must never wrap, and NumPy scalar keys must become Python scalars."""
+    np = pytest.importorskip("numpy")
+    maximum = 2**63 - 1
+    cases = (
+        (
+            np.asarray([[1, 120], [1, 120], [-1, -120]], dtype=np.int8),
+            [
+                {"key": 1, "rows": 2, "total": 240, "low": 120, "high": 120},
+                {"key": -1, "rows": 1, "total": -120, "low": -120, "high": -120},
+            ],
+        ),
+        (
+            np.asarray([[1, maximum], [1, maximum]], dtype=np.int64),
+            [{"key": 1, "rows": 2, "total": maximum * 2, "low": maximum, "high": maximum}],
+        ),
+        (
+            np.asarray([[1, 2**64 - 1], [1, 2**64 - 1]], dtype=np.uint64),
+            [
+                {
+                    "key": 1,
+                    "rows": 2,
+                    "total": (2**64 - 1) * 2,
+                    "low": 2**64 - 1,
+                    "high": 2**64 - 1,
+                }
+            ],
+        ),
+        (
+            np.asarray([[True, True], [False, True], [True, False]], dtype=np.bool_),
+            [
+                {"key": True, "rows": 2, "total": 1, "low": False, "high": True},
+                {"key": False, "rows": 1, "total": 1, "low": True, "high": True},
+            ],
+        ),
+        (
+            np.asarray([[2, 4], [1, -3], [2, 5]], dtype=">i8"),
+            [
+                {"key": 2, "rows": 2, "total": 9, "low": 4, "high": 5},
+                {"key": 1, "rows": 1, "total": -3, "low": -3, "high": -3},
+            ],
+        ),
+    )
+    for matrix, expected in cases:
+        result = (
+            fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+            .group_by("key")
+            .aggregate(
+                rows=fpstreams.agg.count(),
+                total=fpstreams.agg.sum("value"),
+                low=fpstreams.agg.min("value"),
+                high=fpstreams.agg.max("value"),
+            )
+            .to_list()
+        )
+        assert result == expected
+        assert all(
+            type(row["key"]) is type(expected_row["key"])
+            for row, expected_row in zip(result, expected, strict=True)
+        )
+        assert all(
+            type(row[name]) is type(expected_row[name])
+            for row, expected_row in zip(result, expected, strict=True)
+            for name in ("rows", "total", "low", "high")
+        )
+
+    empty = np.empty((0, 1), dtype=np.int64)
+    assert (
+        fpstreams.rows.from_numpy(empty, columns=("present",))
+        .group_by("missing")
+        .aggregate(total=fpstreams.agg.sum("also_missing"))
+        .to_list()
+    ) == []
+    with pytest.raises(fpstreams.SelectionError) as missing:
+        (
+            fpstreams.rows.from_numpy(np.asarray([[1]], dtype=np.int64), columns=("present",))
+            .group_by("missing")
+            .aggregate(total=fpstreams.agg.sum("also_missing"))
+            .to_list()
+        )
+    assert isinstance(missing.value.__cause__, KeyError)
+
+    maximum_key = 2**63 - 1
+    assert (
+        fpstreams.rows.from_numpy(
+            np.asarray([[maximum_key], [maximum_key]], dtype=np.int64),
+            columns=("value",),
+        )
+        .group_by(bucket="value")
+        .aggregate(total=fpstreams.agg.sum("value"))
+        .to_list()
+    ) == [{"bucket": maximum_key, "total": maximum_key * 2}]
+
+
+def test_numpy_group_low_cardinality_overflow_sum_stays_columnar() -> None:
+    """Exact wide totals must not fall back to a Python loop for every source row."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.numpy_group import _exact_numpy_group_sum
+
+    class NoRowList(np.ndarray):
+        def tolist(self) -> list[object]:
+            raise AssertionError("low-cardinality exact grouping must remain columnar")
+
+    maximum = 2**63 - 1
+    values = np.asarray([maximum, -maximum] * 8, dtype=np.int64).view(NoRowList)
+    inverse = np.asarray([0, 1] * 8, dtype=np.intp).view(NoRowList)
+
+    totals = _exact_numpy_group_sum(np, values, inverse, 2)
+
+    assert list(totals) == [maximum * 8, -maximum * 8]
+    assert all(type(value) is int for value in totals)
+
+
+def test_numpy_group_float_exact_integer_sum_uses_bincount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Safely bounded integer sums should use the faster exact weighted reduction."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.numpy_group import _exact_numpy_group_sum
+
+    values = np.asarray([100_000, -100_000, 7, -3] * 8, dtype=np.int32)
+    inverse = np.arange(32, dtype=np.intp) % 4
+    original_bincount = np.bincount
+    calls = 0
+
+    def tracked_bincount(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_bincount(*args, **kwargs)
+
+    monkeypatch.setattr(np, "bincount", tracked_bincount)
+
+    totals = _exact_numpy_group_sum(np, values, inverse, 4)
+
+    assert totals.tolist() == [800_000, -800_000, 56, -24]
+    assert totals.dtype == np.dtype(np.int64)
+    assert calls == 1
+
+    one_group = _exact_numpy_group_sum(np, values, np.zeros(32, dtype=np.intp), 1)
+    assert one_group.tolist() == [32]
+    assert calls == 1
+
+    native_i64 = values.astype(np.int64)
+    assert _exact_numpy_group_sum(np, native_i64, inverse, 4).tolist() == [
+        800_000,
+        -800_000,
+        56,
+        -24,
+    ]
+    assert calls == 1
+
+
+def test_numpy_group_keeps_internal_list_checks_stable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An implementation-only list lookup must not change public grouped results or routing."""
+    import builtins
+
+    np = pytest.importorskip("numpy")
+    maximum = 2**63 - 1
+    query = (
+        fpstreams.rows.from_numpy(
+            np.asarray([[1, maximum], [1, maximum]], dtype=np.int64),
+            columns=("key", "value"),
+        )
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+    )
+    from fpstreams.execution import relational
+
+    def forbidden_rows(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an implementation-only list replacement must stay columnar")
+
+    monkeypatch.setattr(relational, "_execute_python_group_values", forbidden_rows)
+    original_list = builtins.list
+    try:
+        builtins.list = lambda *_args, **_kwargs: ["changed"]
+        result = tuple(query)
+    finally:
+        builtins.list = original_list
+
+    assert result == ({"key": 1, "total": maximum * 2},)
+
+
+@pytest.mark.parametrize(
+    ("dtype_name", "left", "right"),
+    [
+        ("int64", -(2**63), 2**63 - 1),
+        ("uint64", 2**64 - 1, 2**63),
+        ("opposite_i64", -(2**63), 2**63 - 1),
+        ("opposite_u64", 2**64 - 1, 2**63),
+    ],
+)
+def test_numpy_group_exact_limb_sum_covers_extremes_and_byte_orders(
+    dtype_name: str,
+    left: int,
+    right: int,
+) -> None:
+    """Both signed limbs and endian conversions must remain exact without row boxing."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.numpy_group import _exact_numpy_group_sum
+
+    class NoRowList(np.ndarray):
+        def tolist(self) -> list[object]:
+            raise AssertionError("the exact limb path must not box source rows")
+
+    dtype = {
+        "int64": "int64",
+        "uint64": "uint64",
+        "opposite_i64": ">i8" if sys.byteorder == "little" else "<i8",
+        "opposite_u64": ">u8" if sys.byteorder == "little" else "<u8",
+    }[dtype_name]
+    values = np.asarray([left, right] * 8, dtype=dtype).view(NoRowList)
+    inverse = np.asarray([0, 1] * 8, dtype=np.intp).view(NoRowList)
+
+    totals = _exact_numpy_group_sum(np, values, inverse, 2)
+
+    assert totals == [left * 8, right * 8]
+    assert all(type(value) is int for value in totals)
+
+
+def test_numpy_group_exact_limb_sum_keeps_high_cardinality_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The measured low-cardinality kernel must not penalize one-group-per-row data."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group
+
+    def forbidden_limb(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("high-cardinality groups must keep the Python fallback")
+
+    monkeypatch.setattr(numpy_group, "_exact_limb_group_sum", forbidden_limb)
+    maximum = 2**63 - 1
+    values = np.full(16, maximum, dtype=np.int64)
+    inverse = np.arange(16, dtype=np.intp)
+
+    assert numpy_group._exact_numpy_group_sum(np, values, inverse, 16) == [maximum] * 16
+
+
+def test_numpy_group_exact_limb_partials_merge_across_bounded_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python integer state must merge limb partials without wrapping or reordering keys."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+
+    assert relational._NUMPY_GROUP_CHUNK_ROWS <= numpy_group._MAX_EXACT_LIMB_ROWS
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 16)
+    maximum = 2**63 - 1
+    minimum = -(2**63)
+    matrix = np.asarray([[2, maximum], [1, minimum]] * 20, dtype=np.int64)
+
+    result = (
+        fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+        .group_by("key")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("value"),
+        )
+        .to_list()
+    )
+
+    assert result == [
+        {"key": 2, "rows": 20, "total": maximum * 20},
+        {"key": 1, "rows": 20, "total": minimum * 20},
+    ]
+
+
+def test_numpy_group_aggregate_deopts_for_failpoints_and_tracks_source_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failpoints and live shape changes keep their canonical boundaries."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, relational
+    from fpstreams.runtime.failpoints import failpoint
+
+    matrix = np.asarray([[1, 2], [1, 3]], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+    expected = [{"key": 1, "total": 5}]
+
+    def forbidden_columnar(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("observable execution must bypass NumPy grouped columns")
+
+    original_group_aggregate = numpy_group._numpy_group_aggregate
+    monkeypatch.setattr(numpy_group, "_numpy_group_aggregate", forbidden_columnar)
+    assert (
+        source.with_engine("python")
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+        .to_list()
+        == expected
+    )
+    with failpoint("unrelated.numpy.group", RuntimeError("unused")):
+        assert (
+            source.group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list() == expected
+        )
+
+    monkeypatch.setattr(numpy_group, "_numpy_group_aggregate", original_group_aggregate)
+
+    changing = np.asarray([[1, 2], [1, 3], [2, 4], [2, 5]], dtype=np.int64)
+    changing_source = fpstreams.rows.from_numpy(changing, columns=("key", "value"))
+    original_factorization = numpy_group._factorize_numpy_group_keys
+    calls = 0
+
+    monkeypatch.setattr(numpy_group, "_native_numpy_group_endpoints", lambda: None)
+
+    def reshape_after_first_chunk(module: object, values: object) -> object:
+        nonlocal calls
+        result = original_factorization(module, values)
+        calls += 1
+        if calls == 1:
+            changing.resize((changing.size,), refcheck=False)
+        return result
+
+    monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", 2)
+    monkeypatch.setattr(numpy_group, "_factorize_numpy_group_keys", reshape_after_first_chunk)
+    with pytest.raises(ValueError, match="changed to 1 dimensions during iteration"):
+        changing_source.group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list()
+
+    def aggregate_after_resize(
+        initial: list[list[int]],
+        resized: list[list[int]],
+        *,
+        chunk_rows: int,
+    ) -> list[dict[str, object]]:
+        live = np.asarray(initial, dtype=np.int64)
+        live_query = (
+            fpstreams.rows.from_numpy(live, columns=("key", "value"))
+            .group_by("key")
+            .aggregate(total=fpstreams.agg.sum("value"))
+        )
+        resize_calls = 0
+
+        def resize_after_first_chunk(module: object, values: object) -> object:
+            nonlocal resize_calls
+            result = original_factorization(module, values)
+            resize_calls += 1
+            if resize_calls == 1:
+                live.resize((len(resized), 2), refcheck=False)
+                live[:] = resized
+            return result
+
+        monkeypatch.setattr(relational, "_NUMPY_GROUP_CHUNK_ROWS", chunk_rows)
+        monkeypatch.setattr(numpy_group, "_factorize_numpy_group_keys", resize_after_first_chunk)
+        return live_query.to_list()
+
+    assert aggregate_after_resize(
+        [[1, 2], [1, 3], [2, 4], [2, 5]],
+        [[1, 2]],
+        chunk_rows=3,
+    ) == [{"key": 1, "total": 2}]
+    assert aggregate_after_resize(
+        [[1, 2], [1, 3]],
+        [[1, 2], [1, 3], [2, 4], [1, 7]],
+        chunk_rows=2,
+    ) == [{"key": 1, "total": 12}, {"key": 2, "total": 4}]
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires POSIX interval timers")
+@pytest.mark.parametrize("changed_dtype", ["float64", "uint64"])
+def test_numpy_group_matches_python_during_signal_time_same_width_dtype_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_dtype: str,
+) -> None:
+    """An active timer keeps public auto grouping on Python's live dtype boundary."""
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group
+    from fpstreams.tabular import numpy as numpy_adapter
+
+    canonical_validation = numpy_adapter._validate_retained_numpy_iteration
+
+    def consume(engine: str) -> tuple[list[dict[str, object]] | None, BaseException | None]:
+        matrix = np.zeros((200_000, 2), dtype=np.int64)
+        query = (
+            fpstreams.rows.from_numpy(matrix, columns=("key", "value"))
+            .with_engine(engine)
+            .group_by("key")
+            .aggregate(total=fpstreams.agg.sum("value"))
+        )
+        fired = False
+        armed = False
+
+        def change_dtype(_signal_number: int, _frame: object) -> None:
+            nonlocal fired
+            fired = True
+            matrix.dtype = np.dtype(changed_dtype)
+
+        def arm_after_validation(values: object, width: int, dtype: object) -> int:
+            nonlocal armed
+            row_count = canonical_validation(values, width, dtype)
+            if values is matrix and not armed:
+                armed = True
+                signal.setitimer(signal.ITIMER_REAL, 0.0001)
+            return row_count
+
+        previous_handler = signal.signal(signal.SIGALRM, change_dtype)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            with monkeypatch.context() as scoped, warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                scoped.setattr(
+                    numpy_adapter,
+                    "_validate_retained_numpy_iteration",
+                    arm_after_validation,
+                )
+                scoped.setattr(
+                    numpy_group,
+                    "_validate_retained_numpy_iteration",
+                    arm_after_validation,
+                )
+                try:
+                    result = query.to_list()
+                except BaseException as error:
+                    result = None
+                    captured = error
+                else:
+                    captured = None
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            signal.signal(signal.SIGALRM, previous_handler)
+        assert fired
+        return result, captured
+
+    canonical = consume("python")
+    automatic = consume("auto")
+    assert canonical[0] is automatic[0] is None
+    assert [type(canonical[1]), type(automatic[1])] == [ValueError, ValueError]
+    assert (
+        str(canonical[1])
+        == str(automatic[1])
+        == (
+            f"from_numpy() retained array dtype changed from int64 to {changed_dtype} "
+            "during iteration"
+        )
+    )
+
+
+def test_numpy_row_prefix_explain_marks_only_complete_safe_plans() -> None:
+    """Explain should expose only full guarded NumPy row prefixes selected by planning."""
+    np = pytest.importorskip("numpy")
+
+    integers = fpstreams.rows.from_numpy(
+        np.asarray([[1, 4], [2, 3]], dtype=np.int64),
+        columns=("left", "right"),
+    )
+    eligible = (
+        integers.where(fpstreams.col("left") >= 1)
+        .where(5 > fpstreams.col("right"))  # noqa: SIM300 - exercise literal-left lowering
+        .select("left", copied="left")
+    )
+    explanation = eligible.explain("list").to_dict()
+
+    assert explanation["numpy_prefix"] == {
+        "operation_count": 3,
+        "guarded": True,
+    }
+    assert explanation["stages"] == [
+        {
+            "engine": "numpy",
+            "operations": ["filter", "filter", "map"],
+            "fused": True,
+        }
+    ]
+
+    projected_objects = fpstreams.rows.from_numpy(
+        np.asarray([[object(), object()]], dtype=object),
+        columns=("left", "right"),
+    ).select(alias="right")
+    assert projected_objects.explain("list").to_dict()["numpy_prefix"] == {
+        "operation_count": 1,
+        "guarded": True,
+    }
+
+    unsupported = (
+        integers.with_engine("python").select("left"),
+        fpstreams.rows.from_numpy(
+            np.asarray([[1.0, 2.0]], dtype=np.float64),
+            columns=("left", "right"),
+        )
+        .where(fpstreams.col("left") >= 1)
+        .select("left"),
+        integers.where(lambda row: row["left"] >= 1).select("left"),
+    )
+    for query in unsupported:
+        assert query.explain("list").to_dict()["numpy_prefix"] is None
+
+
+def test_numpy_row_prefix_rejects_rebound_native_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement native descriptor must not detach execution from the source factory."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.tabular.numpy import NumpyRowSource
+
+    query = fpstreams.rows.from_numpy(
+        np.asarray([[1], [0]], dtype=np.int64),
+        columns=("value",),
+    ).where(fpstreams.col("value") > 0)
+    source = query._flow._pipeline.source
+    source.native_data = NumpyRowSource(
+        np.asarray([[0], [0]], dtype=np.int64),
+        ("value",),
+    )
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [{"value": 1}]
+    assert execution.report.strategy == "planned:python"
+
+
+def test_numpy_row_prefix_executes_exact_integer_with_columns_without_input_rows() -> None:
+    """A pure computed column should stay columnar until final output dictionaries exist."""
+    np = pytest.importorskip("numpy")
+    values = np.asarray([[-2, 10], [0, 20], [3, 30]], dtype=np.int64)
+    source = fpstreams.rows.from_numpy(values, columns=("left", "right"))
+    query = source.with_columns(
+        score=fpstreams.col("left") * 3 + 1,
+        original=fpstreams.col("left"),
+    ).select("score", "original", "right")
+
+    first = query.run_with_report("to_list")
+    execution = query.run_with_report("to_list")
+    explanation = query.explain("list").to_dict()["numpy_prefix"]
+
+    assert execution.value == [
+        {"score": -5, "original": -2, "right": 10},
+        {"score": 1, "original": 0, "right": 20},
+        {"score": 10, "original": 3, "right": 30},
+    ]
+    assert execution.value == query.with_engine("python").to_list()
+    assert first.value == execution.value
+    assert first.report.strategy == "planned:python"
+    assert execution.report.strategy == "numpy_direct"
+    assert explanation == {
+        "operation_count": 2,
+        "guarded": True,
+    }
+    assert query.explain("list").to_dict()["numpy_prefix"] == explanation
+
+
+def test_numpy_row_prefix_computed_columns_keep_python_integer_and_sibling_semantics() -> None:
+    """Computed columns remain unbounded Python integers and read the original sibling values."""
+    np = pytest.importorskip("numpy")
+    maximum = 2**63 - 1
+    minimum = -(2**63)
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[maximum], [minimum]], dtype=np.int64),
+        columns=("value",),
+    )
+    query = source.with_columns(
+        value=fpstreams.col("value") + 1,
+        sibling=fpstreams.col("value"),
+        tripled=fpstreams.col("value") * 3,
+    ).select("value", "sibling", "tripled")
+
+    first = query.run_with_report("to_list")
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [
+        {"value": maximum + 1, "sibling": maximum, "tripled": maximum * 3},
+        {"value": minimum + 1, "sibling": minimum, "tripled": minimum * 3},
+    ]
+    assert execution.value == query.with_engine("python").to_list()
+    assert first.value == execution.value
+    assert first.report.strategy == "planned:python"
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_row_prefix_computed_constant_subtrees_use_python_arithmetic() -> None:
+    """Literal-only subtrees must not inherit fixed-width NumPy scalar behavior."""
+    np = pytest.importorskip("numpy")
+    maximum = 2**63 - 1
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1]], dtype=np.int64),
+        columns=("value",),
+    )
+    query = source.with_columns(
+        small=fpstreams.lit(1) + 2,
+        overflow=fpstreams.lit(maximum) + 1,
+        multiplied=fpstreams.lit(2**62) * 4,
+        booleans=fpstreams.lit(True) + True,
+        nested=fpstreams.col("value") + (fpstreams.lit(maximum) + 1),
+        negative=-fpstreams.lit(-(2**80)),
+        magnitude=abs(fpstreams.lit(-(2**80))),
+    )
+
+    first = query.run_with_report("to_list")
+    execution = query.run_with_report("to_list")
+    expected = query.with_engine("python").to_list()
+
+    assert (
+        execution.value
+        == expected
+        == [
+            {
+                "value": 1,
+                "small": 3,
+                "overflow": 2**63,
+                "multiplied": 2**64,
+                "booleans": 2,
+                "nested": 2**63 + 1,
+                "negative": 2**80,
+                "magnitude": 2**80,
+            }
+        ]
+    )
+    assert all(type(value) is int for value in execution.value[0].values())
+    assert first.value == execution.value
+    assert first.report.strategy == "planned:python"
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_row_prefix_deopts_deep_computed_expression_trees() -> None:
+    """Columnar evaluation must not recurse beyond Python's iterative RowExpr fallback."""
+    np = pytest.importorskip("numpy")
+    expression = fpstreams.col("value")
+    for _index in range(1_200):
+        expression = expression + 1
+    query = fpstreams.rows.from_numpy(
+        np.asarray([[1]], dtype=np.int64),
+        columns=("value",),
+    ).with_columns(result=expression)
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [{"value": 1, "result": 1_201}]
+    assert execution.report.strategy == "planned:python"
+
+
+def test_numpy_row_prefix_cached_fallback_ignores_python_recursion_limit() -> None:
+    """A low-limit iterative compile remains a safe reusable Python fallback."""
+    np = pytest.importorskip("numpy")
+    expression = fpstreams.col("value")
+    for _index in range(80):
+        expression = expression + 1
+    query = fpstreams.rows.from_numpy(
+        np.asarray([[1]], dtype=np.int64),
+        columns=("value",),
+    ).with_columns(result=expression)
+
+    previous_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(100)
+        first = query.run_with_report("to_list")
+        execution = query.run_with_report("to_list")
+    finally:
+        sys.setrecursionlimit(previous_limit)
+
+    assert execution.value == [{"value": 1, "result": 81}]
+    assert first.value == execution.value
+    assert first.report.strategy == "planned:python"
+    assert execution.report.strategy == "planned:python"
+    assert query.explain("list").to_dict()["numpy_prefix"] is None
+
+
+def test_numpy_row_prefix_computed_columns_preserve_python_integer_identity() -> None:
+    """Bare fields share row objects while evaluated constants remain per-row results."""
+    np = pytest.importorskip("numpy")
+
+    def query() -> fpstreams.Rows[dict[str, object]]:
+        return fpstreams.rows.from_numpy(
+            np.asarray([[1], [2]], dtype=np.int64),
+            columns=("row",),
+        ).with_columns(
+            source=fpstreams.col("row") + 999,
+            first=fpstreams.col("row") + 999,
+            bare=fpstreams.col("row"),
+            calculated=fpstreams.lit(1000) + 1,
+            literal=fpstreams.lit(1000),
+        )
+
+    automatic_query = query()
+    first = automatic_query.run_with_report("to_list")
+    automatic = automatic_query.run_with_report("to_list")
+    canonical = query().with_engine("python").to_list()
+
+    for rows in (first.value, automatic.value, canonical):
+        assert rows[0]["source"] == rows[0]["first"] == 1000
+        assert rows[0]["source"] is not rows[0]["first"]
+        assert rows[0]["bare"] is rows[0]["row"]
+        assert rows[0]["calculated"] == rows[1]["calculated"] == 1001
+        assert rows[0]["calculated"] is not rows[1]["calculated"]
+        assert rows[0]["literal"] is rows[1]["literal"]
+    assert first.report.strategy == "planned:python"
+    assert automatic.report.strategy == "numpy_direct"
+
+    def absolute_query() -> fpstreams.Rows[dict[str, object]]:
+        return fpstreams.rows.from_numpy(
+            np.asarray([[10**12], [-(10**12)]], dtype=np.int64),
+            columns=("value",),
+        ).with_columns(magnitude=abs(fpstreams.col("value")))
+
+    automatic_absolute_query = absolute_query()
+    first_absolute = automatic_absolute_query.run_with_report("to_list")
+    automatic_absolute = automatic_absolute_query.run_with_report("to_list")
+    canonical_absolute = absolute_query().with_engine("python").to_list()
+    for rows in (first_absolute.value, automatic_absolute.value, canonical_absolute):
+        assert rows[0]["magnitude"] is rows[0]["value"]
+        assert rows[1]["magnitude"] == 10**12
+    assert automatic_absolute.value == canonical_absolute
+    assert first_absolute.report.strategy == "planned:python"
+    assert automatic_absolute.report.strategy == "numpy_direct"
+
+
+def test_numpy_row_prefix_computed_columns_keep_lazy_missing_field_boundaries() -> None:
+    """A missing dependency is observed only when a row reaches its computed stage."""
+    np = pytest.importorskip("numpy")
+    empty = fpstreams.rows.from_numpy(
+        np.empty((0, 1), dtype=np.int64),
+        columns=("present",),
+    ).with_columns(result=fpstreams.col("missing") + 1)
+    skipped = (
+        fpstreams.rows.from_numpy(
+            np.asarray([[1], [2]], dtype=np.int64),
+            columns=("present",),
+        )
+        .where(fpstreams.col("present") < 0)
+        .with_columns(result=fpstreams.col("missing") + 1)
+    )
+
+    assert empty.to_list() == []
+    assert skipped.to_list() == []
+
+    reached = fpstreams.rows.from_numpy(
+        np.asarray([[1]], dtype=np.int64),
+        columns=("present",),
+    ).with_columns(result=fpstreams.col("missing") + 1)
+    with pytest.raises(fpstreams.SelectionError) as automatic:
+        reached.to_list()
+    with pytest.raises(fpstreams.SelectionError) as canonical:
+        reached.with_engine("python").to_list()
+    assert str(automatic.value) == str(canonical.value)
+    assert type(automatic.value.__cause__) is type(canonical.value.__cause__) is KeyError
+    assert automatic.value.__context__ is automatic.value.__cause__
+    assert canonical.value.__context__ is canonical.value.__cause__
+
+
+def test_numpy_row_prefix_executes_one_short_circuit_conjunction_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A primitive AND tree should remain one planned filter while evaluating left to right."""
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[0, 5], [1, 4], [2, 3], [3, 2], [4, 1]], dtype=np.int64),
+        columns=("left", "right"),
+    )
+    query = source.where(
+        (fpstreams.col("left") >= 1) & (fpstreams.col("right") < 4) & (10 > fpstreams.col("left"))  # noqa: SIM300 - test reversed comparison lowering
+    ).select("left", "right")
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [
+        {"left": 2, "right": 3},
+        {"left": 3, "right": 2},
+        {"left": 4, "right": 1},
+    ]
+    assert execution.value == query.with_engine("python").to_list()
+    assert execution.report.strategy == "numpy_direct"
+    assert query.explain("list").to_dict()["numpy_prefix"] == {
+        "operation_count": 2,
+        "guarded": True,
+    }
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(np, "greater_equal", lambda _left, _right: False)
+        scoped.setattr(np, "logical_and", lambda _left, _right: False)
+        ufunc_execution = query.run_with_report("to_list")
+    assert ufunc_execution.value == [
+        {"left": 2, "right": 3},
+        {"left": 3, "right": 2},
+        {"left": 4, "right": 1},
+    ]
+    assert ufunc_execution.report.strategy == "numpy_direct"
+
+    import operator
+
+    stable_helpers = source.where(
+        (fpstreams.col("left") < 2**100) & (fpstreams.col("right") > 0)
+    ).select("left", "right")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(operator, "eq", lambda _left, _right: False)
+        scoped.setattr(operator, "and_", lambda _left, _right: False)
+        scoped.setattr(np, "ascontiguousarray", lambda values: values * 0)
+        helper_execution = stable_helpers.run_with_report("to_list")
+    assert helper_execution.value == [
+        {"left": 0, "right": 5},
+        {"left": 1, "right": 4},
+        {"left": 2, "right": 3},
+        {"left": 3, "right": 2},
+        {"left": 4, "right": 1},
+    ]
+    assert helper_execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_row_prefix_conjunction_preserves_reachable_missing_rhs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing right operand is skipped only when every active left operand is false."""
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[0], [1]], dtype=np.int64),
+        columns=("value",),
+    )
+    skipped = source.where((fpstreams.col("value") < 0) & (fpstreams.col("missing") > 0))
+    reached = source.where((fpstreams.col("value") >= 0) & (fpstreams.col("missing") > 0))
+
+    skipped_execution = skipped.run_with_report("to_list")
+    assert skipped_execution.value == []
+    assert skipped_execution.report.strategy == "numpy_direct"
+
+    with pytest.raises(fpstreams.SelectionError) as automatic:
+        reached.to_list()
+    with pytest.raises(fpstreams.SelectionError) as canonical:
+        reached.with_engine("python").to_list()
+    assert str(automatic.value) == str(canonical.value)
+    assert type(automatic.value.__cause__) is type(canonical.value.__cause__) is KeyError
+
+    from fpstreams.execution import numpy_prefix
+
+    monkeypatch.setattr(numpy_prefix, "_NUMPY_PREFIX_CHUNK_ROWS", 2)
+    later_chunk = fpstreams.rows.from_numpy(
+        np.asarray([[0], [0], [1]], dtype=np.int64),
+        columns=("value",),
+    ).where((fpstreams.col("value") > 0) & (fpstreams.col("missing") > 0))
+    with pytest.raises(fpstreams.SelectionError) as later_automatic:
+        later_chunk.to_list()
+    with pytest.raises(fpstreams.SelectionError) as later_canonical:
+        later_chunk.with_engine("python").to_list()
+    assert str(later_automatic.value) == str(later_canonical.value)
+
+
+def test_numpy_row_prefix_rechecks_filter_dtype_at_execution_boundary() -> None:
+    """A retained dtype changed after compilation must deopt before NumPy comparison."""
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution.numpy_prefix import try_numpy_prefix_list
+
+    values = np.asarray([[1], [2]], dtype=np.int64)
+    query = fpstreams.rows.from_numpy(values, columns=("value",)).where(fpstreams.col("value") > 0)
+    physical, pipeline = query._flow._terminal_context("list")
+    assert physical.backend_payload is not None
+    assert physical.backend_payload.numpy_prefix is not None
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        values.dtype = np.dtype("float64")
+    assert try_numpy_prefix_list(query._flow, physical, pipeline) == (False, None)
+    assert query.to_list() == query.with_engine("python").to_list()
+
+
+def test_numpy_row_prefix_materializes_lists_and_columns_without_python_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete primitive prefix should reach both sinks before the row executor."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.streams import flow_terminals
+    from fpstreams.streams.flow import Flow
+
+    values = np.asarray(
+        [[0, 9, 100], [1, 8, 101], [2, 7, 102], [3, 6, 103], [4, 5, 104]],
+        dtype=np.int64,
+    )
+
+    def query() -> fpstreams.Rows[dict[str, object]]:
+        return (
+            fpstreams.rows.from_numpy(values, columns=("left", "right", "tail"))
+            .where(fpstreams.col("left") >= 1)
+            .where(4 > fpstreams.col("left"))  # noqa: SIM300 - literal-left comparison
+            .select(id="left", copied="left", payload="tail")
+        )
+
+    def forbidden_rows(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a safe NumPy prefix must not enter the Python row executor")
+
+    monkeypatch.setattr(flow_terminals, "execute_physical", forbidden_rows)
+    execution = query().run_with_report("to_list")
+    assert execution.value == [
+        {"id": 1, "copied": 1, "payload": 101},
+        {"id": 2, "copied": 2, "payload": 102},
+        {"id": 3, "copied": 3, "payload": 103},
+    ]
+    assert execution.report.strategy == "numpy_direct"
+
+    def forbidden_consume(
+        self: Flow[object],
+        consumer: object,
+    ) -> object:
+        del self, consumer
+        raise AssertionError("a safe NumPy prefix must not consume Python rows")
+
+    monkeypatch.setattr(Flow, "_consume", forbidden_consume)
+    columns = query().to_columns()
+    assert columns == {
+        "id": [1, 2, 3],
+        "copied": [1, 2, 3],
+        "payload": [101, 102, 103],
+    }
+    assert columns["id"] is not columns["copied"]
+
+
+def test_numpy_row_prefix_preserves_empty_and_nonempty_missing_field_boundaries() -> None:
+    """Missing direct fields should stay lazy until the first row reaching their stage."""
+    np = pytest.importorskip("numpy")
+
+    empty = fpstreams.rows.from_numpy(
+        np.empty((0, 1), dtype=np.int64),
+        columns=("present",),
+    )
+    assert empty.select("missing").to_list() == []
+    assert empty.where(fpstreams.col("missing") == 1).select("present").to_columns() == {}
+
+    nonempty = fpstreams.rows.from_numpy(
+        np.asarray([[1]], dtype=np.int64),
+        columns=("present",),
+    )
+    queries = (
+        nonempty.select("missing"),
+        nonempty.where(fpstreams.col("missing") == 1).select("present"),
+    )
+    for query in queries:
+        with pytest.raises(fpstreams.SelectionError) as automatic:
+            query.to_list()
+        with pytest.raises(fpstreams.SelectionError) as canonical:
+            query.with_engine("python").to_list()
+        assert str(automatic.value) == str(canonical.value)
+        assert type(automatic.value.__cause__) is type(canonical.value.__cause__) is KeyError
+
+    assert nonempty.where(fpstreams.col("present") < 0).select("missing").to_list() == []
+    with pytest.raises(fpstreams.SelectionError):
+        nonempty.where(fpstreams.col("present") > 0).select("missing").to_list()
+
+
+@pytest.mark.parametrize(
+    ("dtype", "raw_values"),
+    [
+        ("bool", [False, True]),
+        ("int8", [-128, -1, 0, 1, 127]),
+        ("uint8", [0, 1, 127, 255]),
+        ("int64", [-(2**63), -1, 0, 1, 2**63 - 1]),
+        ("uint64", [0, 1, 2**63, 2**64 - 1]),
+    ],
+)
+def test_numpy_row_prefix_compares_exact_python_integer_literals_without_coercion(
+    dtype: str,
+    raw_values: list[int | bool],
+) -> None:
+    """Out-of-domain literals fold exactly instead of entering NumPy's coercion rules."""
+    import operator
+
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.asarray(raw_values, dtype=dtype).reshape(-1, 1),
+        columns=("value",),
+    )
+    comparisons = (
+        operator.eq,
+        operator.ne,
+        operator.lt,
+        operator.le,
+        operator.gt,
+        operator.ge,
+    )
+    literals = (
+        False,
+        True,
+        -(2**100),
+        -1,
+        0,
+        1,
+        2,
+        127,
+        128,
+        255,
+        256,
+        2**63 - 1,
+        2**64 - 1,
+        2**100,
+    )
+    for compare in comparisons:
+        for literal in literals:
+            for reversed_operands in (False, True):
+                field = fpstreams.col("value")
+                predicate = (
+                    compare(literal, field) if reversed_operands else compare(field, literal)
+                )
+                automatic = source.where(predicate).select("value").to_list()
+                canonical = source.with_engine("python").where(predicate).select("value").to_list()
+                assert automatic == canonical
+
+
+@pytest.mark.parametrize(
+    ("predicate", "expected"),
+    [
+        (fpstreams.lit(2) == fpstreams.col("value"), [2]),
+        (fpstreams.lit(2) != fpstreams.col("value"), [1, 3]),
+        (fpstreams.lit(2) < fpstreams.col("value"), [3]),
+        (fpstreams.lit(2) <= fpstreams.col("value"), [2, 3]),
+        (fpstreams.lit(2) > fpstreams.col("value"), [1]),
+        (fpstreams.lit(2) >= fpstreams.col("value"), [1, 2]),
+    ],
+)
+def test_numpy_row_prefix_preserves_explicit_literal_left_comparisons(
+    predicate: object,
+    expected: list[int],
+) -> None:
+    """Literal expression nodes keep Python ordering when NumPy reverses the comparison."""
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1], [2], [3]], dtype=np.int64),
+        columns=("value",),
+    )
+    query = source.where(predicate).select("value")
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [{"value": value} for value in expected]
+    assert execution.value == query.with_engine("python").to_list()
+    assert execution.report.strategy == "numpy_direct"
+
+
+def test_numpy_row_prefix_declines_an_empty_projection() -> None:
+    """Zero-column records retain the canonical row path and their hidden cardinality."""
+    np = pytest.importorskip("numpy")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1], [2]], dtype=np.int64),
+        columns=("value",),
+    ).select()
+
+    assert source.explain("list").to_dict()["numpy_prefix"] is None
+    assert source.to_list() == [{}, {}]
+    assert source.to_columns() == {}
+
+
+def test_numpy_row_prefix_declines_zero_width_rename_without_losing_cardinality() -> None:
+    """A schema-only rename cannot represent nonzero rows when no output columns exist."""
+    np = pytest.importorskip("numpy")
+    source = fpstreams.rows.from_numpy(
+        np.empty((3, 0), dtype=np.int64),
+        columns=(),
+    ).rename()
+
+    execution = source.run_with_report("to_list")
+
+    assert execution.value == source.with_engine("python").to_list() == [{}, {}, {}]
+    assert execution.report.strategy == "planned:python"
+    assert source.explain("list").to_dict()["numpy_prefix"] is None
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["identity", "columns", "arrow", "prefix", "group"],
+)
+def test_numpy_direct_row_paths_deopt_before_hashing_string_subclass_columns(
+    route: str,
+) -> None:
+    """Planning and direct sinks cannot add or remove observable column-name hash calls."""
+    np = pytest.importorskip("numpy")
+
+    class ArmedColumn(str):
+        armed = False
+        calls = 0
+
+        def __hash__(self) -> int:
+            if self.armed:
+                type(self).calls += 1
+            return super().__hash__()
+
+    def consume(engine: str) -> tuple[object, int, str | None]:
+        name = ArmedColumn("value")
+        rows = fpstreams.rows.from_numpy(
+            np.asarray([[1], [2]], dtype=np.int64),
+            columns=(name,),
+        ).with_engine(engine)
+        query: object
+        if route == "prefix":
+            query = rows.where(fpstreams.col("value") > 0).select("value")
+        elif route == "group":
+            query = rows.group_by("value").aggregate(rows=fpstreams.agg.count())
+        else:
+            query = rows
+        name.armed = True
+        ArmedColumn.calls = 0
+        if route == "columns":
+            result = rows.to_columns()
+            strategy = None
+        elif route == "arrow":
+            result = rows.to_arrow().to_pylist()
+            strategy = None
+        else:
+            execution = query.run_with_report("to_list")  # type: ignore[attr-defined]
+            result = execution.value
+            strategy = execution.report.strategy
+        return result, ArmedColumn.calls, strategy
+
+    canonical = consume("python")
+    automatic = consume("auto")
+    assert automatic[:2] == canonical[:2]
+    assert canonical[1] > 0
+    if route in {"identity", "prefix", "group"}:
+        assert automatic[2] == "planned:python"
+
+
+@pytest.mark.parametrize("changed_dtype", ["float64", "uint64"])
+@pytest.mark.parametrize("sink", ["list", "columns", "arrow", "prefix", "group"])
+def test_numpy_row_scans_match_python_on_threaded_same_width_dtype_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_dtype: str,
+    sink: str,
+) -> None:
+    """A real worker transition is detected by every optimized retained-row scan."""
+    import warnings
+    from threading import Event, Thread
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_group, numpy_prefix
+    from fpstreams.tabular import numpy as numpy_adapter
+
+    canonical_validation = numpy_adapter._validate_retained_numpy_iteration
+
+    def consume(engine: str) -> BaseException | None:
+        values = np.zeros((20_000, 2), dtype=np.int64)
+        rows = fpstreams.rows.from_numpy(values, columns=("key", "value")).with_engine(engine)
+        ready = Event()
+        fired = Event()
+        worker_errors: list[BaseException] = []
+        released = False
+
+        def mutate() -> None:
+            try:
+                if not ready.wait(5):
+                    raise TimeoutError("NumPy scan never reached its first validated boundary")
+                values.dtype = np.dtype(changed_dtype)
+            except BaseException as error:
+                worker_errors.append(error)
+            finally:
+                fired.set()
+
+        def release_after_validation(
+            matrix: object,
+            width: int,
+            dtype: object | None = None,
+        ) -> int:
+            nonlocal released
+            row_count = canonical_validation(matrix, width, dtype)
+            if matrix is values and not released:
+                released = True
+                ready.set()
+                if not fired.wait(5):
+                    raise TimeoutError("dtype mutation worker did not finish")
+            return row_count
+
+        worker = Thread(target=mutate)
+        worker.start()
+        try:
+            with (
+                monkeypatch.context() as scoped,
+                warnings.catch_warnings(),
+            ):
+                warnings.simplefilter("ignore", DeprecationWarning)
+                for module in (numpy_adapter, numpy_prefix, numpy_group):
+                    scoped.setattr(
+                        module,
+                        "_validate_retained_numpy_iteration",
+                        release_after_validation,
+                    )
+                try:
+                    if sink == "list":
+                        rows.to_list()
+                    elif sink == "columns":
+                        rows.to_columns()
+                    elif sink == "arrow":
+                        rows.to_arrow(batch_size=1_024)
+                    elif sink == "prefix":
+                        rows.where(fpstreams.col("key") == 0).select("value").to_list()
+                    else:
+                        rows.group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list()
+                except BaseException as error:
+                    captured = error
+                else:
+                    captured = None
+        finally:
+            worker.join(5)
+        assert not worker.is_alive()
+        assert fired.is_set()
+        assert worker_errors == []
+        return captured
+
+    canonical = consume("python")
+    automatic = consume("auto")
+    assert [type(canonical), type(automatic)] == [ValueError, ValueError]
+    assert (
+        str(canonical)
+        == str(automatic)
+        == (
+            f"from_numpy() retained array dtype changed from int64 to {changed_dtype} "
+            "during iteration"
+        )
+    )
+
+
+@pytest.mark.parametrize("action", ["shrink", "grow", "reshape", "width", "dtype"])
+def test_numpy_row_prefix_preserves_live_matrix_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """Each bounded prefix chunk revalidates live length, width, dimensions, and dtype."""
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import numpy_prefix
+
+    initial = (
+        [[1, 10], [2, 20]]
+        if action == "grow"
+        else [
+            [1, 10],
+            [2, 20],
+            [3, 30],
+            [4, 40],
+        ]
+    )
+    values = np.asarray(initial, dtype=np.int64)
+    original = numpy_prefix._compare_integer_column
+    fired = False
+
+    def mutate_after_comparison(column: object, spec: object) -> object:
+        nonlocal fired
+        result = original(column, spec)  # type: ignore[arg-type]
+        if fired:
+            return result
+        fired = True
+        if action == "shrink":
+            values.resize((2, 2), refcheck=False)
+        elif action == "grow":
+            values.resize((4, 2), refcheck=False)
+            values[2:] = ((3, 30), (4, 40))
+        elif action == "reshape":
+            values.resize((values.size,), refcheck=False)
+        elif action == "width":
+            values.resize((2, 4), refcheck=False)
+        else:
+            values.dtype = np.dtype("uint64")
+        return result
+
+    monkeypatch.setattr(numpy_prefix, "_compare_integer_column", mutate_after_comparison)
+    query = (
+        fpstreams.rows.from_numpy(values, columns=("key", "value"))
+        .where(fpstreams.col("key") > 0)
+        .select("key", "value")
+    )
+    if action in {"reshape", "width", "dtype"}:
+        message = {
+            "reshape": "changed to 1 dimensions",
+            "width": "width changed",
+            "dtype": "dtype changed from int64 to uint64",
+        }[action]
+        with warnings.catch_warnings(), pytest.raises(ValueError, match=message):
+            warnings.simplefilter("ignore", DeprecationWarning)
+            query.to_list()
+        return
+
+    assert query.to_list() == [
+        {"key": 1, "value": 10},
+        {"key": 2, "value": 20},
+        *([{"key": 3, "value": 30}, {"key": 4, "value": 40}] if action == "grow" else []),
+    ]
+
+
+def test_numpy_group_consumes_safe_filtered_projection_and_rename_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Safe schema-only prefixes should feed the existing bounded NumPy group kernel."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import relational
+
+    values = np.asarray(
+        [[2, 4, 1], [1, 7, 0], [2, 3, 1], [1, 5, 1], [3, 9, 1]],
+        dtype=np.int64,
+    )
+
+    def forbidden_rows(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a safe NumPy group prefix must not execute Python rows")
+
+    monkeypatch.setattr(relational, "_execute_python_group_values", forbidden_rows)
+    source = fpstreams.rows.from_numpy(values, columns=("key", "value", "keep"))
+    grouped = (
+        source.where(fpstreams.col("keep") == 1)
+        .select(bucket="key", amount="value")
+        .group_by("bucket")
+        .aggregate(
+            rows=fpstreams.agg.count(),
+            total=fpstreams.agg.sum("amount"),
+            low=fpstreams.agg.min("amount"),
+            high=fpstreams.agg.max("amount"),
+        )
+    )
+    renamed = (
+        source.where(fpstreams.col("keep") == 1)
+        .rename(key="bucket", value="amount")
+        .group_by("bucket")
+        .aggregate(total=fpstreams.agg.sum("amount"))
+    )
+    conjoined = (
+        source.where((fpstreams.col("keep") == 1) & (fpstreams.col("value") >= 4))
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+    )
+
+    expected = [
+        {"bucket": 2, "rows": 2, "total": 7, "low": 3, "high": 4},
+        {"bucket": 1, "rows": 1, "total": 5, "low": 5, "high": 5},
+        {"bucket": 3, "rows": 1, "total": 9, "low": 9, "high": 9},
+    ]
+    execution = grouped.run_with_report("to_list")
+    assert execution.value == expected
+    assert execution.report.strategy == "numpy_direct"
+    assert grouped.explain("list").to_dict()["relations"]["candidate"] == "numpy_hash"
+    assert renamed.to_list() == [
+        {"bucket": 2, "total": 7},
+        {"bucket": 1, "total": 5},
+        {"bucket": 3, "total": 9},
+    ]
+    conjoined_execution = conjoined.run_with_report("to_list")
+    assert conjoined_execution.value == [
+        {"key": 2, "total": 4},
+        {"key": 1, "total": 5},
+        {"key": 3, "total": 9},
+    ]
+    assert conjoined_execution.report.strategy == "numpy_direct"
+
+
+@pytest.mark.parametrize("prefixed", [False, True], ids=["direct", "prefix"])
+@pytest.mark.parametrize("replacement", ["global", "builtins"])
+def test_numpy_group_deopts_before_replaced_hash_is_observed(
+    monkeypatch: pytest.MonkeyPatch,
+    prefixed: bool,
+    replacement: str,
+) -> None:
+    """Columnar grouping cannot bypass either dynamic lookup tier of canonical hash()."""
+    import builtins
+
+    np = pytest.importorskip("numpy")
+    from fpstreams.execution import relational
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2, 1], [1, 3, 1], [2, 4, 0]], dtype=np.int64),
+        columns=("key", "value", "keep"),
+    )
+    if prefixed:
+        source = source.where(fpstreams.col("keep") == 1).select("key", "value")
+    query = source.group_by("key").aggregate(
+        rows=fpstreams.agg.count(),
+        total=fpstreams.agg.sum("value"),
+    )
+    original_hash = builtins.hash
+    calls: list[object] = []
+
+    def observed_hash(value: object) -> int:
+        calls.append(value)
+        return original_hash(value)
+
+    with monkeypatch.context() as scoped:
+        if replacement == "global":
+            scoped.setattr(relational, "hash", observed_hash, raising=False)
+        else:
+            scoped.setattr(builtins, "hash", observed_hash)
+        result = query.to_list()
+
+    expected = (
+        [{"key": 1, "rows": 2, "total": 5}]
+        if prefixed
+        else [
+            {"key": 1, "rows": 2, "total": 5},
+            {"key": 2, "rows": 1, "total": 4},
+        ]
+    )
+    assert calls
+    assert result == expected
+
+
+@pytest.mark.parametrize("prefixed", [False, True], ids=["direct", "prefix"])
+def test_only_a_root_numpy_group_updates_non_list_execution_reports(prefixed: bool) -> None:
+    """A root relational hit is real evidence; the same group nested under a stage is not."""
+    np = pytest.importorskip("numpy")
+
+    source = fpstreams.rows.from_numpy(
+        np.asarray([[1, 2, 1], [1, 3, 1], [2, 4, 0]], dtype=np.int64),
+        columns=("key", "value", "keep"),
+    )
+    if prefixed:
+        source = source.where(fpstreams.col("keep") == 1).select("key", "value")
+    grouped = source.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
+
+    root_execution = grouped.run_with_report("count")
+    nested_execution = grouped.select("key").run_with_report("count")
+
+    assert root_execution.value == (1 if prefixed else 2)
+    assert root_execution.report.strategy == "numpy_direct"
+    assert nested_execution.value == root_execution.value
+    assert nested_execution.report.strategy == "planned:python"

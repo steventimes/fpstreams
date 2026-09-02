@@ -8,7 +8,12 @@ from types import MappingProxyType
 from typing import Any, Literal, NoReturn, TypeAlias, cast
 
 from ..errors import SelectionError
-from ..expressions.selectors import Selector, compile_selector
+from ..expressions.selectors import (
+    Selector,
+    _normalize_direct_row_selector,
+    compile_selector,
+)
+from ..runtime.iterators import close_iterators
 from .records import _as_record, _remember_columns
 
 JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
@@ -167,11 +172,13 @@ class _JoinTargetCache:
         return plan
 
 
-def _close_iterator(iterator: Iterator[Any]) -> None:
-    """Close a source iterator when it exposes an explicit close hook."""
-    close = getattr(iterator, "close", None)
-    if callable(close):
-        close()
+def _close_iterator(
+    iterator: Iterator[Any],
+    *,
+    active_error: BaseException | None = None,
+) -> None:
+    """Close one source without hiding an active join failure."""
+    close_iterators((iterator,), active_error=active_error)
 
 
 def _direct_mapping_mro(row_type: type[Any]) -> tuple[type[Any], ...] | None:
@@ -279,11 +286,13 @@ def _compose_composite_selector(
 def _compile_join_selector(selector: JoinSelector) -> Callable[[Any], Any]:
     """Compile one selector or a tuple of selectors into a join-key function."""
     if not isinstance(selector, tuple):
-        return compile_selector(selector)
+        return compile_selector(_normalize_direct_row_selector(selector))
     if not selector:
         raise ValueError("composite join keys cannot be empty")
-    selectors = tuple(compile_selector(part) for part in selector)
-    return _compose_composite_selector(selector, selectors)
+    normalized = tuple(_normalize_direct_row_selector(part) for part in selector)
+    selectors = tuple(compile_selector(part) for part in normalized)
+    shape = normalized if type(selector) is tuple else selector
+    return _compose_composite_selector(shape, selectors)
 
 
 def _normalize_join_selectors(
@@ -358,6 +367,7 @@ def _join_key_set(
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             row_type = type(row)
@@ -379,8 +389,11 @@ def _join_key_set(
                     f"found duplicate {key!r}"
                 )
             keys.add(key)
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
     return keys
 
 
@@ -413,6 +426,7 @@ def _join_record_index(
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             row_type = type(row)
@@ -458,8 +472,11 @@ def _join_record_index(
                     slots[position] = [bucket, record]
                 if instrumented:
                     hit("join.build.insert.after")
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
 
     return tuple(columns), index, slots
 
@@ -479,6 +496,7 @@ def _join_position_index(
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             row_type = type(row)
@@ -508,8 +526,11 @@ def _join_position_index(
                 )
             else:
                 positions.append(position)
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
     return records, tuple(columns), index
 
 
@@ -527,6 +548,7 @@ def _materialize_join_rows(
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             row_type = type(row)
@@ -547,8 +569,11 @@ def _materialize_join_rows(
                 _check_unique_key(seen_keys, key, validate=validate, side="left")
             records.append((record, key))
             _remember_columns(record, columns, seen_columns)
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
     return records, tuple(columns)
 
 
@@ -665,6 +690,7 @@ def _semi_or_anti_join(
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(left_source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             # Snapshot before selecting the key. Even an exact-dict lookup can
@@ -690,8 +716,11 @@ def _semi_or_anti_join(
                 # _as_record already made the pre-selector snapshot owned by
                 # this single output, so another dictionary copy is redundant.
                 yield left
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
 
 
 def execute_left_join(  # noqa: C901 - keep guarded record snapshots inline in this hot loop
@@ -722,6 +751,7 @@ def execute_left_join(  # noqa: C901 - keep guarded record snapshots inline in t
     cached_mapping_type: type[Any] | None = None
     cached_mapping_mro: tuple[type[Any], ...] | None = None
     iterator = iter(left_source)
+    active_error: BaseException | None = None
     try:
         for row in iterator:
             row_type = type(row)
@@ -828,8 +858,11 @@ def execute_left_join(  # noqa: C901 - keep guarded record snapshots inline in t
                     yield merged
                 else:
                     yield _fill_unmatched_join_plan(merged, plan, shared_names, suffix)
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close_iterator(iterator)
+        _close_iterator(iterator, active_error=active_error)
 
 
 def execute_right_or_full_join(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.util
 import itertools
 import json
@@ -38,6 +37,47 @@ from fpstreams import (
 from fpstreams.planning.sync import FilterOp, MapOp, Operation, TapOp
 
 # --- Tests consolidated from test_primitives.py ---
+
+
+def test_live_source_size_refresh_preserves_explicit_semantic_facts() -> None:
+    """Refreshing cardinality must not reconstruct unrelated source guarantees."""
+    from dataclasses import replace
+
+    from fpstreams.planning.semantics import (
+        Cardinality,
+        OrderingGuarantee,
+        TerminationEvidence,
+        facts_from_capabilities,
+    )
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    values = [1, 2, 3]
+    configured = facts_from_capabilities(
+        reiterable=True,
+        exact_size=None,
+        ordered=False,
+        reopenable=True,
+    )
+    source = Source(
+        lambda: iter(values),
+        SourceCapabilities(reiterable=True, exact_size=None),
+        facts=configured,
+        live_size_data=values,
+    )
+
+    assert source.current_facts() == replace(
+        configured,
+        termination=TerminationEvidence.PROVEN_FINITE,
+        cardinality=Cardinality.exact(3),
+    )
+
+    source._factory = lambda: iter({3, 2, 1})
+    assert source.current_facts() == replace(
+        configured,
+        termination=TerminationEvidence.UNKNOWN,
+        cardinality=Cardinality.unknown(),
+        ordering=OrderingGuarantee.UNKNOWN,
+    )
 
 
 def test_option_paths_present_and_empty() -> None:
@@ -574,6 +614,8 @@ def test_async_operation_dispatch_covers_every_planned_operation() -> None:
         _MapAsync,
         _Merge,
         _MergeMap,
+        _Prefetch,
+        _SessionWindow,
         _SwitchMap,
         _Throttle,
         _Timeout,
@@ -585,6 +627,8 @@ def test_async_operation_dispatch_covers_every_planned_operation() -> None:
         _MapAsync,
         _Merge,
         _MergeMap,
+        _Prefetch,
+        _SessionWindow,
         _SwitchMap,
         _CombineLatest,
         _Timeout,
@@ -661,9 +705,9 @@ async def test_async_stateless_dispatch_preserves_callable_order() -> None:
     ]
 
 
-# --- Tests consolidated from test_release_tools.py ---
+# --- Release workflow safeguards ---
 
-"""Release tools, action pinning, and publish-workflow ordering safeguards."""
+"""Release smoke, action pinning, and publish-workflow ordering safeguards."""
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -673,47 +717,12 @@ PINNED_ACTION = re.compile(
 )
 
 
-def test_sha256_manifest_is_sorted_verifiable_and_excludes_metadata(tmp_path: Path) -> None:
-    packages = tmp_path / "packages"
-    packages.mkdir()
-    (packages / ".gitignore").write_text("*", encoding="utf-8")
-    (packages / "b.whl").write_bytes(b"wheel-b")
-    (packages / "a.tar.gz").write_bytes(b"source-a")
-    manifest = tmp_path / "SHA256SUMS"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "tools" / "write_sha256_manifest.py"),
-            str(packages),
-            str(manifest),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert manifest.read_text(encoding="utf-8") == (
-        f"{hashlib.sha256(b'source-a').hexdigest()}  packages/a.tar.gz\n"
-        f"{hashlib.sha256(b'wheel-b').hexdigest()}  packages/b.whl\n"
-    )
-    verified = subprocess.run(
-        ["sha256sum", "--check", manifest.name],
-        cwd=tmp_path,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert verified.returncode == 0, verified.stderr
-
-
 def test_release_smoke_checks_native_and_python_backends() -> None:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(ROOT / "src")
 
     result = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / "smoke_release.py")],
+        [sys.executable, str(ROOT / "scripts" / "smoke_release.py")],
         cwd=ROOT,
         env=environment,
         check=False,
@@ -725,8 +734,32 @@ def test_release_smoke_checks_native_and_python_backends() -> None:
     assert json.loads(result.stdout) == {
         "native": [1, 3, 5, 7],
         "python": [1, 3, 5, 7],
-        "version": "2.0.0",
+        "version": "2.1.0",
     }
+
+
+def test_release_version_markers_are_consistent() -> None:
+    script = ROOT / "scripts" / "check_release_version.py"
+
+    valid = subprocess.run(
+        [sys.executable, str(script), "--expected", "v2.1.0"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    invalid = subprocess.run(
+        [sys.executable, str(script), "--expected", "9.9.9"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout.strip() == "2.1.0"
+    assert invalid.returncode != 0
+    assert "expected 9.9.9" in invalid.stderr
 
 
 def test_external_github_actions_are_pinned_to_documented_commits() -> None:
@@ -751,4 +784,7 @@ def test_publish_only_receives_credentials_after_artifact_verification() -> None
     assert "needs: manifest" in workflow
     assert "Smoke-test wheel" in workflow
     assert "Build and smoke-test sdist" in workflow
-    assert "write_sha256_manifest.py dist/packages dist/SHA256SUMS" in workflow
+    assert workflow.index("uv run pytest -q") < workflow.index("  linux:")
+    assert workflow.index("cargo test --manifest-path rust/Cargo.toml") < workflow.index("  linux:")
+    assert "sha256sum * > ../SHA256SUMS" in workflow
+    assert 'gh release upload "$RELEASE_TAG" dist/SHA256SUMS dist/packages/*' in workflow

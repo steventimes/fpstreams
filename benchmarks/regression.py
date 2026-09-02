@@ -1,4 +1,4 @@
-"""Create and compare robust fpstreams benchmark baselines."""
+"""Create and compare fpstreams benchmark baselines."""
 
 from __future__ import annotations
 

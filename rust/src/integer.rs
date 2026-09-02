@@ -3,14 +3,27 @@
 use crate::common::{
     AGGREGATE_COUNT, AGGREGATE_FIRST, AGGREGATE_LAST, AGGREGATE_M2, AGGREGATE_MAXIMUM,
     AGGREGATE_MEAN, AGGREGATE_MINIMUM, AGGREGATE_TOTAL, KernelError, OnlineStatistics,
-    extract_i64_container, kernel_error, materialize_target, materialize_values,
-    snapshot_exact_container_prefix, validate_aggregate_mask,
+    validate_aggregate_mask,
 };
-use pyo3::exceptions::{PyTypeError, PyValueError};
-use pyo3::prelude::*;
-use pyo3::types::PyInt;
+use crate::numeric_mean::{CompensatedMean, next_exact_i64_mean_total};
+use crate::relational::SeededI64BuildHasher;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
+
+mod endpoints;
+
+pub(crate) use endpoints::{
+    I64Range, aggregate_i64, aggregate_i64_buffer_masked_v1, aggregate_i64_buffer_masked_v2,
+    aggregate_i64_masked, aggregate_i64_range, aggregate_i64_range_masked, execute_i64,
+    execute_i64_buffer_v1, execute_i64_range, frequencies_i64_exact_v1, materialize_i64,
+    materialize_i64_buffer_v1, materialize_i64_range, mean_i64, mean_i64_buffer_v1,
+    mean_i64_buffer_v2, mean_i64_range, statistics_i64, statistics_i64_range, terminal_i64,
+    terminal_i64_probe, terminal_i64_range,
+};
+#[cfg(not(Py_GIL_DISABLED))]
+pub(crate) use endpoints::{
+    materialize_i64_filter_exact_list_v1, materialize_i64_map_exact_list_v1,
+};
 
 pub(crate) type Instruction = (u8, i64);
 pub(crate) type Program = Vec<(u8, Vec<Instruction>)>;
@@ -29,8 +42,14 @@ struct Stage {
     kind: u8,
     expression: Option<PreparedExpression>,
     remaining: u64,
-    seen: Option<HashSet<i64>>,
+    seen: Option<HashSet<i64, SeededI64BuildHasher>>,
     dropping: bool,
+}
+
+struct StatelessMapFilter {
+    mapper: PreparedExpression,
+    predicate: PreparedExpression,
+    negated: bool,
 }
 
 pub(crate) enum PreparedExpression {
@@ -42,14 +61,89 @@ pub(crate) enum PreparedExpression {
     Bytecode(Vec<Instruction>),
 }
 
-pub(crate) fn prepare_expression(code: Vec<Instruction>) -> PreparedExpression {
-    // These two shapes dominate numeric map/filter pipelines. Both preserve the
-    // checked arithmetic and signed-modulo behavior of the generic evaluator.
-    if let [(0, _), (1, multiplier), (4, _), (1, offset), (2, _)] = code.as_slice() {
-        return PreparedExpression::Affine {
-            multiplier: *multiplier,
-            offset: *offset,
+#[derive(Clone, Copy)]
+enum AffineCandidate {
+    Constant(i64),
+    Item,
+    Scaled(i64),
+    Affine { multiplier: i64, offset: i64 },
+}
+
+impl AffineCandidate {
+    fn shifted(self, offset: i64) -> Option<Self> {
+        let multiplier = match self {
+            Self::Item => 1,
+            Self::Scaled(multiplier) => multiplier,
+            Self::Constant(_) | Self::Affine { .. } => return None,
         };
+        Some(Self::Affine { multiplier, offset })
+    }
+}
+
+fn prepare_affine_expression(code: &[Instruction]) -> Option<PreparedExpression> {
+    // Checked arithmetic makes algebraic reassociation observable. Accept only one item,
+    // an optional item/constant multiplication, then one constant translation. The fixed stack
+    // covers that whole grammar; deeper or nested arithmetic stays on the bytecode evaluator.
+    let mut stack = [AffineCandidate::Item; 3];
+    let mut depth = 0;
+    for &(opcode, operand) in code {
+        match opcode {
+            0 | 1 => {
+                if depth == stack.len() {
+                    return None;
+                }
+                stack[depth] = if opcode == 0 {
+                    AffineCandidate::Item
+                } else {
+                    AffineCandidate::Constant(operand)
+                };
+                depth += 1;
+            }
+            2..=4 => {
+                if depth < 2 {
+                    return None;
+                }
+                let right = stack[depth - 1];
+                let left = stack[depth - 2];
+                depth -= 2;
+                let candidate = match (opcode, left, right) {
+                    (2, linear, AffineCandidate::Constant(offset))
+                    | (2, AffineCandidate::Constant(offset), linear) => linear.shifted(offset)?,
+                    (3, linear, AffineCandidate::Constant(subtrahend)) => {
+                        linear.shifted(subtrahend.checked_neg()?)?
+                    }
+                    (4, AffineCandidate::Item, AffineCandidate::Constant(multiplier))
+                    | (4, AffineCandidate::Constant(multiplier), AffineCandidate::Item) => {
+                        AffineCandidate::Scaled(multiplier)
+                    }
+                    _ => return None,
+                };
+                stack[depth] = candidate;
+                depth += 1;
+            }
+            _ => return None,
+        }
+    }
+    if depth != 1 {
+        return None;
+    }
+    match stack[0] {
+        AffineCandidate::Scaled(multiplier) => Some(PreparedExpression::Affine {
+            multiplier,
+            offset: 0,
+        }),
+        AffineCandidate::Affine { multiplier, offset } => {
+            Some(PreparedExpression::Affine { multiplier, offset })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn prepare_expression(code: Vec<Instruction>) -> PreparedExpression {
+    // These common shapes dominate numeric map/filter pipelines. Each preserves the
+    // checked arithmetic and signed-modulo behavior of the generic evaluator.
+    if let Some(expression) = prepare_affine_expression(&code) {
+        return expression;
     }
     if let [(0, _), (1, divisor), (6, _), (1, 0), (8, _)] = code.as_slice() {
         let magnitude = divisor.unsigned_abs();
@@ -64,7 +158,7 @@ pub(crate) fn prepare_expression(code: Vec<Instruction>) -> PreparedExpression {
 
 impl PreparedExpression {
     #[inline]
-    fn evaluate(&self, value: i64, stack: &mut Vec<i64>) -> Result<i64, KernelError> {
+    pub(crate) fn evaluate(&self, value: i64, stack: &mut Vec<i64>) -> Result<i64, KernelError> {
         match self {
             Self::Affine { multiplier, offset } => value
                 .checked_mul(*multiplier)
@@ -195,11 +289,28 @@ fn prepare(program: Program) -> Result<Vec<Stage>, KernelError> {
                 kind,
                 expression,
                 remaining,
-                seen: (kind == 5).then(HashSet::new),
+                // Exact integers do not need a general-purpose SipHash round per item. A fresh
+                // seed per stage prevents reusable collision layouts across executions.
+                seen: (kind == 5).then(|| HashSet::with_hasher(SeededI64BuildHasher::random())),
                 dropping: kind == 7,
             })
         })
         .collect()
+}
+
+fn prepare_stateless_map_filter(program: Program) -> Result<StatelessMapFilter, KernelError> {
+    let mut stages = program.into_iter();
+    let (_, mapper) = stages
+        .next()
+        .ok_or(KernelError::InvalidProgram("missing map stage"))?;
+    let (filter_kind, predicate) = stages
+        .next()
+        .ok_or(KernelError::InvalidProgram("missing filter stage"))?;
+    Ok(StatelessMapFilter {
+        mapper: prepare_expression(mapper),
+        predicate: prepare_expression(predicate),
+        negated: filter_kind == 2,
+    })
 }
 
 /// Tell the caller why processing a source value cannot continue.
@@ -211,6 +322,7 @@ enum ProcessStop {
     SourceComplete,
 }
 
+#[inline(always)]
 fn process_value<F>(
     stages: &mut [Stage],
     source_value: i64,
@@ -295,7 +407,21 @@ where
     Ok(ControlFlow::Continue(()))
 }
 
+#[inline]
 fn process_values<I, F>(values: I, program: Program, mut emit: F) -> Result<(), KernelError>
+where
+    I: IntoIterator<Item = i64>,
+    F: FnMut(i64) -> Result<ControlFlow<()>, KernelError>,
+{
+    if matches!(program.as_slice(), [(0, _), (1 | 2, _)]) {
+        let map_filter = prepare_stateless_map_filter(program)?;
+        return process_stateless_map_filter(values, map_filter, &mut emit);
+    }
+    process_general_values(values, program, emit)
+}
+
+#[inline]
+fn process_general_values<I, F>(values: I, program: Program, mut emit: F) -> Result<(), KernelError>
 where
     I: IntoIterator<Item = i64>,
     F: FnMut(i64) -> Result<ControlFlow<()>, KernelError>,
@@ -317,6 +443,55 @@ where
     Ok(())
 }
 
+#[inline(never)]
+fn process_stateless_map_filter<I, F>(
+    values: I,
+    map_filter: StatelessMapFilter,
+    emit: &mut F,
+) -> Result<(), KernelError>
+where
+    I: IntoIterator<Item = i64>,
+    F: FnMut(i64) -> Result<ControlFlow<()>, KernelError>,
+{
+    let StatelessMapFilter {
+        mapper,
+        predicate,
+        negated,
+    } = map_filter;
+    if let (
+        PreparedExpression::Affine { multiplier, offset },
+        PreparedExpression::DivisibleByPowerOfTwo { mask },
+    ) = (&mapper, &predicate)
+    {
+        for source_value in values {
+            let value = source_value
+                .checked_mul(*multiplier)
+                .and_then(|mapped| mapped.checked_add(*offset))
+                .ok_or(KernelError::Overflow)?;
+            if (value & *mask == 0) == negated {
+                continue;
+            }
+            if emit(value)?.is_break() {
+                return Ok(());
+            }
+        }
+        return Ok(());
+    }
+
+    let mut stack = Vec::new();
+    for source_value in values {
+        let value = mapper.evaluate(source_value, &mut stack)?;
+        let matches = predicate.evaluate(value, &mut stack)? != 0;
+        if matches == negated {
+            continue;
+        }
+        if emit(value)?.is_break() {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_values<I>(values: I, program: Program) -> Result<Vec<i64>, KernelError>
 where
     I: IntoIterator<Item = i64>,
@@ -327,6 +502,16 @@ where
         Ok(ControlFlow::Continue(()))
     })?;
     Ok(output)
+}
+
+pub(crate) fn run_i64_buffer_materialization(
+    values: Vec<i64>,
+    program: Program,
+) -> Result<Vec<i64>, KernelError> {
+    if program.is_empty() {
+        return Ok(values);
+    }
+    run_values(values, program)
 }
 
 pub(crate) fn run_terminal<I>(
@@ -410,6 +595,18 @@ where
         Ok(ControlFlow::Continue(()))
     })?;
     Ok(statistics.snapshot())
+}
+
+pub(crate) fn run_i64_mean<I>(values: I, program: Program) -> Result<Option<f64>, KernelError>
+where
+    I: IntoIterator<Item = i64>,
+{
+    let mut mean = CompensatedMean::default();
+    process_values(values, program, |value| {
+        mean.accept(value as f64)?;
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok(mean.value())
 }
 
 pub(crate) fn run_i64_aggregate<I>(
@@ -526,305 +723,169 @@ where
     ))
 }
 
-pub(crate) struct I64Range {
-    pub(crate) current: i64,
-    pub(crate) stop: i64,
-    pub(crate) step: i64,
-}
-
-impl Iterator for I64Range {
-    type Item = i64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let finished = if self.step > 0 {
-            self.current >= self.stop
-        } else {
-            self.current <= self.stop
-        };
-        if finished {
-            return None;
-        }
-        let value = self.current;
-        self.current = self.current.checked_add(self.step).unwrap_or(self.stop);
-        Some(value)
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+fn select_i64_extreme<const MAXIMUM: bool>(left: i64, right: i64) -> i64 {
+    if MAXIMUM {
+        left.max(right)
+    } else {
+        left.min(right)
     }
 }
 
-#[pyfunction]
-pub(crate) fn execute_i64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
-) -> PyResult<Vec<i64>> {
-    let values = extract_i64_container(values)?;
-    py.detach(move || run_values(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn execute_i64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-) -> PyResult<Vec<i64>> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+fn reduce_i64_extreme_by<T, F, const MAXIMUM: bool>(values: &[T], value: F) -> Option<i64>
+where
+    F: Fn(&T) -> i64,
+{
+    let (first, remaining) = values.split_first()?;
+    let first = value(first);
+    let mut lane_0 = first;
+    let mut lane_1 = first;
+    let mut lane_2 = first;
+    let mut lane_3 = first;
+    let mut chunks = remaining.chunks_exact(4);
+    for chunk in &mut chunks {
+        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, value(&chunk[0]));
+        lane_1 = select_i64_extreme::<MAXIMUM>(lane_1, value(&chunk[1]));
+        lane_2 = select_i64_extreme::<MAXIMUM>(lane_2, value(&chunk[2]));
+        lane_3 = select_i64_extreme::<MAXIMUM>(lane_3, value(&chunk[3]));
     }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    py.detach(move || run_values(values, program))
-        .map_err(kernel_error)
-}
-
-/// Run a fused i64 program detached, then build the requested terminal container once.
-#[pyfunction]
-pub(crate) fn materialize_i64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
-    target: u8,
-) -> PyResult<Py<PyAny>> {
-    let target = materialize_target(target)?;
-    let values = extract_i64_container(values)?;
-    let output = py
-        .detach(move || run_values(values, program))
-        .map_err(kernel_error)?;
-    materialize_values(py, output, target)
-}
-
-/// Range-specialized counterpart of ``materialize_i64``.
-#[pyfunction]
-pub(crate) fn materialize_i64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-    target: u8,
-) -> PyResult<Py<PyAny>> {
-    let target = materialize_target(target)?;
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
+    for item in chunks.remainder() {
+        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, value(item));
     }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    let output = py
-        .detach(move || run_values(values, program))
-        .map_err(kernel_error)?;
-    materialize_values(py, output, target)
+    Some(select_i64_extreme::<MAXIMUM>(
+        select_i64_extreme::<MAXIMUM>(lane_0, lane_1),
+        select_i64_extreme::<MAXIMUM>(lane_2, lane_3),
+    ))
 }
 
-#[pyfunction]
-pub(crate) fn terminal_i64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
-    terminal: u8,
-) -> PyResult<Option<i64>> {
-    let values = extract_i64_container(values)?;
-    py.detach(move || run_terminal(values, program, terminal))
-        .map_err(kernel_error)
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn reduce_i64_min_by<T, F>(values: &[T], value: F) -> Option<i64>
+where
+    F: Fn(&T) -> i64,
+{
+    reduce_i64_extreme_by::<_, _, false>(values, value)
 }
 
-fn extract_i64_item(value: &Bound<'_, PyAny>) -> PyResult<i64> {
-    if !value.is_exact_instance_of::<PyInt>() {
-        return Err(PyTypeError::new_err(
-            "native i64 container probes require exact integers",
-        ));
-    }
-    value.extract()
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline]
+pub(crate) fn reduce_i64_max_by<T, F>(values: &[T], value: F) -> Option<i64>
+where
+    F: Fn(&T) -> i64,
+{
+    reduce_i64_extreme_by::<_, _, true>(values, value)
 }
 
-/// Probe only a bounded prefix of an exact Python container without building a Vec.
-///
-/// The return value is ``(completed, result)``. ``completed`` is false only when
-/// the budget ended before first/any/all could be decided; callers then restart
-/// the existing detached bulk kernel from the beginning to retain full-scan speed.
-#[pyfunction]
-pub(crate) fn terminal_i64_probe(
-    values: &Bound<'_, PyAny>,
-    program: Program,
-    terminal: u8,
-    max_items: usize,
-) -> PyResult<(bool, Option<i64>)> {
-    if !(5..=7).contains(&terminal) {
-        return Err(kernel_error(KernelError::InvalidProgram(
-            "container probes require first, any, or all",
-        )));
-    }
-    let (items, exhausted) = snapshot_exact_container_prefix(values, max_items)?;
-    let mut stages = prepare(program).map_err(kernel_error)?;
-    let mut result = match terminal {
-        5 => None,
-        6 => Some(0),
-        7 => Some(1),
-        _ => unreachable!(),
-    };
-    if stages
-        .iter()
-        .any(|stage| stage.kind == 3 && stage.remaining == 0)
-    {
-        return Ok((true, result));
-    }
-
-    let mut stack = Vec::new();
-    for item in items {
-        let value = extract_i64_item(item.bind(values.py()))?;
-        let mut emit = |value| {
-            let stop = match terminal {
-                5 => {
-                    result = Some(value);
-                    true
-                }
-                6 if value != 0 => {
-                    result = Some(1);
-                    true
-                }
-                7 if value == 0 => {
-                    result = Some(0);
-                    true
-                }
-                6 | 7 => false,
-                _ => unreachable!(),
-            };
-            Ok(if stop {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            })
-        };
-        if process_value(&mut stages, value, &mut stack, &mut emit)
-            .map_err(kernel_error)?
-            .is_break()
-        {
-            return Ok((true, result));
-        }
-    }
-    Ok((exhausted, if exhausted { result } else { None }))
-}
-
-#[pyfunction]
-pub(crate) fn terminal_i64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-    terminal: u8,
-) -> PyResult<Option<i64>> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    py.detach(move || run_terminal(values, program, terminal))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn statistics_i64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
-) -> PyResult<(u64, f64, f64)> {
-    let values = extract_i64_container(values)?;
-    py.detach(move || run_i64_statistics(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn statistics_i64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-) -> PyResult<(u64, f64, f64)> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    py.detach(move || run_i64_statistics(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn aggregate_i64(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
-) -> PyResult<I64AggregateSnapshot> {
-    let values = extract_i64_container(values)?;
-    py.detach(move || run_i64_aggregate(values, program))
-        .map_err(kernel_error)
-}
-
-#[pyfunction]
-pub(crate) fn aggregate_i64_range(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-) -> PyResult<I64AggregateSnapshot> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
-    }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    py.detach(move || run_i64_aggregate(values, program))
-        .map_err(kernel_error)
-}
-
-/// Compute only requested aggregate fields while preserving the established snapshot schema.
-#[pyfunction]
-pub(crate) fn aggregate_i64_masked(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    program: Program,
+pub(crate) fn run_i64_identity_aggregate_masked<I>(
+    values: I,
     mask: u8,
-) -> PyResult<I64AggregateSnapshot> {
-    let values = extract_i64_container(values)?;
-    py.detach(move || run_i64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
+) -> Result<I64AggregateSnapshot, KernelError>
+where
+    I: IntoIterator<Item = i64>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let mut values = values.into_iter();
+    let empty = || (0, 0, None, None, None, None, 0.0, 0.0);
+    match validate_aggregate_mask(mask)? {
+        AGGREGATE_COUNT => {
+            let mut snapshot = empty();
+            snapshot.0 = u64::try_from(values.len()).map_err(|_| KernelError::Overflow)?;
+            Ok(snapshot)
+        }
+        AGGREGATE_TOTAL => {
+            let mut snapshot = empty();
+            // Every physically representable sequence of i64 values has an exact sum that fits
+            // i128: even `usize::MAX * i64::MIN` remains above `i128::MIN`. Avoiding an
+            // impossible per-item overflow branch lets LLVM keep this identity reduction tight.
+            snapshot.1 = values.map(i128::from).sum();
+            Ok(snapshot)
+        }
+        AGGREGATE_MINIMUM => {
+            let mut snapshot = empty();
+            snapshot.2 = values.min();
+            Ok(snapshot)
+        }
+        AGGREGATE_MAXIMUM => {
+            let mut snapshot = empty();
+            snapshot.3 = values.max();
+            Ok(snapshot)
+        }
+        AGGREGATE_FIRST => {
+            let mut snapshot = empty();
+            snapshot.4 = values.next();
+            Ok(snapshot)
+        }
+        AGGREGATE_LAST => {
+            let mut snapshot = empty();
+            snapshot.5 = values.last();
+            Ok(snapshot)
+        }
+        statistics_mask if statistics_mask == AGGREGATE_COUNT | AGGREGATE_MEAN | AGGREGATE_M2 => {
+            let mut statistics = OnlineStatistics::default();
+            for value in values {
+                statistics.accept(value as f64)?;
+            }
+            let (count, mean, squared_deviations) = statistics.snapshot();
+            Ok((count, 0, None, None, None, None, mean, squared_deviations))
+        }
+        validated => run_i64_aggregate_masked(values, Vec::new(), validated),
+    }
 }
 
-/// Range-specialized counterpart of ``aggregate_i64_masked``.
-#[pyfunction]
-pub(crate) fn aggregate_i64_range_masked(
-    py: Python<'_>,
-    start: i64,
-    stop: i64,
-    step: i64,
-    program: Program,
-    mask: u8,
-) -> PyResult<I64AggregateSnapshot> {
-    if step == 0 {
-        return Err(PyValueError::new_err("range step cannot be zero"));
+#[cfg(any(not(Py_GIL_DISABLED), test))]
+pub(crate) fn run_i64_identity_mean<I>(values: I) -> Result<Option<f64>, KernelError>
+where
+    I: IntoIterator<Item = i64>,
+{
+    let mut values = values.into_iter();
+    let mut count = 0_u64;
+    let mut total = 0_i64;
+    while let Some(value) = values.next() {
+        let next_count = count.checked_add(1).ok_or(KernelError::Overflow)?;
+        if let Some(next_total) = next_exact_i64_mean_total(total, value) {
+            count = next_count;
+            total = next_total;
+            continue;
+        }
+
+        let mut mean = CompensatedMean::from_state(count, total as f64, 0.0);
+        mean.accept(value as f64)?;
+        for value in values {
+            mean.accept(value as f64)?;
+        }
+        return Ok(mean.value());
     }
-    let values = I64Range {
-        current: start,
-        stop,
-        step,
-    };
-    py.detach(move || run_i64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
+    Ok((count != 0).then(|| (total as f64) / (count as f64)))
+}
+
+/// Compute an identity-slice mean while deriving the common-path count from its known length.
+#[inline]
+pub(crate) fn run_i64_identity_mean_by<T, F>(
+    values: &[T],
+    value: F,
+) -> Result<Option<f64>, KernelError>
+where
+    F: Fn(&T) -> i64,
+{
+    let mut total = 0_i64;
+    for (index, item) in values.iter().enumerate() {
+        let item = value(item);
+        if let Some(next_total) = next_exact_i64_mean_total(total, item) {
+            total = next_total;
+            continue;
+        }
+
+        let count = u64::try_from(index).map_err(|_| KernelError::Overflow)?;
+        let mut mean = CompensatedMean::from_state(count, total as f64, 0.0);
+        mean.accept(item as f64)?;
+        for item in &values[index + 1..] {
+            mean.accept(value(item) as f64)?;
+        }
+        return Ok(mean.value());
+    }
+    let count = u64::try_from(values.len()).map_err(|_| KernelError::Overflow)?;
+    Ok((count != 0).then(|| (total as f64) / (count as f64)))
 }

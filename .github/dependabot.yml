@@ -4,13 +4,25 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      uv-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: cargo
     directory: /rust
     schedule:
       interval: monthly
+    groups:
+      cargo-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

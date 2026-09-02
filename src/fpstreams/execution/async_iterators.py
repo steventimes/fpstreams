@@ -1,6 +1,6 @@
 """Sequential async transformations with explicit upstream ownership.
 
-Each generator closes the source iterator in a finally block, so exhaustion,
+Each generator closes the source iterator in an explicit ownership scope, so exhaustion,
 failure, cancellation, and early downstream close all propagate cleanup upstream.
 Operators that open nested sources also close those iterators at their local scope.
 """
@@ -8,7 +8,6 @@ Operators that open nested sources also close those iterators at their local sco
 from __future__ import annotations
 
 import operator
-import sys
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
@@ -43,27 +42,24 @@ from ..planning.async_ import (
     _Zip,
     _ZipLongest,
 )
-from ..planning.async_utils import _resolve, close_async_iterators
+from ..planning.async_utils import _resolve, closing_async_iterators
+from ..runtime.iterators import closing_iterators
 
 
 async def _filter(source: AsyncIterator[Any], operation: _Filter) -> AsyncIterator[Any]:
     """Yield items whose possibly awaitable predicate resolves truthy."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             if await _resolve(operation.predicate(item)):
                 yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _tap(source: AsyncIterator[Any], operation: _Tap) -> AsyncIterator[Any]:
     """Resolve the side-effect action before yielding each original item unchanged."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             await _resolve(operation.action(item))
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _flat_map(source: AsyncIterator[Any], operation: _FlatMap) -> AsyncIterator[Any]:
@@ -72,33 +68,25 @@ async def _flat_map(source: AsyncIterator[Any], operation: _FlatMap) -> AsyncIte
     Async nested iterators are awaited and closed with async cleanup; synchronous
     nested iterators are iterated directly and closed when they support close.
     """
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             nested = await _resolve(operation.function(item))
             if isinstance(nested, AsyncIterable):
                 nested_iterator = nested.__aiter__()
-                try:
+                async with closing_async_iterators((nested_iterator,)):
                     async for nested_item in nested_iterator:
                         yield nested_item
-                finally:
-                    await close_async_iterators((nested_iterator,), active_error=sys.exception())
             else:
                 nested_iterator = iter(nested)
-                try:
+                with closing_iterators((nested_iterator,)):
                     yield_from = nested_iterator
                     for nested_item in yield_from:
                         yield nested_item
-                finally:
-                    close = getattr(nested_iterator, "close", None)
-                    if callable(close):
-                        close()
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _take(source: AsyncIterator[Any], operation: _Take) -> AsyncIterator[Any]:
     """Yield at most count items, consuming nothing when count is zero."""
-    try:
+    async with closing_async_iterators((source,)):
         if operation.count == 0:
             return
         seen = 0
@@ -107,45 +95,37 @@ async def _take(source: AsyncIterator[Any], operation: _Take) -> AsyncIterator[A
             seen += 1
             if seen >= operation.count:
                 break
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _drop(source: AsyncIterator[Any], operation: _Drop) -> AsyncIterator[Any]:
     """Consume the first count items, then yield the remainder unchanged."""
-    try:
+    async with closing_async_iterators((source,)):
         seen = 0
         async for item in source:
             if seen < operation.count:
                 seen += 1
                 continue
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _take_while(source: AsyncIterator[Any], operation: _TakeWhile) -> AsyncIterator[Any]:
     """Yield the leading truthy-predicate run, consuming but omitting its first failure."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             if not await _resolve(operation.predicate(item)):
                 return
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _take_while_inclusive(
     source: AsyncIterator[Any], operation: _TakeWhileInclusive
 ) -> AsyncIterator[Any]:
     """Yield through the first predicate failure, including that terminating item."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             yield item
             if not await _resolve(operation.predicate(item)):
                 return
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _drop_while(source: AsyncIterator[Any], operation: _DropWhile) -> AsyncIterator[Any]:
@@ -153,7 +133,7 @@ async def _drop_while(source: AsyncIterator[Any], operation: _DropWhile) -> Asyn
 
     The predicate is no longer called after the first false result.
     """
-    try:
+    async with closing_async_iterators((source,)):
         dropping = True
         async for item in source:
             if dropping:
@@ -161,13 +141,11 @@ async def _drop_while(source: AsyncIterator[Any], operation: _DropWhile) -> Asyn
                     continue
                 dropping = False
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _chunk(source: AsyncIterator[Any], operation: _Chunk) -> AsyncIterator[Any]:
     """Group consecutive items into tuples, including a final tuple shorter than size."""
-    try:
+    async with closing_async_iterators((source,)):
         batch: list[Any] = []
         async for item in source:
             batch.append(item)
@@ -176,8 +154,6 @@ async def _chunk(source: AsyncIterator[Any], operation: _Chunk) -> AsyncIterator
                 batch.clear()
         if batch:
             yield tuple(batch)
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _batch_by_size(source: AsyncIterator[Any], operation: _BatchBySize) -> AsyncIterator[Any]:
@@ -188,7 +164,7 @@ async def _batch_by_size(source: AsyncIterator[Any], operation: _BatchBySize) ->
     rejects an individually oversized item; non-strict mode permits it as an
     oversized batch of its own.
     """
-    try:
+    async with closing_async_iterators((source,)):
         batch: list[Any] = []
         batch_size = 0
         async for item in source:
@@ -213,8 +189,6 @@ async def _batch_by_size(source: AsyncIterator[Any], operation: _BatchBySize) ->
             batch_size += item_size
         if batch:
             yield tuple(batch)
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _window(source: AsyncIterator[Any], operation: _Window) -> AsyncIterator[Any]:
@@ -223,7 +197,7 @@ async def _window(source: AsyncIterator[Any], operation: _Window) -> AsyncIterat
     If the entire source is shorter than size, one partial window is yielded.
     Exhaustion while advancing ends the stream without a trailing partial window.
     """
-    try:
+    async with closing_async_iterators((source,)):
         current: deque[Any] = deque(maxlen=operation.size)
         while len(current) < operation.size:
             try:
@@ -240,13 +214,11 @@ async def _window(source: AsyncIterator[Any], operation: _Window) -> AsyncIterat
                     current.append(await anext(source))
                 except StopAsyncIteration:
                     return
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _pairwise(source: AsyncIterator[Any]) -> AsyncIterator[Any]:
     """Yield overlapping adjacent pairs; empty and singleton sources emit nothing."""
-    try:
+    async with closing_async_iterators((source,)):
         try:
             previous = await anext(source)
         except StopAsyncIteration:
@@ -254,13 +226,11 @@ async def _pairwise(source: AsyncIterator[Any]) -> AsyncIterator[Any]:
         async for item in source:
             yield previous, item
             previous = item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _group_runs(source: AsyncIterator[Any], operation: _GroupRuns) -> AsyncIterator[Any]:
     """Group consecutive items with equal possibly awaitable keys into tuples."""
-    try:
+    async with closing_async_iterators((source,)):
         try:
             first = await anext(source)
         except StopAsyncIteration:
@@ -276,8 +246,6 @@ async def _group_runs(source: AsyncIterator[Any], operation: _GroupRuns) -> Asyn
             current = [item]
             current_key = item_key
         yield tuple(current)
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _fold(source: AsyncIterator[Any], operation: _Fold) -> AsyncIterator[Any]:
@@ -286,13 +254,11 @@ async def _fold(source: AsyncIterator[Any], operation: _Fold) -> AsyncIterator[A
     Both initializer and step results may be awaitable; an empty source emits the
     resolved initializer value.
     """
-    try:
+    async with closing_async_iterators((source,)):
         state = await _resolve(operation.initializer())
         async for item in source:
             state = await _resolve(operation.function(state, item))
         yield state
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _unique(source: AsyncIterator[Any], operation: _Unique) -> AsyncIterator[Any]:
@@ -302,7 +268,7 @@ async def _unique(source: AsyncIterator[Any], operation: _Unique) -> AsyncIterat
     """
     hashable: set[Any] = set()
     unhashable: list[Any] = []
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             key = await _resolve(operation.key(item))
             try:
@@ -314,19 +280,15 @@ async def _unique(source: AsyncIterator[Any], operation: _Unique) -> AsyncIterat
                     continue
                 unhashable.append(key)
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _enumerate(source: AsyncIterator[Any], operation: _Enumerate) -> AsyncIterator[Any]:
     """Pair each item with consecutive integers beginning at operation.start."""
     position = operation.start
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             yield position, item
             position += 1
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _zip(source: AsyncIterator[Any], operation: _Zip) -> AsyncIterator[Any]:
@@ -335,29 +297,28 @@ async def _zip(source: AsyncIterator[Any], operation: _Zip) -> AsyncIterator[Any
     Strict mode raises when lengths differ, matching built-in zip diagnostics. The
     locally opened right iterator and the upstream left iterator are both closed.
     """
-    other = operation.source.open()
-    try:
-        while True:
-            try:
-                left = await anext(source)
-            except StopAsyncIteration:
-                if not operation.strict:
-                    return
+    async with closing_async_iterators((source,)):
+        other = operation.source.open()
+        async with closing_async_iterators((other,)):
+            while True:
                 try:
-                    await anext(other)
+                    left = await anext(source)
                 except StopAsyncIteration:
-                    return
-                raise ValueError("zip() argument 2 is longer than argument 1") from None
+                    if not operation.strict:
+                        return
+                    try:
+                        await anext(other)
+                    except StopAsyncIteration:
+                        return
+                    raise ValueError("zip() argument 2 is longer than argument 1") from None
 
-            try:
-                right = await anext(other)
-            except StopAsyncIteration:
-                if operation.strict:
-                    raise ValueError("zip() argument 2 is shorter than argument 1") from None
-                return
-            yield left, right
-    finally:
-        await close_async_iterators((other, source), active_error=sys.exception())
+                try:
+                    right = await anext(other)
+                except StopAsyncIteration:
+                    if operation.strict:
+                        raise ValueError("zip() argument 2 is shorter than argument 1") from None
+                    return
+                yield left, right
 
 
 async def _zip_longest(source: AsyncIterator[Any], operation: _ZipLongest) -> AsyncIterator[Any]:
@@ -365,37 +326,36 @@ async def _zip_longest(source: AsyncIterator[Any], operation: _ZipLongest) -> As
 
     The operator opens and owns the right iterator and closes both inputs on exit.
     """
-    other = operation.source.open()
     left_done = right_done = False
-    try:
-        while not (left_done and right_done):
-            if left_done:
-                left = operation.fillvalue
-            else:
-                try:
-                    left = await anext(source)
-                except StopAsyncIteration:
-                    left_done = True
+    async with closing_async_iterators((source,)):
+        other = operation.source.open()
+        async with closing_async_iterators((other,)):
+            while not (left_done and right_done):
+                if left_done:
                     left = operation.fillvalue
+                else:
+                    try:
+                        left = await anext(source)
+                    except StopAsyncIteration:
+                        left_done = True
+                        left = operation.fillvalue
 
-            if right_done:
-                right = operation.fillvalue
-            else:
-                try:
-                    right = await anext(other)
-                except StopAsyncIteration:
-                    right_done = True
+                if right_done:
                     right = operation.fillvalue
+                else:
+                    try:
+                        right = await anext(other)
+                    except StopAsyncIteration:
+                        right_done = True
+                        right = operation.fillvalue
 
-            if not (left_done and right_done):
-                yield left, right
-    finally:
-        await close_async_iterators((other, source), active_error=sys.exception())
+                if not (left_done and right_done):
+                    yield left, right
 
 
 async def _intersperse(source: AsyncIterator[Any], operation: _Intersperse) -> AsyncIterator[Any]:
     """Insert one separator between adjacent items, with none at either boundary."""
-    try:
+    async with closing_async_iterators((source,)):
         try:
             first = await anext(source)
         except StopAsyncIteration:
@@ -404,8 +364,6 @@ async def _intersperse(source: AsyncIterator[Any], operation: _Intersperse) -> A
         async for item in source:
             yield operation.separator
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _concat(source: AsyncIterator[Any], operation: _Concat) -> AsyncIterator[Any]:
@@ -414,18 +372,14 @@ async def _concat(source: AsyncIterator[Any], operation: _Concat) -> AsyncIterat
     Each additional iterator is opened only when reached and closed before moving
     to the next; the original source is closed by the outer cleanup block.
     """
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             yield item
         for additional_source in operation.sources:
             other = additional_source.open()
-            try:
+            async with closing_async_iterators((other,)):
                 async for item in other:
                     yield item
-            finally:
-                await close_async_iterators((other,), active_error=sys.exception())
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _cross(source: AsyncIterator[Any], operation: _Cross) -> AsyncIterator[Any]:
@@ -436,14 +390,13 @@ async def _cross(source: AsyncIterator[Any], operation: _Cross) -> AsyncIterator
     after loading or on failure, and the left source is always closed on exit.
     """
     right_values: list[Any] = []
-    right_iterator: AsyncIterator[Any] | None = None
     initialized = False
-    try:
+    async with closing_async_iterators((source,)):
         async for left in source:
             if not initialized:
                 initialized = True
                 right_iterator = operation.source.open()
-                try:
+                async with closing_async_iterators((right_iterator,)):
                     async for right in right_iterator:
                         if (
                             operation.max_right is not None
@@ -453,14 +406,8 @@ async def _cross(source: AsyncIterator[Any], operation: _Cross) -> AsyncIterator
                                 f"cross() exceeded max_right={operation.max_right}"
                             )
                         right_values.append(right)
-                finally:
-                    await close_async_iterators((right_iterator,), active_error=sys.exception())
-                    right_iterator = None
             for right in right_values:
                 yield left, right
-    finally:
-        owned_iterators = (right_iterator, source) if right_iterator is not None else (source,)
-        await close_async_iterators(owned_iterators, active_error=sys.exception())
 
 
 async def _scan(source: AsyncIterator[Any], operation: _Scan) -> AsyncIterator[Any]:
@@ -469,12 +416,10 @@ async def _scan(source: AsyncIterator[Any], operation: _Scan) -> AsyncIterator[A
     The initial value itself is not emitted, and each step result may be awaitable.
     """
     state = operation.initial
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             state = await _resolve(operation.function(state, item))
             yield state
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _scan_right(source: AsyncIterator[Any], operation: _ScanRight) -> AsyncIterator[Any]:
@@ -484,7 +429,7 @@ async def _scan_right(source: AsyncIterator[Any], operation: _ScanRight) -> Asyn
     max_items raises before buffering an excess source item.
     """
     values: list[Any] = []
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             if operation.max_items is not None and len(values) >= operation.max_items:
                 raise BufferLimitError(f"scan_right() exceeded max_items={operation.max_items}")
@@ -495,35 +440,29 @@ async def _scan_right(source: AsyncIterator[Any], operation: _ScanRight) -> Asyn
             values[index] = state
         for value in values:
             yield value
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _prepend(source: AsyncIterator[Any], operation: _Prepend) -> AsyncIterator[Any]:
     """Yield configured values before pulling and forwarding the source."""
-    try:
+    async with closing_async_iterators((source,)):
         for item in operation.values:
             yield item
         async for item in source:
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _append(source: AsyncIterator[Any], operation: _Append) -> AsyncIterator[Any]:
     """Drain the source before yielding the configured trailing values."""
-    try:
+    async with closing_async_iterators((source,)):
         async for item in source:
             yield item
         for item in operation.values:
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _map_first(source: AsyncIterator[Any], operation: _MapFirst) -> AsyncIterator[Any]:
     """Map only the first item, awaiting its result, and pass later items unchanged."""
-    try:
+    async with closing_async_iterators((source,)):
         try:
             first = await anext(source)
         except StopAsyncIteration:
@@ -531,8 +470,6 @@ async def _map_first(source: AsyncIterator[Any], operation: _MapFirst) -> AsyncI
         yield await _resolve(operation.function(first))
         async for item in source:
             yield item
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _map_last(source: AsyncIterator[Any], operation: _MapLast) -> AsyncIterator[Any]:
@@ -540,7 +477,7 @@ async def _map_last(source: AsyncIterator[Any], operation: _MapLast) -> AsyncIte
 
     One item is held pending so an empty source remains empty.
     """
-    try:
+    async with closing_async_iterators((source,)):
         try:
             pending = await anext(source)
         except StopAsyncIteration:
@@ -549,8 +486,6 @@ async def _map_last(source: AsyncIterator[Any], operation: _MapLast) -> AsyncIte
             yield pending
             pending = item
         yield await _resolve(operation.function(pending))
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())
 
 
 async def _collapse(source: AsyncIterator[Any], operation: _Collapse) -> AsyncIterator[Any]:
@@ -559,7 +494,7 @@ async def _collapse(source: AsyncIterator[Any], operation: _Collapse) -> AsyncIt
     Collapsibility is tested on neighboring original items, while merger combines
     the current run aggregate with the new item. Both callbacks may be awaitable.
     """
-    try:
+    async with closing_async_iterators((source,)):
         try:
             previous = aggregate = await anext(source)
         except StopAsyncIteration:
@@ -572,5 +507,3 @@ async def _collapse(source: AsyncIterator[Any], operation: _Collapse) -> AsyncIt
                 aggregate = item
             previous = item
         yield aggregate
-    finally:
-        await close_async_iterators((source,), active_error=sys.exception())

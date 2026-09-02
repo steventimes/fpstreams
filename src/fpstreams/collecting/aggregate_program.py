@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
-from .aggregation import AggregationItems, NativeAggregation
+from .aggregation import (
+    AggregationItems,
+    Aggregator,
+    NativeAggregation,
+    native_aggregation_is_live,
+)
 from .program import CollectorProgram, compile_collectors
 
 ScalarAggregateTerminal: TypeAlias = Literal["count", "min", "max", "first", "last"]
@@ -53,18 +59,14 @@ class NativeAggregateMask:
         """Return whether a wide or compensated sum is the sole requested field."""
         return self.fields == _TOTAL_ONLY
 
-    def prefers_masked_kernel(self, kind: str) -> bool:
+    def prefers_masked_kernel(self, _kind: str) -> bool:
         """Choose masks only for field mixes that beat the branch-free full loop.
 
         Online statistics dominate the arithmetic cost and the established full
-        loop is faster than checking masks around that state. Float totals have
-        the same result: compensation plus mask branches costs more than the
-        compact full loop. Integer totals and extrema-only mixes retain clear
-        measured wins from skipping Welford statistics.
+        loop is faster than checking masks around that state. Totals and extrema-only
+        mixes retain clear wins from skipping unrelated Welford statistics.
         """
-        if self.fields & _STATISTIC_VALUES:
-            return False
-        return kind != "f64" or NativeAggregateField.TOTAL not in self.fields
+        return not self.fields & _STATISTIC_VALUES
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +119,35 @@ _STATISTICS_FIELDS = frozenset({NativeAggregateField.COUNT, *_STATISTIC_VALUES})
 _TOTAL_ONLY = frozenset({NativeAggregateField.TOTAL})
 
 
+def native_mean_only(items: Iterable[tuple[str, object]]) -> bool:
+    """Return whether every named result is the whole-value native mean.
+
+    This uses aggregation kinds rather than snapshot fields because ``count + mean``
+    requests the same fields as one mean but still needs the count result.
+    """
+    found = False
+    for _name, aggregation in items:
+        if not isinstance(aggregation, Aggregator):
+            return False
+        native = aggregation.native
+        if (
+            not isinstance(native, NativeAggregation)
+            or native.kind != "mean"
+            or not native_aggregation_is_live(aggregation)
+        ):
+            return False
+        found = True
+    return found
+
+
 def compile_aggregations(items: AggregationItems) -> AggregationProgram:
     """Compile aggregators and derive a mask only when every one is native-backed."""
     collectors = compile_collectors(items)
     native_items = [aggregation.native for _name, aggregation in items]
-    if not all(isinstance(value, NativeAggregation) for value in native_items):
+    if not all(
+        isinstance(value, NativeAggregation) and native_aggregation_is_live(aggregation)
+        for (_name, aggregation), value in zip(items, native_items, strict=True)
+    ):
         return AggregationProgram(collectors, None, False)
     fields: set[NativeAggregateField] = set()
     for native in native_items:

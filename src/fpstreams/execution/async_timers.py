@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
 from ..physical.async_plan import AsyncTimerNode
-from ..planning.async_ import _BufferTimeout, _Debounce, _Delay, _Throttle, _Timeout
+from ..planning.async_ import (
+    _BufferTimeout,
+    _Debounce,
+    _Delay,
+    _SessionWindow,
+    _Throttle,
+    _Timeout,
+)
 from ..planning.async_utils import _MISSING, close_async_iterators
 from ..runtime.query import QueryRuntime
+from ..runtime.resources import run_async_cleanup
 from ..runtime.tasks import TaskRole, TaskScope
 
 
@@ -170,6 +177,47 @@ async def _execute_buffer_timeout(
             yield output
 
 
+async def _execute_session_window(
+    source: AsyncIterator[Any],
+    operation: _SessionWindow,
+    scope: TaskScope,
+    timer: TimerHandle,
+) -> AsyncIterator[Any]:
+    """Flush a bounded session after each quiet interval, count cap, or source end."""
+    pull: asyncio.Task[Any] | None = scope.create_task(_pull(source), role=TaskRole.SOURCE)
+    batch: list[Any] = []
+    while pull is not None:
+        waiting = {pull}
+        if timer.task is not None:
+            waiting.add(timer.task)
+        done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+        if pull in done:
+            completed_pull = pull
+            pull = None
+            try:
+                item = await scope.take_result(completed_pull)
+            except StopAsyncIteration:
+                await timer.cancel()
+                if batch:
+                    yield tuple(batch)
+                return
+            batch.append(item)
+            if len(batch) == operation.max_count:
+                await timer.cancel()
+                output = tuple(batch)
+                batch.clear()
+                yield output
+            else:
+                await timer.arm(operation.idle_for)
+            pull = scope.create_task(_pull(source), role=TaskRole.SOURCE)
+            continue
+        await timer.take()
+        if batch:
+            output = tuple(batch)
+            batch.clear()
+            yield output
+
+
 async def _execute_delay(
     source: AsyncIterator[Any], operation: _Delay, timer: TimerHandle
 ) -> AsyncIterator[Any]:
@@ -207,6 +255,7 @@ async def execute_async_timer(
     scope = runtime.tasks.scope(f"timer:{node.logical_ids[0]}")
     timer = TimerHandle(scope)
     operation = node.operation
+    active_error: BaseException | None = None
     try:
         if isinstance(operation, _Timeout):
             async for item in _execute_timeout(source, operation, scope, timer):
@@ -217,6 +266,9 @@ async def execute_async_timer(
         elif isinstance(operation, _BufferTimeout):
             async for item in _execute_buffer_timeout(source, operation, scope, timer):
                 yield item
+        elif isinstance(operation, _SessionWindow):
+            async for item in _execute_session_window(source, operation, scope, timer):
+                yield item
         elif isinstance(operation, _Delay):
             async for item in _execute_delay(source, operation, timer):
                 yield item
@@ -225,7 +277,11 @@ async def execute_async_timer(
                 yield item
         else:  # pragma: no cover - the physical compiler constrains this union.
             raise TypeError(f"unsupported async timer operation: {type(operation).__name__}")
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        await timer.aclose()
-        await scope.aclose()
-        await close_async_iterators((source,), active_error=sys.exception())
+        await run_async_cleanup(
+            (timer.aclose, scope.aclose, lambda: close_async_iterators((source,))),
+            active_error,
+        )

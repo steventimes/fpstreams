@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Coroutine
 from enum import StrEnum
 from typing import Any, TypeVar
 
+from . import failpoints
 from .limits import QueryLimits
 from .metrics import QueryMetrics
 from .resources import _add_cleanup_failure
@@ -271,6 +272,19 @@ class TaskScope:
         try:
             return await self._runtime.take_result(task)
         finally:
+            self._tasks.discard(task)
+
+    def release_observed(self, task: asyncio.Task[Any], *, successful: bool) -> None:
+        """Release a completed task whose outcome another owner has already captured."""
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this scope")
+        if not task.done():
+            raise ValueError("task is not complete")
+        try:
+            if successful:
+                failpoints.hit("task.complete.before_publish")
+        finally:
+            self._runtime._retire_live(task)
             self._tasks.discard(task)
 
     async def cancel(self, task: asyncio.Task[Any]) -> None:

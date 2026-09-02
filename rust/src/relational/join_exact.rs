@@ -255,7 +255,7 @@ pub(super) fn snapshot_exact_join_row(
     key_field: *mut ffi::PyObject,
     schema: &mut Option<ExactDictSchema>,
 ) -> PyResult<Option<(Py<PyDict>, i64, bool)>> {
-    // SAFETY: the source snapshot owns a strong reference to row for this entire call.
+    // SAFETY: the source container or its snapshot owns a strong reference to row for this call.
     if unsafe { ffi::PyDict_CheckExact(row) } == 0 {
         return Ok(None);
     }
@@ -317,18 +317,19 @@ pub(super) fn exact_join_row_field_count(
     Ok(Some(field_count))
 }
 
-/// Capture one validated right row as strong values in canonical schema order.
-pub(super) fn snapshot_exact_join_values(
+/// Capture one validated right row's values in canonical schema order.
+fn collect_exact_join_values<T>(
     py: Python<'_>,
     row: *mut ffi::PyObject,
     key_field: *mut ffi::PyObject,
     schema: &mut Option<ExactDictSchema>,
-    values: &mut Vec<Py<PyAny>>,
+    values: &mut Vec<T>,
+    mut capture: impl FnMut(Python<'_>, *mut ffi::PyObject) -> T,
 ) -> PyResult<Option<i64>> {
     if unsafe { ffi::PyDict_CheckExact(row) } == 0 {
         return Ok(None);
     }
-    // SAFETY: the outer source snapshot owns row strongly throughout this function.
+    // SAFETY: the source container or its snapshot owns row strongly throughout this function.
     let row_bound = unsafe { Borrowed::from_ptr(py, row) };
     with_critical_section(row_bound.as_any(), || {
         // SAFETY: row is an exact dict protected by this critical section.
@@ -388,9 +389,7 @@ pub(super) fn snapshot_exact_join_values(
             if field == key_field {
                 selected_value = field_value;
             }
-            // SAFETY: field_value is borrowed from the locked row. The new strong reference
-            // freezes this build-side value independently of later source mutation.
-            values.push(unsafe { Borrowed::from_ptr(py, field_value).to_owned().unbind() });
+            values.push(capture(py, field_value));
         }
 
         if let Some(fields) = new_fields {
@@ -406,9 +405,36 @@ pub(super) fn snapshot_exact_join_values(
     })
 }
 
-/// Bound speculative allocation while reserving enough compact slots for common narrow tables.
-pub(super) fn reserve_compact_join_values(
+/// Capture one validated right row as strong values in canonical schema order.
+pub(super) fn snapshot_exact_join_values(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+    key_field: *mut ffi::PyObject,
+    schema: &mut Option<ExactDictSchema>,
     values: &mut Vec<Py<PyAny>>,
+) -> PyResult<Option<i64>> {
+    collect_exact_join_values(py, row, key_field, schema, values, |py, value| {
+        // SAFETY: value is borrowed from the locked row. The new strong reference freezes this
+        // build-side value independently of later source mutation.
+        unsafe { Borrowed::from_ptr(py, value).to_owned().unbind() }
+    })
+}
+
+/// Borrow one validated right row's values while a GIL-protected source owns them.
+#[cfg(not(Py_GIL_DISABLED))]
+pub(super) fn borrow_exact_join_values(
+    py: Python<'_>,
+    row: *mut ffi::PyObject,
+    key_field: *mut ffi::PyObject,
+    schema: &mut Option<ExactDictSchema>,
+    values: &mut Vec<*mut ffi::PyObject>,
+) -> PyResult<Option<i64>> {
+    collect_exact_join_values(py, row, key_field, schema, values, |_py, value| value)
+}
+
+/// Bound speculative allocation while reserving enough compact slots for common narrow tables.
+pub(super) fn reserve_compact_join_values<T>(
+    values: &mut Vec<T>,
     row_count: usize,
     field_count: usize,
 ) -> PyResult<()> {
@@ -529,6 +555,8 @@ pub(super) fn merge_exact_join_match(
         if unsafe { ffi::PyDict_Merge(output.bind(py).as_ptr(), right.bind(py).as_ptr(), 0) } != 0 {
             return Err(PyErr::fetch(py));
         }
+        #[cfg(test)]
+        record_join_bulk_merge_hit();
         return Ok(Some(()));
     }
     for (field_index, field) in schema.fields.iter().enumerate() {
@@ -566,6 +594,29 @@ pub(super) fn merge_exact_join_values(
                 field.bind(py).as_ptr(),
                 value.bind(py).as_ptr(),
             )?;
+        }
+    }
+    Ok(())
+}
+
+/// Append borrowed right values while the exact source remains protected by the GIL.
+#[cfg(not(Py_GIL_DISABLED))]
+pub(super) fn merge_borrowed_exact_join_values(
+    py: Python<'_>,
+    output: &Py<PyDict>,
+    right_values: &[*mut ffi::PyObject],
+    right_schema: Option<&ExactDictSchema>,
+    shared_right: &[bool],
+) -> PyResult<()> {
+    let Some(schema) = right_schema else {
+        debug_assert!(right_values.is_empty());
+        return Ok(());
+    };
+    debug_assert_eq!(right_values.len(), schema.fields.len());
+    debug_assert_eq!(shared_right.len(), schema.fields.len());
+    for (field_index, (field, &value)) in schema.fields.iter().zip(right_values).enumerate() {
+        if !shared_right[field_index] {
+            set_dict_item(py, output.bind(py).as_ptr(), field.bind(py).as_ptr(), value)?;
         }
     }
     Ok(())

@@ -28,6 +28,31 @@ def _direct_field(selector: Callable[[Any], Any] | None) -> str | None:
     return None
 
 
+def _normalize_direct_row_selector(selector: Selector) -> Selector:
+    """Lower one inspectable direct RowExpr leaf to its public selector token.
+
+    Relation planning can then reuse the existing field, index, and dotted-path
+    machinery without interpreting arbitrary callable bytecode.  Exact type checks
+    deliberately leave directly constructed PythonUDF expressions, subclasses, and
+    malformed third-party IR untouched.
+    """
+    from .row import RowExpr
+    from .row_ir import Field, Index, Path
+
+    if type(selector) is not RowExpr:
+        return selector
+    node = selector._node
+    if type(node) is Field and type(node.name) is str:
+        return node.name
+    if type(node) is Index and type(node.index) is int:
+        return node.index
+    if type(node) is Path and all(type(part) is str for part in node.parts):
+        path = ".".join(node.parts)
+        if node.selector is None or (type(node.selector) is str and node.selector == path):
+            return path
+    return selector
+
+
 def compile_selector(selector: Selector) -> Callable[[Any], Any]:
     """Return a callable implementing the supplied selector.
 

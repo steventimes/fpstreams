@@ -7,9 +7,8 @@ up those local resources themselves.
 
 from __future__ import annotations
 
-import sys
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -21,9 +20,9 @@ from itertools import dropwhile, islice, pairwise, takewhile, zip_longest
 from multiprocessing import get_context
 from typing import Any
 
-from .. import _native
 from ..errors import BufferLimitError, SelectionError
 from ..expressions.selectors import _direct_field
+from ..planning._pair_stages import PAIR_KEY_SELECTOR, PairFlatMapDescriptor
 from ..planning.gather import Downstream
 from ..planning.sync import (
     AppendOp,
@@ -58,6 +57,8 @@ from ..planning.sync import (
     ZipLongestOp,
     ZipOp,
 )
+from ..runtime.iterators import close_iterators as close_iterators
+from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
 from .sorting import external_sort
 
@@ -143,8 +144,15 @@ def _filter(iterator: Iterator[Any], operation: FilterOp) -> Iterator[Any]:
 
 def _flat_map(iterator: Iterator[Any], operation: FlatMapOp) -> Iterator[Any]:
     """Map each item to an iterable and flatten those iterables in source order."""
+    function = operation.function
+    if type(function) is PairFlatMapDescriptor:
+        callback = function.callback
+        for pair in iterator:
+            yield from callback(pair[0], pair[1])
+        return
+
     for item in iterator:
-        yield from operation.function(item)
+        yield from function(item)
 
 
 def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
@@ -155,8 +163,23 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
     """
     hashable: set[Any] = set()
     unhashable: list[Any] = []
+    if operation.key is PAIR_KEY_SELECTOR:
+        for item in iterator:
+            key = item[0]
+            try:
+                if key in hashable:
+                    continue
+                hashable.add(key)
+            except TypeError:
+                if any(key == seen for seen in unhashable):
+                    continue
+                unhashable.append(key)
+            yield item
+        return
+
+    key_function = operation.key
     for item in iterator:
-        key = operation.key(item) if operation.key is not None else item
+        key = key_function(item) if key_function is not None else item
         try:
             if key in hashable:
                 continue
@@ -214,39 +237,6 @@ def _group_runs(iterator: Iterator[Any], operation: GroupRunsOp) -> Iterator[tup
     yield tuple(current)
 
 
-def close_iterator(iterator: Iterator[Any]) -> None:
-    """Close an iterator when it exposes a callable close method."""
-    close = getattr(iterator, "close", None)
-    if callable(close):
-        close()
-
-
-def close_iterators(iterators: Iterable[Iterator[Any]]) -> None:
-    """Close every supplied iterator without hiding a pipeline or cleanup failure.
-
-    During an active exception, cleanup failures become notes on that exception.
-    Otherwise the first cleanup failure is raised after all iterators are attempted,
-    with later failures attached as notes.
-    """
-    active_error = sys.exception()
-    first_cleanup_error: BaseException | None = None
-
-    for iterator in iterators:
-        try:
-            close_iterator(iterator)
-        except BaseException as error:
-            note = f"cleanup failed with {type(error).__name__}: {error}"
-            if active_error is not None:
-                active_error.add_note(note)
-            elif first_cleanup_error is None:
-                first_cleanup_error = error
-            else:
-                first_cleanup_error.add_note(note)
-
-    if first_cleanup_error is not None:
-        raise first_cleanup_error
-
-
 def _zip(iterator: Iterator[Any], operation: ZipOp) -> Iterator[tuple[Any, Any]]:
     """Zip with a locally opened right source, optionally requiring equal lengths.
 
@@ -254,19 +244,15 @@ def _zip(iterator: Iterator[Any], operation: ZipOp) -> Iterator[tuple[Any, Any]]
     iterator; the plan executor owns the passed left iterator.
     """
     other = operation.source.open()
-    try:
+    with closing_iterators((other,)):
         yield from zip(iterator, other, strict=operation.strict)
-    finally:
-        close_iterator(other)
 
 
 def _zip_longest(iterator: Iterator[Any], operation: ZipLongestOp) -> Iterator[tuple[Any, Any]]:
     """Zip to the longer input with fillvalue and close the locally opened right side."""
     other = operation.source.open()
-    try:
+    with closing_iterators((other,)):
         yield from zip_longest(iterator, other, fillvalue=operation.fillvalue)
-    finally:
-        close_iterator(other)
 
 
 def _intersperse(iterator: Iterator[Any], operation: IntersperseOp) -> Iterator[Any]:
@@ -289,10 +275,8 @@ def _concat(iterator: Iterator[Any], operation: ConcatOp) -> Iterator[Any]:
     yield from iterator
     for source in operation.sources:
         other = source.open()
-        try:
+        with closing_iterators((other,)):
             yield from other
-        finally:
-            close_iterator(other)
 
 
 def _scan(iterator: Iterator[Any], operation: ScanOp) -> Iterator[Any]:
@@ -331,11 +315,13 @@ def _cross(iterator: Iterator[Any], operation: CrossOp) -> Iterator[tuple[Any, A
     right_values: list[Any] = []
     right_iterator: Iterator[Any] | None = None
     initialized = False
+    active_error: BaseException | None = None
     try:
         for left in iterator:
             if not initialized:
                 initialized = True
                 right_iterator = operation.source.open()
+                right_error: BaseException | None = None
                 try:
                     for right in right_iterator:
                         if (
@@ -346,14 +332,21 @@ def _cross(iterator: Iterator[Any], operation: CrossOp) -> Iterator[tuple[Any, A
                                 f"cross() exceeded max_right={operation.max_right}"
                             )
                         right_values.append(right)
+                except BaseException as error:
+                    right_error = error
+                    raise
                 finally:
-                    close_iterator(right_iterator)
+                    owned_right = right_iterator
                     right_iterator = None
+                    close_iterators((owned_right,), active_error=right_error)
             for right in right_values:
                 yield left, right
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
         if right_iterator is not None:
-            close_iterator(right_iterator)
+            close_iterators((right_iterator,), active_error=active_error)
 
 
 def _gather(iterator: Iterator[Any], operation: GatherOp) -> Iterator[Any]:
@@ -494,8 +487,14 @@ def _sort(
     if operation.buffer_size is not None:
         return external_sort(iterator, operation, runtime=runtime)
     field = _direct_field(operation.key)
-    exact_dict_rows = getattr(_native, "all_exact_dict_rows_v1", None)
-    direct_dict_field_key = getattr(_native, "direct_dict_field_key_v1", None)
+    try:
+        from .. import _native
+    except ImportError:
+        exact_dict_rows = None
+        direct_dict_field_key = None
+    else:
+        exact_dict_rows = getattr(_native, "all_exact_dict_rows_v1", None)
+        direct_dict_field_key = getattr(_native, "direct_dict_field_key_v1", None)
     if field is None or exact_dict_rows is None or direct_dict_field_key is None:
         return iter(sorted(iterator, key=operation.key, reverse=operation.reverse))
     values = list(iterator)

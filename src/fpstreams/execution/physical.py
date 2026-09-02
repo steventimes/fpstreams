@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterator
-from typing import Any, cast
+from types import FunctionType
+from typing import Any, Literal, TypeVar, cast
 
 from ..expressions.typed_ir import ExpressionSource
 from ..physical.plan import (
@@ -15,12 +16,21 @@ from ..physical.plan import (
     SortPhysicalNode,
     SortStrategy,
 )
-from ..planning.arrow import PlannedRowCallable, RowStageDescriptor
+from ..planning.arrow import RowStageDescriptor, _register_row_stage
 from ..planning.logical import Pipeline
 from ..planning.sync import FilterOp, MapOp, Operation
 from ..runtime.query import QueryRuntime
 from . import execute
-from .sync import execute_operations
+from ._pair_dict import (
+    PairDictConsumer,
+    consume_pair_filter_to_dict,
+    consume_pair_map_to_dict,
+    consume_pair_side_filter_to_dict,
+    is_canonical_pair_dict_consumer,
+)
+from .sync import execute_operations, open_operations
+
+R = TypeVar("R")
 
 
 class PhysicalExecutionError(RuntimeError):
@@ -76,12 +86,12 @@ def operations_from_physical_nodes(
                 operations.append(MapOp(evaluator, node.operation.name))
             elif isinstance(node.operation, FilterOp):
                 predicate = (
-                    PlannedRowCallable(
+                    _register_row_stage(
                         evaluator,
-                        role="compiled_rows_predicate",
-                        descriptor=RowStageDescriptor("where", predicate=node.expression.root),
+                        RowStageDescriptor("where", predicate=node.expression.root),
                     )
                     if node.expression.source is ExpressionSource.ROW
+                    and type(evaluator) is FunctionType
                     else evaluator
                 )
                 operations.append(FilterOp(predicate, node.operation.negate, node.operation.name))
@@ -94,6 +104,187 @@ def operations_from_physical_nodes(
         else:
             raise PhysicalExecutionError(f"unknown physical node {type(node).__name__}")
     return tuple(operations)
+
+
+def _is_direct_streaming_python_plan(plan: PhysicalPlan) -> bool:
+    """Return whether a compiled iteration plan can be consumed in the caller's stack."""
+    payload = plan.backend_payload
+    return (
+        plan.terminal.name == "iterate"
+        and plan.root is None
+        and plan.engine == "python"
+        and plan.decision.selected_engine == "python"
+        and isinstance(payload, BackendPayload)
+        and payload.arrow_prefix is None
+        and payload.native_decision is not None
+        and payload.native_decision.engine == "python"
+        and all(
+            type(node) is RowPhysicalNode and node.engine == "python-row" for node in plan.nodes
+        )
+    )
+
+
+def consume_physical(  # noqa: C901 - terminal fast paths share one ownership stack
+    plan: PhysicalPlan,
+    consumer: Callable[[Iterator[Any]], R],
+    pipeline: Pipeline | None = None,
+) -> R:
+    """Consume a physical plan while keeping sink and iterator cleanup in one stack."""
+    pair_consumer = consumer if type(consumer) is PairDictConsumer else None
+    if pair_consumer is not None and pipeline is not None and plan.root is None:
+        from ._pair_dict import (
+            try_consume_pair_unique_to_dict,
+            try_consume_pair_value_filter_to_dict,
+        )
+        from ._pair_row_filter import try_consume_pair_row_filter_to_dict
+
+        operations = operations_from_physical_nodes(plan.nodes)
+        handled, result = try_consume_pair_unique_to_dict(
+            plan,
+            pipeline,
+            operations,
+            pair_consumer,
+            open_operations,
+        )
+        if handled:
+            return cast(R, result)
+        handled, result = try_consume_pair_row_filter_to_dict(
+            plan,
+            pipeline,
+            operations,
+            pair_consumer,
+            open_operations,
+        )
+        if handled:
+            return cast(R, result)
+        handled, result = try_consume_pair_value_filter_to_dict(
+            plan,
+            pipeline,
+            operations,
+            pair_consumer,
+            open_operations,
+        )
+        if handled:
+            return cast(R, result)
+    if _is_direct_streaming_python_plan(plan):
+        runtime = QueryRuntime()
+        active_error: BaseException | None = None
+        try:
+            operations = operations_from_physical_nodes(plan.nodes)
+            from ._pair_dict import prepare_pair_value_map_to_dict
+
+            pair_value_map_snapshot = prepare_pair_value_map_to_dict(
+                plan,
+                pipeline,
+                operations,
+                pair_consumer,
+                open_operations,
+            )
+            try:
+                source_iterator = plan.source.open()
+            except StopIteration as error:
+                raise RuntimeError("generator raised StopIteration") from error
+            pair_filter = None
+            pair_map = None
+            if (
+                pair_consumer is not None
+                and operations
+                and is_canonical_pair_dict_consumer(pair_consumer)
+            ):
+                from ..planning._pair_stages import PairFilterDescriptor, PairMapDescriptor
+                from ..runtime.failpoints import has_active_failpoints
+
+                tail = operations[-1]
+                if not has_active_failpoints():
+                    if (
+                        type(tail) is MapOp
+                        and type(tail.function) is PairMapDescriptor
+                        and (
+                            tail.function.side in {"key", "value"}
+                            or (
+                                tail.function.side == "pair"
+                                and pair_consumer.policy in {"first", "last"}
+                            )
+                        )
+                    ):
+                        pair_map = tail.function
+                    elif (
+                        type(tail) is FilterOp
+                        and type(tail.predicate) is PairFilterDescriptor
+                        and (
+                            tail.predicate.target in {"pair", "row"}
+                            or (
+                                tail.predicate.target in {"key", "value"}
+                                and pair_consumer.policy in {"first", "last"}
+                            )
+                        )
+                        and tail.negate is False
+                    ):
+                        pair_filter = tail.predicate
+            prefix = (
+                operations[:-1] if pair_map is not None or pair_filter is not None else operations
+            )
+            with open_operations(source_iterator, prefix, runtime=runtime) as iterator:
+                if pair_map is not None and pair_consumer is not None:
+                    from ._pair_dict import try_consume_pair_value_map_to_dict_opened
+
+                    handled, mapped = try_consume_pair_value_map_to_dict_opened(
+                        plan,
+                        pipeline,
+                        operations,
+                        pair_consumer,
+                        pair_map,
+                        iterator,
+                        pair_value_map_snapshot,
+                    )
+                    if handled:
+                        return cast(R, mapped)
+                    return cast(
+                        R,
+                        consume_pair_map_to_dict(iterator, pair_map, pair_consumer.policy),
+                    )
+                if pair_filter is not None and pair_consumer is not None:
+                    if pair_filter.target == "row":
+                        from ._pair_row_filter import consume_pair_row_filter_to_dict
+
+                        return cast(
+                            R,
+                            consume_pair_row_filter_to_dict(
+                                iterator,
+                                pair_filter,
+                                pair_consumer.policy,
+                            ),
+                        )
+                    return cast(
+                        R,
+                        (
+                            consume_pair_filter_to_dict(
+                                iterator,
+                                pair_filter,
+                                pair_consumer.policy,
+                            )
+                            if pair_filter.target == "pair"
+                            else consume_pair_side_filter_to_dict(
+                                iterator,
+                                pair_filter,
+                                cast(Literal["first", "last"], pair_consumer.policy),
+                            )
+                        ),
+                    )
+                return consumer(iterator)
+        except BaseException as error:
+            active_error = error
+            runtime.close(None if isinstance(error, GeneratorExit) else error)
+            raise
+        finally:
+            if active_error is None:
+                runtime.close()
+
+    iterator = execute_physical(plan)
+    from ..runtime.iterators import closing_iterators
+
+    with closing_iterators((iterator,)):
+        return consumer(iterator)
 
 
 def execute_physical(plan: PhysicalPlan, runtime: QueryRuntime | None = None) -> Iterator[Any]:
@@ -110,7 +301,7 @@ def execute_physical(plan: PhysicalPlan, runtime: QueryRuntime | None = None) ->
 
             def open_relation_values() -> Iterator[Any]:
                 """Open the selected relational executor under runtime ownership."""
-                return execute_relational(cast(Any, plan.root), active_runtime)
+                return execute_relational(cast(Any, plan.root), active_runtime, plan)
 
             relation_values = open_relation_values
         else:

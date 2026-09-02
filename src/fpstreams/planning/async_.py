@@ -5,23 +5,21 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from ..errors import FlowConsumedError
+from ..runtime.iterators import closing_iterators
 from .semantics import StreamFacts, facts_from_capabilities
 
 T = TypeVar("T")
+_NO_RETAINED_SEQUENCE = object()
 
 
 async def _from_sync(iterator: Iterator[T]) -> AsyncIterator[T]:
     """Adapt a synchronous iterator to async iteration and close it on every exit path."""
-    try:
+    with closing_iterators((iterator,)):
         for item in iterator:
             yield item
-    finally:
-        close = getattr(iterator, "close", None)
-        if callable(close):
-            close()
 
 
 def _to_async_iterator(source: AsyncIterable[T] | Iterable[T]) -> AsyncIterator[T]:
@@ -34,7 +32,15 @@ def _to_async_iterator(source: AsyncIterable[T] | Iterable[T]) -> AsyncIterator[
 class _AsyncSource(Generic[T]):
     """Own an async opener, semantic facts, and the claim state for one-shot sources."""
 
-    __slots__ = ("_claimed", "_lock", "_opener", "facts", "reiterable")
+    __slots__ = (
+        "_claimed",
+        "_lock",
+        "_opener",
+        "_retained_opener",
+        "_retained_sequence",
+        "facts",
+        "reiterable",
+    )
 
     def __init__(
         self,
@@ -45,6 +51,8 @@ class _AsyncSource(Generic[T]):
     ) -> None:
         """Store the opener and derive conservative ordered-source facts when none are supplied."""
         self._opener = opener
+        self._retained_opener: Callable[[], AsyncIterator[T]] | None = None
+        self._retained_sequence: object = _NO_RETAINED_SEQUENCE
         self.reiterable = reiterable
         self._claimed = False
         self._lock = Lock()
@@ -65,7 +73,16 @@ class _AsyncSource(Generic[T]):
             exact_size=exact_size,
             ordered=ordered,
         )
-        return cls(lambda: _to_async_iterator(source), reiterable=not one_shot, facts=facts)
+
+        def opener() -> AsyncIterator[T]:
+            """Adapt the retained construction-time source on each evaluation."""
+            return _to_async_iterator(source)
+
+        result = cls(opener, reiterable=not one_shot, facts=facts)
+        if type(source) in (list, tuple, range):
+            result._retained_opener = opener
+            result._retained_sequence = source
+        return result
 
     @classmethod
     def defer(
@@ -96,15 +113,30 @@ class _AsyncSource(Generic[T]):
                 self._claimed = True
         return self._opener()
 
+    def retained_sequence(self) -> list[Any] | tuple[Any, ...] | range | None:
+        """Return a still-canonical exact synchronous sequence retained by this source."""
+        retained = self._retained_sequence
+        if self._opener is not self._retained_opener:
+            return None
+        if type(retained) in (list, tuple, range):
+            return cast(list[Any] | tuple[Any, ...] | range, retained)
+        return None
+
+    def current_exact_size(self) -> int | None:
+        """Read the live length of a retained exact sequence without opening it."""
+        retained = self.retained_sequence()
+        return None if retained is None else len(retained)
+
 
 @dataclass(frozen=True, slots=True)
 class _MapAsync:
-    """Map items with bounded concurrency, optional ordering, and an optional per-call timeout."""
+    """Map items with bounded concurrency, buffering, ordering, and an optional timeout."""
 
     function: Callable[[Any], Any]
     concurrency: int
     ordered: bool
     timeout: float | None
+    buffer: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +209,21 @@ class _BufferTimeout:
 
     max_count: int
     seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionWindow:
+    """Emit bounded tuples separated by ``idle_for`` seconds without a new item."""
+
+    idle_for: float
+    max_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Prefetch:
+    """Pull ahead by at most ``capacity`` accepted, not-yet-emitted values."""
+
+    capacity: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,6 +444,8 @@ AsyncOperation = (
     | _Timeout
     | _Debounce
     | _BufferTimeout
+    | _SessionWindow
+    | _Prefetch
     | _Delay
     | _Throttle
     | _Take

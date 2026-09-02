@@ -1,301 +1,485 @@
 //! Fused numeric pipeline and terminal tests.
 
 use super::*;
+use pyo3::types::PyBytesMethods;
+#[cfg(not(Py_GIL_DISABLED))]
+use std::sync::Mutex;
+
+mod buffers;
+mod kernels;
+mod reductions;
+
+use buffers::{assert_same_f64, assert_same_optional_f64};
+use reductions::legacy_compensated_total;
+
+#[cfg(not(Py_GIL_DISABLED))]
+static BUFFER_GIL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn division_and_modulo_match_python_for_negative_operands() {
-    assert_eq!(floor_div(-7, 3).unwrap(), -3);
-    assert_eq!(floor_div(7, -3).unwrap(), -3);
-    assert_eq!(modulo(-7, 3).unwrap(), 2);
-    assert_eq!(modulo(7, -3).unwrap(), -2);
-}
+fn exact_i64_numpy_pack_is_native_endian_and_declines_without_protocol_dispatch() {
+    Python::initialize();
+    Python::attach(|py| {
+        let values = PyList::new(py, [i64::MIN, -2, 0, i64::MAX]).unwrap();
+        let packed = crate::numpy_export::pack_i64_exact_sequence_v1(py, values.as_any())
+            .unwrap()
+            .unwrap();
+        let bytes = packed.bind(py).as_bytes();
+        let decoded = bytes
+            .chunks_exact(size_of::<i64>())
+            .map(|chunk| i64::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, vec![i64::MIN, -2, 0, i64::MAX]);
 
-#[test]
-fn common_integer_programs_prepare_specialized_kernels() {
-    let affine = prepare_expression(vec![(0, 0), (1, 3), (4, 0), (1, 1), (2, 0)]);
-    let divisible = prepare_expression(vec![(0, 0), (1, 8), (6, 0), (1, 0), (8, 0)]);
-
-    assert!(matches!(
-        affine,
-        PreparedExpression::Affine {
-            multiplier: 3,
-            offset: 1
+        let fixture = PyModule::from_code(
+            py,
+            c"class Integer(int):\n    calls = 0\n    def __index__(self):\n        type(self).calls += 1\n        raise AssertionError('integer protocol called')\ninteger = Integer(1)\n",
+            c"exact_i64_numpy_pack.py",
+            c"exact_i64_numpy_pack",
+        )
+        .unwrap();
+        for incompatible in [
+            PyList::new(py, [fixture.getattr("integer").unwrap()]).unwrap(),
+            PyList::new(py, [true]).unwrap(),
+            PyList::new(py, [py.eval(c"1 << 100", None, None).unwrap()]).unwrap(),
+        ] {
+            assert!(
+                crate::numpy_export::pack_i64_exact_sequence_v1(py, incompatible.as_any())
+                    .unwrap()
+                    .is_none()
+            );
         }
-    ));
-    assert!(matches!(
-        divisible,
-        PreparedExpression::DivisibleByPowerOfTwo { mask: 7 }
-    ));
+        assert_eq!(
+            fixture
+                .getattr("Integer")
+                .unwrap()
+                .getattr("calls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            0
+        );
+    });
 }
 
-#[test]
-fn specialized_integer_programs_preserve_negative_and_overflow_semantics() {
-    let program = vec![
-        (0, vec![(0, 0), (1, 3), (4, 0), (1, 1), (2, 0)]),
-        (1, vec![(0, 0), (1, 8), (6, 0), (1, 0), (8, 0)]),
-    ];
-
-    assert_eq!(run_values(-8..=8, program.clone()).unwrap(), vec![-8, 16]);
-    assert!(run_values(vec![i64::MAX], program).is_err());
+fn f64_array<'py>(py: Python<'py>, values: Vec<f64>) -> Bound<'py, PyAny> {
+    PyModule::import(py, "array")
+        .unwrap()
+        .getattr("array")
+        .unwrap()
+        .call1(("d", values))
+        .unwrap()
 }
 
-#[test]
-fn pipeline_stages_are_fused_in_encounter_order() {
-    let program = vec![
-        (0, vec![(0, 0), (1, 3), (4, 0), (1, 1), (2, 0)]),
-        (1, vec![(0, 0), (1, 2), (6, 0), (1, 0), (8, 0)]),
-        (3, vec![(1, 4)]),
-    ];
-
-    assert_eq!(run_values(0..100, program).unwrap(), vec![4, 10, 16, 22]);
+fn i64_array<'py>(py: Python<'py>, values: Vec<i64>) -> Bound<'py, PyAny> {
+    PyModule::import(py, "array")
+        .unwrap()
+        .getattr("array")
+        .unwrap()
+        .call1(("q", values))
+        .unwrap()
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
 #[test]
-fn terminals_consume_the_fused_pipeline_without_materializing() {
-    let program = vec![(0, vec![(0, 0), (1, 2), (4, 0)])];
+fn exact_i64_sequence_snapshot_accepts_only_builtin_ints_without_protocol_dispatch() {
+    Python::initialize();
+    Python::attach(|py| {
+        let list = PyList::new(py, [i64::MIN, -1, 0, i64::MAX]).unwrap();
+        assert_eq!(
+            crate::common::snapshot_exact_i64_sequence(list.as_any()).unwrap(),
+            vec![i64::MIN, -1, 0, i64::MAX]
+        );
 
-    assert_eq!(run_terminal(1..=4, program.clone(), 0).unwrap(), Some(4));
-    assert_eq!(run_terminal(1..=4, program.clone(), 1).unwrap(), Some(20));
-    assert_eq!(run_terminal(1..=4, program.clone(), 2).unwrap(), Some(2));
-    assert_eq!(run_terminal(1..=4, program, 3).unwrap(), Some(8));
-}
+        let tuple = PyTuple::new(py, [3_i64, 2, 1]).unwrap();
+        assert_eq!(
+            crate::common::snapshot_exact_i64_sequence(tuple.as_any()).unwrap(),
+            vec![3, 2, 1]
+        );
 
-#[test]
-fn terminals_retain_take_drop_and_filter_state_between_source_values() {
-    let program = vec![
-        (4, vec![(1, 2)]),
-        (1, vec![(0, 0), (1, 2), (6, 0), (1, 0), (8, 0)]),
-        (3, vec![(1, 2)]),
-        (0, vec![(0, 0), (1, 1), (2, 0)]),
-    ];
-
-    assert_eq!(run_terminal(0..20, program.clone(), 5).unwrap(), Some(3));
-    assert_eq!(run_terminal(0..20, program, 7).unwrap(), Some(1));
-}
-
-#[test]
-fn short_circuit_terminals_never_pull_an_unneeded_tail() {
-    let identity = vec![(0, vec![(0, 0)])];
-    let dangerous_tail = || std::iter::once_with(|| panic!("tail was evaluated"));
-
-    assert_eq!(
-        run_terminal(
-            std::iter::once(7).chain(dangerous_tail()),
-            identity.clone(),
-            5
+        let fixture = PyModule::from_code(
+            py,
+            c"class Integer(int):\n    calls = 0\n    def __index__(self):\n        type(self).calls += 1\n        raise AssertionError('integer protocol called')\ninteger = Integer(1)\n",
+            c"exact_i64_sequence_snapshot.py",
+            c"exact_i64_sequence_snapshot",
         )
-        .unwrap(),
-        Some(7)
-    );
-    assert_eq!(
-        run_terminal(
-            std::iter::once(1).chain(dangerous_tail()),
-            identity.clone(),
-            6
+        .unwrap();
+        let subclass = PyList::new(py, [fixture.getattr("integer").unwrap()]).unwrap();
+        let subclass_error =
+            crate::common::snapshot_exact_i64_sequence(subclass.as_any()).unwrap_err();
+        assert!(subclass_error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+        assert_eq!(
+            fixture
+                .getattr("Integer")
+                .unwrap()
+                .getattr("calls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            0
+        );
+
+        let booleans = PyTuple::new(py, [true]).unwrap();
+        let boolean_error =
+            crate::common::snapshot_exact_i64_sequence(booleans.as_any()).unwrap_err();
+        assert!(boolean_error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+
+        let huge = py.eval(c"1 << 100", None, None).unwrap();
+        let overflowing = PyList::new(py, [huge]).unwrap();
+        let overflow_error =
+            crate::common::snapshot_exact_i64_sequence(overflowing.as_any()).unwrap_err();
+        assert!(overflow_error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
+    });
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+#[test]
+fn direct_exact_i64_map_materializer_accepts_only_arithmetic_roots() {
+    Python::initialize();
+    Python::attach(|py| {
+        let list = PyList::new(py, [-5_i64, -1, 0, 5]).unwrap();
+        let tuple = PyTuple::new(py, [-5_i64, -1, 0, 5]).unwrap();
+        let cases = [
+            (vec![(0, 0), (1, 2), (2, 0)], vec![-3_i64, 1, 2, 7]),
+            (vec![(0, 0), (1, 2), (3, 0)], vec![-7_i64, -3, -2, 3]),
+            (vec![(0, 0), (1, -2), (4, 0)], vec![10_i64, 2, 0, -10]),
+            (vec![(0, 0), (1, 2), (5, 0)], vec![-3_i64, -1, 0, 2]),
+            (vec![(0, 0), (7, 0)], vec![5_i64, 1, 0, -5]),
+            (
+                vec![(0, 0), (1, 2), (1, 3), (4, 0), (2, 0)],
+                vec![1_i64, 5, 6, 11],
+            ),
+        ];
+
+        for source in [list.as_any(), tuple.as_any()] {
+            for (instructions, expected) in &cases {
+                let output = crate::integer::materialize_i64_map_exact_list_v1(
+                    py,
+                    source,
+                    instructions.clone(),
+                )
+                .unwrap()
+                .unwrap();
+                assert!(output.bind(py).is_exact_instance_of::<PyList>());
+                assert_eq!(output.extract::<Vec<i64>>(py).unwrap(), *expected);
+            }
+        }
+
+        let empty = PyList::empty(py);
+        let output = crate::integer::materialize_i64_map_exact_list_v1(
+            py,
+            empty.as_any(),
+            vec![(0, 0), (1, 1), (2, 0)],
         )
-        .unwrap(),
-        Some(1)
-    );
-    assert_eq!(
-        run_terminal(
-            std::iter::once(0).chain(dangerous_tail()),
-            identity.clone(),
-            7
+        .unwrap()
+        .unwrap();
+        assert!(output.extract::<Vec<i64>>(py).unwrap().is_empty());
+    });
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+#[test]
+fn direct_exact_i64_map_materializer_validates_postfix_before_materializing() {
+    Python::initialize();
+    Python::attach(|py| {
+        let source = PyList::new(py, [1_i64, 2, 3]).unwrap();
+        let invalid_programs = [
+            vec![],
+            vec![(99, 0)],
+            vec![(2, 0)],
+            vec![(7, 0)],
+            vec![(0, 0), (1, 1)],
+            vec![(1, 2), (1, 3), (2, 0)],
+            vec![(0, 0)],
+            vec![(1, 7)],
+            vec![(0, 0), (17, 0)],
+            vec![(0, 0), (1, 2), (6, 0)],
+            vec![(0, 0), (1, 2), (8, 0)],
+        ];
+
+        for instructions in invalid_programs {
+            let error = crate::integer::materialize_i64_map_exact_list_v1(
+                py,
+                source.as_any(),
+                instructions,
+            )
+            .unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        }
+
+        let nonsequence = PyDict::new(py);
+        let error = crate::integer::materialize_i64_map_exact_list_v1(
+            py,
+            nonsequence.as_any(),
+            vec![(2, 0)],
         )
-        .unwrap(),
-        Some(0)
-    );
-    assert_eq!(
-        run_terminal(vec![1, 2, 3], identity.clone(), 4).unwrap(),
-        Some(3)
-    );
-    assert_eq!(
-        run_terminal(Vec::new(), identity.clone(), 6).unwrap(),
-        Some(0)
-    );
-    assert_eq!(run_terminal(Vec::new(), identity, 7).unwrap(), Some(1));
+        .unwrap_err();
+        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
 
-    let float_identity = vec![(0, vec![(0, 0.0)])];
-    assert_eq!(
-        run_f64_terminal(vec![1.5, 2.5], float_identity.clone(), 5).unwrap(),
-        Some(1.5)
-    );
-    assert_eq!(
-        run_f64_terminal(vec![0.0, 2.5], float_identity, 7).unwrap(),
-        Some(0.0)
-    );
+        let empty = PyList::empty(py);
+        let error =
+            crate::integer::materialize_i64_map_exact_list_v1(py, empty.as_any(), vec![(0, 0)])
+                .unwrap_err();
+        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+    });
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
 #[test]
-fn online_statistics_are_fused_and_use_a_compensated_mean() {
-    let identity = vec![(0, vec![(0, 0)])];
-    let (count, mean, squared_deviations) = run_i64_statistics(1..=4, identity).unwrap();
-    assert_eq!(count, 4);
-    assert_eq!(mean, 2.5);
-    assert_eq!(squared_deviations, 5.0);
+fn direct_exact_i64_map_materializer_declines_without_touching_the_source() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"class Integer(int):\n    calls = 0\n    def __index__(self):\n        type(self).calls += 1\n        raise AssertionError('integer protocol called')\nclass Sequence(list):\n    pass\ninteger = Integer(7)\nmixed = [1, integer, 3]\nhuge_tail = [1, 1 << 100]\nfloat_tail = [1, 2.5]\nboolean_tail = [1, True]\nsubclass_source = Sequence([1, 2])\n",
+            c"direct_exact_i64_map.py",
+            c"direct_exact_i64_map",
+        )
+        .unwrap();
+        let add_one = vec![(0, 0), (1, 1), (2, 0)];
 
-    let float_identity = vec![(0, vec![(0, 0.0)])];
-    let (count, mean, _squared_deviations) =
-        run_f64_statistics(vec![1e16, 1.0, -1e16], float_identity.clone()).unwrap();
-    assert_eq!(count, 3);
-    assert!((mean - 1.0 / 3.0).abs() < f64::EPSILON);
-    assert_eq!(
-        run_f64_statistics(Vec::new(), float_identity).unwrap(),
-        (0, 0.0, 0.0)
-    );
+        for name in [
+            "mixed",
+            "huge_tail",
+            "float_tail",
+            "boolean_tail",
+            "subclass_source",
+        ] {
+            let source = fixture.getattr(name).unwrap();
+            assert!(
+                crate::integer::materialize_i64_map_exact_list_v1(py, &source, add_one.clone())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            fixture
+                .getattr("Integer")
+                .unwrap()
+                .getattr("calls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            fixture
+                .getattr("mixed")
+                .unwrap()
+                .repr()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "[1, 7, 3]"
+        );
+
+        let overflow = PyList::new(py, [1_i64, i64::MAX]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_map_exact_list_v1(py, overflow.as_any(), add_one)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(overflow.extract::<Vec<i64>>().unwrap(), vec![1, i64::MAX]);
+
+        let negation_overflow = PyList::new(py, [1_i64, i64::MIN]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_map_exact_list_v1(
+                py,
+                negation_overflow.as_any(),
+                vec![(0, 0), (7, 0)],
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let division_overflow = PyList::new(py, [1_i64, i64::MIN]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_map_exact_list_v1(
+                py,
+                division_overflow.as_any(),
+                vec![(0, 0), (1, -1), (5, 0)],
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let division_by_zero = PyTuple::new(py, [4_i64, 0]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_map_exact_list_v1(
+                py,
+                division_by_zero.as_any(),
+                vec![(1, 10), (0, 0), (5, 0)],
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(division_by_zero.extract::<Vec<i64>>().unwrap(), vec![4, 0]);
+    });
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
 #[test]
-fn aggregate_snapshot_computes_every_terminal_in_one_pipeline_pass() {
-    let snapshot = run_i64_aggregate(1..=4, Vec::new()).unwrap();
+fn direct_exact_i64_filter_materializer_retains_selected_object_identity() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"values = [int(str(value)) for value in (1000, 1001, 1002, 1003)]\ntuple_values = tuple(values)\n",
+            c"direct_exact_i64_filter.py",
+            c"direct_exact_i64_filter",
+        )
+        .unwrap();
+        let even = vec![(0, 0), (1, 2), (6, 0), (1, 0), (8, 0)];
 
-    assert_eq!(
-        snapshot,
-        (4, 10, Some(1), Some(4), Some(1), Some(4), 2.5, 5.0)
-    );
+        for source_name in ["values", "tuple_values"] {
+            let source = fixture.getattr(source_name).unwrap();
+            for (negated, expected, positions) in [
+                (false, vec![1000_i64, 1002], vec![0_usize, 2]),
+                (true, vec![1001_i64, 1003], vec![1_usize, 3]),
+            ] {
+                let output = crate::integer::materialize_i64_filter_exact_list_v1(
+                    py,
+                    &source,
+                    even.clone(),
+                    negated,
+                )
+                .unwrap()
+                .unwrap();
+                let output = output.bind(py).cast_exact::<PyList>().unwrap();
+                assert_eq!(output.extract::<Vec<i64>>().unwrap(), expected);
+                for (output_index, source_index) in positions.into_iter().enumerate() {
+                    assert!(
+                        output
+                            .get_item(output_index)
+                            .unwrap()
+                            .is(source.get_item(source_index).unwrap())
+                    );
+                }
+            }
+        }
+    });
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
 #[test]
-fn aggregate_masks_compute_only_requested_fields_without_narrowing_integer_totals() {
-    assert!(run_i64_aggregate_masked(Vec::new(), Vec::new(), 0).is_err());
+fn direct_exact_i64_filter_materializer_accepts_numeric_and_constant_predicates() {
+    Python::initialize();
+    Python::attach(|py| {
+        let source = PyList::new(py, [0_i64, 2, 0, -3]).unwrap();
+        let cases = [
+            (vec![(0, 0)], false, vec![2_i64, -3]),
+            (vec![(1, 1)], false, vec![0_i64, 2, 0, -3]),
+            (vec![(1, 0)], false, vec![]),
+            (vec![(1, 0)], true, vec![0_i64, 2, 0, -3]),
+        ];
+        for (instructions, negated, expected) in cases {
+            let output = crate::integer::materialize_i64_filter_exact_list_v1(
+                py,
+                source.as_any(),
+                instructions,
+                negated,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(output.extract::<Vec<i64>>(py).unwrap(), expected);
+        }
 
-    let total =
-        run_i64_aggregate_masked(vec![i64::MAX, i64::MAX], Vec::new(), AGGREGATE_TOTAL).unwrap();
-    assert_eq!(total.0, 0);
-    assert_eq!(total.1, i128::from(i64::MAX) * 2);
-    assert_eq!(total.2, None);
-    assert_eq!(total.6, 0.0);
-
-    let endpoints = run_i64_aggregate_masked(
-        vec![4, -2, 7],
-        Vec::new(),
-        AGGREGATE_COUNT | AGGREGATE_MINIMUM | AGGREGATE_LAST,
-    )
-    .unwrap();
-    assert_eq!(endpoints, (3, 0, Some(-2), None, None, Some(7), 0.0, 0.0));
+        for instructions in [
+            vec![],
+            vec![(99, 0)],
+            vec![(2, 0)],
+            vec![(7, 0)],
+            vec![(0, 0), (1, 1)],
+        ] {
+            let error = crate::integer::materialize_i64_filter_exact_list_v1(
+                py,
+                source.as_any(),
+                instructions,
+                false,
+            )
+            .unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        }
+    });
 }
 
+#[cfg(not(Py_GIL_DISABLED))]
 #[test]
-fn float_aggregate_masks_preserve_compensated_sum_and_statistics_fields() {
-    let values = vec![1e16, 1.0, -1e16];
-    let total = run_f64_aggregate_masked(values.clone(), Vec::new(), AGGREGATE_TOTAL).unwrap();
-    assert_eq!(total, (0, 1.0, None, None, None, None, 0.0, 0.0));
+fn direct_exact_i64_filter_materializer_declines_without_mutating_the_source() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"class Integer(int):\n    calls = 0\n    def __index__(self):\n        type(self).calls += 1\n        raise AssertionError('integer protocol called')\nclass Sequence(list):\n    pass\nmixed = [2, Integer(3), 4]\nhuge_tail = [2, 1 << 100]\nfloat_tail = [2, 3.5]\nboolean_tail = [2, True]\nsubclass_source = Sequence([2, 4])\n",
+            c"direct_exact_i64_filter_decline.py",
+            c"direct_exact_i64_filter_decline",
+        )
+        .unwrap();
+        let predicate = vec![(0, 0), (1, 0), (9, 0)];
 
-    let statistics = run_f64_aggregate_masked(
-        values,
-        Vec::new(),
-        AGGREGATE_COUNT | AGGREGATE_MEAN | AGGREGATE_M2,
-    )
-    .unwrap();
-    assert_eq!(statistics.0, 3);
-    assert!((statistics.6 - 1.0 / 3.0).abs() < f64::EPSILON);
-    assert!(statistics.7 > 0.0);
-}
+        for name in [
+            "mixed",
+            "huge_tail",
+            "float_tail",
+            "boolean_tail",
+            "subclass_source",
+        ] {
+            let source = fixture.getattr(name).unwrap();
+            assert!(
+                crate::integer::materialize_i64_filter_exact_list_v1(
+                    py,
+                    &source,
+                    predicate.clone(),
+                    false,
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        assert_eq!(
+            fixture
+                .getattr("Integer")
+                .unwrap()
+                .getattr("calls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            fixture
+                .getattr("mixed")
+                .unwrap()
+                .repr()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "[2, 3, 4]"
+        );
 
-#[test]
-fn stable_distinct_composes_with_other_stages_and_terminals() {
-    let program = vec![
-        (0, vec![(0, 0), (1, 5), (6, 0)]),
-        (5, vec![]),
-        (1, vec![(0, 0), (1, 0), (12, 0)]),
-    ];
-    let values = vec![8, 3, 8, 5, 3, 2, 5, 9, 2, 9, 1, 8];
+        let overflow = PyList::new(py, [1_i64, i64::MAX]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_filter_exact_list_v1(
+                py,
+                overflow.as_any(),
+                vec![(0, 0), (1, 1), (2, 0)],
+                false,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(overflow.extract::<Vec<i64>>().unwrap(), vec![1, i64::MAX]);
 
-    assert_eq!(
-        run_values(values.clone(), program.clone()).unwrap(),
-        vec![3, 2, 4, 1]
-    );
-    assert_eq!(run_terminal(values, program, 1).unwrap(), Some(10));
-}
-
-#[test]
-fn while_stages_preserve_longest_prefix_semantics() {
-    let program = vec![
-        (7, vec![(0, 0), (1, 3), (10, 0)]),
-        (6, vec![(0, 0), (1, 6), (10, 0)]),
-    ];
-
-    assert_eq!(run_values(0..100, program.clone()).unwrap(), vec![3, 4, 5]);
-    assert_eq!(run_terminal(0..100, program, 1).unwrap(), Some(12));
-
-    let float_program = vec![
-        (7, vec![(0, 0.0), (1, 1.5), (10, 0.0)]),
-        (6, vec![(0, 0.0), (1, 3.0), (10, 0.0)]),
-    ];
-    assert_eq!(
-        run_f64(vec![0.0, 1.0, 1.5, 2.0, 3.0, 4.0], float_program).unwrap(),
-        vec![1.5, 2.0]
-    );
-}
-
-#[test]
-fn inclusive_take_sends_its_boundary_through_downstream_stages_then_stops() {
-    let program = vec![
-        (8, vec![(0, 0), (1, 6), (10, 0)]),
-        (1, vec![(0, 0), (1, 4), (6, 0), (1, 0), (8, 0)]),
-    ];
-
-    assert_eq!(
-        run_values(vec![0, 2, 4, 6, 8], program).unwrap(),
-        vec![0, 4]
-    );
-}
-
-#[test]
-fn boolean_and_absolute_value_opcodes_compose() {
-    let absolute_is_three = vec![(0, 0), (17, 0), (1, 3), (8, 0)];
-    let nonzero_and_not_three = vec![
-        (0, 0),
-        (1, 0),
-        (9, 0),
-        (0, 0),
-        (17, 0),
-        (1, 3),
-        (8, 0),
-        (16, 0),
-        (14, 0),
-    ];
-
-    assert_eq!(
-        evaluate(-3, &absolute_is_three, &mut Vec::new()).unwrap(),
-        1
-    );
-    assert_eq!(
-        evaluate(-3, &nonzero_and_not_three, &mut Vec::new()).unwrap(),
-        0
-    );
-    assert_eq!(
-        evaluate(4, &nonzero_and_not_three, &mut Vec::new()).unwrap(),
-        1
-    );
-}
-
-#[test]
-fn float_pipeline_and_terminals_are_fused() {
-    let program = vec![
-        (0, vec![(0, 0.0), (1, 1.5), (4, 0.0)]),
-        (1, vec![(0, 0.0), (1, 3.0), (12, 0.0)]),
-    ];
-
-    assert_eq!(
-        run_f64(vec![1.0, 2.0, 3.0], program.clone()).unwrap(),
-        vec![4.5]
-    );
-    assert_eq!(
-        run_f64_count(vec![1.0, 2.0, 3.0], program.clone()).unwrap(),
-        1
-    );
-    assert_eq!(
-        run_f64_terminal(vec![1.0, 2.0, 3.0], program, 1).unwrap(),
-        Some(4.5)
-    );
-    let identity = vec![(0, vec![(0, 0.0)])];
-    assert_eq!(
-        run_f64_terminal(vec![1e16, 1.0, -1e16], identity.clone(), 1).unwrap(),
-        Some(1.0)
-    );
-    assert_eq!(
-        run_f64_terminal(vec![1e16, 1.0, -1e16], identity, 8).unwrap(),
-        Some(0.0)
-    );
+        let division_by_zero = PyTuple::new(py, [4_i64, 0]).unwrap();
+        assert!(
+            crate::integer::materialize_i64_filter_exact_list_v1(
+                py,
+                division_by_zero.as_any(),
+                vec![(1, 10), (0, 0), (5, 0)],
+                false,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(division_by_zero.extract::<Vec<i64>>().unwrap(), vec![4, 0]);
+    });
 }

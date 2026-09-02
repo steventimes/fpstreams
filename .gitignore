@@ -24,5 +24,9 @@ htmlcov/
 
 .ruff_cache/
 .mypy_cache/
+.playwright-cli/
 site/
 rust/target/
+artifacts/
+.omx/
+fpstreams/docs/assets/packages/

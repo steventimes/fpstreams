@@ -23,6 +23,10 @@ name = "join_group"
 patterns = ["fpstreams_join/*", "fpstreams_group/*"]
 
 [[group]]
+name = "pairs"
+patterns = ["fpstreams_pairs/*"]
+
+[[group]]
 name = "arrow"
 patterns = ["fpstreams_arrow/*"]
 

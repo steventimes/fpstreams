@@ -108,6 +108,76 @@ fn exact_dict_join_preserves_left_order_and_builds_independent_snapshots() {
 }
 
 #[test]
+fn exact_dict_join_v2_preserves_borrowed_source_semantics() {
+    Python::initialize();
+    Python::attach(|py| {
+        let first = PyDict::new(py);
+        first.set_item("id", 2_i64).unwrap();
+        first.set_item("left", "unmatched").unwrap();
+        let second = PyDict::new(py);
+        second.set_item("id", 1_i64).unwrap();
+        second.set_item("left", "matched").unwrap();
+        let left = PyTuple::new(py, [&first, &second]).unwrap();
+
+        let payload = PyDict::new(py);
+        payload.set_item("owned", false).unwrap();
+        let right_row = PyDict::new(py);
+        right_row.set_item("id", 1_i64).unwrap();
+        right_row.set_item("right", &payload).unwrap();
+        let right = PyList::new(py, [&right_row]).unwrap();
+        let field = PyString::new(py, "id");
+
+        let joined = join_i64_unique_dict_rows_v2(
+            left.as_any(),
+            right.as_any(),
+            field.as_any(),
+            field.as_any(),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(joined.len(), 2);
+        assert!(
+            joined[0]
+                .bind(py)
+                .get_item("right")
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            joined[1]
+                .bind(py)
+                .get_item("right")
+                .unwrap()
+                .unwrap()
+                .is(&payload)
+        );
+        second.set_item("left", "changed").unwrap();
+        right_row.set_item("right", "changed").unwrap();
+        assert_eq!(
+            joined[1]
+                .bind(py)
+                .get_item("left")
+                .unwrap()
+                .unwrap()
+                .extract::<&str>()
+                .unwrap(),
+            "matched"
+        );
+        assert!(
+            joined[1]
+                .bind(py)
+                .get_item("right")
+                .unwrap()
+                .unwrap()
+                .is(&payload)
+        );
+    });
+}
+
+#[test]
 fn exact_dict_join_supports_inner_join_and_distinct_key_fields() {
     Python::initialize();
     Python::attach(|py| {
@@ -237,7 +307,7 @@ fn exact_dict_join_accepts_compact_and_bulk_width_boundaries_and_declines_wider_
         left_second.set_item(&left_payload, "L2").unwrap();
         let left = PyList::new(py, [&left_first, &left_second]).unwrap();
 
-        for field_count in [23_usize, 24] {
+        for field_count in [23_usize, 24, 63, 64] {
             let payload_fields = (1..field_count)
                 .map(|index| PyString::new(py, &format!("right_{index}")))
                 .collect::<Vec<_>>();
@@ -317,7 +387,7 @@ fn exact_dict_join_accepts_compact_and_bulk_width_boundaries_and_declines_wider_
 
         let too_wide = PyDict::new(py);
         too_wide.set_item(&id, 1_i64).unwrap();
-        for index in 1..25 {
+        for index in 1..65 {
             too_wide
                 .set_item(format!("too_wide_{index}"), index)
                 .unwrap();
@@ -345,6 +415,55 @@ fn exact_dict_join_accepts_compact_and_bulk_width_boundaries_and_declines_wider_
             .unwrap()
             .is_none()
         );
+    });
+}
+
+#[test]
+fn exact_dict_join_bulk_merges_wide_canonical_schemas_across_versions() {
+    const FIELD_COUNT: usize = 24;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let id = PyString::new(py, "id");
+        let left = PyDict::new(py);
+        left.set_item(&id, 1_i64).unwrap();
+        left.set_item("left", true).unwrap();
+
+        let right = PyDict::new(py);
+        right.set_item(&id, 1_i64).unwrap();
+        for index in 1..FIELD_COUNT {
+            right.set_item(format!("right_{index}"), index).unwrap();
+        }
+
+        begin_record_join_probe_count();
+        let joined = join_i64_unique_dict_rows_v1(
+            PyList::new(py, [&left]).unwrap().as_any(),
+            PyList::new(py, [&right]).unwrap().as_any(),
+            id.as_any(),
+            id.as_any(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let probes = end_record_join_probe_count();
+
+        assert_eq!(joined.len(), 1);
+        assert_eq!(probes.bulk_merge_hits, 1);
+
+        begin_record_join_probe_count();
+        let joined_many = join_i64_many_dict_rows_v1(
+            PyList::new(py, [&left]).unwrap().as_any(),
+            PyList::new(py, [&right]).unwrap().as_any(),
+            id.as_any(),
+            id.as_any(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let many_probes = end_record_join_probe_count();
+
+        assert_eq!(joined_many.len(), 1);
+        assert_eq!(many_probes.bulk_merge_hits, 1);
     });
 }
 
@@ -458,7 +577,7 @@ fn exact_dict_join_declines_non_fixed_schemas_wide_rows_and_unsafe_shapes() {
 
         let wide = PyDict::new(py);
         wide.set_item("id", 1_i64).unwrap();
-        for index in 0..24 {
+        for index in 0..64 {
             wide.set_item(format!("field_{index}"), index).unwrap();
         }
         let wide_left = PyTuple::new(py, [&wide]).unwrap();

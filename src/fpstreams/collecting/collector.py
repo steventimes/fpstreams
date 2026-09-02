@@ -9,6 +9,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector, compile_selector
+from ..runtime.iterators import closing_iterators
 from ._collector_base import (
     Collector as Collector,
 )
@@ -415,17 +416,13 @@ class Collectors(Generic[T]):
         def step(state: Any, value: T) -> Any:
             """Step nested values until their iterator ends or downstream is complete."""
             iterator = iter(expand(value))
-            try:
+            with closing_iterators((iterator,)):
                 while not reduction.done(state):
                     try:
                         nested = next(iterator)
                     except StopIteration:
                         break
                     state = reduction.step(state, nested)
-            finally:
-                close = getattr(iterator, "close", None)
-                if callable(close):
-                    close()
             return state
 
         return Collector(

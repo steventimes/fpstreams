@@ -7,6 +7,7 @@ from typing import Any
 
 from ..collecting.statistics import StatisticsSnapshot
 from ..errors import NativeUnsupportedError
+from ..expressions.scalar import Expr
 from ..planning.arrow import ArrowPrefixPlan, plan_arrow_prefix
 from ..planning.logical import Pipeline
 from ..planning.native import (
@@ -16,7 +17,10 @@ from ..planning.native import (
     select_terminal_engine,
 )
 from ..planning.native import exact_count as exact_count
-from ..planning.source import Source
+from ..planning.source import _CANONICAL_RETAINED_SEQUENCE, Source
+from ..planning.sync import MapOp
+from ..runtime.failpoints import has_active_failpoints
+from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
 from .sync import execute_operations
 
@@ -32,10 +36,28 @@ NativeAggregateSnapshot = tuple[
 ]
 
 
+def _direct_i64_map_list_source(plan: Pipeline, decision: EngineDecision) -> object | None:
+    """Return the retained exact sequence for one uninstrumented scalar map."""
+    program = decision.program
+    if (
+        plan.engine != "auto"
+        or plan.parallel is not None
+        or len(plan.operations) != 1
+        or type(operation := plan.operations[0]) is not MapOp
+        or type(operation.function) is not Expr
+        or program is None
+        or decision.native_operation_count != 1
+        or has_active_failpoints()
+    ):
+        return None
+    retained = _CANONICAL_RETAINED_SEQUENCE(plan.source)
+    return retained if type(retained) in (list, tuple) and retained is program.source else None
+
+
 def _native_source_type_error(kind: str) -> NativeUnsupportedError:
-    """Describe an exact-container rejection without exposing Rust ABI details."""
+    """Describe a numeric-source rejection without exposing Rust ABI details."""
     expected = "homogeneous real numbers" if kind == "f64" else "homogeneous i64 integers"
-    return NativeUnsupportedError(f"native list and tuple sources must contain {expected}")
+    return NativeUnsupportedError(f"native numeric sources must contain {expected}")
 
 
 def _materialize_python_after_native_failure(plan: Pipeline, target: str) -> Any:
@@ -47,7 +69,7 @@ def _materialize_python_after_native_failure(plan: Pipeline, target: str) -> Any
     stateful Python operation is evaluated exactly once.
     """
     values = execute_operations(plan.source.open(), plan.operations)
-    try:
+    with closing_iterators((values,)):
         if target == "list":
             return list(values)
         if target == "tuple":
@@ -55,10 +77,6 @@ def _materialize_python_after_native_failure(plan: Pipeline, target: str) -> Any
         if target == "set":
             return set(values)
         raise RuntimeError(f"unknown materialization target {target!r}")
-    finally:
-        close = getattr(values, "close", None)
-        if callable(close):
-            close()
 
 
 def try_native_materialize(
@@ -74,7 +92,25 @@ def try_native_materialize(
     """
     if decision.engine != "native" or decision.program is None:
         return False, None
-    from .native import execute_materialize, materialize_available
+    from .native import (
+        direct_i64_map_list_endpoint,
+        direct_i64_map_list_program,
+        execute_materialize,
+        materialize_available,
+    )
+
+    if plan.engine == "auto" and target == "list":
+        phase_a_owned, expected_instructions = direct_i64_map_list_program(decision.program)
+        if phase_a_owned:
+            endpoint = direct_i64_map_list_endpoint()
+            if endpoint is not None:
+                source = _direct_i64_map_list_source(plan, decision)
+                if source is None or expected_instructions is None:
+                    return True, _materialize_python_after_native_failure(plan, target)
+                direct = endpoint(source, expected_instructions)
+                if direct is None:
+                    return True, _materialize_python_after_native_failure(plan, target)
+                return True, direct
 
     if not materialize_available(decision.program):
         return False, None
@@ -160,7 +196,14 @@ def try_native_terminal(
     cannot be converted to the compiled numeric kind. A forced native plan instead
     exposes overflow and wraps incompatible source values as NativeUnsupportedError.
     """
-    selected = select_terminal_engine(plan, terminal) if decision is None else decision
+    # Aggregate planning initially uses the umbrella ``aggregate`` terminal. Re-select
+    # short-circuiting scalar projections so a retained buffer cannot turn ``first``
+    # into a full scan that observes an unreachable error or overflow in the tail.
+    selected = (
+        select_terminal_engine(plan, terminal)
+        if decision is None or terminal in {"first", "any", "all"}
+        else decision
+    )
     if selected.engine != "native":
         return False, None
     if selected.program is None:
@@ -198,6 +241,44 @@ def try_native_statistics(
 
     try:
         return True, execute_statistics(selected.program)
+    except TypeError as error:
+        if plan.engine != "auto":
+            raise _native_source_type_error(selected.program.kind) from error
+        return False, None
+    except OverflowError:
+        if plan.engine != "auto":
+            raise
+        return False, None
+
+
+def try_native_mean(
+    plan: Pipeline,
+    *,
+    decision: EngineDecision | None = None,
+) -> tuple[bool, float | None]:
+    """Try Rust's mean-only reduction without allocating variance state."""
+    selected = select_terminal_engine(plan, "mean") if decision is None else decision
+    if selected.engine != "native":
+        return False, None
+    if selected.program is None:
+        raise RuntimeError("native decision is missing a compiled program")
+    from .native import execute_exact_container_mean, execute_mean
+
+    try:
+        exact_container = execute_exact_container_mean(selected.program)
+    except TypeError as error:
+        if plan.engine != "auto":
+            raise _native_source_type_error(selected.program.kind) from error
+        return False, None
+    if exact_container is not None:
+        handled, result = exact_container
+        if handled:
+            return True, result
+        if plan.engine == "auto":
+            return False, None
+
+    try:
+        return True, execute_mean(selected.program)
     except TypeError as error:
         if plan.engine != "auto":
             raise _native_source_type_error(selected.program.kind) from error

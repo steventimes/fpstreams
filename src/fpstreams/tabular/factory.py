@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar, overload
+from collections.abc import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, BinaryIO, TextIO, TypeAlias, TypeVar, overload
 
 if TYPE_CHECKING:
     import polars as pl
@@ -62,29 +62,21 @@ class _RowsFactory:
         Returns:
             A lazy Rows wrapper; construction does not iterate record sources.
         """
-        source_type = type(source)
-        if (
-            not callable(getattr(source_type, "__arrow_c_stream__", None))
-            and not callable(getattr(source_type, "__dataframe__", None))
-            and callable(getattr(source, "__dataframe__", None))
-        ):
-            # Preserve the legacy Rows factory's support for a protocol installed directly on
-            # one instance. Class-level protocols still use Flow's Arrow-first dispatch.
-            return Rows.from_dataframe(source)
         return Rows(source)
 
     def from_csv(
         self,
-        path: str | os.PathLike[str],
+        path: str | os.PathLike[str] | TextIO | Callable[[], TextIO],
         *,
         encoding: str = "utf-8",
         **format_parameters: Any,
     ) -> Rows[dict[str, Any]]:
-        """Return reusable rows that reopen a CSV file and validate its header when iterated.
+        """Read CSV rows lazily from a path, caller-owned handle, or owned opener.
 
         Args:
-            path: CSV input file opened on each iteration.
-            encoding: Text encoding used by the CSV reader.
+            path: A replayable path, a one-shot caller-owned text handle, or a replayable
+                zero-argument opener whose returned handle fpstreams closes.
+            encoding: Text encoding used only when fpstreams opens a path.
             **format_parameters: Keyword options forwarded to csv.DictReader, such as
                 dialect, delimiter, or quoting.
 
@@ -134,16 +126,18 @@ class _RowsFactory:
 
     def from_jsonl(
         self,
-        path: str | os.PathLike[str],
+        path: (str | os.PathLike[str] | TextIO | BinaryIO | Callable[[], TextIO | BinaryIO]),
         *,
         encoding: str = "utf-8",
         max_record_bytes: int | None = 8 * 1024 * 1024,
     ) -> Rows[dict[str, Any]]:
-        """Return reusable rows that decode nonblank JSON objects from a file on demand.
+        """Read JSON objects lazily from a path, caller-owned handle, or owned opener.
 
         Args:
-            path: JSON Lines input file reopened for each iteration.
-            encoding: Encoding applied after each physical line passes its byte limit.
+            path: A replayable path, a one-shot caller-owned text or binary handle, or a
+                replayable zero-argument opener whose returned handle fpstreams closes.
+            encoding: Encoding used for paths and binary handles, and for byte accounting on text
+                handles.
             max_record_bytes: Encoded-byte limit per line, or None for no limit.
 
         Returns:
@@ -168,6 +162,33 @@ class _RowsFactory:
             Lazy Rows; reader-backed inputs may be consumed only once and are closed afterward.
         """
         return Rows.from_arrow(source, batch_size=batch_size)
+
+    def from_columns(
+        self,
+        columns: Mapping[str, Any],
+        *,
+        batch_size: int = 65_536,
+    ) -> Rows[dict[str, Any]]:
+        """Adapt an explicit mapping of independent columns through Arrow."""
+        return Rows.from_columns(columns, batch_size=batch_size)
+
+    def from_numpy(
+        self,
+        array: Any,
+        *,
+        columns: Iterable[str] | None = None,
+    ) -> Rows[dict[str, Any]]:
+        """Adapt a two-dimensional NumPy array to replayable dictionary rows.
+
+        Args:
+            array: Two-dimensional ndarray or array-like input accepted by ``numpy.asarray``.
+            columns: Unique non-empty string names matching the array width. Defaults to
+                stringified integer positions.
+
+        Returns:
+            Lazy rows that convert one retained array row at a time when consumed.
+        """
+        return Rows.from_numpy(array, columns=columns)
 
     def from_dataframe(
         self,

@@ -14,6 +14,7 @@ from ..planning.sync import Engine, ParallelSettings
 from .plan import PhysicalNode
 
 if TYPE_CHECKING:
+    from ..planning.numpy import NumpyPrefixPlan
     from ..tabular.spill_limits import SpillLimits
 
 
@@ -78,12 +79,72 @@ class NativeRecordGroupSumSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class NativePairI64ExprGroupSumSpec:
+    """Two closed pair-i64 RowExpr programs accepted by the guarded group kernel."""
+
+    key_program: tuple[tuple[int, int], ...]
+    value_program: tuple[tuple[int, int], ...]
+    output_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArrowGroupSumSpec:
     """Exact Arrow fields accepted by the guarded columnar i64 group-sum path."""
 
     key_field: str
     value_field: str
     output_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArrowGroupLaneSpec:
+    """One direct int64 lane accepted by retained Arrow grouped aggregation."""
+
+    output_name: str
+    kind: Literal["count", "sum", "min", "max"]
+    value_field: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArrowGroupAggregateSpec:
+    """One direct Arrow key and closed lanes executed without Python row boxing."""
+
+    key_field: str
+    lanes: tuple[ArrowGroupLaneSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NumpyGroupLaneSpec:
+    """One direct integer lane accepted by bounded NumPy grouped aggregation."""
+
+    output_name: str
+    kind: Literal["count", "sum", "min", "max"]
+    value_field: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class NumpyGroupAggregateSpec:
+    """One direct NumPy key and closed lanes executed in bounded column chunks."""
+
+    key_field: str
+    lanes: tuple[NumpyGroupLaneSpec, ...]
+    prefix: NumpyPrefixPlan | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NumpyGlobalLaneSpec:
+    """One direct numeric lane accepted by retained NumPy global aggregation."""
+
+    output_name: str
+    kind: Literal["count", "sum", "min", "max", "mean"]
+    value_field: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class NumpyGlobalAggregateSpec:
+    """Closed direct NumPy lanes executed without constructing Python rows."""
+
+    lanes: tuple[NumpyGlobalLaneSpec, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +158,38 @@ class ArrowGlobalSumSpec:
     value_field: str
     output_name: str
     kind: Literal["sum", "min", "max", "first", "last"] = "sum"
+
+
+@dataclass(frozen=True, slots=True)
+class ArrowGlobalAggregateSpec:
+    """Closed global Arrow lanes executed without constructing Python rows."""
+
+    lanes: tuple[ArrowGroupLaneSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRecordGlobalSumSpec:
+    """Exact record field and output name for one guarded native i64 reduction."""
+
+    value_field: str
+    output_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeGlobalI64LaneSpec:
+    """One direct exact-i64 lane accepted by the generic global reduction ABI."""
+
+    output_name: str
+    kind: Literal["count", "sum", "min", "max"]
+    value_selector: int | str | None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeGlobalI64AggregateSpec:
+    """An ordered exact tuple/dict lane layout reduced in one retained-source scan."""
+
+    row_kind: Literal["tuple", "dict"]
+    lanes: tuple[NativeGlobalI64LaneSpec, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,13 +267,21 @@ class NativeFixedI64GroupSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class NativeCallableGroupSpec:
-    """One exact-record count/sum shape with exactly one opaque callback lane."""
+class NativeMultiI64GroupLaneSpec:
+    """One direct exact-i64 lane accepted by the generic fixed-record ABI."""
 
-    callback_side: Literal["key", "value"]
-    direct_field: str
-    count_name: str
-    sum_name: str
+    output_name: str
+    kind: Literal["count", "sum", "min", "max"]
+    value_selector: int | str | None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMultiI64GroupSpec:
+    """One exact tuple/dict key and ordered multi-aggregate lane layout."""
+
+    row_kind: Literal["tuple", "dict"]
+    key_selector: int | str
+    lanes: tuple[NativeMultiI64GroupLaneSpec, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +302,7 @@ class JoinPhysicalNode(PhysicalRelNode):
     strategy: JoinStrategy
     reason: str
     arrow_unique: ArrowUniqueJoinSpec | None
+    native_direct_fields: NativeRecordJoinSpec | None
     native_record_i64: NativeRecordJoinSpec | None
     native_callable_unique: bool
     native_callable_many: bool
@@ -219,9 +321,10 @@ class GroupAggregatePhysicalNode(PhysicalRelNode):
     simple_sum: SimpleGroupSumSpec | None
     closed_group: ClosedGroupSpec | None
     composite_count_sum: CompositeCountSumSpec | None
-    native_fixed_i64_group: NativeFixedI64GroupSpec | None
-    native_callable_group: NativeCallableGroupSpec | None
-    arrow_i64_sum: ArrowGroupSumSpec | None
+    native_fixed_i64_group: NativeFixedI64GroupSpec | NativeMultiI64GroupSpec | None
+    arrow_i64_sum: ArrowGroupSumSpec | ArrowGroupAggregateSpec | None
+    numpy_group: NumpyGroupAggregateSpec | None
+    native_pair_i64_expr_sum: NativePairI64ExprGroupSumSpec | None
     native_i64_sum: NativeGroupSumSpec | None
     native_record_i64_sum: NativeRecordGroupSumSpec | None
     partitions: int | None
@@ -237,4 +340,7 @@ class GlobalAggregatePhysicalNode(PhysicalRelNode):
     aggregations: AggregationProgram
     exact_count_name: str | None
     arrow_count_name: str | None
-    arrow_i64_sum: ArrowGlobalSumSpec | None
+    arrow_i64_sum: ArrowGlobalSumSpec | ArrowGlobalAggregateSpec | None
+    numpy_global: NumpyGlobalAggregateSpec | None
+    native_multi_i64: NativeGlobalI64AggregateSpec | None
+    native_record_i64_sum: NativeRecordGlobalSumSpec | None

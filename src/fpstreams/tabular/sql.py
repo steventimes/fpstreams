@@ -6,10 +6,10 @@ import operator
 import os
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import suppress
 from typing import Any, TypeAlias
 
 from ..errors import DuplicateKeyError
+from ..runtime.resources import _add_cleanup_failure
 
 ConnectionFactory: TypeAlias = Callable[[], Any]
 DBParameters: TypeAlias = Mapping[str, Any] | Sequence[Any] | None
@@ -28,21 +28,32 @@ def _batch_size(value: int) -> int:
 
 
 def _close(resource: Any) -> None:
-    """Best-effort close a cursor or connection without masking an active error."""
+    """Close a cursor, connection, or iterator when it exposes a close hook."""
     if resource is None:
         return
     close = getattr(resource, "close", None)
     if callable(close):
-        with suppress(Exception):
-            close()
+        close()
+
+
+def _close_resources(resources: Iterable[Any], active_error: BaseException | None) -> None:
+    """Attempt every close and attach failures to the active database error."""
+    if isinstance(active_error, GeneratorExit):
+        active_error = None
+    errors: list[BaseException] = []
+    for resource in resources:
+        try:
+            _close(resource)
+        except BaseException as error:
+            errors.append(error)
+    _add_cleanup_failure(active_error, errors)
 
 
 def _rollback(connection: Any) -> None:
-    """Best-effort roll back a connection after a failed write."""
+    """Roll back a connection when it exposes a rollback hook."""
     rollback = getattr(connection, "rollback", None)
     if callable(rollback):
-        with suppress(Exception):
-            rollback()
+        rollback()
 
 
 def _column_names(description: Any) -> tuple[str, ...]:
@@ -115,6 +126,7 @@ def db_row_factory(
 
         connection: Any = None
         cursor: Any = None
+        active_error: BaseException | None = None
         try:
             connection = connect()
             hit("db.connect.after")
@@ -130,9 +142,11 @@ def db_row_factory(
                 hit("db.fetch.after")
                 for row in batch:
                     yield _record_from_row(row, names)
+        except BaseException as error:
+            active_error = error
+            raise
         finally:
-            _close(cursor)
-            _close(connection)
+            _close_resources((cursor, connection), active_error)
 
     return records
 
@@ -188,6 +202,7 @@ def write_db_rows(
     connection: Any = None
     cursor: Any = None
     iterator: Iterator[Any] | None = None
+    active_error: BaseException | None = None
     try:
         connection = connect()
         hit("db.connect.after")
@@ -209,11 +224,13 @@ def write_db_rows(
         hit("db.commit.before")
         connection.commit()
         return count
-    except BaseException:
+    except BaseException as error:
+        active_error = error
         if connection is not None:
-            _rollback(connection)
+            try:
+                _rollback(connection)
+            except BaseException as rollback_error:
+                _add_cleanup_failure(error, [rollback_error])
         raise
     finally:
-        _close(iterator)
-        _close(cursor)
-        _close(connection)
+        _close_resources((iterator, cursor, connection), active_error)

@@ -37,9 +37,11 @@ from ..planning.async_ import (
     _Merge,
     _MergeMap,
     _Pairwise,
+    _Prefetch,
     _Prepend,
     _Scan,
     _ScanRight,
+    _SessionWindow,
     _SwitchMap,
     _Take,
     _TakeWhile,
@@ -47,12 +49,13 @@ from ..planning.async_ import (
     _Tap,
     _Throttle,
     _Timeout,
+    _to_async_iterator,
     _Unique,
     _Window,
     _Zip,
     _ZipLongest,
 )
-from ..planning.async_utils import _resolve
+from ..planning.async_utils import _resolve, closing_async_iterators
 from ..planning.explain import AsyncPlanExplanation
 from ..planning.semantics import (
     AsyncTerminalName,
@@ -69,6 +72,7 @@ T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
 U = TypeVar("U")
+_NO_QUEUE_STOP = object()
 
 
 def _default_item_size(value: Any) -> int:
@@ -92,6 +96,17 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         instance._logical_plan = plan
         return instance
 
+    def _retained_identity_terminal(
+        self,
+        terminal: str,
+    ) -> Awaitable[Any] | None:
+        """Return deferred direct work for this exact retained synchronous sequence."""
+        from ._async_identity import try_retained_identity_terminal
+
+        if type(self) is not AsyncFlow:
+            return None
+        return try_retained_identity_terminal(self, terminal)
+
     def explain(self, terminal: AsyncTerminalName = "iterate") -> AsyncPlanExplanation:
         """Describe stream facts and terminal completion risks without consuming the source.
 
@@ -108,6 +123,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             "iterate",
             "list",
             "count",
+            "sum",
+            "min",
+            "max",
+            "minmax",
             "statistics",
             "aggregate",
             "first",
@@ -153,6 +172,53 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow over `source`; async iterator instances are one-shot.
         """
         return AsyncFlow[R](source)
+
+    @staticmethod
+    def from_queue(
+        queue: asyncio.Queue[R],
+        *,
+        stop: object = _NO_QUEUE_STOP,
+    ) -> AsyncFlow[R]:
+        """Create a non-owning, one-shot flow over an asyncio queue.
+
+        Values are requested lazily and emitted in ``queue.get()`` return order.
+        When provided, ``stop`` ends the flow by identity and is not emitted.
+        On Python 3.13+, queue shutdown ends the flow normally.
+        Values already removed from the queue are not returned when downstream
+        stops early. This adapter never calls ``task_done()``, including for the
+        hidden ``stop``; do not use pull-ahead ``prefetch()`` when relying on
+        ``Queue.join()`` or per-item acknowledgements. Queue and producer ownership
+        remain with the caller.
+        """
+
+        async def items() -> AsyncIterator[R]:
+            """Receive until the optional identity sentinel is observed."""
+            queue_shutdown = getattr(asyncio, "QueueShutDown", None)
+            while True:
+                try:
+                    item = await queue.get()
+                except Exception as error:
+                    if isinstance(queue_shutdown, type) and isinstance(error, queue_shutdown):
+                        return
+                    raise
+                if stop is not _NO_QUEUE_STOP and item is stop:
+                    return
+                yield item
+
+        return AsyncFlow._from_logical(
+            AsyncLogicalPlan(
+                _AsyncSource(
+                    items,
+                    reiterable=False,
+                    facts=StreamFacts(
+                        TerminationEvidence.UNKNOWN,
+                        Cardinality.unknown(),
+                        Replayability.ONE_SHOT,
+                        OrderingGuarantee.ORDERED,
+                    ),
+                )
+            )
+        )
 
     @staticmethod
     def from_file(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> AsyncFlow[str]:
@@ -239,11 +305,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             cursor = start
             while True:
                 page, next_cursor = await _resolve(fetch_page(cursor))
-                if isinstance(page, AsyncIterable):
-                    async for item in page:
-                        yield item
-                else:
-                    for item in page:
+                page_iterator = _to_async_iterator(page)
+                async with closing_async_iterators((page_iterator,)):
+                    async for item in page_iterator:
                         yield item
                 if next_cursor is None:
                     return
@@ -255,8 +319,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Execute the stored async plan and return its managed output iterator."""
         from ..execution.async_scheduler import execute_async_physical
         from ..physical.async_plan import compile_async_query
+        from ..runtime.report import _record_async_plan
 
         physical = compile_async_query(self._query("iterate"))
+        _record_async_plan()
         return cast(AsyncIterator[T], execute_async_physical(physical))
 
     def _query(self, terminal: AsyncTerminalName) -> Any:
@@ -281,30 +347,36 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         concurrency: int = 8,
         ordered: bool = True,
         timeout: float | None = None,
+        buffer: int | None = None,
     ) -> AsyncFlow[R]:
-        """Map items with bounded concurrency and optional ordering and timeout.
+        """Map items with bounded concurrency, buffering, ordering, and timeout.
 
         Concurrency is bounded. Ordered mode delays later completed results until earlier inputs
-        finish.
+        finish, while the buffer permits completed work to refill active mapper slots.
 
         Args:
             function: Sync or async mapper called once for each source item.
             concurrency: Maximum mapper calls in flight.
             ordered: Emit in source order when true, otherwise in task-completion order.
             timeout: Optional per-item deadline covering mapper invocation and awaiting its result.
+            buffer: Maximum submitted results not yet emitted, or twice ``concurrency`` by default.
 
         Returns:
             An async flow of mapped values with bounded work and cleanup on early exit.
 
         Raises:
-            ValueError: If concurrency is less than one.
+            ValueError: If concurrency or buffer is less than one.
         """
         # Concurrency is stored in the plan and enforced when the flow is consumed.
         if concurrency < 1:
             raise ValueError("concurrency must be at least 1")
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be positive")
-        operation = _MapAsync(function, concurrency, ordered, timeout)
+        if buffer is None:
+            buffer = 2 * concurrency
+        if buffer < 1:
+            raise ValueError("buffer must be at least 1")
+        operation = _MapAsync(function, concurrency, ordered, timeout, buffer)
         return cast(AsyncFlow[R], self._append(operation))
 
     def map(self, function: Callable[[T], R | Awaitable[R]]) -> AsyncFlow[R]:
@@ -597,6 +669,58 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         )
 
     batch_timeout = buffer_timeout
+
+    def session_window(
+        self,
+        idle_for: float,
+        *,
+        max_count: int,
+    ) -> AsyncFlow[tuple[T, ...]]:
+        """Group consecutive items until the source stays idle or the hard count cap is reached.
+
+        The processing-time idle timer is reset after every accepted item. Source completion
+        flushes the final non-empty tuple.
+
+        Args:
+            idle_for: Positive quiet interval that closes the current session.
+            max_count: Required maximum number of items retained in one session.
+
+        Returns:
+            An async flow of non-empty session tuples in encounter order.
+        """
+        try:
+            count = operator.index(max_count)
+        except TypeError:
+            raise TypeError("max_count must be an integer") from None
+        if count < 1:
+            raise ValueError("max_count must be at least 1")
+        if not idle_for > 0:
+            raise ValueError("idle_for must be positive")
+        return cast(
+            AsyncFlow[tuple[T, ...]],
+            self._append(_SessionWindow(idle_for, count)),
+        )
+
+    def prefetch(self, capacity: int) -> AsyncFlow[T]:
+        """Pull upstream values ahead under an explicit bounded buffer.
+
+        Args:
+            capacity: Maximum accepted upstream values not yet handed to downstream.
+
+        Returns:
+            An async flow preserving every value in encounter order.
+
+        Raises:
+            TypeError: If capacity does not implement the integer index protocol.
+            ValueError: If capacity is less than one.
+        """
+        try:
+            bound = operator.index(capacity)
+        except TypeError:
+            raise TypeError("capacity must be an integer") from None
+        if bound < 1:
+            raise ValueError("capacity must be at least 1")
+        return cast(AsyncFlow[T], self._append(_Prefetch(bound)))
 
     def filter_map(
         self,
@@ -1118,6 +1242,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
     constrained_batches = batch_by_size
 
 
+_CANONICAL_ASYNC_FLOW_AITER = AsyncFlow.__aiter__
+
+
 class _AsyncFlowFactory:
     """Callable factory for creating asynchronous flows and async sources."""
 
@@ -1144,6 +1271,20 @@ class _AsyncFlowFactory:
             A reusable async flow that invokes `factory` separately for each evaluation.
         """
         return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(factory)))
+
+    def from_queue(
+        self,
+        queue: asyncio.Queue[R],
+        *,
+        stop: object = _NO_QUEUE_STOP,
+    ) -> AsyncFlow[R]:
+        """Create a non-owning, one-shot flow emitting raw values in ``queue.get()`` order.
+
+        Python 3.13+ queue shutdown ends normally; neither raw values nor the hidden ``stop``
+        call ``task_done()``; avoid ``prefetch()`` with ``Queue.join()`` or per-item
+        acknowledgements.
+        """
+        return AsyncFlow.from_queue(queue, stop=stop)
 
     def from_file(self, path: str | os.PathLike[str], *, encoding: str = "utf-8") -> AsyncFlow[str]:
         """Read a text file asynchronously and emit its lines.

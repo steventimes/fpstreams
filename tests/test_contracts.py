@@ -117,6 +117,28 @@ def test_sync_early_close_does_not_pull_a_second_item() -> None:
     assert events == ["pull:1", "map:1", "close"]
 
 
+def test_public_flow_early_close_propagates_one_source_close_failure() -> None:
+    class Source(Iterator[int]):
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def __next__(self) -> int:
+            return 1
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise OSError("source close failed")
+
+    source = Source()
+    iterator = iter(flow(source).map(abs))
+
+    assert next(iterator) == 1
+    with pytest.raises(OSError, match="source close failed"):
+        iterator.close()
+
+    assert source.close_calls == 1
+
+
 def test_sync_failure_reports_the_first_failing_item_and_closes_once() -> None:
     events: list[str] = []
 
@@ -378,6 +400,7 @@ def test_sync_explain_v2_schema_is_frozen() -> None:
         "semantics",
         "diagnostics",
         "arrow_prefix",
+        "numpy_prefix",
         "boundaries",
     }
     assert set(payload["source"]) == {"reiterable", "exact_size", "ordered"}
@@ -1057,8 +1080,8 @@ async def test_async_scheduler_explicit_close_surfaces_runtime_cleanup_failure()
 
 
 @pytest.mark.asyncio
-async def test_async_scheduler_preserves_nested_cleanup_failures_on_consumer_error() -> None:
-    """Consumer failure stays primary while source and runtime failures remain visible."""
+async def test_async_scheduler_explicit_close_owns_nested_cleanup_failures() -> None:
+    """Explicit close reports its own failures without borrowing an outer handler."""
 
     class FailingCloseSource:
         def __aiter__(self):
@@ -1080,17 +1103,16 @@ async def test_async_scheduler_preserves_nested_cleanup_failures_on_consumer_err
     iterator = execute_async_physical(physical, runtime)
     consumer_error = ValueError("consumer failed")
 
-    with pytest.raises(ValueError, match="consumer failed") as captured:
-        try:
-            async for _value in iterator:
-                raise consumer_error
-        finally:
-            await iterator.aclose()
+    with pytest.raises(ValueError, match="consumer failed") as captured_consumer:
+        async for _value in iterator:
+            raise consumer_error
+    with pytest.raises(OSError, match="source close failed") as captured_cleanup:
+        await iterator.aclose()
 
-    assert captured.value is consumer_error
-    assert captured.value.__notes__ == [
-        "cleanup failed with OSError: source close failed",
-        "cleanup failed: RuntimeError: runtime close failed",
+    assert captured_consumer.value is consumer_error
+    assert getattr(consumer_error, "__notes__", ()) == ()
+    assert captured_cleanup.value.__notes__ == [
+        "cleanup failed: RuntimeError: runtime close failed"
     ]
 
 
@@ -1347,6 +1369,8 @@ def _api_descriptor(value: Any) -> dict[str, Any]:
 
 
 def build_snapshot() -> dict[str, Any]:
+    """Build the versioned contract for the public root namespace."""
+
     exports = sorted(fpstreams.__all__)
     first_name_by_identity: dict[int, str] = {}
     items: dict[str, Any] = {}
@@ -1367,7 +1391,7 @@ def build_snapshot() -> dict[str, Any]:
     }
 
 
-def test_public_api_matches_the_checked_in_v2_manifest() -> None:
+def test_root_public_api_matches_the_checked_in_v2_manifest() -> None:
     expected = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
     assert build_snapshot() == expected

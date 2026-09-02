@@ -8,7 +8,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from itertools import islice
 from typing import Any, TypeAlias
 
-from .sql import _batch_size, _close, _rollback, _validate_names
+from ..runtime.resources import _add_cleanup_failure
+from .sql import _batch_size, _close_resources, _rollback, _validate_names
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
 
@@ -301,6 +302,7 @@ def write_sqlite_rows(
     cursor: sqlite3.Cursor | None = None
     iterator: Iterator[Any] | None = None
     transaction_started = False
+    active_error: BaseException | None = None
     try:
         cursor = connection.cursor()
         exists = _inspect_destination(cursor, table=table, if_exists=if_exists)
@@ -354,11 +356,13 @@ def write_sqlite_rows(
         connection.commit()
         transaction_started = False
         return count
-    except BaseException:
+    except BaseException as error:
+        active_error = error
         if transaction_started:
-            _rollback(connection)
+            try:
+                _rollback(connection)
+            except BaseException as rollback_error:
+                _add_cleanup_failure(error, [rollback_error])
         raise
     finally:
-        _close(iterator)
-        _close(cursor)
-        _close(connection)
+        _close_resources((iterator, cursor, connection), active_error)

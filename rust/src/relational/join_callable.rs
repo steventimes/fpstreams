@@ -1,8 +1,8 @@
 //! Callable and Mapping join kernels for hashable Python keys.
 
 use super::adapters::{
-    mapping_proxy_snapshot_capability, snapshot_callable_join_record,
-    standard_namedtuple_snapshot_capability,
+    CallableJoinRecordAdapters, call_one_arg, mapping_proxy_snapshot_capability,
+    snapshot_callable_join_record, standard_namedtuple_snapshot_capability,
 };
 use super::join_exact::{
     checked_join_output_size, copy_join_record, exact_string_contains_dot, exact_string_equal,
@@ -10,44 +10,254 @@ use super::join_exact::{
 };
 use super::*;
 
-/// Test one live row using only exact C-level type identity.
-fn callable_join_row_type_allowed<const ALLOW_EXACT_DICT: bool>(
-    row: *mut ffi::PyObject,
-    allowed_record_types: &[Py<PyType>],
-    py: Python<'_>,
-) -> bool {
-    // SAFETY: callers retain row through an exact container while this check runs. Py_TYPE and
-    // PyDict_CheckExact are non-dispatching pointer reads, so no critical section can be suspended.
-    (ALLOW_EXACT_DICT && unsafe { ffi::PyDict_CheckExact(row) != 0 })
-        || allowed_record_types
-            .iter()
-            .any(|row_type| row_type.bind(py).as_type_ptr() == unsafe { ffi::Py_TYPE(row) })
+mod many;
+mod unique;
+
+pub(crate) use many::{
+    join_hashable_many_direct_records_v1, join_hashable_many_records_v1,
+    join_hashable_many_records_v2,
+};
+pub(crate) use unique::{
+    join_hashable_unique_direct_records_v1, join_hashable_unique_records_v1,
+    join_hashable_unique_records_v2,
+};
+
+/// Exact row types plus an optional retained MRO identity for mutable nominal Mapping classes.
+#[derive(Default)]
+struct CallableJoinRecordCapabilities {
+    record_types: Vec<Py<PyType>>,
+    expected_mros: Vec<Option<Py<PyTuple>>>,
+    mro_getter: Option<CallableJoinMroGetter>,
 }
 
-/// Parse an exact tuple of strong type capabilities without invoking user code.
-fn callable_join_record_type_tokens(value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Py<PyType>>>> {
+struct CallableJoinMroGetter {
+    descriptor: Py<PyAny>,
+    get: ffi::descrgetfunc,
+}
+
+impl CallableJoinMroGetter {
+    /// Retain the built-in ``type.__mro__`` descriptor and its non-dispatching getter slot.
+    fn new(py: Python<'_>) -> PyResult<Option<Self>> {
+        // The process-lifetime built-in type and its immutable dictionary use only canonical
+        // C slots. Resolve that exact descriptor once, then bypass every supplied metaclass.
+        // SAFETY: PyType_Type is a process-lifetime built-in object.
+        let type_object = unsafe {
+            Bound::<PyAny>::from_borrowed_ptr(
+                py,
+                (&raw mut ffi::PyType_Type).cast::<ffi::PyObject>(),
+            )
+        };
+        let namespace = type_object.getattr("__dict__")?;
+        let descriptor = namespace.get_item("__mro__")?;
+        // SAFETY: descriptor is retained by namespace and PyType_GetSlot only reads its exact
+        // built-in type. A null optional slot makes this specialization unavailable.
+        let slot =
+            unsafe { ffi::PyType_GetSlot(ffi::Py_TYPE(descriptor.as_ptr()), ffi::Py_tp_descr_get) };
+        if slot.is_null() {
+            if unsafe { !ffi::PyErr_Occurred().is_null() } {
+                unsafe { ffi::PyErr_Clear() };
+            }
+            return Ok(None);
+        }
+        // SAFETY: CPython returned this pointer specifically for Py_tp_descr_get.
+        let get =
+            unsafe { core::mem::transmute::<*mut core::ffi::c_void, ffi::descrgetfunc>(slot) };
+        Ok(Some(Self {
+            descriptor: descriptor.unbind(),
+            get,
+        }))
+    }
+
+    /// Compare one type's current internal MRO without metaclass attribute dispatch.
+    fn matches(&self, row_type: &Bound<'_, PyType>, expected_mro: &Bound<'_, PyTuple>) -> bool {
+        let py = row_type.py();
+        // SAFETY: descriptor is the retained built-in type.__mro__ getset descriptor. Calling
+        // its exact descr_get slot directly bypasses arbitrary metaclass namespaces and returns
+        // a new owned reference or sets a Python error.
+        let actual = unsafe {
+            (self.get)(
+                self.descriptor.bind(py).as_ptr(),
+                row_type.as_ptr(),
+                ffi::Py_TYPE(row_type.as_ptr()).cast::<ffi::PyObject>(),
+            )
+        };
+        if actual.is_null() {
+            if unsafe { !ffi::PyErr_Occurred().is_null() } {
+                unsafe { ffi::PyErr_Clear() };
+            }
+            return false;
+        }
+        // SAFETY: descr_get returned a new owned reference proven non-null above.
+        unsafe { Bound::<PyAny>::from_owned_ptr(py, actual) }.is(expected_mro.as_any())
+    }
+}
+
+/// The exact token shape that admits one live row.
+#[derive(Clone, Copy)]
+enum CallableJoinRowTypeCapability {
+    ExactType,
+    StableMro,
+}
+
+/// Match one live row using exact C-level type identity and any retained MRO proof.
+fn callable_join_row_type_capability(
+    row: *mut ffi::PyObject,
+    capabilities: &CallableJoinRecordCapabilities,
+    py: Python<'_>,
+) -> Option<CallableJoinRowTypeCapability> {
+    // SAFETY: callers retain row either directly or through an exact container during this check.
+    // Py_TYPE is a non-dispatching pointer read.
+    let row_type = unsafe { ffi::Py_TYPE(row) };
+    capabilities
+        .record_types
+        .iter()
+        .zip(&capabilities.expected_mros)
+        .find_map(|(expected_type, expected_mro)| {
+            if expected_type.bind(py).as_type_ptr() != row_type {
+                return None;
+            }
+            let Some(expected_mro) = expected_mro else {
+                return Some(CallableJoinRowTypeCapability::ExactType);
+            };
+            capabilities
+                .mro_getter
+                .as_ref()
+                .is_some_and(|getter| getter.matches(expected_type.bind(py), expected_mro.bind(py)))
+                .then_some(CallableJoinRowTypeCapability::StableMro)
+        })
+}
+
+/// Test one live row using exact C-level type identity and any retained MRO proof.
+fn callable_join_row_type_allowed<const ALLOW_EXACT_DICT: bool>(
+    row: *mut ffi::PyObject,
+    capabilities: &CallableJoinRecordCapabilities,
+    py: Python<'_>,
+) -> bool {
+    // SAFETY: row is retained as documented by callable_join_row_type_capability.
+    (ALLOW_EXACT_DICT && unsafe { ffi::PyDict_CheckExact(row) != 0 })
+        || callable_join_row_type_capability(row, capabilities, py).is_some()
+}
+
+/// Route a callback-replaced live row through the canonical adapter after preflight ownership.
+#[inline(always)]
+fn callable_join_uses_fallback(
+    row: &Bound<'_, PyAny>,
+    record_adapters: &CallableJoinRecordAdapters,
+    capabilities: &CallableJoinRecordCapabilities,
+) -> bool {
+    record_adapters.fallback.is_some()
+        && !callable_join_row_type_allowed::<true>(row.as_ptr(), capabilities, row.py())
+}
+
+/// Parse legacy type tokens or `(type, exact_mro)` capabilities without invoking user code.
+fn callable_join_record_type_tokens(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<CallableJoinRecordCapabilities>> {
     let tokens = match value.cast_exact::<PyTuple>() {
         Ok(tokens) => tokens,
         Err(_) => return Ok(None),
     };
-    let mut parsed = Vec::new();
-    parsed
+    let mut record_types = Vec::new();
+    let mut expected_mros = Vec::new();
+    let mut mro_getter = None;
+    record_types
+        .try_reserve_exact(tokens.len())
+        .map_err(join_allocation_error)?;
+    expected_mros
         .try_reserve_exact(tokens.len())
         .map_err(join_allocation_error)?;
     for token in tokens.iter() {
-        let token = match token.cast_into::<PyType>() {
-            Ok(token) => token,
+        if let Ok(row_type) = token.clone().cast_into::<PyType>() {
+            record_types.push(row_type.unbind());
+            expected_mros.push(None);
+            continue;
+        }
+        let pair = match token.cast_exact::<PyTuple>() {
+            Ok(pair) if pair.len() == 2 => pair,
+            Ok(_) | Err(_) => return Ok(None),
+        };
+        let row_type = match pair.get_item(0)?.cast_into::<PyType>() {
+            Ok(row_type) => row_type,
             Err(_) => return Ok(None),
         };
-        parsed.push(token.unbind());
+        let expected_mro = match pair.get_item(1)?.cast_into_exact::<PyTuple>() {
+            Ok(expected_mro) => expected_mro,
+            Err(_) => return Ok(None),
+        };
+        if mro_getter.is_none() {
+            mro_getter = CallableJoinMroGetter::new(value.py())?;
+            if mro_getter.is_none() {
+                return Ok(None);
+            }
+        }
+        if !mro_getter
+            .as_ref()
+            .is_some_and(|getter| getter.matches(&row_type, &expected_mro))
+        {
+            return Ok(None);
+        }
+        record_types.push(row_type.unbind());
+        expected_mros.push(Some(expected_mro.unbind()));
     }
-    Ok(Some(parsed))
+    Ok(Some(CallableJoinRecordCapabilities {
+        record_types,
+        expected_mros,
+        mro_getter,
+    }))
+}
+
+/// Canonical callbacks carried only by the private direct-field capability envelope.
+struct CallableJoinDirectFallback {
+    record_adapter: Py<PyAny>,
+    left_selector: Py<PyAny>,
+    right_selector: Py<PyAny>,
+}
+
+struct CallableJoinDirectCapabilities {
+    record_capabilities: CallableJoinRecordCapabilities,
+    fallback: Option<CallableJoinDirectFallback>,
+}
+
+/// Parse legacy exact type tokens or `(tokens, record_adapter, left_selector, right_selector)`.
+fn callable_join_direct_capabilities(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<CallableJoinDirectCapabilities>> {
+    if let Some(tokens) = callable_join_record_type_tokens(value)? {
+        return Ok(Some(CallableJoinDirectCapabilities {
+            record_capabilities: tokens,
+            fallback: None,
+        }));
+    }
+    let capabilities = match value.cast_exact::<PyTuple>() {
+        Ok(capabilities) if capabilities.len() == 4 => capabilities,
+        Ok(_) | Err(_) => return Ok(None),
+    };
+    let Some(tokens) = callable_join_record_type_tokens(&capabilities.get_item(0)?)? else {
+        return Ok(None);
+    };
+    let record_adapter = capabilities.get_item(1)?;
+    let left_selector = capabilities.get_item(2)?;
+    let right_selector = capabilities.get_item(3)?;
+    if !record_adapter.is_callable()
+        || !left_selector.is_callable()
+        || !right_selector.is_callable()
+    {
+        return Ok(None);
+    }
+    Ok(Some(CallableJoinDirectCapabilities {
+        record_capabilities: tokens,
+        fallback: Some(CallableJoinDirectFallback {
+            record_adapter: record_adapter.unbind(),
+            left_selector: left_selector.unbind(),
+            right_selector: right_selector.unbind(),
+        }),
+    }))
 }
 
 /// Check the initial record shape without invoking a selector or record protocol.
-pub(super) fn preflight_callable_join_source<const ALLOW_EXACT_DICT: bool>(
+fn preflight_callable_join_source<const ALLOW_EXACT_DICT: bool>(
     source: &Bound<'_, PyAny>,
-    allowed_record_types: &[Py<PyType>],
+    capabilities: &CallableJoinRecordCapabilities,
 ) -> PyResult<Option<usize>> {
     if let Ok(rows) = source.cast_exact::<PyList>() {
         return with_critical_section(source, || {
@@ -63,7 +273,7 @@ pub(super) fn preflight_callable_join_source<const ALLOW_EXACT_DICT: bool>(
                 // SAFETY: row remains live under the source list's critical section.
                 if !callable_join_row_type_allowed::<ALLOW_EXACT_DICT>(
                     row,
-                    allowed_record_types,
+                    capabilities,
                     source.py(),
                 ) {
                     return Ok(None);
@@ -83,15 +293,20 @@ pub(super) fn preflight_callable_join_source<const ALLOW_EXACT_DICT: bool>(
             return Err(PyErr::fetch(source.py()));
         }
         // SAFETY: row is a live tuple item for the duration of this check.
-        if !callable_join_row_type_allowed::<ALLOW_EXACT_DICT>(
-            row,
-            allowed_record_types,
-            source.py(),
-        ) {
+        if !callable_join_row_type_allowed::<ALLOW_EXACT_DICT>(row, capabilities, source.py()) {
             return Ok(None);
         }
     }
     Ok(Some(rows.len()))
+}
+
+/// Return the size of an exact eager source when every live row has a canonical fallback.
+#[inline]
+pub(super) fn exact_callable_join_source_len(source: &Bound<'_, PyAny>) -> Option<usize> {
+    if let Ok(rows) = source.cast_exact::<PyList>() {
+        return Some(rows.len());
+    }
+    source.cast_exact::<PyTuple>().ok().map(|rows| rows.len())
 }
 
 /// Append newly discovered right fields using Python set hashing and equality semantics.
@@ -321,10 +536,7 @@ fn callable_join_key_error(py: Python<'_>, error: PyErr) -> PyErr {
 }
 
 /// Match the public direct-string selector boundary without returning to a Python callback.
-pub(super) fn direct_join_selection_error(
-    field: &Bound<'_, PyAny>,
-    error: PyErr,
-) -> PyResult<PyErr> {
+fn direct_join_selection_error(field: &Bound<'_, PyAny>, error: PyErr) -> PyResult<PyErr> {
     let py = field.py();
     if !error.is_instance_of::<PyAttributeError>(py)
         && !error.is_instance_of::<PyKeyError>(py)
@@ -363,8 +575,25 @@ fn select_hashable_join_key<'py, const DIRECT_FIELDS: bool>(
             Err(error) => Err(direct_join_selection_error(selector, error)?),
         }
     } else {
-        selector.call1((row,))
+        call_one_arg(selector, row)
     }
+}
+
+/// Restore canonical selection when a snapshot callback replaces a preflighted direct row.
+#[inline(always)]
+fn select_live_hashable_join_key<'py, const DIRECT_FIELDS: bool>(
+    row: &Bound<'py, PyAny>,
+    selector: &Bound<'py, PyAny>,
+    fallback_selector: Option<&Bound<'py, PyAny>>,
+    use_fallback: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    if DIRECT_FIELDS && use_fallback {
+        return select_hashable_join_key::<false>(
+            row,
+            fallback_selector.expect("direct fallback snapshots require a canonical selector"),
+        );
+    }
+    select_hashable_join_key::<DIRECT_FIELDS>(row, selector)
 }
 
 /// Build the exact duplicate-cardinality error after the canonical first index lookup.
@@ -480,9 +709,10 @@ struct CallableJoinTargetCache {
 
 /// Admit one order-preserving PyDict_Merge plan.
 ///
-/// A suffixed source name must collide with the owned left snapshot. Inserting a strict prefix
-/// of suffixed targets first lets override=0 skip their originals while the bulk merge appends
-/// every remaining field in canonical right order. Any later suffixed operation is rejected.
+/// A suffixed source name must collide with the owned left snapshot. Inserting a short strict
+/// prefix of suffixed targets first lets override=0 skip their originals while the bulk merge
+/// appends every remaining field in canonical right order. A prefix wider than one quarter of
+/// the plan or any later suffixed operation is rejected because manual collision work dominates.
 fn callable_join_bulk_merge_suffix_prefix(plan: &[CallableJoinPlanEntry]) -> Option<usize> {
     if plan.len() < CALLABLE_JOIN_BULK_MERGE_MIN_FIELDS {
         return None;
@@ -491,7 +721,8 @@ fn callable_join_bulk_merge_suffix_prefix(plan: &[CallableJoinPlanEntry]) -> Opt
         .iter()
         .take_while(|entry| matches!(entry.operation, CallableJoinTargetOperation::Suffixed))
         .count();
-    if suffix_prefix == plan.len()
+    if suffix_prefix > plan.len() / 4
+        || suffix_prefix == plan.len()
         || plan[suffix_prefix..]
             .iter()
             .any(|entry| matches!(entry.operation, CallableJoinTargetOperation::Suffixed))
@@ -807,669 +1038,4 @@ fn merge_callable_join_unmatched(
         }
     }
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Shared callable-key unique-right join after its versioned type capabilities are parsed.
-fn join_hashable_unique_records<const DIRECT_FIELDS: bool>(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &[Py<PyType>],
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    if !record_adapter.is_callable() {
-        return Ok(None);
-    }
-    if DIRECT_FIELDS {
-        let left_field = match left_key.cast_exact::<PyString>() {
-            Ok(field) => field,
-            Err(_) => return Ok(None),
-        };
-        let right_field = match right_key.cast_exact::<PyString>() {
-            Ok(field) => field,
-            Err(_) => return Ok(None),
-        };
-        if exact_string_contains_dot(left.py(), left_field.as_ptr())?
-            || exact_string_contains_dot(left.py(), right_field.as_ptr())?
-        {
-            return Ok(None);
-        }
-    } else if !left_key.is_callable() || !right_key.is_callable() {
-        return Ok(None);
-    }
-    let suffix = match suffix.cast_exact::<PyString>() {
-        Ok(suffix) => suffix,
-        Err(_) => return Ok(None),
-    };
-    let shared_names = match shared_names.cast_exact::<PyFrozenSet>() {
-        Ok(names) => names,
-        Err(_) => return Ok(None),
-    };
-    for name in shared_names.iter() {
-        if name.cast_exact::<PyString>().is_err() {
-            return Ok(None);
-        }
-    }
-    let right_count = if DIRECT_FIELDS {
-        preflight_callable_join_source::<false>(right, allowed_record_types)?
-    } else {
-        preflight_callable_join_source::<true>(right, allowed_record_types)?
-    };
-    let Some(right_count) = right_count else {
-        return Ok(None);
-    };
-    let left_count = if DIRECT_FIELDS {
-        preflight_callable_join_source::<false>(left, allowed_record_types)?
-    } else {
-        preflight_callable_join_source::<true>(left, allowed_record_types)?
-    };
-    let Some(left_count) = left_count else {
-        return Ok(None);
-    };
-
-    // From this point forward selectors may have observable effects. Every later shape uses
-    // either the exact-dict branch or record_adapter; no path may return None and replay them.
-    let py = left.py();
-    let index = PyDict::new(py);
-    let seen_columns = PySet::empty(py)?;
-    // A preflighted live list may replace later rows from an earlier selector callback. Check each
-    // actual row below: exact dictionaries are copied, while only the built-in `dict` adapter is
-    // trusted to return a fresh snapshot for any replacement record type.
-    let trusted_record_adapter = record_adapter.is(py.get_type::<PyDict>().as_any());
-    let mapping_proxy = mapping_proxy_snapshot_capability(record_adapter, allowed_record_types)?;
-    let namedtuple = standard_namedtuple_snapshot_capability(record_adapter)?;
-    let mut can_collapse_right_lookup = true;
-    let mut right_columns = Vec::new();
-    right_columns
-        .try_reserve(RECORD_JOIN_V1_MAX_FIELDS.min(right_count))
-        .map_err(join_allocation_error)?;
-    let mut right_schema_cache =
-        CallableRightSchemaCache::new(right_count, CallableRightSchemaMode::Unique);
-    let mut right_iterator = right.try_iter()?;
-    for row in &mut right_iterator {
-        let row = row?;
-        // SAFETY: row is retained by this Bound and exact type identity cannot dispatch user code.
-        if unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } == 0 && !trusted_record_adapter {
-            can_collapse_right_lookup = false;
-        }
-        let record = snapshot_callable_join_record(
-            &row,
-            record_adapter,
-            mapping_proxy.as_ref(),
-            namedtuple.as_ref(),
-        )?;
-        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, right_key)?;
-        remember_callable_join_columns_with_cache(
-            &record,
-            &mut right_columns,
-            &seen_columns,
-            &mut can_collapse_right_lookup,
-            &mut right_schema_cache,
-            py,
-        )?;
-        let existing = index
-            .get_item(&key)
-            .map_err(|error| callable_join_key_error(py, error))?;
-        if existing.is_some() {
-            return Err(callable_join_duplicate_error(&key)?);
-        }
-        index
-            .set_item(&key, record.bind(py))
-            .map_err(|error| callable_join_key_error(py, error))?;
-    }
-
-    let mut joined = Vec::new();
-    joined
-        .try_reserve(left_count)
-        .map_err(join_allocation_error)?;
-    let mut target_cache: Option<CallableJoinTargetCache> = None;
-    let mut left_iterator = left.try_iter()?;
-    for row in &mut left_iterator {
-        let row = row?;
-        let output = snapshot_callable_join_record(
-            &row,
-            record_adapter,
-            mapping_proxy.as_ref(),
-            namedtuple.as_ref(),
-        )?;
-        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, left_key)?;
-        let matched = index
-            .get_item(&key)
-            .map_err(|error| callable_join_key_error(py, error))?;
-        let Some(right_record) = matched else {
-            if left_join {
-                let cache_hit = target_cache
-                    .as_ref()
-                    .map(|cached| callable_join_same_left_shape(&output, cached, py))
-                    .transpose()?
-                    .unwrap_or(false);
-                if cache_hit {
-                    merge_callable_join_plan_unmatched(
-                        &output,
-                        target_cache
-                            .as_ref()
-                            .expect("a cache hit requires a retained target plan"),
-                        suffix,
-                        py,
-                    )?;
-                } else {
-                    let (targets, new_cache) =
-                        callable_join_targets(&output, &right_columns, suffix, shared_names, py)?;
-                    merge_callable_join_unmatched(&output, &targets, shared_names, py)?;
-                    target_cache = new_cache;
-                }
-                if joined.len() == joined.capacity() {
-                    joined.try_reserve(1).map_err(join_allocation_error)?;
-                }
-                joined.push(output);
-            }
-            continue;
-        };
-        let right_record = right_record
-            .cast_into_exact::<PyDict>()
-            .expect("the private join index stores only exact dictionary snapshots");
-        let cache_hit = target_cache
-            .as_ref()
-            .map(|cached| callable_join_same_left_shape(&output, cached, py))
-            .transpose()?
-            .unwrap_or(false);
-        if cache_hit {
-            merge_callable_join_plan_match(
-                &output,
-                &right_record,
-                target_cache
-                    .as_ref()
-                    .expect("a cache hit requires a retained target plan"),
-                suffix,
-                can_collapse_right_lookup,
-                py,
-            )?;
-        } else {
-            let (targets, new_cache) =
-                callable_join_targets(&output, &right_columns, suffix, shared_names, py)?;
-            merge_callable_join_match(
-                &output,
-                &right_record,
-                &targets,
-                shared_names,
-                can_collapse_right_lookup,
-                py,
-            )?;
-            target_cache = new_cache;
-        }
-        if joined.len() == joined.capacity() {
-            joined.try_reserve(1).map_err(join_allocation_error)?;
-        }
-        joined.push(output);
-    }
-    Ok(Some(joined))
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Materialize an exact-dict callable-key join without replaying an invoked callback.
-pub(crate) fn join_hashable_unique_records_v1(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    join_hashable_unique_records::<false>(
-        left,
-        right,
-        left_key,
-        right_key,
-        record_adapter,
-        left_join,
-        suffix,
-        shared_names,
-        &[],
-    )
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Extend v1 with exact row-type capabilities validated before callback ownership transfers.
-pub(crate) fn join_hashable_unique_records_v2(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
-        return Ok(None);
-    };
-    join_hashable_unique_records::<false>(
-        left,
-        right,
-        left_key,
-        right_key,
-        record_adapter,
-        left_join,
-        suffix,
-        shared_names,
-        &allowed_record_types,
-    )
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Select exact-string fields after a Mapping-only v2-style preflight, without Python callbacks.
-pub(crate) fn join_hashable_unique_direct_records_v1(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_field: &Bound<'_, PyAny>,
-    right_field: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
-        return Ok(None);
-    };
-    let record_adapter = left.py().get_type::<PyDict>();
-    if allowed_record_types.is_empty()
-        || allowed_record_types
-            .iter()
-            .any(|row_type| row_type.bind(left.py()).is(&record_adapter))
-    {
-        return Ok(None);
-    }
-    join_hashable_unique_records::<true>(
-        left,
-        right,
-        left_field,
-        right_field,
-        record_adapter.as_any(),
-        left_join,
-        suffix,
-        shared_names,
-        &allowed_record_types,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Shared callable-key many-right join after its versioned type capabilities are parsed.
-fn join_hashable_many_records<const DIRECT_FIELDS: bool>(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &[Py<PyType>],
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    if !record_adapter.is_callable() {
-        return Ok(None);
-    }
-    if DIRECT_FIELDS {
-        let left_field = match left_key.cast_exact::<PyString>() {
-            Ok(field) => field,
-            Err(_) => return Ok(None),
-        };
-        let right_field = match right_key.cast_exact::<PyString>() {
-            Ok(field) => field,
-            Err(_) => return Ok(None),
-        };
-        if exact_string_contains_dot(left.py(), left_field.as_ptr())?
-            || exact_string_contains_dot(left.py(), right_field.as_ptr())?
-        {
-            return Ok(None);
-        }
-    } else if !left_key.is_callable() || !right_key.is_callable() {
-        return Ok(None);
-    }
-    let suffix = match suffix.cast_exact::<PyString>() {
-        Ok(suffix) => suffix,
-        Err(_) => return Ok(None),
-    };
-    let shared_names = match shared_names.cast_exact::<PyFrozenSet>() {
-        Ok(names) => names,
-        Err(_) => return Ok(None),
-    };
-    for name in shared_names.iter() {
-        if name.cast_exact::<PyString>().is_err() {
-            return Ok(None);
-        }
-    }
-    let right_count = if DIRECT_FIELDS {
-        preflight_callable_join_source::<false>(right, allowed_record_types)?
-    } else {
-        preflight_callable_join_source::<true>(right, allowed_record_types)?
-    };
-    let Some(right_count) = right_count else {
-        return Ok(None);
-    };
-    let left_count = if DIRECT_FIELDS {
-        preflight_callable_join_source::<false>(left, allowed_record_types)?
-    } else {
-        preflight_callable_join_source::<true>(left, allowed_record_types)?
-    };
-    let Some(left_count) = left_count else {
-        return Ok(None);
-    };
-
-    // All fallbacks end here. From the first snapshot onward, adapters and selectors own their
-    // observable effects and every error must propagate without replaying either source.
-    let py = left.py();
-    let index = PyDict::new(py);
-    let seen_columns = PySet::empty(py)?;
-    // See the unique-right path: validate ownership against each post-callback live row rather
-    // than relying on the earlier source preflight.
-    let trusted_record_adapter = record_adapter.is(py.get_type::<PyDict>().as_any());
-    let mapping_proxy = mapping_proxy_snapshot_capability(record_adapter, allowed_record_types)?;
-    let namedtuple = standard_namedtuple_snapshot_capability(record_adapter)?;
-    let mut can_collapse_right_lookup = true;
-    let mut right_columns = Vec::new();
-    right_columns
-        .try_reserve(RECORD_JOIN_V1_MAX_FIELDS.min(right_count))
-        .map_err(join_allocation_error)?;
-    let mut right_schema_cache =
-        CallableRightSchemaCache::new(right_count, CallableRightSchemaMode::Many);
-    let mut right_records = Vec::new();
-    right_records
-        .try_reserve_exact(right_count)
-        .map_err(join_allocation_error)?;
-    let mut right_codes = Vec::new();
-    right_codes
-        .try_reserve_exact(right_count)
-        .map_err(join_allocation_error)?;
-    let mut group_counts = Vec::new();
-    group_counts
-        .try_reserve_exact(right_count)
-        .map_err(join_allocation_error)?;
-
-    let mut right_iterator = right.try_iter()?;
-    for row in &mut right_iterator {
-        let row = row?;
-        // SAFETY: row is retained by this Bound and exact type identity cannot dispatch user code.
-        if unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } == 0 && !trusted_record_adapter {
-            can_collapse_right_lookup = false;
-        }
-        let record = snapshot_callable_join_record(
-            &row,
-            record_adapter,
-            mapping_proxy.as_ref(),
-            namedtuple.as_ref(),
-        )?;
-        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, right_key)?;
-        remember_callable_join_columns_with_cache(
-            &record,
-            &mut right_columns,
-            &seen_columns,
-            &mut can_collapse_right_lookup,
-            &mut right_schema_cache,
-            py,
-        )?;
-        let code = match index.get_item(&key)? {
-            Some(code) => code
-                .extract::<usize>()
-                .expect("the private many-right index stores only usize codes"),
-            None => {
-                let code = group_counts.len();
-                index.set_item(&key, code)?;
-                if group_counts.len() == group_counts.capacity() {
-                    group_counts.try_reserve(1).map_err(join_allocation_error)?;
-                }
-                group_counts.push(0);
-                code
-            }
-        };
-        group_counts[code] = checked_join_output_size(group_counts[code], 1)?;
-        if right_codes.len() == right_codes.capacity() {
-            right_codes.try_reserve(1).map_err(join_allocation_error)?;
-        }
-        if right_records.len() == right_records.capacity() {
-            right_records
-                .try_reserve(1)
-                .map_err(join_allocation_error)?;
-        }
-        right_codes.push(code);
-        right_records.push(record);
-    }
-    let bulk_merge_right_field_count = right_schema_cache.identity_homogeneous_field_count();
-    let (group_offsets, right_positions) = factorized_right_positions(&right_codes, &group_counts)?;
-
-    let mut joined = Vec::new();
-    joined
-        .try_reserve(left_count)
-        .map_err(join_allocation_error)?;
-    let mut target_cache: Option<CallableJoinTargetCache> = None;
-    let mut left_iterator = left.try_iter()?;
-    for row in &mut left_iterator {
-        let row = row?;
-        let left_record = snapshot_callable_join_record(
-            &row,
-            record_adapter,
-            mapping_proxy.as_ref(),
-            namedtuple.as_ref(),
-        )?;
-        let key = select_hashable_join_key::<DIRECT_FIELDS>(&row, left_key)?;
-        let matched = index.get_item(&key)?;
-        let Some(code) = matched else {
-            if left_join {
-                let output_count = checked_join_output_size(joined.len(), 1)?;
-                joined.try_reserve(1).map_err(join_allocation_error)?;
-                let cache_hit = target_cache
-                    .as_ref()
-                    .map(|cached| callable_join_same_left_shape(&left_record, cached, py))
-                    .transpose()?
-                    .unwrap_or(false);
-                if cache_hit {
-                    merge_callable_join_plan_unmatched(
-                        &left_record,
-                        target_cache
-                            .as_ref()
-                            .expect("a cache hit requires a retained target plan"),
-                        suffix,
-                        py,
-                    )?;
-                } else {
-                    let (targets, new_cache) = callable_join_targets(
-                        &left_record,
-                        &right_columns,
-                        suffix,
-                        shared_names,
-                        py,
-                    )?;
-                    merge_callable_join_unmatched(&left_record, &targets, shared_names, py)?;
-                    target_cache = new_cache;
-                }
-                joined.push(left_record);
-                debug_assert_eq!(joined.len(), output_count);
-            }
-            continue;
-        };
-        let code = code
-            .extract::<usize>()
-            .expect("the private many-right index stores only usize codes");
-        let start = group_offsets[code];
-        let end = group_offsets[code + 1];
-        let matches = &right_positions[start..end];
-        let output_count = checked_join_output_size(joined.len(), matches.len())?;
-        joined
-            .try_reserve(matches.len())
-            .map_err(join_allocation_error)?;
-        let cache_hit = target_cache
-            .as_ref()
-            .map(|cached| callable_join_same_left_shape(&left_record, cached, py))
-            .transpose()?
-            .unwrap_or(false);
-        let (targets, new_cache) = if cache_hit {
-            (
-                callable_join_targets_from_plan(
-                    target_cache
-                        .as_ref()
-                        .expect("a cache hit requires a retained target plan"),
-                    suffix,
-                    py,
-                )?,
-                None,
-            )
-        } else {
-            callable_join_targets(&left_record, &right_columns, suffix, shared_names, py)?
-        };
-        let bulk_suffix_prefix = if cache_hit {
-            let cached = target_cache
-                .as_ref()
-                .expect("a cache hit requires a retained target plan");
-            bulk_merge_right_field_count
-                .filter(|field_count| *field_count == cached.plan.len())
-                .and(cached.bulk_merge_suffix_prefix)
-                .filter(|_| {
-                    trusted_record_adapter || unsafe { ffi::PyDict_CheckExact(row.as_ptr()) } != 0
-                })
-        } else {
-            None
-        };
-        let mut original = Some(left_record);
-        for (match_index, &right_position) in matches.iter().enumerate() {
-            let output = if match_index + 1 == matches.len() {
-                original
-                    .take()
-                    .expect("the final match owns the original left snapshot")
-            } else {
-                copy_join_record(
-                    py,
-                    original
-                        .as_ref()
-                        .expect("earlier matches retain the original left snapshot"),
-                )?
-            };
-            if let Some(suffix_prefix) = bulk_suffix_prefix {
-                merge_callable_join_targets_bulk_match(
-                    &output,
-                    right_records[right_position].bind(py),
-                    &targets,
-                    suffix_prefix,
-                    py,
-                )?;
-            } else {
-                merge_callable_join_match(
-                    &output,
-                    right_records[right_position].bind(py),
-                    &targets,
-                    shared_names,
-                    can_collapse_right_lookup,
-                    py,
-                )?;
-            }
-            joined.push(output);
-        }
-        if !cache_hit {
-            target_cache = new_cache;
-        }
-        debug_assert_eq!(joined.len(), output_count);
-    }
-    Ok(Some(joined))
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Materialize an exact-dict callable-key many-right join without replaying callbacks.
-pub(crate) fn join_hashable_many_records_v1(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    join_hashable_many_records::<false>(
-        left,
-        right,
-        left_key,
-        right_key,
-        record_adapter,
-        left_join,
-        suffix,
-        shared_names,
-        &[],
-    )
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Extend callable many v1 with exact row-type capabilities checked before callbacks.
-pub(crate) fn join_hashable_many_records_v2(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_key: &Bound<'_, PyAny>,
-    right_key: &Bound<'_, PyAny>,
-    record_adapter: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
-        return Ok(None);
-    };
-    join_hashable_many_records::<false>(
-        left,
-        right,
-        left_key,
-        right_key,
-        record_adapter,
-        left_join,
-        suffix,
-        shared_names,
-        &allowed_record_types,
-    )
-}
-
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-/// Select exact-string fields for a many join after a Mapping-only exact-type preflight.
-pub(crate) fn join_hashable_many_direct_records_v1(
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    left_field: &Bound<'_, PyAny>,
-    right_field: &Bound<'_, PyAny>,
-    left_join: bool,
-    suffix: &Bound<'_, PyAny>,
-    shared_names: &Bound<'_, PyAny>,
-    allowed_record_types: &Bound<'_, PyAny>,
-) -> PyResult<Option<Vec<Py<PyDict>>>> {
-    let Some(allowed_record_types) = callable_join_record_type_tokens(allowed_record_types)? else {
-        return Ok(None);
-    };
-    let record_adapter = left.py().get_type::<PyDict>();
-    if allowed_record_types.is_empty()
-        || allowed_record_types
-            .iter()
-            .any(|row_type| row_type.bind(left.py()).is(&record_adapter))
-    {
-        return Ok(None);
-    }
-    join_hashable_many_records::<true>(
-        left,
-        right,
-        left_field,
-        right_field,
-        record_adapter.as_any(),
-        left_join,
-        suffix,
-        shared_names,
-        &allowed_record_types,
-    )
 }
