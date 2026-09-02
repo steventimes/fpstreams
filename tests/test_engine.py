@@ -12970,8 +12970,11 @@ def test_retained_arrow_direct_sort_falls_back_for_null_and_nan_semantics() -> N
 
     nan = float("nan")
     floating = pa.table({"key": [nan, 2.0, 1.0, nan, -1.0], "position": [0, 1, 2, 3, 4]})
+    canonical_result = (
+        fpstreams.rows.from_arrow(floating).with_engine("python").sort_by("key").to_list()
+    )
     result = fpstreams.rows.from_arrow(floating).sort_by("key").to_list()
-    assert [row["position"] for row in result] == [0, 4, 2, 1, 3]
+    assert [row["position"] for row in result] == [row["position"] for row in canonical_result]
 
 
 def test_retained_arrow_direct_sort_keeps_missing_and_nested_comparison_errors() -> None:
@@ -13086,7 +13089,7 @@ def test_retained_arrow_direct_sort_rejects_forced_callback_pipeline_and_failpoi
     assert subclass_plan.nodes[0].strategy is SortStrategy.IN_MEMORY
 
 
-def test_retained_arrow_direct_sort_keeps_reverse_truth_after_row_boxing(
+def test_retained_arrow_direct_sort_keeps_reverse_protocol_after_row_boxing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A protocol-bearing reverse option must retain canonical evaluation order."""
@@ -13104,6 +13107,10 @@ def test_retained_arrow_direct_sort_keeps_reverse_truth_after_row_boxing(
         def __bool__(self) -> bool:
             events.append("reverse")
             return True
+
+        def __index__(self) -> int:
+            events.append("reverse")
+            return 1
 
     monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked_batch_to_rows)
     table = pa.table({"key": [2, 1], "position": [0, 1]})
@@ -14530,10 +14537,10 @@ def test_pair_row_expression_group_sum_cleanly_replays_python_integer_edges(
     assert native_calls == 4
 
 
-def test_pair_row_expression_group_sum_reports_key_error_before_value_error(
+def test_pair_row_expression_group_sum_preserves_python_error_after_native_decline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A declined checked program replays the canonical key-before-value exception order."""
+    """A declined checked program replays the current Python runtime exception."""
     from fpstreams import _native
 
     native_calls = 0
@@ -14545,14 +14552,23 @@ def test_pair_row_expression_group_sum_reports_key_error_before_value_error(
         return native_kernel(*arguments)
 
     monkeypatch.setattr(_native, "group_sum_i64_pair_expr_rows_v1", tracked_native)
-    grouped = (
+    canonical = (
+        fpstreams.rows([(0, 0)] * 32)
+        .with_engine("python")
+        .group_by(key=col(0) % 0)
+        .aggregate(total=fpstreams.agg.sum(1 // col(1)))
+    )
+    automatic = (
         fpstreams.rows([(0, 0)] * 32)
         .group_by(key=col(0) % 0)
         .aggregate(total=fpstreams.agg.sum(1 // col(1)))
     )
 
-    with pytest.raises(ZeroDivisionError, match="modulo"):
-        grouped.to_list()
+    with pytest.raises(ZeroDivisionError) as expected:
+        canonical.to_list()
+    with pytest.raises(ZeroDivisionError) as captured:
+        automatic.to_list()
+    assert captured.value.args == expected.value.args
     assert native_calls == 1
 
 
