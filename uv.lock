@@ -438,7 +438,7 @@ provides-extras = ["test", "async", "arrow", "data", "polars", "all"]
 build = [{ name = "maturin", specifier = ">=1.9,<2" }]
 docs = [
     { name = "mkdocs-material", specifier = ">=9,<10" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27,<2" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6,<2" },
     { name = "ruff", specifier = ">=0.12" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.12" }]
