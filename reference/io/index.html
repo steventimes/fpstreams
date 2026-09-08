@@ -1347,10 +1347,10 @@
 
 
 <h1 id="data-input-and-output">Data input and output</h1>
-<p>fpstreams separates source selection from query construction. File formats are
-never guessed from a string path, and a two-dimensional Python object is not
-silently reclassified by sampling its contents. Use an explicit adapter when the
-source contract matters.</p>
+<p>Use an explicit factory for files, named columns, and NumPy arrays.
+<code>flow(source)</code> recognizes supported tabular objects and protocols, but treats
+ordinary iterables as supplied. It does not infer a file format from a path or
+sample nested lists to decide whether they are tables.</p>
 <h2 id="input-matrix">Input matrix</h2>
 <table>
 <thead>
@@ -1483,10 +1483,10 @@ their package is already loaded. It does not import all optional packages to
 probe every arbitrary object. Standard <code>__arrow_c_stream__</code> and <code>__dataframe__</code>
 providers are recognized directly; Arrow wins when an object exposes both.</p>
 <h2 id="csv-compatibility-and-typed-scan">CSV: compatibility and typed scan</h2>
-<p>Two CSV adapters intentionally expose different contracts.</p>
+<p><code>from_csv()</code> reads string cells with Python's CSV parser. <code>scan_csv()</code> uses
+Arrow's typed batch reader.</p>
 <h3 id="rowsfrom_csv"><code>rows.from_csv</code></h3>
-<p>Use the standard-library-compatible reader when string cells and <code>csv</code> dialect
-options are desired.</p>
+<p>Use this reader for string cells and Python <code>csv</code> dialect options.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">paid</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_csv</span><span class="p">(</span><span class="s2">&quot;orders.csv&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">status</span><span class="o">=</span><span class="s2">&quot;paid&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
@@ -1501,8 +1501,7 @@ options are desired.</p>
   returns;</li>
 <li>duplicate header names raise <code>DuplicateKeyError</code> before the first row is emitted.</li>
 </ul>
-<p>The ownership distinction makes upload streams and remote-storage clients usable without a
-temporary file:</p>
+<p>Pass an open handle to read it once, or an opener to read it again on each execution:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">io</span><span class="w"> </span><span class="kn">import</span> <span class="n">StringIO</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">uploaded</span> <span class="o">=</span> <span class="n">StringIO</span><span class="p">(</span><span class="s2">&quot;id,name</span><span class="se">\n</span><span class="s2">1,Ada</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
@@ -1605,9 +1604,9 @@ and providers of <code>__arrow_c_stream__</code>. Use <code>from_parquet</code> 
 <li>Crossing into arbitrary Python callbacks materializes Python-visible values as
   required by the callback contract.</li>
 </ul>
-<p>The C stream protocol provides interoperability, not a promise of zero copies in
-every downstream operation. Schema conversion, unsupported data types, or a
-Python row boundary can require allocation.</p>
+<p>The C stream protocol lets libraries exchange Arrow data. Schema conversion,
+unsupported data types, and conversion to Python rows can still allocate or copy
+data.</p>
 <h2 id="dataframe-interchange-and-pandas">Dataframe interchange and pandas</h2>
 <p><code>from_dataframe</code> accepts the standard <code>__dataframe__</code> protocol. Conversion is
 deferred until execution where the provider permits it. Pandas indices are not
@@ -1645,7 +1644,7 @@ names from the cursor description, and closes resources it owns.</p>
 <a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="k">lambda</span><span class="p">:</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;shop.db&quot;</span><span class="p">),</span>
 <a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="s2">&quot;select id, amount from orders where status = ?&quot;</span><span class="p">,</span>
 <a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;paid&quot;</span><span class="p">,),</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">fetch_size</span><span class="o">=</span><span class="mi">1_000</span><span class="p">,</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">1_000</span><span class="p">,</span>
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">)</span>
 </code></pre></div>
 <p><code>rows.from_sqlite</code> is the convenience adapter for a database path or URI. Query
@@ -1758,11 +1757,10 @@ characters such as <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</
 a single quote. Leave it disabled for machine interchange where byte-level value
 preservation is required.</p>
 <h2 id="files-errors-and-partial-effects">Files, errors, and partial effects</h2>
-<p>Read adapters own files and connections they open and close them on completion,
-early termination, and failure. Writer methods document whether they stream
-directly or use a replace/transaction boundary. A raised error means callers
-must not assume an external file or database accepted no rows unless the adapter
-explicitly provides atomic behavior.</p>
+<p>Read adapters close the files and connections they open on completion, early
+termination, and failure. Writers may stream directly, replace a completed file,
+or use a database transaction; check the method's contract. A failed streaming
+write may leave partial output.</p>
 <p>Common adapter failures include:</p>
 <ul>
 <li><code>ImportError</code> with the required optional extra when an integration is absent;</li>

@@ -2274,9 +2274,8 @@ callback or third-party-library exceptions.</p>
 <p>When an optional adapter is missing, install the extra named in its <code>ImportError</code>
 message. A missing optional integration is not converted to <code>FlowError</code>.</p>
 <h2 id="spilllimits">SpillLimits</h2>
-<p><code>SpillLimits</code> is an immutable set of hard relational budgets. It protects the
-application from skew, underestimated rows, explosive many-to-many joins, and
-unbounded repartition attempts.</p>
+<p><code>SpillLimits</code> sets hard limits for partitioned joins and grouping. These cover
+partition size, matches per key, output rows, and repartition depth.</p>
 
 
 <div class="doc doc-object doc-class">
@@ -2364,7 +2363,7 @@ unbounded repartition attempts.</p>
 </tbody>
 </table>
 <p>Limits must be positive integers except repartition depth, which may be zero.
-Exceeding a budget raises before the operation silently becomes unbounded.</p>
+Exceeding a limit raises <code>BufferLimitError</code> and triggers query cleanup.</p>
 <h2 id="summarystatistics">SummaryStatistics</h2>
 <p><code>flow(values).collect(Collectors.summarizing())</code> returns one mutable statistics
 value containing count, sum, minimum, maximum, and a derived average.</p>

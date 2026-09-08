@@ -1229,7 +1229,7 @@ original value is returned unchanged.</p>
         <p>Wrap a callable so its arguments can be supplied across multiple calls.</p>
 <p>The wrapped callable executes as soon as every non-variadic parameter without a default
 has been bound. Arguments may still be supplied all at once, and invalid or duplicate
-arguments raise the same binding errors produced by :func:<code>inspect.signature</code>.</p>
+arguments raise the same binding errors produced by <code>inspect.signature</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1278,17 +1278,9 @@ arguments raise the same binding errors produced by :func:<code>inspect.signatur
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A metadata-preserving callable that either executes <code>function</code> or returns another</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="collections.abc.Callable">Callable</span>[..., <span title="typing.Any">Any</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>argument-accepting stage.</p>
+                <p>A wrapper that preserves <code>function</code> metadata. It calls <code>function</code> once all
+required arguments are bound; otherwise it returns a callable for the next
+arguments.</p>
               </div>
             </td>
           </tr>

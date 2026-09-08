@@ -3638,28 +3638,28 @@ returned list.</p>
     <table>
       <thead>
         <tr>
-          <th>Type</th>
+<th>Name</th>          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-            <td>
+<td><code>success_values</code></td>            <td>
                   <code><span title="list">list</span>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(success_values, exceptions)</code>, with <code>Ok</code> and <code>Err</code> payloads unwrapped in their</p>
+                <p>Unwrapped <code>Ok</code> values in encounter order.</p>
               </div>
             </td>
           </tr>
           <tr class="doc-section-item">
-            <td>
+<td><code>exceptions</code></td>            <td>
                   <code><span title="list">list</span>[<span title="Exception">Exception</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>respective encounter orders.</p>
+                <p>Exceptions stored by <code>Err</code>, in encounter order.</p>
               </div>
             </td>
           </tr>
@@ -7176,17 +7176,8 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow that drains each mapped iterable in source order before mapping the next</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.R">R</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>item.</p>
+                <p>An async flow that drains each mapped iterable in source order before
+mapping the next item.</p>
               </div>
             </td>
           </tr>
@@ -7338,17 +7329,9 @@ encounter order.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of latest-value tuples in source argument order. Emission starts only after every</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, ...]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>source has produced once; completed sources retain their final value.</p>
+                <p>A flow of latest-value tuples in source argument order. It starts emitting
+after every source has produced a value. Completed sources keep their
+final value in later tuples.</p>
               </div>
             </td>
           </tr>
@@ -8025,17 +8008,8 @@ the requested interval, using the event loop's monotonic clock.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow that drops superseded pending items and flushes the latest item when the</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>source completes.</p>
+                <p>An async flow that replaces a pending item whenever a newer one arrives.
+The final pending item is emitted when the source completes.</p>
               </div>
             </td>
           </tr>
@@ -8553,17 +8527,8 @@ determines whether the original item is retained.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow retaining only items with truthy selected values; without a selector,</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>falsey items such as <code>None</code>, <code>0</code>, and empty containers are omitted.</p>
+                <p>An async flow keeping items whose own or selected value is truthy. Without
+a selector, this drops <code>None</code>, <code>0</code>, <code>False</code>, and empty containers.</p>
               </div>
             </td>
           </tr>
@@ -8649,17 +8614,8 @@ determines whether the original item is retained.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow containing the first occurrence of each distinct value; unhashable values</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>are compared by equality.</p>
+                <p>An async flow keeping the first occurrence of each distinct value.
+Unhashable values are compared by equality.</p>
               </div>
             </td>
           </tr>
@@ -8884,17 +8840,8 @@ key; callable results may be awaitable.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow containing only the first <code>count</code> items, with upstream work cancelled</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>and closed after the limit.</p>
+                <p>An async flow of at most <code>count</code> items. Reaching the limit cancels pending
+upstream work and closes its iterators.</p>
               </div>
             </td>
           </tr>
@@ -9244,17 +9191,8 @@ result.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow beginning with the first falsey-predicate item; later items are emitted</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>without further predicate calls.</p>
+                <p>An async flow starting with the first item for which <code>predicate</code> is falsey.
+Remaining items pass through without further predicate calls.</p>
               </div>
             </td>
           </tr>
@@ -9443,17 +9381,8 @@ result.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of full sliding windows; a non-empty source shorter than <code>size</code> produces one</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, ...]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>partial window, but no trailing partial window is emitted otherwise.</p>
+                <p>A flow of full sliding windows. A non-empty source shorter than <code>size</code>
+produces one partial window; otherwise, partial trailing windows are omitted.</p>
               </div>
             </td>
           </tr>
@@ -9519,17 +9448,8 @@ result.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow of overlapping <code>(previous, current)</code> pairs; fewer than two items emit</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, <span title="fpstreams.streams.async_flow.T">T</span>]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>nothing.</p>
+                <p>An async flow of overlapping <code>(previous, current)</code> pairs. Fewer than two
+items produce no pairs.</p>
               </div>
             </td>
           </tr>
@@ -10189,17 +10109,8 @@ lengths.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow of <code>(left, right)</code> pairs with every right item repeated for each left</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, <span title="fpstreams.streams.async_flow.U">U</span>]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>item.</p>
+                <p>An async flow of <code>(left, right)</code> pairs. For each left item, it emits a pair
+with every buffered right item in order.</p>
               </div>
             </td>
           </tr>
@@ -10936,17 +10847,8 @@ left.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow emitting exactly one final state, including the initializer for an empty</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.R">R</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>source.</p>
+                <p>An async flow containing one final state. For an empty source, that state
+is the resolved result of <code>initializer()</code>.</p>
               </div>
             </td>
           </tr>
@@ -11078,17 +10980,9 @@ singleton batch.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow of non-empty tuples packed within both limits, except for non-strict</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.async_flow.T">T</span>, ...]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>oversized singleton items.</p>
+                <p>An async flow of non-empty tuple batches within the size and count limits.
+With <code>strict=False</code>, an item larger than <code>max_size</code> is emitted in its own
+batch.</p>
               </div>
             </td>
           </tr>

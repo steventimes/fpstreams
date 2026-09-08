@@ -2459,9 +2459,8 @@
 
 
 <h1 id="rows">Rows</h1>
-<p><code>Rows[T]</code> is the explicit relational and compatibility view over a lazy Flow. It
-adds record selectors, expressions, joins, grouping, reshape operations, and
-record-oriented data-system adapters.</p>
+<p><code>Rows[T]</code> adds record operations to a lazy Flow: field selection, joins,
+grouping, reshaping, and record I/O.</p>
 <p>Enter it with <code>flow(source).rows()</code>, construct it with <code>rows(source)</code>, or use one
 of the adapter factories. A Rows view shares its Flow's plan and source
 ownership; it does not inspect the source or make a one-shot input reusable.</p>
@@ -2587,8 +2586,9 @@ deferred. An Arrow C stream provider is the exception: its stream is imported
 once at construction and treated as one-shot. Adapter docstrings list the exact
 options and return types.</p>
 <p>Use <code>from_csv()</code> when Python <code>csv.DictReader</code> compatibility and string-valued
-cells matter. Use <code>scan_csv()</code> for typed inference and wide analytical scans;
-direct <code>select()</code> queries are pushed into Arrow CSV conversion. Arrow's
+cells matter. Use <code>scan_csv()</code> for typed inference and wide analytical scans.
+With a plain local path and default reader options, direct <code>select()</code> queries
+can prune columns during Arrow CSV conversion. Arrow's
 incremental reader is single-threaded and freezes inferred types after its first
 byte block, so pass <code>ReadOptions</code> or <code>ConvertOptions.column_types</code> when the
 default inference is not appropriate.</p>
@@ -2683,8 +2683,8 @@ still exceeds the configured depth, or match, group-state, or output expansion
 exceeds another limit, the operation raises <code>BufferLimitError</code> before loading an
 unbounded bucket. Temporary files are removed. Pass a custom <code>SpillLimits</code> to
 <code>join(..., partitions=..., limits=...)</code> or <code>group_by(...).spill(limits=...)</code>.</p>
-<p>This is bounded processing up to configured limits, not guaranteed completion
-for every skewed or many-to-many input.</p>
+<p>Highly skewed or many-to-many input may exceed these limits even with spill
+enabled.</p>
 <h2 id="methods">Methods</h2>
 
 
@@ -4229,17 +4229,8 @@ dialect, delimiter, or quoting.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Lazy dictionaries keyed by the unique CSV header. Handle inputs are one-shot; paths</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Rows (fpstreams.tabular.rows.Rows)" href="#fpstreams.Rows">Rows</a>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>and opener inputs are replayable.</p>
+                <p>Lazy dictionaries keyed by the unique CSV header. Open handles can be consumed once;
+paths and opener functions can be read again.</p>
               </div>
             </td>
           </tr>
@@ -4277,7 +4268,12 @@ dialect, delimiter, or quoting.</p>
     <div class="doc doc-contents ">
 
         <p>Lazily scan typed CSV batches with optional query-level column pruning.</p>
-<p>Unlike :meth:<code>from_csv</code>, this explicit Arrow path infers non-string scalar types.
+<p>Unlike <a class="autorefs autorefs-internal" title="from_csv
+
+
+  
+      staticmethod
+  " href="#fpstreams.Rows.from_csv">from_csv()</a>, this Arrow reader infers non-string types.
 PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
 The incremental Arrow reader is single-threaded and freezes inferred types after its
 first byte block; use <code>read_options</code> or <code>convert_options</code> to control those choices.
@@ -4533,17 +4529,9 @@ handles.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Lazy dictionary rows. Handle inputs are one-shot; paths and opener inputs are</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Rows (fpstreams.tabular.rows.Rows)" href="#fpstreams.Rows">Rows</a>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>replayable. Duplicate keys and non-object records fail when consumed.</p>
+                <p>Lazy dictionary rows. Open handles can be consumed once; paths and opener
+functions can be read again. Duplicate keys and non-object records raise
+errors during consumption.</p>
               </div>
             </td>
           </tr>
@@ -8227,6 +8215,14 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
 </div><h2 id="groupedrows">GroupedRows</h2>
 <p><code>group_by()</code> returns a grouped plan. Call <code>aggregate()</code> directly, or call
 <code>spill()</code> first to use partitioned temporary storage.</p>
+<p>In the unreleased version, Python grouping uses the current selector if a source
+or callback changes its code or closure. The previous field shortcut could keep
+using an old field and merge distinct groups.</p>
+<p>Grouping with one collector also uses the current <code>step</code> after truth-testing a
+custom <code>done</code> result. Temporary states and unused keys are released at the same
+points as in the general collector path, including when the output iterator is
+closed early. Release callbacks can therefore affect the next row or finisher as
+expected. These fixes are not included in <code>2.1.0</code>.</p>
 
 
 <div class="doc doc-object doc-class">

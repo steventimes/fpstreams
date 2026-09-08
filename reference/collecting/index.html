@@ -3046,9 +3046,14 @@ finishing, and partial <code>(sum, count)</code> states can be combined componen
     <div class="doc doc-contents ">
 
         <p>Build a collector returning mutable count, sum, extrema, and average state.</p>
-<p>Selected values update :class:<code>SummaryStatistics</code> directly. Empty input normalizes
-minimum and maximum from infinities to <code>0.0</code>; the sum, count, and derived average are
-already zero. The returned statistics object is the final mutable state.</p>
+<p>Selected values update <a class="autorefs autorefs-internal" title="fpstreams.SummaryStatistics
+
+
+  
+      dataclass
+  " href="../errors/#fpstreams.SummaryStatistics">SummaryStatistics</a> directly.
+Empty input changes the minimum and maximum from infinities to <code>0.0</code>; the sum,
+count, and derived average are already zero. The returned object is the final mutable state.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3112,7 +3117,12 @@ already zero. The returned statistics object is the final mutable state.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A one-pass collector returning a :class:<code>SummaryStatistics</code> instance.</p>
+                <p>A one-pass collector returning <a class="autorefs autorefs-internal" title="fpstreams.SummaryStatistics
+
+
+  
+      dataclass
+  " href="../errors/#fpstreams.SummaryStatistics">SummaryStatistics</a>.</p>
               </div>
             </td>
           </tr>

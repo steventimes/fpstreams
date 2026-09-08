@@ -1761,7 +1761,23 @@ successful value or an exception.</p>
 
         <p>Store either one non-<code>None</code> value or an empty state.</p>
 <p>Instances are immutable and cannot distinguish a present <code>None</code> from absence. Use
-:meth:<code>of</code>, :meth:<code>of_nullable</code>, or :meth:<code>empty</code> to make that choice explicit.</p>
+<a class="autorefs autorefs-internal" title="of
+
+
+  
+      classmethod
+  " href="#fpstreams.Option.of">of()</a>, <a class="autorefs autorefs-internal" title="of_nullable
+
+
+  
+      classmethod
+  " href="#fpstreams.Option.of_nullable">of_nullable()</a>,
+or <a class="autorefs autorefs-internal" title="empty
+
+
+  
+      classmethod
+  " href="#fpstreams.Option.empty">empty()</a> to make that choice explicit.</p>
 
 
 
@@ -2257,8 +2273,8 @@ value produces a new empty option. Exceptions from <code>predicate</code> propag
     <div class="doc doc-contents ">
 
         <p>Map a present value and convert a mapped <code>None</code> to absence.</p>
-<p>The mapper is skipped for an empty option. Unlike :class:<code>Result</code>, this method does
-not capture mapper exceptions.</p>
+<p>The mapper is skipped for an empty option. Unlike <a class="autorefs autorefs-internal" title="fpstreams.Result" href="#fpstreams.Result">Result</a>,
+this method does not capture mapper exceptions.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2312,22 +2328,8 @@ not capture mapper exceptions.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An option containing the mapped value, or an empty option when either input or</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Option
-
-
-  
-      dataclass
-   (fpstreams.primitives.option.Option)" href="#fpstreams.Option">Option</a>[<span title="fpstreams.primitives.option.R">R</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>output is <code>None</code>.</p>
+                <p>An option containing the mapped value, or an empty option if this option is
+empty or the mapper returns <code>None</code>.</p>
               </div>
             </td>
           </tr>
@@ -2762,7 +2764,7 @@ passed through without additional wrapping or validation.</p>
 
 
 
-        <p>Common interface for a successful :class:<code>Ok</code> or failed :class:<code>Err</code> value.</p>
+        <p>Common interface for a successful <code>Ok</code> or failed <code>Err</code> value.</p>
 
 
 
@@ -2807,18 +2809,18 @@ passed through without additional wrapping or validation.</p>
     <table>
       <thead>
         <tr>
-<th>Name</th>          <th>Type</th>
+          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-<td><code>The</code></td>            <td>
+            <td>
                   <code><span title="Exception">Exception</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>class:<code>Err</code> exception or <code>None</code> for :class:<code>Ok</code>.</p>
+                <p>The exception stored by <code>Err</code>, or <code>None</code> for <code>Ok</code>.</p>
               </div>
             </td>
           </tr>
@@ -2849,7 +2851,7 @@ passed through without additional wrapping or validation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create an :class:<code>Ok</code> containing <code>value</code>.</p>
+        <p>Create an <code>Ok</code> containing <code>value</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2927,7 +2929,7 @@ passed through without additional wrapping or validation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Create an :class:<code>Err</code> containing <code>error</code>.</p>
+        <p>Create an <code>Err</code> containing <code>error</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3006,7 +3008,7 @@ passed through without additional wrapping or validation.</p>
     <div class="doc doc-contents ">
 
         <p>Call a zero-argument function and capture ordinary exceptions as failure.</p>
-<p>A normal return becomes :class:<code>Ok</code>; an :class:<code>Exception</code> becomes :class:<code>Err</code>.
+<p>A normal return becomes <code>Ok</code>; an <code>Exception</code> becomes <code>Err</code>.
 Exceptions outside the <code>Exception</code> hierarchy, such as <code>KeyboardInterrupt</code>, propagate.</p>
 
 
@@ -3081,7 +3083,7 @@ Exceptions outside the <code>Exception</code> hierarchy, such as <code>KeyboardI
 
     <div class="doc doc-contents ">
 
-        <p>Report whether this instance is an :class:<code>Ok</code>.</p>
+        <p>Report whether this instance is an <code>Ok</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3124,7 +3126,7 @@ Exceptions outside the <code>Exception</code> hierarchy, such as <code>KeyboardI
 
     <div class="doc doc-contents ">
 
-        <p>Report whether this instance is an :class:<code>Err</code>.</p>
+        <p>Report whether this instance is an <code>Err</code>.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -3319,7 +3321,7 @@ value is passed through without runtime type validation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Alias :meth:<code>and_then</code> for chaining result-returning computations.</p>
+        <p>Alias <a class="autorefs autorefs-internal" title="and_then" href="#fpstreams.Result.and_then">and_then()</a> for chaining result computations.</p>
 <p>The callable runs only for success; existing failures pass through unchanged.</p>
 
 
@@ -3473,7 +3475,7 @@ value is passed through without runtime type validation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Alias :meth:<code>map_err</code> for transforming a stored exception.</p>
+        <p>Alias <a class="autorefs autorefs-internal" title="map_err" href="#fpstreams.Result.map_err">map_err()</a> for transforming a stored exception.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3765,7 +3767,7 @@ value is passed through without runtime type validation.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Alias :meth:<code>unwrap</code> for extracting success or raising failure.</p>
+        <p>Alias <a class="autorefs autorefs-internal" title="unwrap" href="#fpstreams.Result.unwrap">unwrap()</a> for extracting success or raising failure.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>

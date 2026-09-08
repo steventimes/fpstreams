@@ -759,6 +759,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Pairs.run_with_report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run_with_report
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Pairs.keys" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1256,6 +1267,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Pairs.run_with_report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run_with_report
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Pairs.keys" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1506,7 +1528,18 @@ key-, value-, and pair-aware transforms plus per-key collection and aggregation.
 <p><code>with_engine()</code> keeps the Pairs view while changing the underlying Flow policy.
 <code>to_flow()</code> returns that Flow without copying values. Inspect the returned Flow
 when it will be consumed as a Flow; pair terminals such as <code>to_dict()</code> may use a
-pair-specific direct path and do not currently expose a separate <code>explain()</code> API.</p>
+pair-specific direct path and do not expose a separate <code>explain()</code> API.</p>
+<p>Use <code>run_with_report()</code> to execute <code>to_dict</code>, <code>group_values</code>, <code>collect_values</code>,
+or <code>aggregate_values</code> and inspect the route. The terminal runs once; extra
+arguments are forwarded to it. The result contains the terminal's value and an
+immutable <a href="../../user-guide/execution-reports/">execution report</a>.
+This reporting method is available in the current source tree and has not yet
+been released on PyPI.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([(</span><span class="s2">&quot;red&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;red&quot;</span><span class="p">,</span> <span class="mi">3</span><span class="p">)])</span><span class="o">.</span><span class="n">pairs</span><span class="p">()</span><span class="o">.</span><span class="n">run_with_report</span><span class="p">(</span><span class="s2">&quot;group_values&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">value</span> <span class="o">==</span> <span class="p">{</span><span class="s2">&quot;red&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]}</span>
+</code></pre></div>
 
 
 <div class="doc doc-object doc-class">
@@ -1655,6 +1688,142 @@ pair-specific direct path and do not currently expose a separate <code>explain()
             <td>
               <div class="doc-md-description">
                 <p>Lazy Pairs backed by the engine-adjusted Flow.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Pairs.run_with_report" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">run_with_report</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">run_with_report</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">terminal</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">/</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ExecutionResult</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Execute one pair terminal and return its value with query-owned metrics.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>terminal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>to_dict</code>, <code>group_values</code>, <code>collect_values</code>, or <code>aggregate_values</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>*args</code>
+            </td>
+            <td>
+                  <code><span title="typing.Any">Any</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Positional arguments passed to that terminal.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>**kwargs</code>
+            </td>
+            <td>
+                  <code><span title="typing.Any">Any</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Keyword arguments passed to that terminal.</p>
+              </div>
+            </td>
+            <td>
+                  <code>{}</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.ExecutionResult
+
+
+  
+      dataclass
+   (fpstreams.runtime.report.ExecutionResult)" href="../../user-guide/execution-reports/#fpstreams.ExecutionResult">ExecutionResult</a>[<span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The terminal value and an immutable report. The source is consumed once.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the name is not a reportable pair terminal.</p>
               </div>
             </td>
           </tr>

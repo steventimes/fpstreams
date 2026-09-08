@@ -1203,17 +1203,17 @@
 
 
 <h1 id="performance-and-execution">Performance and execution</h1>
-<p>Start with <code>auto</code>. It can keep small or opaque work in Python, fuse numeric work
-into Rust, retain an Arrow prefix, or combine backends at a guarded boundary.
-Forcing <code>native</code> does not make an unsupported plan faster; it turns a normal
-fallback into <code>NativeUnsupportedError</code>.</p>
+<p>Start with <code>auto</code>. It can keep small workloads and Python callbacks in Python,
+run supported numeric work in Rust, and preserve columnar execution in Arrow or
+NumPy. Forcing <code>native</code> raises <code>NativeUnsupportedError</code> if the requested plan
+cannot run there.</p>
 <h2 id="inspect-before-changing-code">Inspect before changing code</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">item</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">1_000_000</span><span class="p">))</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">item</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">item</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">pipeline</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">terminal</span><span class="o">=</span><span class="s2">&quot;sum&quot;</span><span class="p">))</span>
 </code></pre></div>
-<p>The explanation answers the questions that matter for performance:</p>
+<p>Use the explanation to check:</p>
 <ul>
 <li>Is the source reiterable, exact-sized, ordered, or known infinite?</li>
 <li>Which engine handles streaming and which handles materialization?</li>
@@ -1222,6 +1222,10 @@ fallback into <code>NativeUnsupportedError</code>.</p>
 <li>Where does an Arrow plan hand records back to Python?</li>
 <li>Does a terminal need all input, only a prefix, or no scan at all?</li>
 </ul>
+<p>The explanation describes planning decisions. An
+<a href="../execution-reports/"><code>execution report</code></a> adds terminal and resource
+observations, but neither is a complete trace of internal kernels and runtime
+fallbacks. Confirm the relevant route before attributing a timing to a backend.</p>
 <p>An O(1) <code>count()</code> is valid only when source metadata proves the exact output
 cardinality and no operation invalidates it. A one-shot iterator is consumed in
 the normal way.</p>
@@ -1268,6 +1272,12 @@ the normal way.</p>
 <td>Stream batches without pretending they can reopen</td>
 </tr>
 <tr>
+<td>NumPy array</td>
+<td>Reiterable</td>
+<td>Live dimensions, dtype, and strides</td>
+<td>Use compatible numeric kernels; read scalar values lazily on Python paths</td>
+</tr>
+<tr>
 <td>dataframe protocol provider</td>
 <td>Adapter-defined</td>
 <td>Column metadata</td>
@@ -1290,9 +1300,14 @@ remain Python programs.</p>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">flow</span><span class="p">(</span><span class="n">values</span><span class="p">)</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">custom_transform</span><span class="p">)</span>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">flow</span><span class="p">(</span><span class="n">records</span><span class="p">)</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="n">normalize</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;region&quot;</span><span class="p">]))</span>
 </code></pre></div>
-<p>Choose the form that communicates your operation. Replacing a readable callable
-with an expression is worthwhile when the expression model fits exactly; do not
-encode complex business logic just to chase a backend.</p>
+<p>Use an expression when it expresses the operation clearly. Keep a callable for
+logic that would become harder to read as an expression.</p>
+<p>In the unreleased working tree, <code>auto</code> can run a two-key count/sum group in Rust
+when its input is a retained list or tuple of exact tuple rows. Both keys and
+the selected values must be plain signed 64-bit integers. The result keeps the
+first key objects and encounter order, and the sum may exceed 64 bits. Iterator
+sources, custom types, changed collector functions, and unsupported layouts use
+the Python collector program. This path is not in the published 2.1.0 wheel.</p>
 <h2 id="keep-pipelines-fused">Keep pipelines fused</h2>
 <p>Each terminal opens and executes a plan. Keep adjacent transformations in one
 pipeline when they form one result:</p>
@@ -1308,7 +1323,8 @@ or interaction with an API that requires a container.</p>
 <h2 id="select-the-right-terminal">Select the right terminal</h2>
 <p>Use the narrowest terminal that expresses the answer:</p>
 <ul>
-<li><code>first</code>, <code>any</code>, <code>all</code>, <code>find</code>, <code>take</code>, and <code>nth</code> can short-circuit;</li>
+<li><code>first</code>, <code>any</code>, <code>all</code>, <code>find</code>, and <code>nth</code> can short-circuit; use the lazy
+  <code>take</code> transformation to bound how many results a later terminal requests;</li>
 <li><code>count</code>, <code>sum</code>, <code>min</code>, <code>max</code>, <code>mean</code>, <code>variance</code>, and <code>std</code> avoid building an
   output container;</li>
 <li><code>summarize()</code> and <code>aggregate(...)</code> can compute several reductions during one
@@ -1319,6 +1335,25 @@ or interaction with an API that requires a container.</p>
 <p>Calling separate scalar terminals on a one-shot source is invalid, and on a
 reiterable source scans it repeatedly. Use a combined aggregation when the
 statistics belong to one pass.</p>
+<p><code>frequencies()</code> retains one count per distinct key. The unreleased implementation
+can count exact builtin values in retained lists and tuples in Rust, including
+strings, bytes, floats, large integers, booleans, and <code>None</code>.</p>
+<p>It keeps the first key object and encounter order. Custom keys are counted in
+Python without extra hash or equality calls. Transformed pipelines keep their
+existing execution paths. The new continuation is disabled on free-threaded
+CPython.</p>
+<p>For an untransformed NumPy source without a key, an automatic plan that selects
+native execution can also count in Rust. It consumes the existing iterator one
+item at a time, preserving source fallback and query cleanup. This removes the
+Python counting loop; the selected numeric executor still materializes its
+output before iteration. A missing iterator-counting entry point keeps the
+previous path.</p>
+<p>When the Rust extension is unavailable, <code>auto</code> counts in Python. The current
+source tree also fixes this fallback for lists and tuples in the browser wheel.</p>
+<p>For a NumPy source, a key callback may change values that have not been read yet.
+The unreleased <code>auto</code> implementation preserves those edits by reading between
+key calls on sequential linear pipelines. This route can cost more than copying
+the array up front. Its execution report records <code>python_frequency</code>.</p>
 <h2 id="records-and-tabular-data">Records and tabular data</h2>
 <p>Record operations have two different costs: extracting fields and creating owned
 output records. A columnar source can avoid part of that work only while its
@@ -1335,9 +1370,10 @@ semantics are what the application needs.</p>
 <li>direct fields versus Python callbacks;</li>
 <li>whether an input can be safely partitioned or replayed.</li>
 </ul>
-<p>Set <code>validate</code> on joins when the relationship is known. It documents the data
-contract and lets fpstreams reject invalid multiplicity before producing a
-misleading result.</p>
+<p>Set <code>validate</code> on joins when the relationship is known. fpstreams raises when a
+key violates it. A streaming consumer may already have received earlier rows
+when a duplicate is encountered, so validation does not make downstream side
+effects atomic.</p>
 <h2 id="bound-large-global-work">Bound large global work</h2>
 <p>Use external sorting or spill-enabled relational operations when the in-memory
 working set is not acceptable. Configure limits from an operational budget:</p>
@@ -1358,9 +1394,9 @@ working set is not acceptable. Configure limits from an operational budget:</p>
 <a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>    <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span>
 <a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="p">)</span>
 </code></pre></div>
-<p>Limits prevent a pathological key or underestimated row from turning a bounded
-operation into an unbounded one. Raising the limit without inspecting the data
-only moves the failure.</p>
+<p>If a limit is exceeded, inspect key skew, row size, and join fan-out before
+raising it. Spill processing can still fail when a single partition remains
+too large after repartitioning.</p>
 <h2 id="async-throughput">Async throughput</h2>
 <p>For I/O-bound work, <code>map_async</code> exposes concurrency and ordering separately.
 Higher concurrency is useful only until the upstream service, connection pool,
@@ -1376,16 +1412,46 @@ pays for, proves equivalent outputs, and samples more than one size and data
 shape. At minimum record:</p>
 <ul>
 <li>Python and dependency versions, platform, and processor architecture;</li>
+<li>Git commit, dirty status, source and native-extension fingerprints;</li>
 <li>source type, input size, cardinality, skew, and null distribution;</li>
+<li>requested engine and observed execution route, including gaps in that evidence;</li>
 <li>warmup policy and multiple timing samples;</li>
 <li>peak memory or bounded-resource counters where relevant;</li>
 <li>output equivalence and exception behavior;</li>
 <li>both common and adversarial shapes.</li>
 </ul>
-<p>Compare end-to-end user tasks, not internal kernels with different semantics.
+<p>Compare tasks with equivalent results and source-consumption rules.
 Pandas and NumPy begin with columnar or contiguous storage; an fpstreams pipeline
 may begin with arbitrary Python objects. Include input preparation consistently
 or state that the comparison begins after preparation.</p>
+<p>The frequency comparison cases start with prepared inputs: lists for fpstreams
+and <code>collections.Counter</code>, arrays for NumPy, and Series for pandas. Every timed
+task returns a dictionary; NumPy converts its result arrays in bulk, and pandas
+uses <code>to_dict()</code>. The cases cover low and high cardinality for integers,
+strings, large integers, and floats, plus a string distribution in which one key
+accounts for 90% of the input. They compare counts using dictionary equality;
+fpstreams' key identity and encounter order are checked separately in parity
+tests. Input conversion is outside timing, and other distributions can change
+the ranking.</p>
+<p>Eight additional frequency cases start from NumPy int64 or float64 arrays. They
+separate identity counting from a callable key, with repeated and distinct keys
+in each group. All implementations return complete dictionaries in first-key
+order. The Python reference converts the array to a list inside its timed task;
+the NumPy and pandas references use equivalent array operations for the key.</p>
+<p>The <code>io.arrow.csv.select</code> and <code>io.arrow.parquet.select</code> cases start with files
+and query objects created outside timing. Each measured call reads the file,
+selects two columns, and returns Python records. The pandas reference reads the
+same file independently. These cases measure file reading and projection;
+fixture creation and query construction are excluded.</p>
+<p>The join cases also start with prepared records and return complete lists.
+Twelve Python controls vary record type (dict or Mapping) and key selection
+(field or callable). They cover inner and left joins with unique right keys,
+plus inner joins with repeated right keys. Use these controls to assess changes
+to Python execution, and check the observed route: auto-engine cases can run
+in Rust.
+Six further cases use eight or 32 left fields to measure wider record layouts.
+Callable-key comparisons retain both key columns and copy records before calling
+the selector. Left joins include unmatched rows and their missing right values.</p>
 <h2 id="a-practical-tuning-loop">A practical tuning loop</h2>
 <p>Native, Arrow, and NumPy execution does not emit the same per-row Python trace
 or profile events as the Python engine. When a debugger or Python profiler needs
@@ -1394,13 +1460,112 @@ it.</p>
 <ol>
 <li>Use <code>explain()</code> and a profiler to find the dominant stage.</li>
 <li>Record a correctness-checked baseline across representative shapes.</li>
-<li>Change one general mechanism, not one named benchmark scenario.</li>
+<li>Change one mechanism shared by the workloads that show the bottleneck.</li>
 <li>Re-run correctness, resource, and performance gates.</li>
 <li>Keep the change only when the improvement is stable and the complexity is
    justified; revert neutral or noisy changes.</li>
 </ol>
-<p>The repository benchmark follows this policy. It is a diagnostic and regression
-guard, not part of production dispatch.</p>
+<p>The repository runner compares engine paths and offers a separate Python,
+NumPy, and pandas comparison suite. List the available scenarios before choosing
+what to measure:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--list-scenarios<span class="w"> </span>--quick<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;fpstreams_operation/sync/*&#39;</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--list-scenarios<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span>
+</code></pre></div>
+<p>Both suites support <code>--quick</code> and <code>--include</code> when listing. For the engine suite,
+<code>--domain</code> selects integer workloads, floating-point workloads, or both. Engine
+listing creates small fixtures and releases them before returning; it does not
+run benchmark tasks or collect timing, allocation, or execution reports.</p>
+<p>Both suites emit schema 6 reports with dependency versions, Git state, source
+and native hashes, and a workload fingerprint. They also record CPU affinity,
+NumPy CPU features and a fingerprint of selected kernel targets, plus SIMD,
+thread-count, Python hash-seed, and allocator settings.
+The allocator fields include <code>PYTHONMALLOC</code>, <code>PYTHONMALLOCSTATS</code>, <code>GLIBC_TUNABLES</code>,
+and an allowlist of <code>MALLOC_*</code> environment controls. These are requested settings;
+the report does not prove which allocator is active or reconstruct its allocation
+history. The runners recheck that evidence after measurement and reject a run if it changes.
+An unavailable Git repository is recorded explicitly with <code>git_available=false</code>
+and null revision and dirty fields. Runtime configuration must match on both
+sides; older reports need to be regenerated.</p>
+<p>The engine suite can enforce ratios against its Python references from the same
+run. Composite count/sum groups and NamedTuple callable joins apply their extra
+speedup requirements from 1,000 rows. Smaller inputs still produce timing and
+allocation records, with <code>maximum_ratio=null</code> for these cases.</p>
+<p>Competitive reports describe cross-library timings without enforcing those
+ratios. For comparisons across versions, <code>benchmarks/regression.py</code> checks each
+task's timing and allocation against the baseline; this includes reference tasks
+and small-input cases without a same-run speedup requirement.</p>
+<p>The competitive runner rotates peer order, collects garbage, then warms the
+next task for at least 1ms before timing one call. Each result records the number
+of warmup calls. This measures warmed execution; first-call latency needs a
+separate measurement. Local checks found that one warmup call left short NumPy
+tasks with two timing ranges. Longer warmup removed that pattern, though other
+full-matrix outliers still require investigation. Matching allocator settings
+also does not reproduce process allocation history: local same-code checks
+still found different timing bands under fixed mmap and trim thresholds. Check
+stability with independent runs before evaluating a candidate. Keep failed runs;
+a passing replay does not invalidate them, and hidden priming allocations can
+change what the benchmark measures.</p>
+<p>For sensitive cases, use an exact <code>--include</code> case ID and launch the CLI in a
+new process for each run. This avoids allocations left by other cases in the
+same suite process. Local checks of five affected tasks passed at 100,000 items
+with this approach and matching allocator settings. Later candidate comparisons
+still failed at smaller sizes, sometimes across several implementations in the
+same run. Isolation alone does not prove stability. Check other sizes and
+compare reports produced with the same invocation pattern; do not mix isolated
+case runs with results from a shared suite process.</p>
+<p>After timing, each implementation runs once more under <code>tracemalloc</code> to record
+<code>resources.peak_allocation_bytes</code>. One-shot tasks create a fresh source for this
+call too. The measurement includes temporary allocations and the result, while
+prepared inputs remain outside its scope. Rust and other native allocations may
+be invisible to <code>tracemalloc</code>; this is not process RSS or total memory usage.</p>
+<p>Run these measurements on a patched interpreter. Older CPython builds can crash
+when tracing stops while a native thread initializes; see
+<a href="https://github.com/python/cpython/issues/128679">CPython #128679</a>. Local file-scan
+stress checks passed on CPython 3.12.13 with the same dependencies that reproduced
+the crash on 3.12.3. Record the full version and rerun both sides of a comparison
+after changing interpreters.</p>
+<p>Reports with missing or invalid resource values are rejected. Schema 4 competitive
+reports did not measure allocation, so their timing results cannot establish a
+memory gain or a passed allocation threshold.</p>
+<p>NumPy's <a href="https://numpy.org/doc/stable/reference/simd/how-it-works.html">runtime CPU dispatch</a>
+can select different kernels on different processors or with different feature
+settings. Do not disable those features just to make a comparison pass. Record
+the actual configuration and compare equivalent runs.</p>
+<p>Each fpstreams task runs once outside timing to observe its execution route.
+This uses the same callable as the timed task; one-shot cases create a fresh
+source for every call. <code>execution.status="unknown"</code> means that the task did not
+record a plan. An <code>observed</code> outer route still has the limits described in
+<a href="../execution-reports/">execution reports</a>.</p>
+<p>To compare another checkout, point <code>FPSTREAMS_BENCHMARK_SOURCE</code> at its <code>src</code>
+directory. Use the same runner and Python environment for both sides. Build
+the release extension for each checkout first, and keep size, filters, domain,
+and quick mode identical:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nv">FPSTREAMS_BENCHMARK_SOURCE</span><span class="o">=</span>/path/to/base/src<span class="w"> </span>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/base-10000-run-1.json
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/current-10000-run-1.json
+</code></pre></div>
+<p>Repeat both commands with <code>run-2</code> and <code>run-3</code> filenames. Keep the raw reports and
+write the baseline to a separate file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span>--create-baseline<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--provenance<span class="w"> </span>local_one_shot_unreviewed<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--output<span class="w"> </span>artifacts/base-10000-median.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>artifacts/base-10000-run-1.json<span class="w"> </span>artifacts/base-10000-run-2.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>artifacts/base-10000-run-3.json
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>artifacts/base-10000-median.json<span class="w"> </span>artifacts/current-10000-run-1.json
+</code></pre></div>
+<p>Compare each current run against that baseline, then repeat at another size.
+The baseline retains each run's provenance. Code hashes, Git revisions, and
+fpstreams versions may differ between the two sides;
+workload settings and other dependency versions must match. Old reports that
+lack the required fields need to be regenerated.</p>
+<p>Cross-commit checks in CI still need a reviewed baseline that matches the
+runner's environment. Without one, the scheduled workflow compares three runs
+with a fourth from the same checkout. That checks timing consistency within
+one revision. The <a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
 
 
 

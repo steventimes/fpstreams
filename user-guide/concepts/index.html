@@ -1203,9 +1203,9 @@
 
 
 <h1 id="core-concepts">Core concepts</h1>
-<p>fpstreams describes work before it performs it. A pipeline contains a source,
-ordered transformations, and enough facts for the planner to select a safe
-executor. A terminal turns that description into values.</p>
+<p>A pipeline stores a source and its transformations. Building the pipeline does
+not pull items from an ordinary iterable; iteration or a terminal such as
+<code>to_list()</code> starts execution.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">item</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">))</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">item</span> <span class="o">*</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">item</span> <span class="o">&gt;</span> <span class="mi">8</span><span class="p">)</span>
@@ -1235,7 +1235,7 @@ value, write output, or perform a side effect.</p>
 </tr>
 <tr>
 <td>Lazy relational operation</td>
-<td><code>group_by</code>, <code>join</code>, <code>pivot</code></td>
+<td><code>group_by</code>, <code>Rows.join</code>, <code>pivot</code></td>
 <td>A relational plan</td>
 </tr>
 <tr>
@@ -1258,7 +1258,7 @@ value, write output, or perform a side effect.</p>
 <p>Iteration is also execution. <code>for value in pipeline</code> opens and owns one source
 iterator in the same way as a terminal.</p>
 <h2 id="source-replayability">Source replayability</h2>
-<p>The source, not the pipeline syntax, determines whether a plan can be run again.</p>
+<p>A plan can run again if its source can be reopened.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">reusable</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
@@ -1274,8 +1274,11 @@ iterator:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">defer</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="nb">iter</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]))</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">assert</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">==</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">==</span> <span class="mi">6</span>
 </code></pre></div>
-<p>fpstreams does not silently cache a generator. That would change memory use,
-resource lifetime, callback timing, and visibility of upstream changes.</p>
+<p>A generator is consumed once. To reuse its results, materialize them explicitly;
+this retains the values in memory and runs upstream callbacks at that point.</p>
+<p>A custom iterable's <code>__len__()</code> does not prove how many items it will yield.
+<code>count()</code> traverses such a source. Only trusted source metadata, such as the
+current length of an exact builtin list, can avoid that traversal.</p>
 <h2 id="one-synchronous-entry-point">One synchronous entry point</h2>
 <p><code>flow()</code> is the normal synchronous constructor for both scalar and record data.
 Record-specific methods whose names do not conflict with Flow semantics enter a
@@ -1365,11 +1368,12 @@ each comparison:</p>
 </tr>
 </tbody>
 </table>
-<p>These are views over a small number of execution models, not independent data
-containers that eagerly copy inputs.</p>
+<p>These entry points construct plans and share source ownership when you switch
+views. Each adapter defines when it imports or converts its input; see the
+<a href="../../reference/io/">I/O matrix</a>.</p>
 <h2 id="planning-and-engines">Planning and engines</h2>
-<p>The default <code>auto</code> engine chooses among canonical Python iteration, compiled
-Rust kernels, Arrow-native prefixes, and guarded hybrid plans. Engine selection
+<p>The default <code>auto</code> engine chooses among Python iteration, Rust kernels,
+Arrow and NumPy operations, and plans that combine them. Engine selection
 must preserve values, exceptions, ordering, one-shot behavior, and callback
 effects.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">item</span>
@@ -1384,8 +1388,7 @@ for debugging or controlled deployment requirements:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">pipeline</span><span class="o">.</span><span class="n">with_engine</span><span class="p">(</span><span class="s2">&quot;python&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">pipeline</span><span class="o">.</span><span class="n">with_engine</span><span class="p">(</span><span class="s2">&quot;native&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>  <span class="c1"># raises if the exact plan is unsupported</span>
 </code></pre></div>
-<p><code>auto</code> falling back to Python is normal. It is not an error and does not mean
-the whole library is running eagerly.</p>
+<p>If <code>auto</code> falls back to Python, streaming operations still pull values lazily.</p>
 <h2 id="streaming-buffering-and-materialization">Streaming, buffering, and materialization</h2>
 <p>Operations fall into three broad memory shapes:</p>
 <ul>
@@ -1396,10 +1399,9 @@ the whole library is running eagerly.</p>
 <li>global operators such as in-memory sorting, exact grouping, pivoting, and
   <code>to_list</code> must retain data proportional to the input or output.</li>
 </ul>
-<p>Large global work can use explicit spill settings. Limits are correctness and
-operational controls, not tuning hints: exceeding a configured partition,
-fan-out, output, or byte budget raises <code>BufferLimitError</code> instead of quietly
-using unbounded memory.</p>
+<p>Large global operations can use spill settings. Exceeding a configured
+partition, fan-out, output, or byte budget raises <code>BufferLimitError</code> and ends
+the query.</p>
 <h2 id="resource-ownership">Resource ownership</h2>
 <p>The executor closes the source iterator and resources it opens. Early
 termination, callback failure, cancellation, and terminal failure still enter
@@ -1412,6 +1414,8 @@ terminal cancels outstanding work before it returns or propagates an error.</p>
 Important boundaries include:</p>
 <ul>
 <li>record and container subclasses may override Python protocols;</li>
+<li>custom metaclasses may override class equality, so equality with <code>list</code> or
+  <code>int</code> cannot establish an exact builtin type;</li>
 <li>mapping lookup can invoke custom hash and equality code;</li>
 <li>a selector or aggregation callable can mutate live input;</li>
 <li>an iterator cannot be replayed after a speculative executor has pulled it;</li>

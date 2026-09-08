@@ -1151,10 +1151,12 @@ that every chain should use a native kernel.</p>
 Use <code>rows()</code> when you want an explicit relational view, record-specific I/O, or
 a method whose Flow spelling already has another meaning.</p>
 <h2 id="what-does-the-auto-engine-do">What does the <code>auto</code> engine do?</h2>
-<p><code>auto</code> chooses a legal Python, Rust, Arrow, NumPy, or hybrid path for the source,
+<p><code>auto</code> chooses a Python, Rust, Arrow, NumPy, or hybrid path based on the source,
 operations, and terminal. It falls back when an optimization cannot preserve
-Python behavior. Use <code>explain(terminal=...)</code> before execution or
-<code>run_with_report(...)</code> to inspect what actually ran.</p>
+Python behavior. Use <code>explain(terminal=...)</code> to inspect the plan.
+<a href="../user-guide/execution-reports/"><code>run_with_report(...)</code></a> adds the recorded
+terminal route and query-owned resource counts, though it does not identify
+every internal kernel or fallback.</p>
 <p>Forcing <code>native</code> is mainly useful for parity checks and diagnosis. It raises
 <code>NativeUnsupportedError</code> when the complete requested plan is unsupported.</p>
 <h2 id="why-are-from_csv-and-scan_csv-separate">Why are <code>from_csv()</code> and <code>scan_csv()</code> separate?</h2>
@@ -1168,10 +1170,9 @@ open handles, async iterators, Arrow readers, and imported Arrow C streams are
 one-shot. Use <code>flow.defer(factory)</code> or a documented opener function when each
 execution should acquire a fresh resource.</p>
 <h2 id="is-fpstreams-a-distributed-or-gpu-engine">Is fpstreams a distributed or GPU engine?</h2>
-<p>No. fpstreams is a local pipeline library. It can retain Arrow and NumPy data and
-use guarded Rust kernels, but it does not silently move work to a cluster or GPU.
-Use explicit interoperability boundaries when another system should own that
-execution.</p>
+<p>fpstreams executes locally using Python and supported Rust, Arrow, and NumPy
+paths. It has no distributed or GPU backend. Export data to another library
+when you need that execution model.</p>
 <h2 id="how-should-i-report-a-performance-problem">How should I report a performance problem?</h2>
 <p>Include the fpstreams and Python versions, CPU and operating system, input size,
 data types, key cardinality where relevant, the complete pipeline, and the

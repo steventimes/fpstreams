@@ -1155,9 +1155,9 @@
 
 
 <h1 id="fpstreams-v2">fpstreams v2</h1>
-<p>fpstreams builds typed, lazy data pipelines over ordinary Python iterables,
-retained tabular inputs, and async iterables. The v2 API has four construction
-namespaces; <code>flow</code> is the primary synchronous entry point:</p>
+<p>fpstreams lets you filter, transform, and aggregate data in lazy Python
+pipelines. Start with <code>flow()</code> for synchronous values and records, including
+supported Arrow tables and dataframes. Use <code>aflow()</code> for async work:</p>
 <table>
 <thead>
 <tr>
@@ -1176,7 +1176,7 @@ namespaces; <code>flow</code> is the primary synchronous entry point:</p>
 </tr>
 <tr>
 <td><code>rows(source)</code></td>
-<td>An explicit relational/compatibility view and record-specific data I/O</td>
+<td>Record operations, relational joins, and record-specific I/O</td>
 </tr>
 <tr>
 <td><code>pairs(source)</code></td>
@@ -1184,16 +1184,16 @@ namespaces; <code>flow</code> is the primary synchronous entry point:</p>
 </tr>
 </tbody>
 </table>
-<p>These docs target <code>2.1.0</code>.</p>
+<p>The examples use the <code>2.1</code> API. Sections marked unreleased describe changes
+available in the source tree that are not yet included in the PyPI release.</p>
 <p>The <a href="https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md">2.1 changelog</a>
 summarizes the new public APIs and execution changes.</p>
 <h2 id="installation">Installation</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fpstreams
 </code></pre></div>
-<p>Python 3.11 or newer is required. Standard CPython 3.11 through 3.14 is covered
-by release testing. Free-threaded CPython 3.14t currently has an experimental,
-non-blocking job that builds the extension on a 3.14t interpreter rather than
-producing release wheels. Optional integrations are installed separately:</p>
+<p>Python 3.11 or newer is required. Release testing covers standard CPython 3.11
+through 3.14. Free-threaded 3.14t support is experimental and has no release
+wheels. Install optional integrations as needed:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[async]&quot;</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[arrow]&quot;</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[data]&quot;</span>
@@ -1238,9 +1238,8 @@ Use <code>flow.defer(factory)</code> when every execution must open a fresh sour
 <p>Use a <code>Collector</code> when the result is a general container or reduction. Use an
 <code>Aggregator</code> for composable statistics, especially named and grouped aggregation.</p>
 <h2 id="work-with-records">Work with records</h2>
-<p><code>flow()</code> also starts record pipelines. String selectors address record fields,
-and <code>col()</code> builds row expressions without repetitive lambdas. Nonconflicting
-record methods enter a Rows view automatically.</p>
+<p>Use string selectors to read record fields and <code>col()</code> to build expressions.
+Methods such as <code>select()</code> and <code>group_by()</code> enter a Rows view from <code>flow()</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">col</span><span class="p">,</span> <span class="n">flow</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">orders</span> <span class="o">=</span> <span class="p">[</span>
@@ -1306,10 +1305,9 @@ when the corresponding adapter is used.</p>
 <p>Concurrency is bounded. On completion, short-circuit, timeout, or failure,
 fpstreams cancels outstanding tasks and closes the owned async iterator.</p>
 <h2 id="understand-execution">Understand execution</h2>
-<p>The default engine is <code>auto</code>. It selects a fused Python loop, a native Rust
-kernel, an Arrow-native prefix, or a hybrid plan based on the source,
-operations, and requested terminal. Relational plans can use guarded native
-subpaths while keeping their canonical fallback.</p>
+<p>The default engine, <code>auto</code>, selects Python, Rust, Arrow, NumPy, or a combination
+based on the source, operations, and terminal. It uses an optimized path only
+when that path can preserve the pipeline's Python behavior.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span><span class="p">,</span> <span class="n">item</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">pipeline</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
@@ -1326,8 +1324,8 @@ fall back or split the pipeline into stages.</p>
 they are not scanned and copied into Rust. An unchanged reiterable source with a
 known exact size can answer <code>count()</code> without opening the source.</p>
 <h2 id="keep-memory-bounded">Keep memory bounded</h2>
-<p>Most transformations stream values without materializing the source. Some
-operations inherently need retained state. v2 exposes bounded alternatives:</p>
+<p><code>map</code>, <code>filter</code>, and <code>take</code> stream values. Sorting, joins, and grouping need
+more state; use these options to limit their in-memory working set:</p>
 <ul>
 <li><code>external_sort(buffer_size=..., tempdir=...)</code> writes sorted runs to temporary files.</li>
 <li><code>Rows.join(..., partitions=..., tempdir=..., limits=...)</code> partitions large joins.</li>
@@ -1336,8 +1334,7 @@ operations inherently need retained state. v2 exposes bounded alternatives:</p>
 </ul>
 <p><code>SpillLimits</code> has finite defaults for partition rows and bytes, per-key matches,
 total output, and repartition depth. Highly skewed or expanding inputs can fail
-at those limits; “bounded” means bounded by configuration, not guaranteed
-completion. Temporary resources are cleaned up on normal completion, errors,
+at those limits. Temporary resources are cleaned up on normal completion, errors,
 limit failures, and early exit.</p>
 <p>CSV is written raw by default. Enable <code>spreadsheet_safe=True</code> for untrusted text
 that will be opened in spreadsheet software. JSONL input has an 8 MiB per-record

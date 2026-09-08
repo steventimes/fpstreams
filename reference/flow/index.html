@@ -3607,10 +3607,10 @@ terminal itself.</p>
 <p>An Arrow-capable plan reports its retained prefix and any guarded transition to
 Python rows in <code>arrow_prefix</code> and <code>boundaries</code>. Relational plans additionally
 report their selected tree and strategy in <code>relations</code>.</p>
-<p>Use <a href="../../user-guide/execution-reports/"><code>run_with_report()</code></a> when you need the
-strategy and query-owned resource measurements from an execution that actually
-ran. It returns the terminal value and its report without evaluating the source
-twice.</p>
+<p><a href="../../user-guide/execution-reports/"><code>run_with_report()</code></a> returns the terminal
+value, its recorded route, and query-owned resource counts in one execution.
+The report covers the outer plan and some direct paths; internal kernels and
+fallbacks are not all recorded.</p>
 <p>An identity list or tuple remains in Python under <code>auto</code> when a terminal would
 otherwise scan and copy it. An identity range can still use native numeric
 reduction. Exact-size <code>count()</code> is O(1) only for an unchanged, safely reiterable
@@ -4276,27 +4276,9 @@ as text.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An empty dictionary for an empty flow; otherwise <code>count</code> plus numeric <code>sum</code>, <code>min</code>,</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | <span title="float">float</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>max</code>, and <code>mean</code> when real values occur. Mixed input also includes</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span> | <span title="float">float</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>numeric_count</code>, and two or more numeric values add sample <code>std</code>.</p>
+                <p>A dictionary containing <code>count</code>, or <code>{}</code> for an empty flow. Real-valued items
+add <code>sum</code>, <code>min</code>, <code>max</code>, and <code>mean</code>. Mixed input also adds <code>numeric_count</code>;
+two or more numeric items add sample standard deviation as <code>std</code>.</p>
               </div>
             </td>
           </tr>
@@ -4719,28 +4701,28 @@ relational join.</p>
     <table>
       <thead>
         <tr>
-          <th>Type</th>
+<th>Name</th>          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-            <td>
+<td><code>success_values</code></td>            <td>
                   <code><span title="list">list</span>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(success_values, exceptions)</code>, with <code>Ok</code> and <code>Err</code> payloads unwrapped in their</p>
+                <p>Unwrapped <code>Ok</code> values in encounter order.</p>
               </div>
             </td>
           </tr>
           <tr class="doc-section-item">
-            <td>
+<td><code>exceptions</code></td>            <td>
                   <code><span title="list">list</span>[<span title="Exception">Exception</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>respective encounter orders.</p>
+                <p>Exceptions stored by <code>Err</code>, in encounter order.</p>
               </div>
             </td>
           </tr>
@@ -7398,17 +7380,8 @@ the flow.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of mapped values; current plan-level parallel settings, if any, apply to this</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.R">R</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>map.</p>
+                <p>A lazy flow of mapped values. Any parallel settings on the current plan
+apply to this map.</p>
               </div>
             </td>
           </tr>
@@ -8048,17 +8021,8 @@ value is checked for <code>None</code>; without one, each item is checked direct
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow that omits items whose selected value is <code>None</code> while retaining other falsey</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>values.</p>
+                <p>A flow excluding items whose own or selected value is <code>None</code>. Other falsey
+values, such as <code>0</code> and <code>False</code>, are kept.</p>
               </div>
             </td>
           </tr>
@@ -9185,17 +9149,8 @@ singleton batch.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of non-empty tuples packed without exceeding either configured limit, except</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.flow.T">T</span>, ...]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>for non-strict oversized singleton items.</p>
+                <p>A flow of non-empty tuple batches within the size and count limits. With
+<code>strict=False</code>, an item larger than <code>max_size</code> is emitted in its own batch.</p>
               </div>
             </td>
           </tr>
@@ -9285,17 +9240,8 @@ singleton batch.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of full sliding windows; a non-empty source shorter than <code>size</code> produces one</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="tuple">tuple</span>[<span title="fpstreams.streams.flow.T">T</span>, ...]]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>partial window, but no trailing partial window is emitted otherwise.</p>
+                <p>A flow of full sliding windows. A non-empty source shorter than <code>size</code>
+produces one partial window; otherwise, partial trailing windows are omitted.</p>
               </div>
             </td>
           </tr>
@@ -11949,17 +11895,8 @@ lengths.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow beginning with the first item whose predicate result is falsey; later items are</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>emitted without further predicate calls.</p>
+                <p>A flow starting with the first item for which <code>predicate</code> is falsey.
+Remaining items pass through without further predicate calls.</p>
               </div>
             </td>
           </tr>

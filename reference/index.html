@@ -1070,8 +1070,7 @@
 <h1 id="api-index">API index</h1>
 <p>Use this page to find an operation by task. Detailed signatures, parameter
 defaults, return types, and exceptions are rendered on the linked class pages.
-The leftmost name in each row is the canonical spelling; aliases are listed
-separately so search results do not imply several different behaviors.</p>
+The final table lists aliases alongside their canonical names.</p>
 <h2 id="construct-a-pipeline">Construct a pipeline</h2>
 <table>
 <thead>
@@ -1297,8 +1296,7 @@ separately so search results do not imply several different behaviors.</p>
 </tbody>
 </table>
 <p>Terminals that require an element document their empty-input policy. Statistical
-terminals return <code>None</code> where the statistic is undefined rather than inventing a
-value.</p>
+terminals return <code>None</code> where the statistic is undefined.</p>
 <h2 id="work-with-records">Work with records</h2>
 <table>
 <thead>
@@ -1345,8 +1343,8 @@ value.</p>
 <td><code>to_list</code>, <code>to_columns</code>, <code>first</code>, <code>last</code>, <code>count</code></td>
 </tr>
 <tr>
-<td>Flow view and planning</td>
-<td><code>to_flow</code>, <code>explain</code></td>
+<td>Flow view and observation</td>
+<td><code>to_flow</code>, <code>explain</code>, <code>run_with_report</code></td>
 </tr>
 <tr>
 <td>NumPy/Arrow/dataframes</td>
@@ -1425,6 +1423,10 @@ proof.</p>
 <td>Terminal</td>
 <td><code>to_dict</code></td>
 </tr>
+<tr>
+<td>Execution report</td>
+<td><code>run_with_report</code></td>
+</tr>
 </tbody>
 </table>
 <p>See <a href="pairs/">Pairs</a>.</p>
@@ -1454,12 +1456,16 @@ async-only groups are:</p>
 <td><code>delay</code>, <code>interval</code>, <code>spaceout</code>, <code>throttle</code>, <code>debounce</code>, <code>timeout</code></td>
 </tr>
 <tr>
-<td>Time-bounded buffers</td>
-<td><code>batch_timeout</code>, <code>buffer_timeout</code></td>
+<td>Time and session buffers</td>
+<td><code>batch_timeout</code>, <code>buffer_timeout</code>, <code>session_window</code></td>
+</tr>
+<tr>
+<td>Pull-ahead buffering</td>
+<td><code>prefetch</code></td>
 </tr>
 <tr>
 <td>External sources</td>
-<td><code>from_file</code>, <code>paginate</code></td>
+<td><code>from_queue</code>, <code>from_file</code>, <code>paginate</code></td>
 </tr>
 </tbody>
 </table>
@@ -1491,8 +1497,8 @@ method on <a href="async_flow/">AsyncFlow</a>.</p>
 <td>Embed a literal in a row expression</td>
 </tr>
 <tr>
-<td><code>when(condition, value)</code></td>
-<td>Conditional row expression builder</td>
+<td><code>when(condition, then, otherwise=None)</code></td>
+<td>Choose a value; the false branch defaults to <code>None</code></td>
 </tr>
 <tr>
 <td><code>coalesce(*values)</code></td>
@@ -1554,15 +1560,15 @@ name in the left column.</p>
 <tbody>
 <tr>
 <td><code>take</code></td>
-<td><code>limit</code>, <code>head</code> (Rows)</td>
+<td>Flow: <code>limit</code>; Rows: <code>limit</code>, <code>head</code></td>
 </tr>
 <tr>
-<td><code>drop</code></td>
-<td><code>skip</code>, <code>offset</code> (Rows)</td>
+<td><code>Flow.drop</code> / <code>Rows.skip</code></td>
+<td>Flow: <code>skip</code>; Rows: <code>offset</code></td>
 </tr>
 <tr>
 <td><code>filter</code></td>
-<td><code>where</code>; <code>reject</code> negates the predicate</td>
+<td>Flow: <code>where</code>; Rows: <code>where</code> also accepts field equalities</td>
 </tr>
 <tr>
 <td><code>unique</code> / <code>unique_by</code></td>
@@ -1606,8 +1612,8 @@ name in the left column.</p>
 </tr>
 </tbody>
 </table>
-<p>Aliases have the same execution semantics unless their signature explicitly
-narrows the canonical method.</p>
+<p><code>Rows.drop(*columns)</code> removes fields; use <code>Rows.skip(count)</code> to skip records.
+<code>reject</code> negates a predicate and is listed with filtering operations above.</p>
 
 
 

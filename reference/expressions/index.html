@@ -1467,6 +1467,18 @@ equalities.</p>
 <p>Row-expression methods such as <code>cast()</code>, <code>isin()</code>, <code>fill_null()</code>, <code>lower()</code>, and
 <code>contains()</code> return new expressions; they do not read rows immediately.</p>
 <h2 id="scalar-expressions">Scalar expressions</h2>
+<p><code>fitem</code> accepts exact <code>int</code> and <code>float</code> constants and converts them to a float
+when the expression is built. Booleans, numeric subclasses, and objects with
+custom conversion methods are rejected. Use a callable when you need those
+objects' Python behavior.</p>
+<p>The working tree fixes a signed-zero error: <code>FExpr.constant(-0.0)</code> keeps its
+negative sign, including after a positive-zero expression has populated the cache.</p>
+<p>It also fixes cache collisions between numerically equal constants of different
+types. For example, <code>FExpr("const", value=9007199254740993)</code> keeps that integer
+result even if a float expression ran first. Directly constructed expressions
+with nonstandard operand types use Python in <code>auto</code> mode; forcing <code>native</code>
+raises <code>NativeUnsupportedError</code>. The accepted inputs to <code>item</code>, <code>fitem</code>, and
+their constant factories are unchanged. These fixes are not in 2.1.0.</p>
 
 
 <div class="doc doc-object doc-class">
