@@ -71,7 +71,7 @@ class Collector(Generic[T, S, R]):
         return self.finish(state)
 
 
-class _LifecycleSlot:
+class _LifecycleSlot(property):
     """Increment a private revision when an explicit lifecycle slot is replaced.
 
     Normal assignment remains rejected by the frozen dataclass. ``object.__setattr__`` is
@@ -85,11 +85,8 @@ class _LifecycleSlot:
     def __init__(self, slot: Any, revision: Any) -> None:
         self._slot = slot
         self._revision = revision
-
-    def __get__(self, instance: object | None, owner: type[object] | None = None) -> Any:
-        if instance is None:
-            return self
-        return self._slot.__get__(instance, owner)
+        # property calls the original C slot getter without a Python read wrapper.
+        super().__init__(slot.__get__, doc=type(self).__doc__)
 
     def __set__(self, instance: object, value: Any) -> None:
         self._slot.__set__(instance, value)
@@ -98,6 +95,9 @@ class _LifecycleSlot:
         except AttributeError:
             revision = 0
         self._revision.__set__(instance, revision + 1)
+
+    def __delete__(self, instance: object) -> None:
+        raise AttributeError("__delete__")
 
 
 # Dataclass initialization and explicit ``object.__setattr__`` both use these descriptors. The

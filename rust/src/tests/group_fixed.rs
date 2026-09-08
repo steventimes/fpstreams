@@ -3,6 +3,164 @@
 use super::*;
 
 #[test]
+fn two_key_count_sum_retains_component_identity_order_and_widened_totals() {
+    Python::initialize();
+    Python::attach(|py| {
+        let first = pyo3::types::PyInt::new(py, 1_000_i64);
+        let equal = pyo3::types::PyInt::new(py, 1_000_i64);
+        let second = pyo3::types::PyInt::new(py, 2_000_i64);
+        let equal_second = pyo3::types::PyInt::new(py, 2_000_i64);
+        assert!(!first.is(&equal));
+        assert!(!second.is(&equal_second));
+        let row_a = PyTuple::new(
+            py,
+            [
+                first.as_any(),
+                second.as_any(),
+                pyo3::types::PyInt::new(py, i64::MAX).as_any(),
+            ],
+        )
+        .unwrap();
+        let row_b = PyTuple::new(py, [1_001_i64, 2_000, -5]).unwrap();
+        let row_c = PyTuple::new(
+            py,
+            [
+                equal.as_any(),
+                equal_second.as_any(),
+                pyo3::types::PyInt::new(py, 1).as_any(),
+            ],
+        )
+        .unwrap();
+        let row_d = PyTuple::new(py, [1_000_i64, 2_001, 7]).unwrap();
+        let names = PyTuple::new(py, ["first", "second", "count", "total"]).unwrap();
+        for source in [
+            PyList::new(py, [&row_a, &row_b, &row_c, &row_d])
+                .unwrap()
+                .into_any(),
+            PyTuple::new(py, [&row_a, &row_b, &row_c, &row_d])
+                .unwrap()
+                .into_any(),
+        ] {
+            for indices in [[0, 1, 2], [-3, -2, -1]] {
+                let indices = PyTuple::new(py, indices).unwrap();
+                let result =
+                    group_count_sum_i64_two_key_rows_v1(&source, indices.as_any(), names.as_any())
+                        .unwrap()
+                        .unwrap();
+                let result = result.bind(py);
+                assert_eq!(result.len(), 3);
+                let first_result = result.get_item(0).unwrap().cast_into::<PyDict>().unwrap();
+                assert!(first_result.get_item("first").unwrap().unwrap().is(&first));
+                assert!(
+                    first_result
+                        .get_item("second")
+                        .unwrap()
+                        .unwrap()
+                        .is(&second)
+                );
+                assert_eq!(
+                    first_result
+                        .get_item("count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    first_result
+                        .get_item("total")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i128>()
+                        .unwrap(),
+                    i128::from(i64::MAX) + 1
+                );
+                let second_result = result.get_item(1).unwrap().cast_into::<PyDict>().unwrap();
+                assert_eq!(
+                    second_result
+                        .get_item("first")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    1_001
+                );
+                assert_eq!(
+                    second_result
+                        .get_item("total")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    -5
+                );
+                let third_result = result.get_item(2).unwrap().cast_into::<PyDict>().unwrap();
+                assert_eq!(
+                    third_result
+                        .get_item("second")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    2_001
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn two_key_count_sum_declines_unsupported_protocols_without_calling_them() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixtures = PyModule::from_code(py, c"\nclass Trap:\n    def __index__(self): raise AssertionError('index')\n    def __iter__(self): raise AssertionError('iter')\n    def __getitem__(self, key): raise AssertionError('getitem')\nclass Text(str):\n    def __hash__(self): raise AssertionError('hash')\ntrap = Trap()\ninputs = [trap, [trap], [(1, 2, 3), trap], [(trap, 2, 3)], [(1, trap, 3)], [(1, 2, trap)], [(True, 2, 3)], [(1, 2, 2**63)], [(1, 2, 3), (1,)]]\nnames = (Text('first'), 'second', 'count', 'total')\n", c"two_key_fixtures.py", c"two_key_fixtures").unwrap();
+        let indices = PyTuple::new(py, [0, 1, 2]).unwrap();
+        let names = PyTuple::new(py, ["first", "second", "count", "total"]).unwrap();
+        for source in fixtures.getattr("inputs").unwrap().try_iter().unwrap() {
+            assert!(
+                group_count_sum_i64_two_key_rows_v1(
+                    &source.unwrap(),
+                    indices.as_any(),
+                    names.as_any()
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        let source = PyList::new(py, [(1_i64, 2_i64, 3_i64)]).unwrap();
+        assert!(
+            group_count_sum_i64_two_key_rows_v1(
+                source.as_any(),
+                indices.as_any(),
+                &fixtures.getattr("names").unwrap()
+            )
+            .unwrap()
+            .is_none()
+        );
+        let trap = fixtures.getattr("trap").unwrap();
+        let bad_indices = PyTuple::new(
+            py,
+            [
+                trap.as_any(),
+                pyo3::types::PyInt::new(py, 1).as_any(),
+                pyo3::types::PyInt::new(py, 2).as_any(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            group_count_sum_i64_two_key_rows_v1(
+                source.as_any(),
+                bad_indices.as_any(),
+                names.as_any()
+            )
+            .unwrap()
+            .is_none()
+        );
+    });
+}
+
+#[test]
 fn fixed_tuple_group_returns_count_pairs_and_count_sum_triples_with_identity_and_order() {
     Python::initialize();
     Python::attach(|py| {

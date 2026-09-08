@@ -5,26 +5,32 @@ from __future__ import annotations
 import csv
 import fnmatch
 import gc
-import hashlib
 import json
 import math
 import operator
-import platform
 import statistics
+import struct
 import time
 from array import array as python_array
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from functools import partial
 from itertools import islice, takewhile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from typing import Any, Literal, TypedDict, cast
 
 import fpstreams
 from fpstreams import item
+
+from .evidence import (
+    REPORT_SCHEMA_VERSION,
+    BenchmarkEvidence,
+    measure_python_allocation,
+    observe_task,
+)
 
 try:
     from itertools import batched
@@ -45,28 +51,7 @@ Task = Callable[[], object]
 Normalizer = Callable[[object], object]
 Equality = Callable[[object, object], bool]
 _MIN_MEANINGFUL_DELTA_RATIO = 0.02
-
-
-def _file_sha256(path: Path) -> str:
-    """Fingerprint benchmark code or a loaded extension for artifact provenance."""
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def _python_package_sha256(root: Path) -> str:
-    """Fingerprint importable Python sources and type metadata in stable path order."""
-    digest = hashlib.sha256()
-    paths = sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and (path.suffix in {".py", ".pyi"} or path.name == "py.typed")
-    )
-    for path in paths:
-        digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+_SAMPLE_WARMUP_SECONDS = 0.001
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +62,7 @@ class CaseSpec:
     api: str
     scope: Literal["compute-only", "end-to-end"] = "compute-only"
     quick: bool = False
+    engine: Literal["auto", "python", "native"] = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +190,25 @@ _CASE_SPECS = (
         "terminal.frequencies.high_cardinality",
         "Flow.frequencies() [high cardinality]",
     ),
+    *(
+        CaseSpec(
+            f"terminal.frequencies.{kind}.{cardinality}",
+            f"Flow.frequencies() [{kind}, {cardinality.replace('_', ' ')}]",
+        )
+        for kind in ("str", "big_int", "float")
+        for cardinality in ("low_cardinality", "high_cardinality")
+    ),
+    CaseSpec("terminal.frequencies.str.skewed", "Flow.frequencies() [str, 90% repeated key]"),
+    *(
+        CaseSpec(
+            f"terminal.numpy.{kind}frequencies.{selection}{cardinality}",
+            f"Flow.from_numpy(1D {dtype}).frequencies({argument}) "
+            f"[{cardinality.replace('_', ' ')}]",
+        )
+        for kind, dtype in (("", "int64"), ("float.", "float64"))
+        for selection, argument in (("", ""), ("key.", "callable key"))
+        for cardinality in ("low_cardinality", "high_cardinality")
+    ),
     CaseSpec(
         "rows.numpy.identity",
         "Rows.from_numpy(2D int64).to_list() [preconstructed input]",
@@ -235,6 +240,19 @@ _CASE_SPECS = (
     ),
     CaseSpec("rows.filter", "Rows.filter(...).to_list()", quick=True),
     CaseSpec("rows.select", "Rows.select(...).to_list()", quick=True),
+    CaseSpec("rows.select.python", "Rows.select(...).to_list() [Python]", engine="python"),
+    CaseSpec("rows.select.mapping", "Rows.select(...).to_list() [MappingProxyType]"),
+    CaseSpec("rows.select.arrow", "Rows.from_arrow(...).select(...).to_list()"),
+    CaseSpec("rows.select.expression", "Rows.select('id', score=col('value') + 1).to_list()"),
+    CaseSpec("rows.with_columns.field", "Rows.with_columns(next_value='value').to_list()"),
+    CaseSpec(
+        "rows.with_columns.field.mapping",
+        "Rows.with_columns(next_value='value').to_list() [MappingProxyType]",
+    ),
+    CaseSpec(
+        "rows.with_columns.numpy",
+        "Rows.from_numpy(...).with_columns(next_value=col('value') + 1).to_list()",
+    ),
     CaseSpec(
         "rows.with_columns.expression",
         "Rows.with_columns(next_value=col('value') + 1) [expression]",
@@ -250,6 +268,9 @@ _CASE_SPECS = (
     CaseSpec("rows.unnest", "Rows.unnest(...).to_list()"),
     CaseSpec("rows.unpivot", "Rows.unpivot(...).to_list()"),
     CaseSpec("rows.pivot", "Rows.pivot(...).to_list()"),
+    CaseSpec("rows.pivot.python", "Rows.pivot(...).to_list() [Python]", engine="python"),
+    CaseSpec("rows.pivot.mapping", "Rows.pivot(...).to_list() [mappingproxy records]"),
+    CaseSpec("rows.pivot.callable", "Rows.pivot(...).to_list() [callable column selector]"),
     CaseSpec("rows.sort", "Rows.sort_by(...).to_list()"),
     CaseSpec(
         "rows.aggregate.multi",
@@ -271,6 +292,66 @@ _CASE_SPECS = (
         "Rows.group_by(callable).aggregate(sum(callable)) [nominal Mapping, up to 30k groups]",
     ),
     CaseSpec(
+        "rows.group_sum.python.dict_fields.low_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, dict, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.dict_fields.high_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, dict, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.dict_done.low_cardinality",
+        "Rows.group_by('key').aggregate(custom sum) [Python, done predicate, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.dict_done.high_cardinality",
+        "Rows.group_by('key').aggregate(custom sum) [Python, done predicate, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.dict_callable.low_cardinality",
+        "Rows.group_by(callable).aggregate(sum(callable)) [Python, dict, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.dict_callable.high_cardinality",
+        "Rows.group_by(callable).aggregate(sum(callable)) [Python, dict, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.mapping_fields.low_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, Mapping, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.mapping_fields.high_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, Mapping, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.proxy_fields.low_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, mappingproxy, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_sum.python.proxy_fields.high_cardinality",
+        "Rows.group_by('key').aggregate(sum('value')) [Python, mappingproxy, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_first.python.dict_fields.low_cardinality",
+        "Rows.group_by('key').aggregate(first('value')) [Python, repeated keys]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.group_first.python.dict_fields.high_cardinality",
+        "Rows.group_by('key').aggregate(first('value')) [Python, distinct keys]",
+        engine="python",
+    ),
+    CaseSpec(
         "rows.join.inner.unique",
         "Rows.join(..., how='inner') [m:1]",
         quick=True,
@@ -284,6 +365,96 @@ _CASE_SPECS = (
     CaseSpec(
         "rows.join.inner.many.mapping_callable",
         "Rows.join(..., callable keys) [nominal Mapping, m:m]",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.python.dict_fields",
+        "Rows.join(..., how='inner') [Python, dict, field keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.python.dict_callable",
+        "Rows.join(..., how='inner') [Python, dict, callable keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.python.mapping_fields",
+        "Rows.join(..., how='inner') [Python, Mapping, field keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.python.mapping_callable",
+        "Rows.join(..., how='inner') [Python, Mapping, callable keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.python.dict_fields",
+        "Rows.join(..., how='left') [Python, dict, field keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.python.dict_callable",
+        "Rows.join(..., how='left') [Python, dict, callable keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.python.mapping_fields",
+        "Rows.join(..., how='left') [Python, Mapping, field keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.python.mapping_callable",
+        "Rows.join(..., how='left') [Python, Mapping, callable keys, m:1]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.python.dict_fields",
+        "Rows.join(..., how='inner') [Python, dict, field keys, m:m]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.python.dict_callable",
+        "Rows.join(..., how='inner') [Python, dict, callable keys, m:m]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.python.mapping_fields",
+        "Rows.join(..., how='inner') [Python, Mapping, field keys, m:m]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.python.mapping_callable",
+        "Rows.join(..., how='inner') [Python, Mapping, callable keys, m:m]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.width8.python.dict_fields",
+        "Rows.join(..., how='inner') [Python, dict, field keys, 8 left fields]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.unique.width32.python.dict_fields",
+        "Rows.join(..., how='inner') [Python, dict, field keys, 32 left fields]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.width8.python.dict_callable",
+        "Rows.join(..., how='left') [Python, dict, callable keys, 8 left fields]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.left.unique.width32.python.dict_callable",
+        "Rows.join(..., how='left') [Python, dict, callable keys, 32 left fields]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.width8.python.mapping_fields",
+        "Rows.join(..., how='inner') [Python, Mapping, field keys, 8 left fields]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.join.inner.many.width32.python.mapping_fields",
+        "Rows.join(..., how='inner') [Python, Mapping, field keys, 32 left fields]",
+        engine="python",
     ),
     CaseSpec(
         "pairs.map_values.half_cardinality",
@@ -322,6 +493,10 @@ _CASE_SPECS = (
     CaseSpec(
         "pairs.aggregate_values.high_cardinality",
         "Pairs.aggregate_values(sum=agg.sum()) [high cardinality]",
+    ),
+    CaseSpec("io.arrow.csv.select", "Rows.scan_csv(...).select(...).to_list()", "end-to-end"),
+    CaseSpec(
+        "io.arrow.parquet.select", "Rows.from_parquet(...).select(...).to_list()", "end-to-end"
     ),
     CaseSpec("io.csv.read", "Rows.from_csv(...).to_list()", "end-to-end", quick=True),
     CaseSpec(
@@ -810,9 +985,75 @@ def _flow_case(  # noqa: C901
     )
 
 
+def _frequency_outputs_equal(left: object, right: object) -> bool:
+    """Compare ordered counts, preserving scalar types, signed zero, and distinct NaNs."""
+    if type(left) is not dict or type(right) is not dict or len(left) != len(right):
+        return False
+    for (left_key, left_count), (right_key, right_count) in zip(
+        left.items(), right.items(), strict=True
+    ):
+        if type(left_key) is not type(right_key):
+            return False
+        if type(left_count) is not int or type(right_count) is not int or left_count != right_count:
+            return False
+        if type(left_key) is float:
+            # Independent runs box distinct NaNs. Compare each entry without merging them.
+            if struct.pack("!d", left_key) != struct.pack("!d", right_key):
+                return False
+        elif left_key != right_key:
+            return False
+    return True
+
+
+def _numpy_frequency_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
+    """Count prepared arrays, retaining first-key order in every complete output."""
+    cardinality = max(1, size if spec.case_id.endswith("high_cardinality") else min(16, size))
+    has_key = ".key." in spec.case_id
+    floating = ".float." in spec.case_id
+    array = np.arange(size - 1, -1, -1, dtype=np.float64 if floating else np.int64)
+    if not has_key:
+        array = array % cardinality
+    if floating:
+        array = array + 0.5
+    series = pd.Series(array, copy=False)
+
+    def select(value: Any) -> Any:
+        return value % cardinality
+
+    source = fpstreams.flow.from_numpy(array).with_engine(spec.engine)
+    candidate = partial(source.frequencies, select) if has_key else source.frequencies
+
+    def python_frequencies() -> dict[Any, int]:
+        values = array.tolist()
+        return dict(Counter(map(select, values) if has_key else values))
+
+    def numpy_frequencies() -> dict[Any, int]:
+        selected = array % cardinality if has_key else array
+        keys, first, counts = np.unique(selected, return_index=True, return_counts=True)
+        order = np.argsort(first)
+        return dict(zip(keys[order].tolist(), counts[order].tolist(), strict=True))
+
+    def pandas_frequencies() -> dict[Any, int]:
+        selected = series.mod(cardinality) if has_key else series
+        return selected.value_counts(sort=False).to_dict()
+
+    return CompetitiveCase(
+        spec,
+        _implementation("fpstreams", candidate),
+        (
+            _implementation("python", python_frequencies),
+            _implementation("numpy", numpy_frequencies),
+            _implementation("pandas", pandas_frequencies),
+        ),
+        _frequency_outputs_equal,
+    )
+
+
 def _terminal_case(  # noqa: C901
     spec: CaseSpec, size: int, np: Any, pd: Any
 ) -> CompetitiveCase:
+    if spec.case_id.startswith("terminal.numpy.") and ".frequencies." in spec.case_id:
+        return _numpy_frequency_case(spec, size, np, pd)
     values = list(range(size))
     array = np.arange(size, dtype=np.int64)
     series = pd.Series(array, copy=False)
@@ -1017,31 +1258,36 @@ def _terminal_case(  # noqa: C901
                 _implementation("pandas", lambda: series.ge(0).all(), bool),
             )
             equal = operator.eq
-        case "terminal.frequencies.low_cardinality" | "terminal.frequencies.high_cardinality":
+        case _ if spec.case_id.startswith("terminal.frequencies."):
             cardinality = (
                 size if spec.case_id.endswith("high_cardinality") else max(1, min(16, size))
             )
             repeated = [value % cardinality for value in values]
-            repeated_array = np.asarray(repeated, dtype=np.int64)
+            if ".str." in spec.case_id:
+                repeated = [f"key-{value:08x}" for value in repeated]
+                if spec.case_id.endswith("skewed"):
+                    repeated = [
+                        f"key-{value:08x}" if value % 10 == 0 else "common" for value in values
+                    ]
+            elif ".big_int." in spec.case_id:
+                repeated = [(1 << 80) + value for value in repeated]
+            elif ".float." in spec.case_id:
+                repeated = [value + 0.5 for value in repeated]
+            dtype = object if ".big_int." in spec.case_id else None
+            repeated_array = np.asarray(repeated, dtype=dtype)
             repeated_series = pd.Series(repeated_array, copy=False)
             candidate = fpstreams.flow(repeated).frequencies
+
+            def numpy_frequencies() -> dict[Any, int]:
+                keys, counts = np.unique(repeated_array, return_counts=True)
+                return dict(zip(keys.tolist(), counts.tolist(), strict=True))
+
             references = (
                 _implementation("python", lambda: dict(Counter(repeated))),
-                _implementation(
-                    "numpy",
-                    lambda: {
-                        int(key): int(count)
-                        for key, count in zip(
-                            *np.unique(repeated_array, return_counts=True), strict=True
-                        )
-                    },
-                ),
+                _implementation("numpy", numpy_frequencies),
                 _implementation(
                     "pandas",
-                    lambda: {
-                        int(key): int(count)
-                        for key, count in repeated_series.value_counts(sort=False).items()
-                    },
+                    lambda: repeated_series.value_counts(sort=False).to_dict(),
                 ),
             )
             equal = operator.eq
@@ -1365,16 +1611,58 @@ def _rows_case(  # noqa: C901
                     lambda: frame.loc[frame["value"] % 2 == 0].to_dict("records"),
                 ),
             )
-        case "rows.select":
-            candidate = rows.select("id", "value").to_list
+        case "rows.select" | "rows.select.python" | "rows.select.mapping" | "rows.select.arrow":
+            if spec.case_id.endswith("mapping"):
+                rows = fpstreams.rows([MappingProxyType(record) for record in records])
+            elif spec.case_id.endswith("arrow"):
+                import pyarrow as pa
+
+                rows = fpstreams.Rows.from_arrow(pa.Table.from_pylist(records))
+            candidate = rows.with_engine(spec.engine).select("id", "value").to_list
             references = (
                 _implementation(
                     "python", lambda: [{"id": row["id"], "value": row["value"]} for row in records]
                 ),
                 _implementation("pandas", lambda: frame.loc[:, ["id", "value"]].to_dict("records")),
             )
-        case "rows.with_columns.expression" | "rows.with_columns.callable":
-            if spec.case_id.endswith("expression"):
+        case "rows.select.expression":
+            candidate = rows.select("id", score=fpstreams.col("value") + 1).to_list
+            references = (
+                _implementation(
+                    "python",
+                    lambda: [{"id": row["id"], "score": row["value"] + 1} for row in records],
+                ),
+                _implementation(
+                    "pandas",
+                    lambda: frame.assign(score=frame["value"] + 1)[["id", "score"]].to_dict(
+                        "records"
+                    ),
+                ),
+            )
+        case "rows.with_columns.field" | "rows.with_columns.field.mapping":
+            if spec.case_id.endswith("mapping"):
+                rows = fpstreams.rows([MappingProxyType(record) for record in records])
+            candidate = rows.with_columns(next_value="value").to_list
+            references = (
+                _implementation(
+                    "python", lambda: [{**row, "next_value": row["value"]} for row in records]
+                ),
+                _implementation(
+                    "pandas", lambda: frame.assign(next_value=frame["value"]).to_dict("records")
+                ),
+            )
+        case (
+            "rows.with_columns.expression"
+            | "rows.with_columns.callable"
+            | "rows.with_columns.numpy"
+        ):
+            if spec.case_id.endswith("numpy"):
+                records = [{"id": row["id"], "value": row["value"]} for row in records]
+                frame = frame[["id", "value"]]
+                rows = fpstreams.Rows.from_numpy(
+                    frame.to_numpy(dtype="int64"), columns=["id", "value"]
+                )
+            if not spec.case_id.endswith("callable"):
                 next_value = fpstreams.col("value") + 1
 
                 def python_with_column() -> list[dict[str, Any]]:
@@ -1496,15 +1784,27 @@ def _rows_case(  # noqa: C901
                 ),
                 _implementation("pandas", pandas_unpivot),
             )
-        case "rows.pivot":
+        case "rows.pivot" | "rows.pivot.python" | "rows.pivot.mapping" | "rows.pivot.callable":
             long = [
                 {"group": index, "name": name, "amount": index * multiplier}
                 for index in range(max(1, size // 2))
                 for name, multiplier in (("left", 1), ("right", 2))
             ]
             long_frame = pd.DataFrame(long)
+            pivot_rows = (
+                [MappingProxyType(record) for record in long]
+                if spec.case_id == "rows.pivot.mapping"
+                else long
+            )
+            pivot_column: fpstreams.Selector = (
+                (lambda row: row["name"]) if spec.case_id == "rows.pivot.callable" else "name"
+            )
             candidate = (
-                fpstreams.rows(long).pivot(index="group", columns="name", values="amount").to_list
+                fpstreams.rows(pivot_rows)
+                .with_engine(spec.engine)
+                .pivot(index="group", columns=pivot_column, values="amount")
+                .with_engine(spec.engine)
+                .to_list
             )
 
             def python_pivot() -> object:
@@ -1620,13 +1920,19 @@ def _rows_case(  # noqa: C901
 
 
 def _group_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
-    cardinality = (
-        size if spec.case_id == "rows.group_sum.high_cardinality" else max(1, min(16, size))
-    )
+    cardinality = size if spec.case_id.endswith(".high_cardinality") else max(1, min(16, size))
     mapping_callable = spec.case_id.endswith(".mapping_callable")
+    dict_records = ".dict_" in spec.case_id
+    mapping_records = ".mapping_fields." in spec.case_id
+    proxy_records = ".proxy_fields." in spec.case_id
+    callable_selectors = mapping_callable or ".dict_callable." in spec.case_id
     if mapping_callable:
         cardinality = max(1, min(size, 30_000))
-        records = [_NominalRecord(key=index % cardinality, value=index) for index in range(size)]
+    if mapping_callable or dict_records or mapping_records or proxy_records:
+        record_type = _NominalRecord if mapping_callable or mapping_records else dict
+        records = [record_type(key=index % cardinality, value=index) for index in range(size)]
+        if proxy_records:
+            records = [MappingProxyType(record) for record in records]
         keys = np.asarray([row["key"] for row in records], dtype=np.int64)
         values = np.asarray([row["value"] for row in records], dtype=np.int64)
 
@@ -1636,16 +1942,31 @@ def _group_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
         def select_value(row: Mapping[str, Any]) -> Any:
             return row["value"]
 
+        aggregation = fpstreams.agg.sum(select_value if callable_selectors else "value")
+        if ".dict_done." in spec.case_id:
+            # A nonbinding budget keeps outputs equivalent while exercising live done calls.
+            limit = size * size
+            aggregation = fpstreams.Aggregator(
+                lambda: 0,
+                lambda total, row: total + row["value"],
+                done=lambda total: total >= limit,
+            )
         grouped = (
             fpstreams.rows(records)
-            .group_by(key=select_key)
-            .aggregate(total=fpstreams.agg.sum(select_value))
+            .with_engine(spec.engine)
+            .group_by(key=select_key if callable_selectors else "key")
+            .aggregate(total=aggregation)
         )
     else:
         records = [(index % cardinality, index) for index in range(size)]
         keys = np.asarray([key for key, _value in records], dtype=np.int64)
         values = np.asarray([value for _key, value in records], dtype=np.int64)
-        grouped = fpstreams.rows(records).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
+        grouped = (
+            fpstreams.rows(records)
+            .with_engine(spec.engine)
+            .group_by(key=0)
+            .aggregate(total=fpstreams.agg.sum(1))
+        )
     frame = pd.DataFrame({"key": keys, "value": values})
 
     def fpstreams_group() -> object:
@@ -1654,8 +1975,10 @@ def _group_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
     def python_group() -> object:
         totals: dict[int, int] = {}
         for row in records:
-            if mapping_callable:
+            if callable_selectors:
                 key, value = select_key(row), select_value(row)
+            elif dict_records or mapping_records or proxy_records:
+                key, value = row["key"], row["value"]
             else:
                 key, value = row
             totals[key] = totals.get(key, 0) + value
@@ -1689,16 +2012,82 @@ def _group_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
     )
 
 
+def _group_first_case(spec: CaseSpec, size: int, np: Any, pd: Any) -> CompetitiveCase:
+    """Consume every key while selecting a value only for a newly encountered group."""
+    cardinality = size if spec.case_id.endswith(".high_cardinality") else max(1, min(16, size))
+    records = [{"key": index % cardinality, "value": index} for index in range(size)]
+    keys = np.asarray([row["key"] for row in records], dtype=np.int64)
+    values = np.asarray([row["value"] for row in records], dtype=np.int64)
+    frame = pd.DataFrame({"key": keys, "value": values})
+    query = (
+        fpstreams.rows(records)
+        .with_engine(spec.engine)
+        .group_by("key")
+        .aggregate(first=fpstreams.agg.first("value"))
+    )
+
+    def python_group() -> object:
+        first: dict[int, int] = {}
+        for row in records:
+            key = row["key"]
+            if key not in first:
+                first[key] = row["value"]
+        return [{"key": key, "first": value} for key, value in first.items()]
+
+    def numpy_group() -> object:
+        first_indexes = np.sort(np.unique(keys, return_index=True)[1])
+        return [{"key": int(keys[index]), "first": int(values[index])} for index in first_indexes]
+
+    def pandas_group() -> object:
+        result = frame.groupby("key", sort=False, as_index=False)["value"].first()
+        return [
+            {"key": int(key), "first": int(value)}
+            for key, value in result.itertuples(index=False, name=None)
+        ]
+
+    return CompetitiveCase(
+        spec,
+        _implementation("fpstreams", query.to_list, _normalize_exact_records),
+        tuple(
+            _implementation(library, task, _normalize_exact_records)
+            for library, task in (
+                ("python", python_group),
+                ("numpy", numpy_group),
+                ("pandas", pandas_group),
+            )
+        ),
+        lambda left, right: left == right,
+    )
+
+
 def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
     spec: CaseSpec, size: int, np: Any, pd: Any
 ) -> CompetitiveCase:
     del np
-    mapping_callable = spec.case_id.endswith(".mapping_callable")
+    mapping_records = ".mapping_" in spec.case_id
+    callable_selectors = spec.case_id.endswith("_callable")
+    owned_snapshots = mapping_records or callable_selectors
 
     def record(**values: Any) -> Mapping[str, Any]:
-        return _NominalRecord(**values) if mapping_callable else values
+        return _NominalRecord(**values) if mapping_records else values
 
-    left = [record(id=index, value=index) for index in range(size)]
+    width = next(
+        (
+            int(part.removeprefix("width"))
+            for part in spec.case_id.split(".")
+            if part.startswith("width")
+        ),
+        2,
+    )
+    extra_fields = tuple(f"left_{offset}" for offset in range(width - 2))
+    left = [
+        record(
+            id=index,
+            value=index,
+            **{name: index + offset for offset, name in enumerate(extra_fields)},
+        )
+        for index in range(size)
+    ]
     if ".many" in spec.case_id:
         right = [
             record(id=index, label=f"r{index}-{duplicate}")
@@ -1708,7 +2097,7 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
         how = "inner"
         validation = "m:m"
         pandas_validation = "many_to_many"
-    elif spec.case_id == "rows.join.left.unique":
+    elif ".left." in spec.case_id:
         right = [record(id=index, label=f"r{index}") for index in range(0, size, 2)]
         how = "left"
         validation = "m:1"
@@ -1724,15 +2113,19 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
     def select_id(row: Mapping[str, Any]) -> Any:
         return row["id"]
 
-    joined = fpstreams.rows(left).join(
-        right,
-        on=select_id if mapping_callable else "id",
-        how=how,
-        validate=validation,
+    joined = (
+        fpstreams.rows(left)
+        .with_engine(spec.engine)
+        .join(
+            right,
+            on=select_id if callable_selectors else "id",
+            how=how,
+            validate=validation,
+        )
     )
 
     def merge_match(left_row: Mapping[str, Any], right_row: Mapping[str, Any]) -> dict[str, Any]:
-        if not mapping_callable:
+        if not callable_selectors:
             return {**left_row, **right_row}
         merged = dict(left_row)
         for name, value in right_row.items():
@@ -1742,34 +2135,42 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
     def merge_mapping_snapshot(
         left_snapshot: dict[str, Any], right_snapshot: Mapping[str, Any]
     ) -> dict[str, Any]:
-        """Merge already-owned callable rows without paying for a second left snapshot."""
+        """Merge owned rows, retaining both key columns only for callable selectors."""
         for name, value in right_snapshot.items():
+            if not callable_selectors and name == "id":
+                continue
             left_snapshot[f"{name}_right" if name in left_snapshot else name] = value
         return left_snapshot
+
+    unmatched_right = {"id": None, "label": None}
 
     if validation == "m:1":
 
         def python_join() -> object:
             index: dict[Any, Mapping[str, Any]] = {}
             for row in right:
-                snapshot = dict(row) if mapping_callable else row
-                key = select_id(row) if mapping_callable else row["id"]
+                snapshot = dict(row) if owned_snapshots else row
+                key = select_id(row) if callable_selectors else row["id"]
                 if key in index:
                     raise ValueError(f"duplicate right join key: {key!r}")
                 index[key] = snapshot
             result: list[dict[str, Any]] = []
             for row in left:
-                snapshot = dict(row) if mapping_callable else row
-                key = select_id(row) if mapping_callable else row["id"]
+                snapshot = dict(row) if owned_snapshots else row
+                key = select_id(row) if callable_selectors else row["id"]
                 match = index.get(key)
                 if match is not None:
                     result.append(
                         merge_mapping_snapshot(cast(dict[str, Any], snapshot), match)
-                        if mapping_callable
+                        if owned_snapshots
                         else merge_match(row, match)
                     )
                 elif how == "left":
-                    result.append({**row, "label": None})
+                    result.append(
+                        merge_mapping_snapshot(cast(dict[str, Any], snapshot), unmatched_right)
+                        if owned_snapshots
+                        else {**row, "label": None}
+                    )
             return result
 
     else:
@@ -1777,15 +2178,15 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
         def python_join() -> object:
             index: dict[Any, list[Mapping[str, Any]]] = {}
             for row in right:
-                snapshot = dict(row) if mapping_callable else row
-                key = select_id(row) if mapping_callable else row["id"]
+                snapshot = dict(row) if owned_snapshots else row
+                key = select_id(row) if callable_selectors else row["id"]
                 index.setdefault(key, []).append(snapshot)
             result: list[dict[str, Any]] = []
             for row in left:
-                snapshot = dict(row) if mapping_callable else row
-                key = select_id(row) if mapping_callable else row["id"]
+                snapshot = dict(row) if owned_snapshots else row
+                key = select_id(row) if callable_selectors else row["id"]
                 matches = index.get(key, ())
-                if mapping_callable:
+                if owned_snapshots:
                     result.extend(
                         merge_mapping_snapshot(cast(dict[str, Any], snapshot).copy(), match)
                         for match in matches
@@ -1795,7 +2196,7 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
             return result
 
     def pandas_join() -> object:
-        if mapping_callable:
+        if callable_selectors:
             merged = left_frame.merge(
                 right_frame.rename(columns={"id": "id_right"}),
                 left_on="id",
@@ -1814,9 +2215,9 @@ def _join_case(  # noqa: C901 - join shapes share one fairness-critical baseline
             )
         return merged.where(pd.notna(merged), None).to_dict("records")
 
-    normalize = _normalize_exact_records if mapping_callable else _normalize_null_records
+    normalize = _normalize_exact_records if owned_snapshots else _normalize_null_records
     references = [_implementation("python", python_join, normalize)]
-    if not mapping_callable:
+    if not owned_snapshots:
         references.append(_implementation("pandas", pandas_join, normalize))
     return CompetitiveCase(
         spec,
@@ -1950,6 +2351,38 @@ def _fresh_record_rows(size: int) -> list[dict[str, int]]:
     return [{"id": index, "value": index * 2} for index in range(size)]
 
 
+def _arrow_scan_case(spec: CaseSpec, size: int, pd: Any, tempdir: Path) -> CompetitiveCase:
+    """Build typed file-projection tasks with independent pandas file readers."""
+    import pyarrow as pa
+    import pyarrow.csv as pa_csv
+    import pyarrow.parquet as pq
+
+    table = pa.table(
+        {
+            "id": range(size),
+            "value": range(size),
+            "unused": ["unused payload"] * size,
+        }
+    )
+    if spec.case_id == "io.arrow.csv.select":
+        path = tempdir / "projection.csv"
+        pa_csv.write_csv(table, path)
+        candidate = fpstreams.Rows.scan_csv(path).select("id", "value").to_list
+
+        def pandas_projection() -> object:
+            return pd.read_csv(path, usecols=["id", "value"]).to_dict("records")
+    else:
+        path = tempdir / "projection.parquet"
+        pq.write_table(table, path)
+        candidate = fpstreams.Rows.from_parquet(path).select("id", "value").to_list
+
+        def pandas_projection() -> object:
+            return pd.read_parquet(path, columns=["id", "value"]).to_dict("records")
+
+    references = (_implementation("pandas", pandas_projection),)
+    return CompetitiveCase(spec, _implementation("fpstreams", candidate), references, operator.eq)
+
+
 def _io_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> CompetitiveCase:
     records = (
         _fresh_record_rows(size)
@@ -2070,6 +2503,8 @@ def _build_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> C
         return _terminal_case(spec, size, np, pd)
     if spec.case_id.startswith("rows.numpy."):
         return _numpy_rows_case(spec, size, np, pd)
+    if spec.case_id.startswith("rows.group_first."):
+        return _group_first_case(spec, size, np, pd)
     if spec.case_id.startswith("rows.group_"):
         return _group_case(spec, size, np, pd)
     if spec.case_id.startswith("rows.join."):
@@ -2078,6 +2513,8 @@ def _build_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> C
         return _rows_case(spec, size, np, pd)
     if spec.case_id.startswith("pairs."):
         return _pairs_case(spec, size, np, pd)
+    if spec.case_id.startswith("io.arrow."):
+        return _arrow_scan_case(spec, size, pd, tempdir)
     if spec.case_id.startswith("io."):
         return _io_case(spec, size, np, pd, tempdir)
     raise KeyError(spec.case_id)
@@ -2087,6 +2524,7 @@ def _measurement_record(
     implementation: Implementation,
     spec: CaseSpec,
     samples: list[float],
+    warmup_runs: list[int],
 ) -> dict[str, Any]:
     library = implementation.library
     implementation_name = implementation.variant or library
@@ -2094,6 +2532,7 @@ def _measurement_record(
         "name": f"competitive/{implementation_name}/{spec.case_id}",
         "sample_count": len(samples),
         "samples_seconds": samples,
+        "warmup_runs": warmup_runs,
         "median_seconds": statistics.median(samples),
         "stdev_seconds": statistics.stdev(samples) if len(samples) > 1 else 0.0,
         "backend": library,
@@ -2105,31 +2544,49 @@ def _measurement_record(
     }
 
 
+def _warmup_task(task: Task) -> int:
+    """Warm each peer for a fixed time budget after GC, retaining no task results."""
+    deadline = time.perf_counter() + _SAMPLE_WARMUP_SECONDS
+    runs = 0
+    while True:
+        task()
+        runs += 1
+        if time.perf_counter() >= deadline:
+            return runs
+
+
 def _measure_case(case: CompetitiveCase, repeats: int) -> tuple[dict[str, Any], ...]:
     """Measure warmed peers in rotating order so no implementation owns every first slot."""
     implementations = (case.candidate, *case.references, *case.ceilings)
+    observation = observe_task(case.candidate.task, case.spec.engine, case.spec.case_id)
     samples: list[list[float]] = [[] for _implementation in implementations]
+    warmups: list[list[int]] = [[] for _implementation in implementations]
     implementation_count = len(implementations)
     round_count = max(repeats, implementation_count)
     for round_index in range(round_count):
         for offset in range(implementation_count):
             implementation_index = (round_index + offset) % implementation_count
             gc.collect()
-            # Prime implementation-specific allocator and cache state immediately before
-            # timing. Otherwise large temporary outputs from another peer can flip a
-            # bimodal allocation workload's median without any code change.
-            implementations[implementation_index].task()
+            # One tiny call need not settle allocator, cache, or SIMD transition state.
+            warmups[implementation_index].append(
+                _warmup_task(implementations[implementation_index].task)
+            )
             started = time.perf_counter()
             implementations[implementation_index].task()
             samples[implementation_index].append(time.perf_counter() - started)
-    return tuple(
-        _measurement_record(implementation, case.spec, implementation_samples)
-        for implementation, implementation_samples in zip(
+    records = tuple(
+        _measurement_record(implementation, case.spec, implementation_samples, warmup_runs)
+        for implementation, implementation_samples, warmup_runs in zip(
             implementations,
             samples,
+            warmups,
             strict=True,
         )
     )
+    for record, implementation in zip(records, implementations, strict=True):
+        record["resources"] = measure_python_allocation(implementation.task)
+    records[0]["execution"] = observation
+    return records
 
 
 def _assert_equivalent_outputs(case: CompetitiveCase) -> None:
@@ -2167,10 +2624,7 @@ def run_competitive(
             "competitive benchmarks require the 'data' extra: pip install fpstreams[data]"
         ) from error
 
-    matrix_path = Path(__file__).resolve()
-    package_root = Path(fpstreams.__file__).resolve().parent
-    matrix_sha256 = _file_sha256(matrix_path)
-    python_package_sha256 = _python_package_sha256(package_root)
+    evidence = BenchmarkEvidence("competitive", native)
 
     selected_ids = set(list_competitive_cases(quick=quick, include=include))
     if not selected_ids:
@@ -2245,48 +2699,24 @@ def run_competitive(
                     }
                 )
 
-    if _file_sha256(matrix_path) != matrix_sha256:
-        raise RuntimeError("competitive benchmark matrix changed while measurements were running")
-    if _python_package_sha256(package_root) != python_package_sha256:
-        raise RuntimeError("fpstreams Python sources changed while measurements were running")
-    native_path = native.get("path")
-    native_sha256 = native.get("sha256")
-    if (
-        isinstance(native_path, str)
-        and isinstance(native_sha256, str)
-        and _file_sha256(Path(native_path)) != native_sha256
-    ):
-        raise RuntimeError("fpstreams native extension changed while measurements were running")
-
     return {
-        "schema_version": 2,
+        "schema_version": REPORT_SCHEMA_VERSION,
         "metadata": {
-            "suite": "competitive",
-            "fpstreams_version": fpstreams.__version__,
-            "python_version": platform.python_version(),
-            "implementation": platform.python_implementation(),
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "native": dict(native),
-            "generated_at_utc": datetime.now(UTC).isoformat(),
-            "benchmark_matrix_sha256": matrix_sha256,
-            "python_package_sha256": python_package_sha256,
-            "provenance_verified_unchanged": True,
+            **evidence.finish(),
             "size": size,
             "repeats": repeats,
             "quick": quick,
+            "domain": "mixed",
             "scope": "compute-only unless a row is marked end-to-end",
             "methodology": {
                 "inputs_preconstructed": True,
                 "correctness_warmup_runs": 1,
+                "sample_warmup_min_seconds": _SAMPLE_WARMUP_SECONDS,
+                "gc_before_sample_warmup": True,
                 "timed_tasks_fully_materialize_outputs": True,
                 "timed_output_normalization": False,
-            },
-            "libraries": {
-                "fpstreams": fpstreams.__version__,
-                "numpy": np.__version__,
-                "pandas": pd.__version__,
+                "execution_observation_timed": False,
+                "execution_observation_runs": 1,
             },
         },
         "results": results,

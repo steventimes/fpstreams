@@ -10,12 +10,11 @@ import fnmatch
 import hashlib
 import json
 import os
-import platform
 import statistics
 import sys
 import time
-import tracemalloc
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -23,9 +22,16 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, Literal, NamedTuple
 
-# Running this repository script directly puts the documentation directory named
-# ``fpstreams`` ahead of the src-layout package. Prefer the adjacent source tree when present.
-_SOURCE_TREE = Path(__file__).resolve().parent / "src"
+# Use the same harness against another checkout when collecting a historical baseline.
+# The explicit path names its src directory; missing paths must not silently use this tree.
+_SOURCE_OVERRIDE = os.environ.get("FPSTREAMS_BENCHMARK_SOURCE")
+_SOURCE_TREE = (
+    Path(_SOURCE_OVERRIDE).resolve()
+    if _SOURCE_OVERRIDE is not None
+    else Path(__file__).resolve().parent / "src"
+)
+if _SOURCE_OVERRIDE is not None and not (_SOURCE_TREE / "fpstreams" / "__init__.py").is_file():
+    raise SystemExit("FPSTREAMS_BENCHMARK_SOURCE must name a checkout's src directory")
 if _SOURCE_TREE.is_dir():
     sys.path.insert(0, str(_SOURCE_TREE))
 
@@ -37,7 +43,14 @@ from benchmarks.competitive import (
 from benchmarks.competitive import (
     run_competitive as run_competitive_matrix,
 )
+from benchmarks.evidence import (
+    REPORT_SCHEMA_VERSION,
+    BenchmarkEvidence,
+    measure_python_allocation,
+    observe_task,
+)
 from fpstreams import fitem, flow, item
+from fpstreams.planning.compiler import compile_query
 from fpstreams.planning.gather import Gatherer
 from fpstreams.planning.logical import Pipeline
 from fpstreams.planning.source import Source
@@ -47,6 +60,8 @@ Backend = Literal["python-builtin", "python", "native", "auto"]
 Task = Callable[[], object]
 _MIN_FIRST_ROW_SAMPLES = 15
 _SCALAR_FUSION_GUARD_MIN_SIZE = 4_096
+# Composite-group and NamedTuple-join speedup limits were validated from this size.
+_RELATIONAL_SPEEDUP_GUARD_MIN_SIZE = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,14 +92,14 @@ def measure(function: Task, repeats: int) -> list[float]:
 def _record(scenario: Scenario, repeats: int) -> dict[str, Any]:
     # Thread startup, tiny temporary-file workloads, and allocation-heavy group
     # results can be bimodal on CI, so those scenarios request a larger sample.
+    observation = (
+        observe_task(scenario.task, scenario.backend, scenario.terminal)
+        if scenario.backend != "python-builtin"
+        else {"status": "not_applicable", "reason": "Python reference task"}
+    )
     sample_count = max(repeats, scenario.minimum_repeats)
     samples = measure(scenario.task, sample_count)
-    tracemalloc.start()
-    try:
-        scenario.task()
-        _, peak_allocation = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    resources = measure_python_allocation(scenario.task)
     record: dict[str, Any] = {
         "name": scenario.name,
         "sample_count": sample_count,
@@ -92,11 +107,12 @@ def _record(scenario: Scenario, repeats: int) -> dict[str, Any]:
         "median_seconds": statistics.median(samples),
         "stdev_seconds": statistics.stdev(samples) if len(samples) > 1 else 0.0,
         "backend": scenario.backend,
+        "execution": observation,
         "source_kind": scenario.source_kind,
         "terminal": scenario.terminal,
         "baseline": scenario.baseline,
         "maximum_ratio": scenario.maximum_ratio,
-        "resources": {"peak_allocation_bytes": peak_allocation},
+        "resources": resources,
     }
     if scenario.first_row_task is not None:
         first_row_samples = measure(
@@ -380,6 +396,36 @@ def _logical_compile_scenarios() -> list[Scenario]:
             "fpstreams_planning/current_plan/iterate",
         ),
     ]
+
+
+def _expression_compile_scenarios(size: int) -> list[Scenario]:
+    """Separate repeated query compilation from execution over the same retained input."""
+    values = list(range(size))
+    pipelines = {
+        "int_expression": flow(values).map(item * 3 + 1).filter(item % 2 == 0),
+        "float_expression": (
+            flow([float(value) for value in values]).map(fitem * 3 + 1).filter(fitem > 4.0)
+        ),
+        "callable": flow(values)
+        .map(lambda value: value * 3 + 1)
+        .filter(lambda value: value % 2 == 0),
+    }
+    scenarios = []
+    for kind, pipeline in pipelines.items():
+        pipeline = pipeline.with_engine("python")
+        query = pipeline._query("list")
+        for phase, task in (("compile", partial(compile_query, query)), ("run", pipeline.to_list)):
+            scenarios.append(
+                Scenario(
+                    f"fpstreams_planning/{kind}/{phase}/list/python",
+                    task,
+                    "python",
+                    "list",
+                    "list",
+                    None,
+                )
+            )
+    return scenarios
 
 
 def _sync_operation_scenarios() -> list[Scenario]:
@@ -868,12 +914,8 @@ def _fixed_sparse_group_scenarios(size: int) -> list[Scenario]:
 
 
 def _composite_group_scenarios(size: int) -> list[Scenario]:
-    """Guard the fixed two-key count/sum loop against its callable-key fallback."""
+    """Compare direct and callable two-key count/sum across key cardinalities."""
     row_count = min(size, 100_000)
-    cardinality = max(1, min(row_count, 30_000))
-    records = tuple(
-        (index % cardinality, (index % cardinality) % 7, index) for index in range(row_count)
-    )
 
     def first(row: tuple[int, int, int]) -> int:
         return row[0]
@@ -881,32 +923,41 @@ def _composite_group_scenarios(size: int) -> list[Scenario]:
     def second(row: tuple[int, int, int]) -> int:
         return row[1]
 
-    source = fpstreams.rows(records)
-    python_name = "fpstreams_group/tuple/callable_composite/count_sum/high_cardinality/python"
-    return [
-        Scenario(
-            python_name,
-            source.with_engine("python")
-            .group_by(first, second)
-            .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
-            .to_list,
-            "python",
-            "tuple_rows",
-            "group_aggregate",
-            None,
-        ),
-        Scenario(
-            "fpstreams_group/tuple/direct_composite/count_sum/high_cardinality/auto",
-            source.group_by(0, 1)
-            .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
-            .to_list,
-            "auto",
-            "tuple_rows",
-            "group_aggregate",
-            python_name,
-            maximum_ratio=0.45,
-        ),
-    ]
+    scenarios = []
+    for label, limit in (("high_cardinality", 30_000), ("low_cardinality", 16)):
+        cardinality = max(1, min(row_count, limit))
+        records = tuple(
+            (index % cardinality, (index % cardinality) % 7, index) for index in range(row_count)
+        )
+        source = fpstreams.rows(records)
+        python_name = f"fpstreams_group/tuple/callable_composite/count_sum/{label}/python"
+        scenarios.extend(
+            [
+                Scenario(
+                    python_name,
+                    source.with_engine("python")
+                    .group_by(first, second)
+                    .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+                    .to_list,
+                    "python",
+                    "tuple_rows",
+                    "group_aggregate",
+                    None,
+                ),
+                Scenario(
+                    f"fpstreams_group/tuple/direct_composite/count_sum/{label}/auto",
+                    source.group_by(0, 1)
+                    .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+                    .to_list,
+                    "auto",
+                    "tuple_rows",
+                    "group_aggregate",
+                    python_name,
+                    maximum_ratio=0.45 if row_count >= _RELATIONAL_SPEEDUP_GUARD_MIN_SIZE else None,
+                ),
+            ]
+        )
+    return scenarios
 
 
 def _mapping_field_join_scenarios(size: int) -> list[Scenario]:
@@ -1051,7 +1102,11 @@ def _namedtuple_callable_join_scenarios(size: int) -> list[Scenario]:
                     "join",
                     python_name,
                     minimum_repeats=15,
-                    maximum_ratio=maximum_ratios[cardinality],
+                    maximum_ratio=(
+                        maximum_ratios[cardinality]
+                        if size >= _RELATIONAL_SPEEDUP_GUARD_MIN_SIZE
+                        else None
+                    ),
                 ),
             )
         )
@@ -1825,6 +1880,87 @@ def find_regressions(
     return regressions
 
 
+def _validate_engine_selection(domain: str, include: Sequence[str]) -> None:
+    if domain not in {"int", "float", "both"}:
+        raise ValueError("domain must be 'int', 'float', or 'both'")
+    if any(not pattern for pattern in include):
+        raise ValueError("benchmark include patterns cannot be empty")
+
+
+@contextmanager
+def _engine_scenarios(
+    *,
+    size: int,
+    domain: str,
+    quick: bool,
+    native_available: bool,
+    include: Sequence[str],
+) -> Iterator[list[Scenario]]:
+    """Own constructed fixtures through selection and the caller's use of the scenarios."""
+    scenarios: list[Scenario] = []
+    try:
+        if domain in {"int", "both"}:
+            scenarios.extend(_identity_scenarios(size, include_tuple=not quick))
+            scenarios.append(_small_plan_scenario())
+            scenarios.extend(_logical_compile_scenarios())
+            scenarios.extend(_expression_compile_scenarios(size))
+            scenarios.extend(_sync_operation_scenarios())
+            scenarios.extend(_async_operation_scenarios())
+            scenarios.extend(_rows_operation_scenarios())
+            scenarios.extend(_pair_row_filter_scenarios(size))
+            scenarios.extend(_callable_group_scenarios(size))
+            scenarios.extend(_fixed_sparse_group_scenarios(size))
+            scenarios.extend(_composite_group_scenarios(size))
+            scenarios.extend(_mapping_field_join_scenarios(size))
+            scenarios.extend(_namedtuple_callable_join_scenarios(size))
+            scenarios.extend(_wide_callable_join_scenarios(size))
+            scenarios.extend(_value_layout_callable_join_scenarios(size))
+            scenarios.extend(_exact_dict_sort_scenarios(size))
+            scenarios.extend(_arrow_identity_list_scenarios(size))
+            scenarios.extend(_arrow_numeric_mean_scenarios(size))
+            scenarios.extend(_arrow_stable_sort_scenarios(size))
+            scenarios.extend(_arrow_group_multi_scenarios(size))
+            scenarios.extend(_arrow_unique_join_scenarios(size))
+            scenarios.extend(_arrow_c_stream_scenarios(size))
+            scenarios.extend(_arrow_reader_group_scenarios(size))
+            scenarios.extend(_arrow_file_group_scenarios(size))
+            scenarios.extend(_arrow_dictionary_group_scenarios(size))
+            scenarios.extend(_one_shot_scenarios(size))
+            if not quick:
+                scenarios.extend(_integer_pipeline_scenarios(size, native_available))
+        if domain in {"float", "both"}:
+            scenarios.extend(_float_scenarios(size, native_available))
+        if include:
+            selected = [
+                scenario
+                for scenario in scenarios
+                if any(fnmatch.fnmatch(scenario.name, pattern) for pattern in include)
+            ]
+            if not selected:
+                raise ValueError("benchmark include patterns selected no scenarios")
+        else:
+            selected = scenarios
+        yield selected
+    finally:
+        _cleanup_scenarios(scenarios)
+
+
+def list_engine_scenarios(
+    *, domain: str = "int", quick: bool = False, include: Sequence[str] = ()
+) -> tuple[str, ...]:
+    """List available workloads using small fixtures, without executing benchmark tasks."""
+    _validate_engine_selection(domain, include)
+    native = native_build_metadata()
+    with _engine_scenarios(
+        size=1,
+        domain=domain,
+        quick=quick,
+        native_available=bool(native["available"]),
+        include=include,
+    ) as scenarios:
+        return tuple(scenario.name for scenario in scenarios)
+
+
 def run(
     *,
     size: int,
@@ -1838,71 +1974,35 @@ def run(
         raise ValueError("size must be positive")
     if repeats < 1:
         raise ValueError("repeats must be positive")
-    if domain not in {"int", "float", "both"}:
-        raise ValueError("domain must be 'int', 'float', or 'both'")
-    if any(not pattern for pattern in include):
-        raise ValueError("benchmark include patterns cannot be empty")
+    _validate_engine_selection(domain, include)
 
     native = native_build_metadata()
+    evidence = BenchmarkEvidence("engine", native)
     if fail_on_regression and native["profile"] != "release":
         raise RuntimeError(
             "--fail-on-regression requires a confirmed release native build; "
             f"detected {native['profile']!r}"
         )
 
-    scenarios: list[Scenario] = []
-    if domain in {"int", "both"}:
-        scenarios.extend(_identity_scenarios(size, include_tuple=not quick))
-        scenarios.append(_small_plan_scenario())
-        scenarios.extend(_logical_compile_scenarios())
-        scenarios.extend(_sync_operation_scenarios())
-        scenarios.extend(_async_operation_scenarios())
-        scenarios.extend(_rows_operation_scenarios())
-        scenarios.extend(_pair_row_filter_scenarios(size))
-        scenarios.extend(_callable_group_scenarios(size))
-        scenarios.extend(_fixed_sparse_group_scenarios(size))
-        scenarios.extend(_composite_group_scenarios(size))
-        scenarios.extend(_mapping_field_join_scenarios(size))
-        scenarios.extend(_namedtuple_callable_join_scenarios(size))
-        scenarios.extend(_wide_callable_join_scenarios(size))
-        scenarios.extend(_value_layout_callable_join_scenarios(size))
-        scenarios.extend(_exact_dict_sort_scenarios(size))
-        scenarios.extend(_arrow_identity_list_scenarios(size))
-        scenarios.extend(_arrow_numeric_mean_scenarios(size))
-        scenarios.extend(_arrow_stable_sort_scenarios(size))
-        scenarios.extend(_arrow_group_multi_scenarios(size))
-        scenarios.extend(_arrow_unique_join_scenarios(size))
-        scenarios.extend(_arrow_c_stream_scenarios(size))
-        scenarios.extend(_arrow_reader_group_scenarios(size))
-        scenarios.extend(_arrow_file_group_scenarios(size))
-        scenarios.extend(_arrow_dictionary_group_scenarios(size))
-        scenarios.extend(_one_shot_scenarios(size))
-        if not quick:
-            scenarios.extend(_integer_pipeline_scenarios(size, bool(native["available"])))
-    if domain in {"float", "both"}:
-        scenarios.extend(_float_scenarios(size, bool(native["available"])))
-    owned_scenarios = tuple(scenarios)
-    try:
-        if include:
-            scenarios = [
-                scenario
-                for scenario in scenarios
-                if any(fnmatch.fnmatch(scenario.name, pattern) for pattern in include)
-            ]
-            if not scenarios:
-                raise ValueError("benchmark include patterns selected no scenarios")
-
+    with _engine_scenarios(
+        size=size,
+        domain=domain,
+        quick=quick,
+        native_available=bool(native["available"]),
+        include=include,
+    ) as scenarios:
         results = [_record(scenario, repeats) for scenario in scenarios]
         return {
-            "schema_version": 1,
+            "schema_version": REPORT_SCHEMA_VERSION,
             "metadata": {
-                "fpstreams_version": fpstreams.__version__,
-                "python_version": platform.python_version(),
-                "implementation": platform.python_implementation(),
-                "platform": platform.platform(),
-                "machine": platform.machine(),
-                "processor": platform.processor(),
-                "native": native,
+                **evidence.finish(),
+                "methodology": {
+                    "timed_output_normalization": False,
+                    "resource_measurement_timed": False,
+                    "correctness_warmup_runs": 0,
+                    "execution_observation_timed": False,
+                    "execution_observation_runs": 1,
+                },
                 "size": size,
                 "repeats": repeats,
                 "domain": domain,
@@ -1911,8 +2011,6 @@ def run(
             "results": results,
             "regressions": find_regressions(results),
         }
-    finally:
-        _cleanup_scenarios(owned_scenarios)
 
 
 def run_competitive(
@@ -2014,21 +2112,24 @@ def main() -> int:
                 include=arguments.include,
             )
         else:
+            if arguments.list_scenarios:
+                selected = list_engine_scenarios(
+                    domain=arguments.domain,
+                    quick=arguments.quick,
+                    include=arguments.include,
+                )
+                print("\n".join(selected))
+                return 0
             report = run(
-                size=1 if arguments.list_scenarios else arguments.size,
-                repeats=1 if arguments.list_scenarios else arguments.repeats,
+                size=arguments.size,
+                repeats=arguments.repeats,
                 domain=arguments.domain,
                 quick=arguments.quick,
-                fail_on_regression=(
-                    False if arguments.list_scenarios else arguments.fail_on_regression
-                ),
+                fail_on_regression=arguments.fail_on_regression,
                 include=arguments.include,
             )
     except (RuntimeError, ValueError) as error:
         parser.error(str(error))
-    if arguments.list_scenarios:
-        print("\n".join(result["name"] for result in report["results"]))
-        return 0
     render(report)
     if arguments.json is not None:
         _write_json_report(arguments.json, report)

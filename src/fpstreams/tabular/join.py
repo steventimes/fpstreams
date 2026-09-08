@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABCMeta
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from operator import is_ as _is
 from types import MappingProxyType
 from typing import Any, Literal, NoReturn, TypeAlias, cast
 
@@ -26,6 +27,7 @@ _JoinCachedLayout: TypeAlias = tuple[_JoinTargetPlan, _FixedJoinTargets | None]
 _JOIN_MODES = frozenset({"inner", "left", "right", "full", "semi", "anti"})
 _JOIN_VALIDATIONS = frozenset({"m:m", "1:1", "1:m", "m:1"})
 _MAX_JOIN_TARGET_SHAPES = 64
+_BUILTIN_TUPLE: type[tuple[Any, ...]] = tuple
 
 
 def _same_name_objects(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
@@ -48,7 +50,7 @@ def _same_name_objects(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
             and left[2] is right[2]
             and left[3] is right[3]
         )
-    return all(current is previous for current, previous in zip(left, right, strict=True))
+    return all(map(_is, left, right))
 
 
 class _JoinTargetCache:
@@ -64,6 +66,7 @@ class _JoinTargetCache:
         "_last_fixed_targets",
         "_last_plan",
         "_last_shape",
+        "_last_shape_wide",
         "_layouts",
         "enabled",
     )
@@ -71,6 +74,7 @@ class _JoinTargetCache:
     def __init__(self) -> None:
         self.enabled = True
         self._last_shape: tuple[str, ...] | None = None
+        self._last_shape_wide = False
         self._last_plan: _JoinTargetPlan = ()
         self._last_fixed_targets: _FixedJoinTargets | None = ()
         self._layouts: dict[tuple[str, ...], _JoinCachedLayout] = {}
@@ -79,6 +83,7 @@ class _JoinTargetCache:
         """Release retained shapes and make later rows use the canonical path directly."""
         self.enabled = False
         self._last_shape = None
+        self._last_shape_wide = False
         self._last_plan = ()
         self._last_fixed_targets = None
         self._layouts.clear()
@@ -127,9 +132,18 @@ class _JoinTargetCache:
         """
         if not self.enabled:
             return None
-        shape = tuple(left_names)
-        if self._last_shape is not None and _same_name_objects(shape, self._last_shape):
-            return self._last_plan
+        # Repeated wide snapshots need no temporary tuple of field names.
+        if self._last_shape_wide and type(left_names) is dict and tuple is _BUILTIN_TUPLE:
+            last_shape = self._last_shape
+            assert last_shape is not None
+            if len(left_names) == len(last_shape) and all(map(_is, left_names, last_shape)):
+                return self._last_plan
+            shape = tuple(left_names)
+        else:
+            shape = tuple(left_names)
+            last_shape = self._last_shape
+            if last_shape is not None and _same_name_objects(shape, last_shape):
+                return self._last_plan
         if type(suffix) is not str or not all(type(name) is str for name in shape):
             self._disable()
             return None
@@ -138,6 +152,7 @@ class _JoinTargetCache:
         if cached_layout is not None:
             cached_plan, fixed_targets = cached_layout
             self._last_shape = shape
+            self._last_shape_wide = len(shape) > 4
             self._last_plan = cached_plan
             self._last_fixed_targets = fixed_targets
             return cached_plan
@@ -167,6 +182,7 @@ class _JoinTargetCache:
         else:
             self._layouts[shape] = (plan, fixed_targets)
             self._last_shape = shape
+            self._last_shape_wide = len(shape) > 4
             self._last_plan = plan
             self._last_fixed_targets = fixed_targets
         return plan

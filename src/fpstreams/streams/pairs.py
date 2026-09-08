@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from operator import itemgetter
+from time import perf_counter_ns
 from types import FunctionType
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
@@ -24,6 +25,12 @@ from ..planning._pair_stages import (
 )
 from ..planning.sync import Engine
 from ..runtime.iterators import closing_iterators
+from ..runtime.report import (
+    ExecutionResult,
+    _record_direct_strategy,
+    _start_recording,
+    _stop_recording,
+)
 
 if TYPE_CHECKING:
     from .flow import Flow
@@ -130,6 +137,39 @@ class Pairs(Generic[K, V]):
             Lazy Pairs backed by the engine-adjusted Flow.
         """
         return Pairs(self._flow.with_engine(engine))
+
+    def run_with_report(
+        self,
+        terminal: str,
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ExecutionResult[Any]:
+        """Execute one pair terminal and return its value with query-owned metrics.
+
+        Args:
+            terminal: `to_dict`, `group_values`, `collect_values`, or `aggregate_values`.
+            *args: Positional arguments passed to that terminal.
+            **kwargs: Keyword arguments passed to that terminal.
+
+        Returns:
+            The terminal value and an immutable report. The source is consumed once.
+
+        Raises:
+            ValueError: If the name is not a reportable pair terminal.
+        """
+        if terminal not in {"to_dict", "group_values", "collect_values", "aggregate_values"}:
+            raise ValueError(f"{terminal!r} is not a reportable eager Pairs terminal")
+        method = getattr(self, terminal)
+        recorder, token = _start_recording(terminal, str(self._flow._logical_plan.engine))
+        started = perf_counter_ns()
+        try:
+            value = method(*args, **kwargs)
+            # A custom Pairs subclass may return without iterating the underlying Flow.
+            _record_direct_strategy(None, "pairs_direct", "pair terminal returned without a plan")
+            return recorder.finish(value, perf_counter_ns() - started)
+        finally:
+            _stop_recording(token)
 
     def keys(self) -> Flow[K]:
         """Select only keys as a Flow.
@@ -423,6 +463,9 @@ class Pairs(Generic[K, V]):
                 closed.kinds,
             )
             if native is not None:
+                _record_direct_strategy(
+                    None, "rust_direct", "guarded native pair aggregation returned the result"
+                )
                 return cast(dict[K, dict[str, Any]], native)
 
         def consume(iterator: Iterator[tuple[K, V]]) -> dict[K, dict[str, Any]]:

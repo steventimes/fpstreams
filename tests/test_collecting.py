@@ -24,6 +24,42 @@ def _sequential_native_pairs() -> list[tuple[int, int]]:
 # --- Tests consolidated from test_collecting_api.py ---
 
 
+@pytest.mark.parametrize("collector_type", [fpstreams.Collector, fpstreams.Aggregator])
+def test_collector_lifecycle_fields_preserve_frozen_and_explicit_replacement_contract(
+    collector_type: Any,
+) -> None:
+    from dataclasses import FrozenInstanceError
+
+    def step(state: int, value: int) -> int:
+        return state + value
+
+    collector = collector_type(lambda: 0, step)
+    assert collector.step is step
+    assert collector([1, 2, 3]) == 6
+    with pytest.raises(FrozenInstanceError):
+        collector.step = lambda state, value: state + value * 10
+    assert collector.step is step
+
+    def replacement(state: int, value: int) -> int:
+        return state + value * 10
+
+    object.__setattr__(collector, "step", replacement)
+    assert collector.step is replacement
+    assert collector([1, 2, 3]) == 60
+    with pytest.raises(AttributeError, match=r"^__delete__$"):
+        object.__delattr__(collector, "step")
+    assert collector.step is replacement
+
+
+def test_collector_subclass_uses_inherited_live_lifecycle_fields() -> None:
+    class CustomCollector(fpstreams.Collector[int, int, int]):
+        __slots__ = ()
+
+    collector = CustomCollector(lambda: 0, lambda state, value: state + value)
+    object.__setattr__(collector, "finish", lambda state: state * 10)
+    assert collector([1, 2, 3]) == 60
+
+
 def test_flow_conveniences_and_collectors_stay_thin_and_pythonic() -> None:
     values = flow([3, 1, 2, 4])
 

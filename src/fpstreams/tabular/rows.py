@@ -140,7 +140,7 @@ def _build_select_project(
 
     def project(row: Any) -> dict[str, Any]:
         """Evaluate positional and named selectors into a new projected dictionary."""
-        return {name: select(row) for name, select in (*positional, *aliases)}
+        return {name: select(row) for name, select in [*positional, *aliases]}
 
     return project
 
@@ -183,6 +183,14 @@ def _materialized_select_spec(
             or selector.__globals__ is not _CANONICAL_SELECTOR_GLOBALS
             or _BUILTIN_GETATTR(selector, "__builtins__", None) is not _CANONICAL_SELECTOR_BUILTINS
         ):
+            return None
+        selector_closure = selector.__closure__
+        if selector_closure is None or len(selector_closure) != 1:
+            return None
+        try:
+            if selector_closure[0].cell_contents is not field:
+                return None
+        except ValueError:
             return None
         direct.append((name, field))
     selector_globals = _CANONICAL_SELECTOR_GLOBALS
@@ -1346,6 +1354,55 @@ def _try_csv_identity_list(source_flow: Flow[Any]) -> tuple[bool, list[Any] | No
     return True, descriptor.materialize()
 
 
+def _pivot_iteration_is_current() -> bool:
+    """Keep changed iteration and source hooks on the ordinary pivot path."""
+    for owner, name, function, code in _PIVOT_ITERATION_BOUNDARIES:
+        if owner.__dict__.get(name) is not function or _function_code(function) is not code:
+            return False
+    return True
+
+
+def _pivot_selectors_are_current(
+    selectors: tuple[Callable[[Any], Any], ...], fields: tuple[str, ...]
+) -> bool:
+    """Admit only original direct accessors still bound to the native field names."""
+    if _BUILTIN_LEN(selectors) != _BUILTIN_LEN(fields):
+        return False
+    for selector, field in _BUILTIN_ZIP(selectors, fields, strict=True):
+        if (
+            _BUILTIN_TYPE(selector) is not _CANONICAL_FUNCTION_TYPE
+            or selector.__code__ is not _CANONICAL_DIRECT_SELECT_CODE
+            or selector.__globals__ is not _CANONICAL_SELECTOR_GLOBALS
+            or _BUILTIN_GETATTR(selector, "__builtins__", None) is not _CANONICAL_SELECTOR_BUILTINS
+        ):
+            return False
+        closure = selector.__closure__
+        if closure is None or _BUILTIN_LEN(closure) != 1:
+            return False
+        try:
+            if closure[0].cell_contents is not field:
+                return False
+        except ValueError:
+            return False
+    for name, canonical in (
+        ("AttributeError", _BUILTIN_ATTRIBUTE_ERROR),
+        ("KeyError", _BUILTIN_KEY_ERROR),
+        ("TypeError", _BUILTIN_TYPE_ERROR),
+        ("dict", _BUILTIN_DICT),
+        ("getattr", _BUILTIN_GETATTR),
+        ("isinstance", _BUILTIN_ISINSTANCE),
+        ("type", _BUILTIN_TYPE),
+        ("Mapping", Mapping),
+        ("SelectionError", _CANONICAL_SELECTION_ERROR),
+    ):
+        if (
+            _CANONICAL_SELECTOR_GLOBALS.get(name, _CANONICAL_SELECTOR_BUILTINS.get(name))
+            is not canonical
+        ):
+            return False
+    return True
+
+
 def _try_native_pivot_materialize(
     source: object,
     index_fields: tuple[str, ...],
@@ -1378,6 +1435,7 @@ def _try_native_pivot_materialize(
     for name, canonical in (
         ("callable", _BUILTIN_CALLABLE),
         ("dict", _BUILTIN_DICT),
+        ("iter", _BUILTIN_ITER),
         ("str", _BUILTIN_STR),
         ("tuple", _BUILTIN_TUPLE),
         ("type", _BUILTIN_TYPE),
@@ -1494,8 +1552,8 @@ class Rows(RowsIOMixin[T], Generic[T]):
                 dialect, delimiter, or quoting.
 
         Returns:
-            Lazy dictionaries keyed by the unique CSV header. Handle inputs are one-shot; paths
-            and opener inputs are replayable.
+            Lazy dictionaries keyed by the unique CSV header. Open handles can be consumed once;
+                paths and opener functions can be read again.
         """
         return Rows(
             csv_flow(
@@ -1517,7 +1575,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
     ) -> Rows[dict[str, Any]]:
         """Lazily scan typed CSV batches with optional query-level column pruning.
 
-        Unlike :meth:`from_csv`, this explicit Arrow path infers non-string scalar types.
+        Unlike [from_csv()][fpstreams.Rows.from_csv], this Arrow reader infers non-string types.
         PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
         The incremental Arrow reader is single-threaded and freezes inferred types after its
         first byte block; use ``read_options`` or ``convert_options`` to control those choices.
@@ -1566,8 +1624,9 @@ class Rows(RowsIOMixin[T], Generic[T]):
             max_record_bytes: Encoded-byte limit per line, or None for no limit.
 
         Returns:
-            Lazy dictionary rows. Handle inputs are one-shot; paths and opener inputs are
-            replayable. Duplicate keys and non-object records fail when consumed.
+            Lazy dictionary rows. Open handles can be consumed once; paths and opener
+                functions can be read again. Duplicate keys and non-object records raise
+                errors during consumption.
         """
         return Rows(
             jsonl_flow(
@@ -2425,8 +2484,8 @@ class Rows(RowsIOMixin[T], Generic[T]):
                     record.update({name: cells.get(name, fill) for name in column_names})
                 yield record
 
-        def evaluate_direct() -> Iterator[dict[str, Any]]:  # noqa: C901
-            """Use direct fields while retaining canonical tuple-shaped index keys."""
+        def evaluate_direct() -> Iterator[dict[str, Any]]:
+            """Try native direct fields, then evaluate the live selector functions."""
             if _BUILTIN_TYPE(aggregate) is canonical_str and aggregate == "error":
                 logical = self._flow._logical_plan
                 root = logical.root
@@ -2437,9 +2496,13 @@ class Rows(RowsIOMixin[T], Generic[T]):
                     and logical.parallel is None
                     and _BUILTIN_TYPE(root) is SourceNode
                     and _BUILTIN_TYPE(root.source) is Source
+                    and _pivot_iteration_is_current()
                 ):
                     retained = root.source.retained_sequence()
-                    if retained is not None:
+                    if retained is not None and _pivot_selectors_are_current(
+                        (*key_selectors, column_selector, value_selector),
+                        (*direct_indexes, direct_column, direct_value),
+                    ):
                         native = _try_native_pivot_materialize(
                             retained,
                             direct_indexes,
@@ -2451,125 +2514,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
                         if native is not None:
                             yield from native
                             return
-            groups: dict[tuple[Any, ...], dict[str, Any]] = {}
-            spare_cells: dict[str, Any] = {}
-            column_names: list[str] = []
-            seen_columns: set[str] = set()
-            exact_columns = key_name_set is not None
-            iterator = iter(self)
-            active_error: BaseException | None = None
-            try:
-                for row in iterator:
-                    record: dict[str, Any] = row  # type: ignore[assignment]
-                    exact_record = type(record) is dict
-                    if exact_record:
-                        if single_index:
-                            field = direct_indexes[0]
-                            try:
-                                key = (record[field],)
-                            except (AttributeError, KeyError, TypeError) as error:
-                                raise SelectionError(
-                                    f"Could not resolve selector {field!r}; failed at {field!r}"
-                                ) from error
-                        else:
-                            direct_key_parts: list[Any] = []
-                            for field in direct_indexes:
-                                try:
-                                    direct_key_parts.append(record[field])
-                                except (AttributeError, KeyError, TypeError) as error:
-                                    raise SelectionError(
-                                        f"Could not resolve selector {field!r}; failed at {field!r}"
-                                    ) from error
-                            key = tuple(direct_key_parts)
-                        try:
-                            selected_column = record[direct_column]
-                        except (AttributeError, KeyError, TypeError) as error:
-                            raise SelectionError(
-                                f"Could not resolve selector {direct_column!r}; "
-                                f"failed at {direct_column!r}"
-                            ) from error
-                        column = str(selected_column)
-                    else:
-                        key = tuple(select(row) for select in key_selectors)
-                        column = str(column_selector(row))
-                    if exact_columns and key_name_set is not None and type(column) is canonical_str:
-                        if column in key_name_set:
-                            raise ValueError(
-                                f"pivot column {column!r} collides with an index column"
-                            )
-                        if column not in seen_columns:
-                            seen_columns.add(column)
-                            column_names.append(column)
-                    else:
-                        exact_columns = False
-                        if column in key_names:
-                            raise ValueError(
-                                f"pivot column {column!r} collides with an index column"
-                            )
-                        if column not in column_names:
-                            column_names.append(column)
-                    cells = groups.setdefault(key, spare_cells)
-                    if cells is spare_cells:
-                        spare_cells = {}
-                    if exact_record:
-                        try:
-                            value = record[direct_value]
-                        except (AttributeError, KeyError, TypeError) as error:
-                            raise SelectionError(
-                                f"Could not resolve selector {direct_value!r}; "
-                                f"failed at {direct_value!r}"
-                            ) from error
-                    else:
-                        value = value_selector(row)
-                    if column not in cells:
-                        cells[column] = value
-                    elif aggregate_function is not None and callable is canonical_callable:
-                        cells[column] = aggregate_function(cells[column], value)
-                    elif not (
-                        type(aggregate) is canonical_str and callable is canonical_callable
-                    ) and callable(aggregate):
-                        cells[column] = aggregate(cells[column], value)
-                    elif aggregate == "error":
-                        raise DuplicateKeyError(
-                            f"multiple values for pivot key {key!r}, column {column!r}"
-                        )
-                    elif aggregate == "last":
-                        cells[column] = value
-                    elif aggregate == "sum":
-                        cells[column] += value
-            except BaseException as error:
-                active_error = error
-                raise
-            finally:
-                close_iterators((iterator,), active_error=active_error)
-
-            template_eligible = exact_columns and _BUILTIN_LEN(groups) > 1
-            template: dict[str, Any] | None = None
-            for key, cells in groups.items():
-                record_dict = dict
-                record_zip = zip
-                if (
-                    template_eligible
-                    and record_dict is canonical_dict
-                    and record_zip is canonical_zip
-                ):
-                    if template is None:
-                        template = canonical_dict.fromkeys((*key_names, *column_names), fill)
-                    record = template.copy()
-                    if single_index:
-                        record[key_names[0]] = key[0]
-                    else:
-                        record.update(canonical_zip(key_names, key, strict=True))
-                    record.update(cells)
-                    yield record
-                    continue
-                record = record_dict(record_zip(key_names, key, strict=True))
-                if exact_columns:
-                    for name in column_names:
-                        record[name] = cells.get(name, fill)
-                else:
-                    record.update({name: cells.get(name, fill) for name in column_names})
-                yield record
+            yield from evaluate_compatible()
 
         return Rows(flow.defer(evaluate_direct if direct_fields else evaluate_compatible))
 
@@ -2811,3 +2756,18 @@ class Rows(RowsIOMixin[T], Generic[T]):
                 )
             )
         )
+
+
+_PIVOT_ITERATION_BOUNDARIES = (
+    (Rows, "__iter__", Rows.__iter__, Rows.__iter__.__code__),
+    (Flow, "__iter__", Flow.__iter__, Flow.__iter__.__code__),
+    (Flow, "_query", Flow._query, Flow._query.__code__),
+    (Source, "open", Source.open, Source.open.__code__),
+    (Source, "_claim", Source._claim, Source._claim.__code__),
+    (
+        Source,
+        "retained_sequence",
+        Source.retained_sequence,
+        Source.retained_sequence.__code__,
+    ),
+)

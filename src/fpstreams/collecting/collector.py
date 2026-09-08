@@ -579,15 +579,15 @@ class Collectors(Generic[T]):
     ) -> Collector[T, SummaryStatistics, SummaryStatistics]:
         """Build a collector returning mutable count, sum, extrema, and average state.
 
-        Selected values update :class:`SummaryStatistics` directly. Empty input normalizes
-        minimum and maximum from infinities to `0.0`; the sum, count, and derived average are
-        already zero. The returned statistics object is the final mutable state.
+        Selected values update [SummaryStatistics][fpstreams.SummaryStatistics] directly.
+        Empty input changes the minimum and maximum from infinities to `0.0`; the sum,
+        count, and derived average are already zero. The returned object is the final mutable state.
 
         Args:
             selector: Value selector; `None` summarizes each whole input item.
 
         Returns:
-            A one-pass collector returning a :class:`SummaryStatistics` instance.
+            A one-pass collector returning [SummaryStatistics][fpstreams.SummaryStatistics].
         """
         select = _selector(selector)
 

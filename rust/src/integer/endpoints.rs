@@ -2,7 +2,7 @@
 
 use super::*;
 #[cfg(not(Py_GIL_DISABLED))]
-use crate::common::acquire_i64_buffer;
+use crate::common::{acquire_i64_buffer, is_exact_sequence_iterator};
 use crate::common::{
     extract_i64_buffer, extract_i64_container, kernel_error, materialize_target,
     materialize_values, snapshot_exact_container_prefix,
@@ -113,6 +113,108 @@ pub(crate) fn frequencies_i64_exact_v1(source: &Bound<'_, PyAny>) -> PyResult<Op
 
     let counts = materialize_frequency_groups(source.py(), groups)?;
     Ok(Some(counts.into_any().unbind()))
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+fn callback_free_frequency_key(value: &Bound<'_, PyAny>) -> bool {
+    // SAFETY: value owns a live Python reference. Exact builtins cannot override hashing or
+    // equality, and every key already in the result is checked against this same set.
+    unsafe {
+        ffi::PyLong_CheckExact(value.as_ptr()) != 0
+            || ffi::PyBool_Check(value.as_ptr()) != 0
+            || ffi::PyUnicode_CheckExact(value.as_ptr()) != 0
+            || ffi::PyBytes_CheckExact(value.as_ptr()) != 0
+            || ffi::PyFloat_CheckExact(value.as_ptr()) != 0
+            || value.is_none()
+    }
+}
+
+type FrequencyPrefix = (Option<Py<PyAny>>, bool);
+
+/// Continue counting exact builtin keys in the final dictionary, without a second group table.
+#[pyfunction]
+pub(crate) fn frequencies_exact_prefix_v1(
+    counts: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+) -> PyResult<Option<FrequencyPrefix>> {
+    #[cfg(not(Py_GIL_DISABLED))]
+    if counts.cast_exact::<PyDict>().is_err() || !is_exact_sequence_iterator(source.py(), source)? {
+        return Ok(None);
+    }
+    count_frequency_prefix(counts, source)
+}
+
+type OwnedFrequencyPrefix = (Py<PyDict>, Option<Py<PyAny>>, bool);
+
+/// Count an iterator's builtin prefix without exposing the accumulating dictionary to callbacks.
+#[pyfunction]
+pub(crate) fn frequencies_iter_prefix_v1(
+    source: &Bound<'_, PyAny>,
+) -> PyResult<Option<OwnedFrequencyPrefix>> {
+    let counts = PyDict::new(source.py());
+    Ok(count_frequency_prefix(counts.as_any(), source)?
+        .map(|(boundary, exhausted)| (counts.unbind(), boundary, exhausted)))
+}
+
+fn count_frequency_prefix(
+    counts: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+) -> PyResult<Option<FrequencyPrefix>> {
+    #[cfg(Py_GIL_DISABLED)]
+    {
+        let _ = (counts, source);
+        Ok(None)
+    }
+    #[cfg(not(Py_GIL_DISABLED))]
+    {
+        let Ok(counts) = counts.cast_exact::<PyDict>() else {
+            return Ok(None);
+        };
+        let py = source.py();
+        for (key, count) in counts.iter() {
+            if !callback_free_frequency_key(&key)
+                || !count.is_exact_instance_of::<PyInt>()
+                || count.extract::<usize>().is_err()
+            {
+                return Ok(None);
+            }
+        }
+        for (index, item) in source.try_iter()?.enumerate() {
+            if index % 1024 == 0 {
+                py.check_signals()?;
+            }
+            let item = item?;
+            if !callback_free_frequency_key(&item) {
+                return Ok(Some((Some(item.unbind()), false)));
+            }
+            // SAFETY: counts and item are live under the GIL. Exact builtin keys cannot
+            // dispatch user protocols, so the borrowed count stays valid through conversion.
+            let previous = unsafe { ffi::PyDict_GetItemWithError(counts.as_ptr(), item.as_ptr()) };
+            let count = if previous.is_null() {
+                if !unsafe { ffi::PyErr_Occurred() }.is_null() {
+                    return Err(PyErr::fetch(py));
+                }
+                1
+            } else {
+                if unsafe { ffi::PyLong_CheckExact(previous) } == 0 {
+                    return Ok(Some((Some(item.unbind()), false)));
+                }
+                // SAFETY: previous is an exact int, so conversion cannot call __index__.
+                let previous = unsafe { ffi::PyLong_AsSize_t(previous) };
+                if previous == usize::MAX {
+                    if !unsafe { ffi::PyErr_Occurred() }.is_null() {
+                        drop(PyErr::fetch(py));
+                    }
+                    // Python must perform the increment if the count exceeds this ABI's
+                    // integer width. Return the current key before updating its count.
+                    return Ok(Some((Some(item.unbind()), false)));
+                }
+                previous + 1
+            };
+            counts.set_item(item, count)?;
+        }
+        Ok(Some((None, true)))
+    }
 }
 
 impl Iterator for I64Range {

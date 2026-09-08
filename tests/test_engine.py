@@ -19,6 +19,376 @@ from fpstreams.planning.compiler import compile_query
 from fpstreams.planning.plan_cache import PhysicalPlanTemplate, PlanCache, PlanCacheKey
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_native_frequency_iterator_stops_before_custom_key_protocols(raises: bool) -> None:
+    from fpstreams import _native
+
+    events = []
+    failure = RuntimeError("second hash")
+
+    class Key:
+        calls = 0
+
+        def __hash__(self):
+            self.calls += 1
+            if raises and self.calls == 2:
+                raise failure
+            return 7
+
+    key = Key()
+
+    def values():
+        try:
+            events.append("first")
+            yield 7
+            events.append("boundary")
+            yield key
+            events.append("tail")
+            yield 9
+        finally:
+            events.append("closed")
+
+    iterator = values()
+    counts, boundary, exhausted = _native.frequencies_iter_prefix_v1(iterator)
+    assert counts == {7: 1}
+    assert boundary is key
+    assert not exhausted
+    assert key.calls == 0
+    assert events == ["first", "boundary"]
+    from fpstreams.streams.flow_terminals import (
+        _prepend_frequency_boundary,
+        _update_identity_frequency_counts,
+    )
+
+    try:
+        if raises:
+            with pytest.raises(RuntimeError) as caught:
+                _update_identity_frequency_counts(
+                    _prepend_frequency_boundary(boundary, iterator), counts
+                )
+            assert caught.value is failure
+            assert key.calls == 2
+            assert events == ["first", "boundary"]
+        else:
+            result = _update_identity_frequency_counts(
+                _prepend_frequency_boundary(boundary, iterator), counts
+            )
+            assert list(result.values()) == [1, 1, 1]
+            assert events == ["first", "boundary", "tail", "closed"]
+    finally:
+        iterator.close()
+
+
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+@pytest.mark.parametrize("failure_kind", ["none", "source", "count"])
+def test_numpy_frequency_iterator_preserves_runtime_error_ownership(
+    dtype: str, failure_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    from fpstreams.execution import native
+    from fpstreams.runtime.query import QueryRuntime
+
+    failure = RuntimeError(failure_kind)
+    closes = []
+    events = []
+    original_close = QueryRuntime.close
+
+    def close(self, active_error=None):
+        closes.append(active_error)
+        return original_close(self, active_error)
+
+    class Key:
+        def __hash__(self):
+            raise failure
+
+    def execute(program):
+        def values():
+            try:
+                events.append("first")
+                yield 1
+                if failure_kind == "source":
+                    raise failure
+                events.append("second")
+                yield Key() if failure_kind == "count" else 2
+                events.append("tail")
+            finally:
+                events.append("closed")
+
+        return values()
+
+    monkeypatch.setattr(QueryRuntime, "close", close)
+    monkeypatch.setattr(native, "execute", execute)
+    source = flow.from_numpy(np.arange(1000, dtype=dtype))
+    if failure_kind == "none":
+        assert source.frequencies() == {1: 1, 2: 1}
+        assert closes == [None]
+        assert events == ["first", "second", "tail", "closed"]
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            source.frequencies()
+        assert caught.value is failure
+        assert closes == ([failure] if failure_kind == "source" else [None])
+        assert "tail" not in events
+        assert events[-1] == "closed"
+
+
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+@pytest.mark.parametrize("engine", ["python", "auto", "native"])
+def test_numpy_frequency_iterator_reports_only_selected_automatic_native_counting(
+    dtype: str, engine: str
+) -> None:
+    import numpy as np
+
+    result = (
+        flow.from_numpy(np.arange(1000, dtype=dtype) % 16)
+        .with_engine(engine)
+        .run_with_report("frequencies")
+    )
+    assert list(result.value) == list(range(16))
+    assert sum(result.value.values()) == 1000
+    assert all(type(key) is (int if dtype == "int64" else float) for key in result.value)
+    assert (result.report.strategy == "rust_direct") is (engine == "auto")
+
+
+@pytest.mark.parametrize("unavailable", ["missing", "declined"])
+def test_numpy_frequency_iterator_old_wheel_does_not_consume_twice(
+    unavailable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    from fpstreams import _native
+    from fpstreams.execution import native
+
+    calls = []
+    original = native.execute
+
+    def execute(program):
+        calls.append("execute")
+        return original(program)
+
+    monkeypatch.setattr(native, "execute", execute)
+    if unavailable == "missing":
+        monkeypatch.delattr(_native, "frequencies_iter_prefix_v1")
+    else:
+        monkeypatch.setattr(_native, "frequencies_iter_prefix_v1", lambda iterator: None)
+    result = flow.from_numpy(np.arange(1000, dtype="int64")).run_with_report("frequencies")
+    assert list(result.value.items()) == [(value, 1) for value in range(1000)]
+    assert calls == ["execute"]
+    assert result.report.strategy != "rust_direct"
+
+
+@pytest.mark.parametrize("error_type", [TypeError, OverflowError])
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+def test_numpy_frequency_iterator_keeps_automatic_source_fallback(
+    error_type: type[Exception], dtype: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    from fpstreams.execution import native
+    from fpstreams.planning.source import Source
+
+    calls = []
+    original_open = Source.open
+
+    def execute(program):
+        calls.append("native")
+        raise error_type("fallback")
+
+    def open_source(self):
+        calls.append("python")
+        return original_open(self)
+
+    monkeypatch.setattr(native, "execute", execute)
+    monkeypatch.setattr(Source, "open", open_source)
+    result = flow.from_numpy(np.arange(1000, dtype=dtype)).frequencies()
+    assert list(result.items()) == [(value, 1) for value in range(1000)]
+    assert calls == ["native", "python"]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto", "native"])
+def test_numpy_frequency_iterator_keeps_nan_payloads_and_signed_zero(engine: str) -> None:
+    import struct
+
+    import numpy as np
+
+    bits = ["8000000000000000", "0000000000000000", "7ff8000000000001", "fff8000000000002"]
+    values = [struct.unpack("!d", bytes.fromhex(value))[0] for value in bits] * 300
+    result = flow.from_numpy(np.array(values)).with_engine(engine).frequencies()
+    actual = [(struct.pack("!d", key).hex(), count) for key, count in result.items()]
+    assert actual == [(bits[0], 600)] + [(value, 1) for value in bits[2:] * 300]
+
+
+@pytest.mark.parametrize("engine", ["python", "native"])
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["factory_stop", "iter_stop", "next_error", "unbound_error", "early_close", "unopened_close"],
+)
+def test_physical_forwarding_preserves_error_conversion_and_delegate_release(
+    engine: str, failure_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fpstreams.execution import physical
+    from fpstreams.runtime.query import QueryRuntime
+
+    failure = StopIteration("factory") if failure_kind.endswith("stop") else RuntimeError("next")
+    events = []
+    closed_errors = []
+
+    class Delegate:
+        def __iter__(self):
+            events.append("iter")
+            if failure_kind == "iter_stop":
+                raise failure
+            return self
+
+        def __next__(self):
+            events.append("next")
+            if failure_kind == "next_error":
+                raise failure
+            return 1
+
+        def close(self):
+            events.append("delegate_close")
+
+        def __del__(self):
+            events.append("released")
+
+    if failure_kind == "unbound_error":
+
+        def unbound_next():
+            events.append("next")
+            raise failure
+
+        Delegate.__next__ = staticmethod(unbound_next)
+
+    def execute(*args, **kwargs):
+        events.append("factory")
+        if failure_kind == "factory_stop":
+            raise failure
+        return Delegate()
+
+    original_close = QueryRuntime.close
+
+    def close(self, active_error=None):
+        closed_errors.append(active_error)
+        events.append("runtime_close")
+        return original_close(self, active_error)
+
+    source = flow(range(1000)).map(item + 1).with_engine(engine)
+    plan = compile_query(source._query("iterate"))
+    monkeypatch.setattr(
+        physical, "execute_operations" if engine == "python" else "execute", execute
+    )
+    monkeypatch.setattr(QueryRuntime, "close", close)
+    iterator = physical.execute_physical(plan)
+    assert events == []
+    if failure_kind == "unopened_close":
+        iterator.close()
+        assert closed_errors == [None]
+    elif failure_kind == "early_close":
+        assert next(iterator) == 1
+        iterator.close()
+        assert closed_errors == [None]
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            next(iterator)
+        error = caught.value
+        assert closed_errors == [error]
+        if failure_kind.endswith("stop"):
+            assert str(error) == "generator raised StopIteration"
+            assert error.__cause__ is failure
+        else:
+            assert error is failure
+    assert (
+        events
+        == {
+            "factory_stop": ["factory", "runtime_close"],
+            "iter_stop": ["factory", "iter", "runtime_close"],
+            "next_error": ["factory", "iter", "next", "runtime_close"],
+            "unbound_error": ["factory", "iter", "next", "released", "runtime_close"],
+            "early_close": [
+                "factory",
+                "iter",
+                "next",
+                "delegate_close",
+                "released",
+                "runtime_close",
+            ],
+            "unopened_close": ["runtime_close"],
+        }[failure_kind]
+    )
+
+
+@pytest.mark.parametrize("kind", ["factory_stop", "next_error", "early_close"])
+def test_physical_forwarding_retains_arrow_sort_delegate_on_error(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pyarrow as pa
+
+    from fpstreams import rows
+    from fpstreams.execution import arrow, physical
+    from fpstreams.runtime.query import QueryRuntime
+
+    events, errors = [], []
+    failure = StopIteration("sort factory") if kind == "factory_stop" else RuntimeError("sort next")
+
+    def advance():
+        events.append("next")
+        if kind == "next_error":
+            raise failure
+        return {"key": 1}
+
+    class Delegate:
+        __next__ = staticmethod(advance)
+
+        def __iter__(self):
+            events.append("iter")
+            return self
+
+        def close(self):
+            events.append("delegate_close")
+
+        def __del__(self):
+            events.append("released")
+
+    def open_sort(plan):
+        events.append("factory")
+        if kind == "factory_stop":
+            raise failure
+        return Delegate()
+
+    original_close = QueryRuntime.close
+
+    def close(self, error=None):
+        events.append("runtime_close")
+        errors.append(error)
+        return original_close(self, error)
+
+    plan = compile_query(
+        rows.from_arrow(pa.table({"key": [2, 1]})).sort_by("key")._flow._query("list")
+    )
+    monkeypatch.setattr(arrow, "try_retained_arrow_stable_sort", open_sort)
+    monkeypatch.setattr(QueryRuntime, "close", close)
+    iterator = physical.execute_physical(plan)
+    assert events == []
+    if kind == "early_close":
+        assert next(iterator) == {"key": 1}
+        iterator.close()
+        assert errors == [None]
+        assert events == ["factory", "iter", "next", "delegate_close", "released", "runtime_close"]
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            next(iterator)
+        assert errors == [caught.value]
+        if kind == "factory_stop":
+            assert caught.value.__cause__ is failure
+            assert str(caught.value) == "generator raised StopIteration"
+            assert events == ["factory", "runtime_close"]
+        else:
+            assert caught.value is failure
+            assert events == ["factory", "iter", "next", "runtime_close"]
+
+
 def _key(value: str) -> PlanCacheKey:
     return PlanCacheKey(value, "list", (True, 10, True))
 
@@ -1784,6 +2154,28 @@ def test_direct_row_filter_declines_failpoints() -> None:
     assert execution.report.strategy == "planned:python"
 
 
+def test_single_select_preserves_current_row_until_source_resumes() -> None:
+    """An adaptive projection retains dropped values while advancing its source."""
+    from fpstreams import rows
+
+    events: list[str] = []
+
+    class Resource:
+        def __del__(self) -> None:
+            events.append("released")
+
+    def source():
+        yield {"value": 1, "unused": Resource()}
+        events.append("source resumed")
+        yield {"value": 2}
+
+    assert rows(source()).select("value").with_engine("python").to_list() == [
+        {"value": 1},
+        {"value": 2},
+    ]
+    assert events == ["source resumed", "released"]
+
+
 def test_small_direct_select_uses_builtin_map_until_codegen_can_amortize() -> None:
     """A simple projection avoids query-local AST cost while richer expressions still fuse."""
     from fpstreams import rows
@@ -2373,6 +2765,97 @@ def test_program_fingerprint_is_structural_and_address_free() -> None:
     assert "0x" not in left.value
 
 
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("int_zero", "e5c1816aaa13725b7cf68103a20056b37ed5be7219dcfd262a09d722e796dfd8"),
+        ("int_negative", "43c78be6aeaab50632fd41e26fac2ad0e9fd6e7c34d814aba062e06e0d0ba7a7"),
+        ("int_wide", "d5976658ac2aa92b8e809f2e68762aee7090e7643453f6e7773ce08eb66695ff"),
+        ("0000000000000000", "c8c0a303faa3c52a78c13120f51da50dfd41622b3247079160440cc78a0e1ba3"),
+        ("8000000000000000", "9e6c65801ecf0a39562163f56cce16ba9ebd10d2581ee52fd07e639a47b842d4"),
+        ("7ff0000000000000", "ce712151e8fa86842c1b62e5b5e3d5fe617b8b59ebbfe8facbcf4b5e33106c18"),
+        ("fff0000000000000", "f848d1da6f767a9bee84da96f15b98af74bce4a60cedd5d700e20f29396ee445"),
+        ("7ff80000000000a1", "b805d1fba0a39ee1070bf5bc00588c004fbc313911ecd7afa5b9e99c7688f8d3"),
+        ("7ff80000000000b2", "46794adabbc9d7dab2395357e47b077661509f5e748a804b8e3a4b47bca32323"),
+        ("int_pipeline", "cb8319c153a80986beb344211e57d5c41675c17a1fa6f8505cbf8ef6037eb88f"),
+        ("float_pipeline", "df66a5fbbc436c1a1e33f20260e2df96f02b35bf38fae2b2bd7e171229b984b4"),
+    ],
+)
+def test_scalar_fingerprint_keeps_the_framed_binary_format(case: str, expected: str) -> None:
+    """Stable fingerprints preserve integer width and each floating-point payload bit."""
+    import struct
+
+    from fpstreams.expressions.scalar import Expr, FExpr, fitem
+
+    if case == "int_pipeline":
+        expression = item * 3 + 1
+    elif case == "float_pipeline":
+        expression = fitem * 3 + 1
+    elif case.startswith("int_"):
+        expression = Expr.constant(
+            {"int_zero": 0, "int_negative": -129, "int_wide": 1 << 4096}[case]
+        )
+    else:
+        expression = FExpr.constant(struct.unpack("!d", bytes.fromhex(case))[0])
+    program = ExprProgram(expression, {}, Effect.MAY_RAISE)
+    assert ProgramFingerprint.from_expression(program).value == expected
+
+
+@pytest.mark.parametrize("family", ["integer", "float"])
+@pytest.mark.parametrize(
+    ("opcode", "integer_fingerprint", "float_fingerprint"),
+    [
+        (
+            -256,
+            "8091d69958100af5a1d350ae3d326b6e54983cbb18a79da4c31aeb4b0f134348",
+            "f2dabe4a014cd9978777001e3c1c2f00d86f58958380614aa99f45b136eb442a",
+        ),
+        (
+            -1,
+            "037d6807831120d0b38f906cef2d1e3673c5b81f1331d4f283e794d567be5001",
+            "570a10bb77466ddbd3d5f1057cf6df8eff26d58fd893ac6cccda4d5b78bc1d76",
+        ),
+        (
+            0,
+            "f407abf0af565f8c9fb3ff7cc720e7f3b75ea919bbd69b99c7404f80a534ea9f",
+            "c5c92e5b706b177f591d4f7aa17325b5e825cab213f183b08efa528e79090d68",
+        ),
+        (
+            18,
+            "6bd706ca3b55c78f07c882545041dd36b6753f0c515213ddb2214491ef8502ff",
+            "492dab516aeaa771687ec8545bf0fc7ef384e7a385550ffe0449e32732d4e71c",
+        ),
+        (
+            255,
+            "9a52cef4423316bd61931249c8211ecc680681ab6fc533f7f32470d2521f1abc",
+            "812d57d1deac31a1888709310fc88458c7a7007cfc159261d656f1dca7cad072",
+        ),
+        (
+            256,
+            "e94cc3cabd9d639ae6a5c010ee80d478cb098d02a0692f9cb1f22e1728716c43",
+            "8268a030d902079de9b62b6e5a451e809f85181d360e28f245f49ddb6f343c1f",
+        ),
+        (
+            1 << 129,
+            "80d8f46c120224ca92ef6f00a71ad935adb3e7c2d5c45697ca676c63aab1d3a1",
+            "08978f5ecfe550665aff43616f57704f3dc40f7ccb8b77ecc1acb8f551fe3831",
+        ),
+    ],
+)
+def test_scalar_fingerprint_preserves_opcode_sign_and_width(
+    family, opcode, integer_fingerprint, float_fingerprint
+) -> None:
+    """Opcode framing remains stable across the byte boundary and for wider integers."""
+    from fpstreams.expressions.scalar import Expr, FExpr
+
+    expression = Expr.constant(1) if family == "integer" else FExpr.constant(1)
+    operand = 1 << 257 if family == "integer" else -0.0
+    object.__setattr__(expression, "_instructions", ((opcode, operand),))
+    program = ExprProgram(expression, {}, Effect.MAY_RAISE)
+    expected = integer_fingerprint if family == "integer" else float_fingerprint
+    assert ProgramFingerprint.from_expression(program).value == expected
+
+
 def test_program_fingerprint_frames_row_literals_without_delimiter_collisions() -> None:
     left = ProgramFingerprint.from_expression(
         compile_expression(lower_expression(lit(("a,str:b",))))
@@ -2436,11 +2919,309 @@ def test_explicit_python_nan_payload_is_stable_across_scalar_fusion_boundary() -
     assert struct.pack("!d", at_boundary[-1]) == expected_bits
 
 
+@pytest.mark.parametrize("first_negative", [False, True])
+@pytest.mark.parametrize("depth", [0, 70])
+def test_float_constant_sign_survives_instruction_and_evaluator_caches(
+    first_negative: bool, depth: int
+) -> None:
+    import math
+
+    from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
+
+    _compile_float_evaluator.cache_clear()
+    fingerprints = []
+    for negative in (first_negative, not first_negative, first_negative):
+        expected_sign = -1.0 if negative else 1.0
+        expression = FExpr.constant(-0.0 if negative else 0.0)
+        for _ in range(depth):
+            expression = expression * 1.0
+        instructions = expression.native_instructions()
+        assert math.copysign(1.0, instructions[0][1]) == expected_sign
+        assert math.copysign(1.0, expression(7.0)) == expected_sign
+        fingerprints.append(
+            ProgramFingerprint.from_expression(ExprProgram(expression, {}, Effect.MAY_RAISE))
+        )
+    assert fingerprints[0] != fingerprints[1]
+    assert fingerprints[0] == fingerprints[2]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto", "native"])
+@pytest.mark.parametrize("first_negative", [False, True])
+def test_float_constant_sign_is_independent_of_previously_compiled_plan(
+    engine: str, first_negative: bool
+) -> None:
+    import math
+
+    from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
+
+    _compile_float_evaluator.cache_clear()
+    for negative in (first_negative, not first_negative, first_negative):
+        expected_sign = -1.0 if negative else 1.0
+        expression = FExpr.constant(-0.0 if negative else 0.0)
+        values = flow([1.0, 2.0]).with_engine(engine).map(expression).to_list()
+        assert [math.copysign(1.0, value) for value in values] == [expected_sign] * 2
+
+
+@pytest.mark.parametrize("first_negative", [False, True])
+@pytest.mark.parametrize("policy", ["first", "last"])
+def test_pair_float_constant_sign_keeps_the_native_value_map(
+    monkeypatch: pytest.MonkeyPatch, first_negative: bool, policy: str
+) -> None:
+    import math
+
+    from fpstreams import _native, fitem, pairs
+    from fpstreams.execution import _pair_dict
+    from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
+
+    _compile_float_evaluator.cache_clear()
+    monkeypatch.setattr(_pair_dict, "_PAIR_VALUE_MAP_MIN_ROWS", 0)
+    endpoint = _native.pair_f64_value_map_to_dict_exact_prefix_v1
+    calls = []
+
+    def tracked(*arguments: object) -> object:
+        calls.append("native")
+        return endpoint(*arguments)
+
+    monkeypatch.setattr(_native, "pair_f64_value_map_to_dict_exact_prefix_v1", tracked)
+    for negative in (first_negative, not first_negative, first_negative):
+        value = -0.0 if negative else 0.0
+        result = (
+            pairs([(1, 2.0), (1, 3.0)])
+            .map_values(FExpr.constant(value) * fitem)
+            .to_dict(on_duplicate=policy)
+        )
+        assert math.copysign(1.0, result[1]) == (-1.0 if negative else 1.0)
+    assert calls == ["native", "native", "native"]
+
+
+def test_float_evaluator_cache_distinguishes_explicit_signed_zero_instructions() -> None:
+    import math
+
+    from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
+
+    _compile_float_evaluator.cache_clear()
+    first = FExpr.constant(0.0)
+    second = FExpr.constant(-0.0)
+    # Isolate the evaluator-cache key from the instruction builder's normalization.
+    object.__setattr__(first, "_instructions", ((1, 0.0),))
+    object.__setattr__(second, "_instructions", ((1, -0.0),))
+    assert math.copysign(1.0, first(7.0)) == 1.0
+    assert math.copysign(1.0, second(7.0)) == -1.0
+
+
+@pytest.mark.parametrize("numeric_type", [int, float], ids=["integer", "float"])
+def test_generated_expression_preserves_custom_constant_inspection_order(numeric_type) -> None:
+    from fpstreams.expressions.scalar import (
+        Expr,
+        FExpr,
+        _compile_float_evaluator,
+        _compile_int_evaluator,
+    )
+
+    events = []
+
+    class Number(numeric_type):
+        def __new__(cls, value, label):
+            instance = numeric_type.__new__(cls, value)
+            instance.label = label
+            return instance
+
+        @property
+        def __class__(self):
+            events.append(self.label)
+            return numeric_type
+
+    _compile_int_evaluator.cache_clear()
+    _compile_float_evaluator.cache_clear()
+    expression_type = Expr if numeric_type is int else FExpr
+    expression = expression_type(
+        "add",
+        expression_type("const", value=Number(1, "left")),
+        expression_type("const", value=Number(2, "right")),
+    )
+
+    with pytest.raises(TypeError, match="invalid type in Constant: Number"):
+        expression(0)
+
+    assert events == ["left", "left", "right", "right"]
+
+
 def test_callback_program_has_no_compiled_fingerprint() -> None:
     expression = ExprProgram(lambda value: value + 1, {}, Effect.PYTHON_CALLBACK)
 
     with pytest.raises(ValueError, match="callback"):
         ProgramFingerprint.from_expression(expression)
+
+
+@pytest.fixture
+def isolated_scalar_caches():
+    from fpstreams.expressions import scalar
+    from fpstreams.planning import compiler
+
+    def clear():
+        scalar._compile_int_evaluator.cache_clear()
+        scalar._compile_float_evaluator.cache_clear()
+        compiler._EXPRESSION_PROGRAM_CACHE._entries.clear()
+        compiler._PHYSICAL_TEMPLATE_CACHE._entries.clear()
+
+    clear()
+    yield
+    clear()
+
+
+@pytest.mark.parametrize(
+    ("family", "first", "second"),
+    [
+        ("integer", 1, True),
+        ("integer", 1, 1.0),
+        ("float", 1.0, 1),
+        ("float", float(2**53), 2**53 + 1),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("depth", [0, 70])
+def test_scalar_evaluator_cache_keeps_direct_constant_types(
+    isolated_scalar_caches, family, first, second, reverse, depth
+) -> None:
+    from fpstreams.expressions import scalar
+
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    values = (second, first, second) if reverse else (first, second, first)
+    for value in values:
+        expression = expression_type("const", value=value)
+        expected = value
+        for _ in range(depth):
+            expression = expression * 1
+            expected *= 1 if family == "integer" else 1.0
+        result = expression(0)
+        assert type(result) is type(expected)
+        assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("family", "first", "second"),
+    [
+        ("integer", 1, True),
+        ("integer", 1, 1.0),
+        ("float", 1.0, 1),
+        ("float", float(2**53), 2**53 + 1),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("size", [1, 4096])
+def test_scalar_program_cache_keeps_direct_constant_types(
+    isolated_scalar_caches, family, first, second, reverse, engine, size
+) -> None:
+    from fpstreams.expressions import scalar
+
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    values = (second, first, second) if reverse else (first, second, first)
+    for value in values:
+        expression = expression_type("const", value=value)
+        result = flow([0] * size).map(expression).with_engine(engine).to_list()
+        assert len(result) == size
+        assert all(type(item) is type(value) and item == value for item in result)
+
+
+@pytest.mark.parametrize(
+    ("family", "value"), [("integer", True), ("integer", 1.0), ("float", 2**53 + 1)]
+)
+def test_native_rejects_direct_constants_that_change_numeric_representation(
+    isolated_scalar_caches, family, value
+) -> None:
+    from fpstreams.errors import NativeUnsupportedError
+    from fpstreams.expressions import scalar
+
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    expression = expression_type("const", value=value)
+    with pytest.raises(NativeUnsupportedError, match="exact"):
+        flow([0] * 4096).map(expression).with_engine("native").to_list()
+
+
+@pytest.mark.parametrize("family", ["integer", "float"])
+def test_scalar_cache_does_not_hide_invalid_custom_constants(
+    isolated_scalar_caches, family
+) -> None:
+    from fpstreams.expressions import scalar
+
+    numeric_type = int if family == "integer" else float
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    events = []
+
+    class Number(numeric_type):
+        @property
+        def __class__(self):
+            events.append("class")
+            return numeric_type
+
+    assert expression_type.constant(1)(0) == 1
+    with pytest.raises(TypeError, match="invalid type in Constant: Number"):
+        expression_type("const", value=Number(1))(0)
+    assert events == ["class", "class"]
+
+
+@pytest.mark.parametrize("family", ["integer", "float"])
+@pytest.mark.parametrize("route", ["direct", "python", "auto"])
+def test_scalar_cache_keeps_custom_constant_identity_in_flat_programs(
+    isolated_scalar_caches, family, route
+) -> None:
+    from fpstreams.expressions import scalar
+
+    numeric_type = int if family == "integer" else float
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    calls = []
+
+    class Number(numeric_type):
+        def __abs__(self):
+            calls.append(self)
+            return self
+
+    first, second = Number(1), Number(1)
+    assert first is not second
+    for value in (first, second, first):
+        calls.clear()
+        expression = expression_type("const", value=value)
+        for _ in range(140):
+            expression = abs(expression)
+        result = (
+            expression(0)
+            if route == "direct"
+            else flow([0]).map(expression).with_engine(route).to_list()[0]
+        )
+        assert result is value
+        assert len(calls) == 140
+        assert all(called is value for called in calls)
+
+
+@pytest.mark.parametrize("family", ["integer", "float"])
+def test_scalar_fingerprint_declines_custom_numeric_protocols(family) -> None:
+    from fpstreams.expressions import scalar
+
+    calls = []
+
+    class Meta(type):
+        def __eq__(cls, other):
+            calls.append("type equality")
+            return True
+
+        __hash__ = type.__hash__
+
+    class Numeric(metaclass=Meta):
+        def __abs__(self):
+            calls.append("abs")
+            return 1
+
+        def __float__(self):
+            calls.append("float")
+            return 1.0
+
+    expression_type = scalar.Expr if family == "integer" else scalar.FExpr
+    expression = expression_type.constant(1)
+    object.__setattr__(expression, "_instructions", ((1, Numeric()),))
+    with pytest.raises(ValueError, match="exact"):
+        ProgramFingerprint.from_expression(ExprProgram(expression, {}, Effect.MAY_RAISE))
+    assert calls == []
 
 
 def test_kernel_cache_is_structural_and_bounded() -> None:
@@ -3733,6 +4514,90 @@ def test_single_collector_group_refreshes_live_lifecycle_at_callback_boundaries(
 
 
 @pytest.mark.parametrize("execution_path", ["direct", "executor"])
+@pytest.mark.parametrize("lifecycle", ["initializer", "step", "done"])
+@pytest.mark.parametrize("fail_lookup", [False, True])
+def test_single_collector_group_releases_transient_hooks_before_key_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    execution_path: str,
+    lifecycle: str,
+    fail_lookup: bool,
+) -> None:
+    """Do not retain a hook installed by key selection and replaced by hashing."""
+    from fpstreams.execution import relational
+
+    if execution_path == "executor":
+        monkeypatch.setattr(relational, "try_direct_group_list", lambda plan: (None, plan))
+
+    def run(single: bool) -> list[str]:
+        events: list[str] = []
+        row = {"value": 3}
+        collector = fpstreams.Aggregator(lambda: 0, lambda state, item: state + item["value"])
+        original = getattr(collector, lifecycle)
+
+        class TemporaryHook:
+            def __call__(self, *_args: object) -> object:
+                raise AssertionError("transient hook must not run")
+
+            def __del__(self) -> None:
+                events.append("release")
+                row["value"] = 30
+
+        class Key:
+            calls = 0
+
+            def __hash__(self) -> int:
+                self.calls += 1
+                events.append(f"hash:{self.calls}")
+                if self.calls == 1:
+                    object.__setattr__(collector, lifecycle, original)
+                    events.append("replaced")
+                elif self.calls == 2:
+                    assert row["value"] == 30
+                    if fail_lookup:
+                        raise TypeError("lookup failed")
+                return 0
+
+        key = Key()
+
+        def select_key(_row: object) -> Key:
+            object.__setattr__(collector, lifecycle, TemporaryHook())
+            return key
+
+        def source() -> Iterator[dict[str, int]]:
+            try:
+                events.append("pull")
+                yield row
+            finally:
+                events.append("close")
+
+        items = {"total": collector}
+        if not single:
+            items["count"] = fpstreams.agg.count()
+        query = (
+            fpstreams.rows(source())
+            .with_engine("python")
+            .group_by(key=select_key)
+            .aggregate(**items)
+        )
+        if fail_lookup:
+            with pytest.raises(TypeError, match=r"^group_by keys must be hashable$"):
+                query.to_list()
+        else:
+            expected = {"key": key, "total": 30}
+            if not single:
+                expected["count"] = 1
+            assert query.to_list() == [expected]
+        return events
+
+    expected_events = ["pull", "hash:1", "release", "replaced", "hash:2"]
+    if not fail_lookup:
+        expected_events.append("hash:3")
+    expected_events.append("close")
+    assert run(False) == expected_events
+    assert run(True) == expected_events
+
+
+@pytest.mark.parametrize("execution_path", ["direct", "executor"])
 def test_single_collector_group_refreshes_after_instrumented_state_boundary(
     monkeypatch: pytest.MonkeyPatch,
     execution_path: str,
@@ -3815,6 +4680,339 @@ def test_single_collector_group_preserves_live_done_completion_cache(
 
     assert grouped.to_list() == [{"key": "a", "result": expected}]
     assert steps == expected_steps
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("execution_path", ["direct", "executor"])
+@pytest.mark.parametrize("mutation", ["step", "done", "finish", "raises"])
+def test_single_group_completion_truth_keeps_current_hooks(
+    monkeypatch, engine, execution_path, mutation
+):
+    from fpstreams.collecting._collector_base import _never_done
+    from fpstreams.execution import relational
+
+    if execution_path == "executor":
+        monkeypatch.setattr(relational, "try_direct_group_list", lambda plan: (None, plan))
+
+    def run(single):
+        events = []
+        key = object()
+
+        def step(state, row):
+            events.append(("step", row["value"]))
+            return state + row["value"]
+
+        def replacement_step(state, row):
+            events.append(("replacement", row["value"]))
+            return state + row["value"] * 10
+
+        class Completion:
+            def __init__(self, state):
+                self.state = state
+
+            def __bool__(self):
+                events.append(("truth", self.state))
+                if mutation == "raises":
+                    raise ValueError("completion truth failed")
+                replacement = {
+                    "step": replacement_step,
+                    "done": _never_done,
+                    "finish": lambda state: state * 10,
+                }[mutation]
+                object.__setattr__(collector, mutation, replacement)
+                return False
+
+        def done(state):
+            events.append(("done", state))
+            return Completion(state)
+
+        collector = fpstreams.Aggregator(lambda: 0, step, done=done)
+
+        def source():
+            try:
+                for value in (1, 2):
+                    events.append(("pull", value))
+                    yield {"key": key, "value": value}
+            finally:
+                events.append("close")
+
+        aggregations = {"total": collector}
+        if not single:
+            aggregations["count"] = fpstreams.agg.count()
+        query = (
+            fpstreams.rows(source()).with_engine(engine).group_by("key").aggregate(**aggregations)
+        )
+        if mutation == "raises":
+            with pytest.raises(ValueError, match="completion truth failed"):
+                query.to_list()
+            result = None
+        else:
+            result = query.to_list()
+            if not single:
+                assert result[0].pop("count") == 2
+            assert result[0]["key"] is key
+            result[0]["key"] = "first-key"
+        assert events.count("close") == 1
+        with pytest.raises(fpstreams.FlowConsumedError):
+            query.to_list()
+        return result, events
+
+    expected = run(False)
+    assert run(True) == expected
+    if mutation != "raises":
+        assert expected[0] == [{"key": "first-key", "total": 3 if mutation == "done" else 30}]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("execution_path", ["direct", "executor"])
+def test_single_group_releases_replaced_completion_before_next_pull(
+    monkeypatch, engine, execution_path
+):
+    from fpstreams.execution import relational
+
+    if execution_path == "executor":
+        monkeypatch.setattr(relational, "try_direct_group_list", lambda plan: (None, plan))
+
+    def run(single):
+        events = []
+        next_value = 2
+
+        class Completion:
+            def __init__(self, state):
+                self.state = state
+
+            def __bool__(self):
+                events.append(("truth", self.state))
+                return False
+
+            def __del__(self):
+                nonlocal next_value
+                events.append(("release", self.state))
+                next_value = 20
+
+        def done(state):
+            events.append(("done", state))
+            return Completion(state)
+
+        collector = fpstreams.Aggregator(
+            lambda: 0, lambda state, row: state + row["value"], done=done
+        )
+
+        def source():
+            try:
+                events.append(("pull", 1))
+                yield {"key": "a", "value": 1}
+                events.append(("pull", next_value))
+                yield {"key": "a", "value": next_value}
+            finally:
+                events.append("close")
+
+        aggregations = {"total": collector}
+        if not single:
+            aggregations["count"] = fpstreams.agg.count()
+        result = (
+            fpstreams.rows(source())
+            .with_engine(engine)
+            .group_by("key")
+            .aggregate(**aggregations)
+            .to_list()
+        )
+        if not single:
+            assert result[0].pop("count") == 2
+        return result, events
+
+    expected = run(False)
+    assert expected[0] == [{"key": "a", "total": 21}]
+    assert run(True) == expected
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("terminal", ["list", "close"])
+@pytest.mark.parametrize("order", ["aaa", "aba", "abca", "abcb"])
+@pytest.mark.parametrize("multiple_keys", [False, True])
+def test_single_group_preserves_state_release_order(engine, terminal, order, multiple_keys):
+    def run(single):
+        events = []
+        created = 0
+
+        class State:
+            def __init__(self, group, value):
+                self.group = group
+                self.value = value
+
+            def __del__(self):
+                events.append(("release", self.group, self.value))
+
+        def initialize():
+            nonlocal created
+            created += 1
+            return State(created, 0)
+
+        def step(state, row):
+            return State(state.group, state.value + row["value"])
+
+        def source():
+            try:
+                for value, key in enumerate(order, 1):
+                    events.append(("pull", key, value))
+                    yield {"key": key, "partition": "all", "value": value}
+            finally:
+                events.append("close")
+
+        aggregations = {"total": fpstreams.Aggregator(initialize, step, lambda state: state.value)}
+        if not single:
+            aggregations["count"] = fpstreams.agg.count()
+        rows = fpstreams.rows(source()).with_engine(engine)
+        grouped = rows.group_by("key", "partition") if multiple_keys else rows.group_by("key")
+        query = grouped.aggregate(**aggregations)
+        if terminal == "list":
+            result = query.to_list()
+        else:
+            iterator = iter(query)
+            try:
+                result = [next(iterator)]
+            finally:
+                iterator.close()
+        if not single:
+            for row in result:
+                row.pop("count")
+        assert events.count("close") == 1
+        with pytest.raises(fpstreams.FlowConsumedError):
+            query.to_list()
+        return result, events
+
+    expected = run(False)
+    totals = {}
+    for value, key in enumerate(order, 1):
+        totals[key] = totals.get(key, 0) + value
+    expected_rows = [
+        {"key": key, **({"partition": "all"} if multiple_keys else {}), "total": value}
+        for key, value in totals.items()
+    ]
+    assert expected[0] == (expected_rows if terminal == "list" else expected_rows[:1])
+    assert run(True) == expected
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("terminal", ["list", "close"])
+@pytest.mark.parametrize("multiple_keys", [False, True])
+def test_single_group_releases_unused_input_key_before_finishing(engine, terminal, multiple_keys):
+    def run(single):
+        events = []
+        created = 0
+        aggregation = fpstreams.Aggregator(lambda: 0, lambda state, row: state + row["value"])
+
+        class Key:
+            def __init__(self, label, number):
+                self.label = label
+                self.number = number
+
+            def __hash__(self):
+                return hash(self.label)
+
+            def __eq__(self, other):
+                return isinstance(other, Key) and self.label == other.label
+
+            def __del__(self):
+                events.append(("release", self.number))
+                if self.number == 3:
+                    object.__setattr__(aggregation, "finish", lambda state: state * 10)
+
+        def select(row):
+            nonlocal created
+            created += 1
+            return Key(row["key"], created)
+
+        def source():
+            try:
+                for value, label in enumerate("aba", 1):
+                    yield {"key": label, "value": value, "partition": "all"}
+            finally:
+                events.append("close")
+
+        aggregations = {"total": aggregation}
+        if not single:
+            aggregations["count"] = fpstreams.agg.count()
+        keys = {"key": select}
+        if multiple_keys:
+            keys["partition"] = "partition"
+        query = (
+            fpstreams.rows(source()).with_engine(engine).group_by(**keys).aggregate(**aggregations)
+        )
+        if terminal == "list":
+            result = query.to_list()
+        else:
+            iterator = iter(query)
+            try:
+                result = [next(iterator)]
+            finally:
+                iterator.close()
+        normalized = [{"key": row["key"].label, "total": row["total"]} for row in result]
+        assert result[0]["key"].number == 1
+        assert events.count("close") == 1
+        assert ("release", 3) in events
+        return normalized
+
+    expected = [{"key": "a", "total": 40}, {"key": "b", "total": 20}]
+    if terminal == "close":
+        expected = expected[:1]
+    assert run(False) == expected
+    assert run(True) == expected
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("multiple_keys", [False, True])
+def test_single_group_releases_previous_output_before_next_finisher(engine, multiple_keys):
+    """Releasing a consumed output can replace the finisher for the next group."""
+
+    def run(single):
+        events = []
+        aggregation = fpstreams.Aggregator(lambda: 0, lambda state, row: state + row["value"])
+
+        class Finished:
+            def __init__(self, value):
+                self.value = value
+
+            def __del__(self):
+                events.append("release")
+                object.__setattr__(aggregation, "finish", lambda state: state * 10)
+
+        def finish(state):
+            return Finished(state) if state == 1 else state
+
+        object.__setattr__(aggregation, "finish", finish)
+
+        def source():
+            try:
+                for value, key in enumerate("ab", 1):
+                    yield {"key": key, "partition": "all", "value": value}
+            finally:
+                events.append("close")
+
+        aggregations = {"total": aggregation}
+        if not single:
+            aggregations["count"] = fpstreams.agg.count()
+        records = fpstreams.rows(source()).with_engine(engine)
+        grouped = records.group_by("key", "partition") if multiple_keys else records.group_by("key")
+        query = grouped.aggregate(**aggregations)
+        iterator = iter(query)
+        try:
+            first = next(iterator)
+            assert first["total"].value == 1
+            del first
+            second = next(iterator)
+        finally:
+            iterator.close()
+        if not single:
+            second.pop("count")
+        assert events == ["close", "release"]
+        with pytest.raises(fpstreams.FlowConsumedError):
+            query.to_list()
+        return second
+
+    expected = {"key": "b", **({"partition": "all"} if multiple_keys else {}), "total": 20}
+    assert run(False) == expected
+    assert run(True) == expected
 
 
 @pytest.mark.parametrize("execution_path", ["direct", "executor"])
@@ -4260,6 +5458,314 @@ def test_closed_group_selector_step_replacement_starts_on_the_next_row(
         "replacement:step",
         "select:3",
     ]
+
+
+@pytest.mark.parametrize("execution_path", ["direct", "executor"])
+@pytest.mark.parametrize("mutation_row", [0, 1])
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize(
+    ("mutation", "changed_count", "total_offset", "total_factor"),
+    [
+        ("count_initializer", 101, 0, 1),
+        ("count_step", 10, 0, 1),
+        ("sum_initializer", 1, 100, 1),
+        ("sum_step", 1, 0, 10),
+        ("selector_cell", 1, 0, 10),
+    ],
+)
+def test_composite_group_calls_live_functions_after_source_mutation(  # noqa: C901 - shared mutation matrix
+    monkeypatch: pytest.MonkeyPatch,
+    execution_path: str,
+    mutation_row: int,
+    engine: str,
+    mutation: str,
+    changed_count: int,
+    total_offset: int,
+    total_factor: int,
+) -> None:
+    """Adding a count lane must not hide live function-code or closure changes."""
+    from fpstreams.execution import relational
+
+    if execution_path == "executor":
+        monkeypatch.setattr(relational, "try_direct_group_list", lambda plan: (None, plan))
+
+    def initialize() -> int:
+        return 100
+
+    def count_step(state: int, _row: object) -> int:
+        return state + 10
+
+    def sum_step_code(select: Any) -> object:
+        def step(state: int, row: object) -> int:
+            return state + select(row) * 10
+
+        return step.__code__
+
+    def run(control: bool) -> list[dict[str, object]]:
+        events: list[str] = []
+        count = fpstreams.agg.count()
+        total = fpstreams.agg.sum(2)
+        with monkeypatch.context() as scoped:
+
+            def source() -> Iterator[tuple[int, int, int]]:
+                try:
+                    for index, value in enumerate((2, 3)):
+                        events.append(f"pull:{index}")
+                        if index == mutation_row:
+                            if mutation == "selector_cell":
+                                scoped.setattr(
+                                    total.step.__closure__[0],  # type: ignore[attr-defined]
+                                    "cell_contents",
+                                    lambda row: row[2] * 10,
+                                )
+                            else:
+                                target, replacement = {
+                                    "count_initializer": (count.initializer, initialize.__code__),
+                                    "count_step": (count.step, count_step.__code__),
+                                    "sum_initializer": (total.initializer, initialize.__code__),
+                                    "sum_step": (total.step, sum_step_code(lambda row: row[2])),
+                                }[mutation]
+                                scoped.setattr(target, "__code__", replacement)
+                        yield (index, 1, value)
+                finally:
+                    events.append("close")
+
+            items = {"rows": count, "total": total}
+            if control:
+                items["control"] = fpstreams.Aggregator(lambda: 0, lambda state, row: state)
+            query = (
+                fpstreams.rows(source()).with_engine(engine).group_by(a=0, b=1).aggregate(**items)
+            )
+            physical = compile_query(query._flow._query("list"))
+            assert isinstance(physical.root, GroupAggregatePhysicalNode)
+            assert (physical.root.composite_count_sum is None) is control
+            result = query.to_list()
+            if control:
+                for row in result:
+                    assert row.pop("control") == 0
+        assert events == ["pull:0", "pull:1", "close"]
+        return result
+
+    expected = []
+    for index, value in enumerate((2, 3)):
+        row = {"a": index, "b": 1, "rows": 1, "total": value}
+        if index >= mutation_row:
+            row["rows"] = changed_count
+            row["total"] = value * total_factor + total_offset
+        expected.append(row)
+    assert run(True) == expected
+    assert run(False) == expected
+
+
+@pytest.mark.parametrize("container", [list, tuple])
+@pytest.mark.parametrize("indices", [(0, 1, 2), (-3, -2, -1)])
+@pytest.mark.parametrize("terminal", ["to_list", "count"])
+def test_native_composite_group_preserves_keys_order_and_widened_sum(
+    monkeypatch: pytest.MonkeyPatch, container: Any, indices: tuple[int, int, int], terminal: str
+) -> None:
+    from fpstreams import _native
+
+    first, equal = int("1000"), int("1000")
+    second, equal_second = int("2000"), int("2000")
+    assert first is not equal and second is not equal_second
+    source = container([(first, second, 2**63 - 1), (1001, second, -5), (equal, equal_second, 1)])
+    kernel = _native.group_count_sum_i64_two_key_rows_v1
+    calls = []
+
+    def tracked(rows: object, positions: object, names: object) -> object:
+        assert rows is source
+        calls.append((positions, names))
+        return kernel(rows, positions, names)
+
+    monkeypatch.setattr(_native, "group_count_sum_i64_two_key_rows_v1", tracked)
+    query = (
+        fpstreams.rows(source)
+        .group_by(a=indices[0], b=indices[1])
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(indices[2]))
+    )
+    execution = query.run_with_report(terminal)
+    assert calls == [(indices, ("a", "b", "rows", "total"))]
+    assert execution.report.strategy == "rust_direct"
+    expected = [
+        {"a": first, "b": second, "rows": 2, "total": 2**63},
+        {"a": 1001, "b": second, "rows": 1, "total": -5},
+    ]
+    assert execution.value == (expected if terminal == "to_list" else 2)
+    if terminal == "to_list":
+        assert execution.value[0]["a"] is first
+        assert execution.value[0]["b"] is second
+        assert list(execution.value[0]) == ["a", "b", "rows", "total"]
+
+
+@pytest.mark.parametrize("mode", ["missing", "noncallable", "decline", "memory_error"])
+@pytest.mark.parametrize("terminal", ["to_list", "count"])
+def test_native_composite_group_optional_abi_outcomes(
+    monkeypatch: pytest.MonkeyPatch, mode: str, terminal: str
+) -> None:
+    from fpstreams import _native
+
+    calls = []
+
+    def decline(*_args: object) -> None:
+        calls.append("native")
+        if mode == "memory_error":
+            raise MemoryError("composite allocation failed")
+
+    name = "group_count_sum_i64_two_key_rows_v1"
+    if mode == "missing":
+        monkeypatch.delattr(_native, name)
+    else:
+        monkeypatch.setattr(_native, name, None if mode == "noncallable" else decline)
+    query = (
+        fpstreams.rows([(1, 2, 3), (1, 2, 4)])
+        .group_by(a=0, b=1)
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+    )
+    if mode == "memory_error":
+        with pytest.raises(MemoryError, match="composite allocation failed"):
+            query.run_with_report(terminal)
+    else:
+        execution = query.run_with_report(terminal)
+        assert execution.value == (
+            [{"a": 1, "b": 2, "rows": 2, "total": 7}] if terminal == "to_list" else 1
+        )
+        assert execution.report.strategy == "planned:python"
+    assert calls == (["native"] if mode in {"decline", "memory_error"} else [])
+
+
+@pytest.mark.parametrize("source", [[], ()])
+def test_native_composite_group_empty_is_a_successful_result(source: Any) -> None:
+    result = (
+        fpstreams.rows(source)
+        .group_by(a=0, b=1)
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+        .run_with_report("to_list")
+    )
+    assert result.value == []
+    assert result.report.strategy == "rust_direct"
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("value", [True, 2**70, "custom_int", "custom_row"])
+def test_native_composite_group_declines_without_extra_protocol_calls(
+    position: int, value: Any
+) -> None:
+    def run(engine: str) -> tuple[Any, list[str]]:
+        events = []
+
+        class CustomInt(int):
+            def __hash__(self) -> int:
+                events.append("hash")
+                return super().__hash__()
+
+            def __radd__(self, other: int) -> int:
+                events.append("add")
+                return int(self) + other
+
+        class CustomRow(tuple):
+            def __getitem__(self, index: int) -> Any:
+                events.append(f"get:{index}")
+                return super().__getitem__(index)
+
+        row = [1, 2, 3]
+        if value == "custom_int":
+            row[position] = CustomInt(row[position])
+        elif value != "custom_row":
+            row[position] = value
+        last = CustomRow(row) if value == "custom_row" else tuple(row)
+        result = (
+            fpstreams.rows([(1, 2, 3), last])
+            .with_engine(engine)
+            .group_by(a=0, b=1)
+            .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+            .run_with_report("to_list")
+        )
+        assert result.report.strategy == "planned:python"
+        return result.value, events
+
+    assert run("auto") == run("python")
+
+
+@pytest.mark.parametrize("mutation", ["pair_code", "component_code", "component_cell", "pair_cell"])
+def test_native_composite_group_revalidates_compiled_key_functions(
+    monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    from fpstreams import _native
+    from fpstreams.execution import relational
+
+    query = (
+        fpstreams.rows([(1, 2, 3), (1, 2, 4)])
+        .group_by(a=0, b=1)
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+    )
+    plan = compile_query(query._flow._query("list"))
+    node = plan.root
+    assert isinstance(node, GroupAggregatePhysicalNode)
+    assert node.composite_count_sum is not None
+
+    def unexpected(*_args: object) -> object:
+        raise AssertionError("changed selector entered the native kernel")
+
+    def component_code(selector: int) -> Any:
+        def select(row: Any) -> Any:
+            return row[selector] * 10
+
+        return select.__code__
+
+    def pair_code(first: int, second: int, selectors: Any) -> Any:
+        def select(row: Any) -> Any:
+            assert first == 0 and second == 1 and len(selectors) == 2
+            return row[0] * 10, row[1]
+
+        return select.__code__
+
+    monkeypatch.setattr(_native, "group_count_sum_i64_two_key_rows_v1", unexpected)
+    if mutation == "pair_code":
+        monkeypatch.setattr(node.select_key, "__code__", pair_code(0, 1, node.keys))
+        expected = [{"a": 10, "b": 2, "rows": 2, "total": 7}]
+    elif mutation == "component_code":
+        monkeypatch.setattr(node.keys[0], "__code__", component_code(0))
+        expected = [{"a": 10, "b": 2, "rows": 2, "total": 7}]
+    elif mutation == "component_cell":
+        monkeypatch.setattr(node.keys[0].__closure__[0], "cell_contents", 2)
+        expected = [
+            {"a": 3, "b": 2, "rows": 1, "total": 3},
+            {"a": 4, "b": 2, "rows": 1, "total": 4},
+        ]
+    else:
+        monkeypatch.setattr(
+            node.select_key.__closure__[2], "cell_contents", (lambda row: row[0] * 10, node.keys[1])
+        )
+        expected = [{"a": 10, "b": 2, "rows": 2, "total": 7}]
+    result, _ = relational.try_direct_group_list(plan)
+    assert result == expected
+
+
+def test_native_composite_group_observes_replaced_source_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams import _native
+
+    events = []
+    query = (
+        fpstreams.rows([(1, 2, 3)])
+        .group_by(a=0, b=1)
+        .aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+    )
+
+    def changed_open(_source: object) -> Iterator[Any]:
+        events.append("open")
+        yield (1, 2, 30)
+
+    def unexpected(*_args: object) -> object:
+        raise AssertionError("changed source entered the native kernel")
+
+    monkeypatch.setattr(Source, "open", changed_open)
+    monkeypatch.setattr(_native, "group_count_sum_i64_two_key_rows_v1", unexpected)
+    result = query.run_with_report("to_list")
+    assert result.value == [{"a": 1, "b": 2, "rows": 1, "total": 30}]
+    assert result.report.strategy == "planned:python"
+    assert events == ["open"]
 
 
 @pytest.mark.parametrize("shape", ["simple_sum", "closed_group", "composite_count_sum"])
@@ -4910,9 +6416,9 @@ def test_callable_simple_group_sum_matches_canonical_iterator_protocol(
     spec = physical.root.simple_sum
     assert spec is not None
 
-    assert list(relational._execute_python_group_values(ObservableIterator(), physical.root)) == [
-        {"key": 1, "total": 2}
-    ]
+    grouped_values = relational._execute_python_group_values(ObservableIterator(), physical.root)
+    assert events == []
+    assert list(grouped_values) == [{"key": 1, "total": 2}]
     assert events == ["iter", "iter", "next", "next", "close"]
 
 
@@ -5144,6 +6650,156 @@ def test_callable_simple_group_sum_observes_selector_mutation_at_canonical_bound
         expected = [{"key": 2, "total": 10}, {"key": 1, "total": 5}]
     assert grouped.to_list() == expected
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("record_kind", ["dict", "proxy", "mapping"])
+@pytest.mark.parametrize("boundary", ["source", "value", "hash"])
+@pytest.mark.parametrize("mutation", ["closure", "code"])
+def test_single_group_key_selector_keeps_live_bindings(engine, record_kind, boundary, mutation):
+    """Source and row callbacks can change the next key without replaying any input."""
+    from collections import UserDict
+    from types import MappingProxyType
+
+    from fpstreams.expressions.selectors import compile_selector
+
+    select = compile_selector("left")
+    events = []
+    changed = False
+
+    def replacement_factory(selector):
+        def replacement(row):
+            return row["right"] if selector else row["left"]
+
+        return replacement
+
+    def change():
+        nonlocal changed
+        if changed:
+            return
+        changed = True
+        if mutation == "closure":
+            select.__closure__[0].cell_contents = "right"
+        else:
+            select.__code__ = replacement_factory("left").__code__
+
+    class Key:
+        def __hash__(self):
+            if boundary == "hash":
+                change()
+            return 17
+
+    first_key = Key()
+    record_type = {"dict": dict, "proxy": MappingProxyType, "mapping": UserDict}[record_kind]
+    records = [record_type({"left": first_key, "right": "B", "value": value}) for value in (1, 2)]
+
+    def source():
+        try:
+            for index, record in enumerate(records):
+                if index == 1 and boundary == "source":
+                    change()
+                events.append(index)
+                yield record
+        finally:
+            events.append("close")
+
+    def select_value(row):
+        if boundary == "value":
+            change()
+        return row["value"]
+
+    grouped = (
+        fpstreams.rows(source())
+        .with_engine(engine)
+        .group_by(key=select)
+        .aggregate(total=fpstreams.agg.sum(select_value))
+    )
+    result = grouped.to_list()
+    assert result == [{"key": first_key, "total": 1}, {"key": "B", "total": 2}]
+    assert result[0]["key"] is first_key
+    assert events == [0, 1, "close"]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        grouped.to_list()
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("mutation", ["empty_closure", "error_class", "type_global"])
+def test_single_group_key_selector_keeps_live_errors_and_globals(monkeypatch, engine, mutation):
+    """Selector errors and global lookups occur at the row that observes a change."""
+    import builtins
+
+    from fpstreams.expressions import selectors
+
+    select = selectors.compile_selector("left")
+    events = []
+    type_calls = []
+    second = {} if mutation == "error_class" else {"left": "A"}
+
+    class ChangedSelectionError(fpstreams.SelectionError):
+        pass
+
+    def traced_type(value):
+        type_calls.append(value)
+        return builtins.type(value)
+
+    def source():
+        try:
+            events.append(0)
+            yield {"left": "A"}
+            if mutation == "empty_closure":
+                del select.__closure__[0].cell_contents
+            elif mutation == "error_class":
+                monkeypatch.setattr(selectors, "SelectionError", ChangedSelectionError)
+            else:
+                monkeypatch.setattr(selectors, "type", traced_type, raising=False)
+            events.append(1)
+            yield second
+        finally:
+            events.append("close")
+
+    grouped = (
+        fpstreams.rows(source())
+        .with_engine(engine)
+        .group_by(key=select)
+        .aggregate(total=fpstreams.agg.count())
+    )
+    if mutation == "type_global":
+        assert grouped.to_list() == [{"key": "A", "total": 2}]
+        assert len(type_calls) == 1 and type_calls[0] is second
+    else:
+        expected = NameError if mutation == "empty_closure" else ChangedSelectionError
+        with pytest.raises(expected) as captured:
+            grouped.to_list()
+        if mutation == "error_class":
+            assert isinstance(captured.value.__cause__, KeyError)
+    assert events == [0, 1, "close"]
+
+
+@pytest.mark.parametrize("record_kind", ["proxy", "mapping"])
+def test_generated_field_selector_keeps_mapping_instancecheck_hooks(monkeypatch, record_kind):
+    """Calling a generated selector preserves the Mapping protocol's live instance hook."""
+    from abc import ABCMeta
+    from collections import UserDict
+    from types import MappingProxyType
+
+    from fpstreams.expressions.selectors import compile_selector
+
+    record_type = MappingProxyType if record_kind == "proxy" else UserDict
+    record = record_type({"value": 7})
+    select = compile_selector("value")
+    original = ABCMeta.__instancecheck__
+    calls = []
+
+    def observed(cls, value):
+        if cls is Mapping and value is record:
+            calls.append(value)
+        return original(cls, value)
+
+    assert select(record) == 7
+    with monkeypatch.context() as patch:
+        patch.setattr(ABCMeta, "__instancecheck__", observed)
+        assert select(record) == 7
+    assert len(calls) == 1 and calls[0] is record
 
 
 @pytest.mark.parametrize("callback_side", ["key", "value"])
@@ -6054,6 +7710,42 @@ def test_declined_native_group_keeps_the_planned_python_report(
     execution = grouped.run_with_report(terminal)
 
     assert execution.value == ([{"key": 1, "rows": 2, "total": 7}] if terminal == "to_list" else 1)
+    assert execution.report.strategy == "planned:python"
+
+
+def test_native_join_and_declined_join_report_distinct_successful_routes(monkeypatch) -> None:
+    from fpstreams.execution import relational
+    from fpstreams.runtime.report import _current_recorder
+
+    marker = object()
+    left = [{"id": 1, "value": marker}]
+    right = [{"id": 1, "label": "match"}]
+    query = fpstreams.rows(left).join(right, on="id", validate="m:1")
+    execution = query.run_with_report("to_list")
+    assert execution.value == [{"id": 1, "value": marker, "label": "match"}]
+    assert execution.value[0]["value"] is marker
+    assert execution.report.strategy == "rust_direct"
+    assert execution.report.compiler_engine == "python"
+
+    calls = []
+
+    def decline(_plan):
+        calls.append("declined")
+        return None
+
+    monkeypatch.setattr(relational, "try_native_record_join", decline)
+    fallback = query.run_with_report("to_list")
+    assert calls == ["declined"]
+    assert fallback.value == execution.value
+    assert fallback.value[0]["value"] is marker
+    assert fallback.report.strategy == "python_join"
+    assert _current_recorder() is None
+
+
+def test_child_join_report_does_not_replace_outer_terminal_strategy() -> None:
+    joined = fpstreams.rows([{"id": 1}]).join([{"id": 1}], on="id", validate="m:1")
+    execution = joined.select("id").run_with_report("to_list")
+    assert execution.value == [{"id": 1}]
     assert execution.report.strategy == "planned:python"
 
 

@@ -6,6 +6,7 @@ import ast
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from ._codegen import locate_generated_ast
 from .row_ir import (
     Binary,
     Call,
@@ -70,7 +71,7 @@ def compile_row_evaluator(
         builder = _ExpressionBuilder(selectors)
         expression = builder.build(root)
         tree = ast.Expression(ast.Lambda(_lambda_arguments(builder.row_name), expression))
-        code = compile(ast.fix_missing_locations(tree), "<fpstreams-row-expr>", "eval")
+        code = compile(locate_generated_ast(tree), "<fpstreams-row-expr>", "eval")
         globals_: dict[str, Any] = {
             "__builtins__": {},
             builder.slots_name: tuple(builder.slots),

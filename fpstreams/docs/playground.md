@@ -1,14 +1,15 @@
 # Try fpstreams in your browser
 
-The page installs fpstreams' pure-Python wheel into a dedicated Pyodide worker.
-Code runs in that worker and is not sent to an fpstreams server. Initial load
-time depends on the network and browser cache.
+Edit an example and run it in your browser. The page downloads Python and the
+fpstreams pure-Python wheel, then runs your code in a separate worker. It does
+not send your code to an fpstreams server. The first load can take longer while
+the runtime downloads.
 
 <div class="fp-playground" data-fp-playground>
   <div class="fp-playground__masthead">
     <div>
       <p class="fp-playground__eyebrow">Runs locally in your browser</p>
-      <h2>Inspect a pipeline while you learn it</h2>
+      <h2>Run a Python pipeline</h2>
     </div>
     <div class="fp-playground__status" data-status="loading" role="status" aria-live="polite">
       <span class="fp-playground__status-light" aria-hidden="true"></span>
@@ -32,7 +33,7 @@ time depends on the network and browser cache.
       </div>
       <label class="sr-only" for="fp-playground-code">Python source code</label>
       <textarea id="fp-playground-code" data-code spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="fp-playground-help"></textarea>
-      <p id="fp-playground-help" class="fp-playground__help">The namespace is retained between runs. Reset starts a clean interpreter.</p>
+      <p id="fp-playground-help" class="fp-playground__help">Variables stay available between runs. Reset runtime clears them and starts Python again.</p>
     </section>
 
     <section class="fp-playground__pane fp-playground__output-pane" aria-labelledby="fp-output-title">
@@ -63,11 +64,11 @@ time depends on the network and browser cache.
   </div>
 </div>
 
-<noscript>This playground requires JavaScript. All ordinary documentation remains available without it.</noscript>
+<noscript>Enable JavaScript to run these examples. You can still read the documentation without it.</noscript>
 
 ## Browser scope
 
-The playground is intended for core pipeline exploration:
+You can try the core APIs here:
 
 - `Flow`, `Rows`, `Pairs`, collectors, expressions, and `AsyncFlow` run locally;
 - the `auto` engine selects the canonical Python path because the CPython/Rust

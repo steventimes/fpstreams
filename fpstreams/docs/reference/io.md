@@ -1,9 +1,9 @@
 # Data input and output
 
-fpstreams separates source selection from query construction. File formats are
-never guessed from a string path, and a two-dimensional Python object is not
-silently reclassified by sampling its contents. Use an explicit adapter when the
-source contract matters.
+Use an explicit factory for files, named columns, and NumPy arrays.
+`flow(source)` recognizes supported tabular objects and protocols, but treats
+ordinary iterables as supplied. It does not infer a file format from a path or
+sample nested lists to decide whether they are tables.
 
 ## Input matrix
 
@@ -31,12 +31,12 @@ providers are recognized directly; Arrow wins when an object exposes both.
 
 ## CSV: compatibility and typed scan
 
-Two CSV adapters intentionally expose different contracts.
+`from_csv()` reads string cells with Python's CSV parser. `scan_csv()` uses
+Arrow's typed batch reader.
 
 ### `rows.from_csv`
 
-Use the standard-library-compatible reader when string cells and `csv` dialect
-options are desired.
+Use this reader for string cells and Python `csv` dialect options.
 
 ```python
 from fpstreams import rows
@@ -53,8 +53,7 @@ paid = rows.from_csv("orders.csv", encoding="utf-8").where(status="paid").to_lis
   returns;
 - duplicate header names raise `DuplicateKeyError` before the first row is emitted.
 
-The ownership distinction makes upload streams and remote-storage clients usable without a
-temporary file:
+Pass an open handle to read it once, or an opener to read it again on each execution:
 
 ```python
 from io import StringIO
@@ -184,9 +183,9 @@ and providers of `__arrow_c_stream__`. Use `from_parquet` for an Arrow Dataset.
 - Crossing into arbitrary Python callbacks materializes Python-visible values as
   required by the callback contract.
 
-The C stream protocol provides interoperability, not a promise of zero copies in
-every downstream operation. Schema conversion, unsupported data types, or a
-Python row boundary can require allocation.
+The C stream protocol lets libraries exchange Arrow data. Schema conversion,
+unsupported data types, and conversion to Python rows can still allocate or copy
+data.
 
 ## Dataframe interchange and pandas
 
@@ -241,7 +240,7 @@ orders = rows.from_db(
     lambda: sqlite3.connect("shop.db"),
     "select id, amount from orders where status = ?",
     parameters=("paid",),
-    fetch_size=1_000,
+    batch_size=1_000,
 )
 ```
 
@@ -282,11 +281,10 @@ preservation is required.
 
 ## Files, errors, and partial effects
 
-Read adapters own files and connections they open and close them on completion,
-early termination, and failure. Writer methods document whether they stream
-directly or use a replace/transaction boundary. A raised error means callers
-must not assume an external file or database accepted no rows unless the adapter
-explicitly provides atomic behavior.
+Read adapters close the files and connections they open on completion, early
+termination, and failure. Writers may stream directly, replace a completed file,
+or use a database transaction; check the method's contract. A failed streaming
+write may leave partial output.
 
 Common adapter failures include:
 

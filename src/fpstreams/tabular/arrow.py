@@ -416,6 +416,9 @@ def csv_source(
     _pa, _dataset, _parquet = _arrow_modules()
     csv_module = cast(Any, import_module("pyarrow.csv"))
     size = _positive_size(batch_size)
+    csv_core = cast(Any, import_module("pyarrow._csv"))
+    input_stream_factory = _pa.lib.input_stream
+    csv_reader_factory = csv_core.open_csv
 
     def open_reader(
         options: Any,
@@ -455,7 +458,13 @@ def csv_source(
 
     def projected_batches(requested: tuple[str, ...]) -> Iterator[Any]:
         """Reopen a default CSV reader with only proven-present query fields."""
-        if not requested:
+        if (
+            not requested
+            or _pa.input_stream is not input_stream_factory
+            or csv_module.open_csv is not csv_reader_factory
+            or csv_module.ReadOptions is not csv_core.ReadOptions
+            or csv_module.ConvertOptions is not csv_core.ConvertOptions
+        ):
             yield from batches()
             return
         if read_options is None and parse_options is None and convert_options is None:
@@ -516,6 +525,13 @@ def csv_source(
             projected_batches if convert_options is None and parse_options is None else None
         ),
         byte_size_opener=byte_size,
+        projection_safe=(
+            (type(path) is str or type(path) is type(Path()))
+            and read_options is None
+            and parse_options is None
+            and convert_options is None
+            and memory_pool is None
+        ),
     )
     return _deferred_arrow_source(records, descriptor)
 
@@ -693,6 +709,9 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
     size = _positive_size(batch_size)
     projected = None if columns is None else list(_column_names(columns, operation="Parquet scan"))
     dataset_factory = getattr(dataset_module, "dataset", None)
+    dataset_factory_code = (
+        _function_code(dataset_factory) if type(dataset_factory) is FunctionType else None
+    )
     metadata_count_is_guarded = bool(
         dataset_factory is not None
         and _guarded_local_parquet_metadata_count(
@@ -722,8 +741,16 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
         range_predicate: RangePredicate | None = None,
         *,
         first_only: bool = False,
+        projection_check: Callable[[], bool] | None = None,
     ) -> Iterator[Any]:
         """Yield batches, narrowing only within the caller-visible source schema."""
+        if getattr(dataset_module, "dataset", None) is not dataset_factory or (
+            type(dataset_factory) is FunctionType
+            and _function_code(dataset_factory) is not dataset_factory_code
+        ):
+            # A replaced opener can change the live selector. Keep the public source
+            # columns available when the opened batch falls back to Python.
+            requested = None
         dataset = open_dataset()
         scan_columns = projected
         scan_filter = filter
@@ -776,6 +803,8 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
         if first_only:
             scanner_options["batch_readahead"] = 0
             scanner_options["fragment_readahead"] = 0
+        if requested is not None and projection_check is not None and not projection_check():
+            scanner_options["columns"] = projected
         scanner = dataset.scanner(
             **scanner_options,
         )
@@ -798,9 +827,10 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
         """Create a scanner from schema-guarded projection and comparison hints."""
         yield from scan(
             request.columns,
-            request.equality,
-            request.range_predicate,
-            first_only=request.first_only,
+            request.equality if filter is None else None,
+            request.range_predicate if filter is None else None,
+            first_only=request.first_only if filter is None else False,
+            projection_check=request.projection_check,
         )
 
     def count_rows() -> int | None:
@@ -873,8 +903,9 @@ def parquet_source(
         "parquet",
         size,
         projection_opener=projected_batches,
-        request_opener=requested_batches if filter is None else None,
+        request_opener=requested_batches,
         count_opener=count_rows,
+        projection_safe=_guarded_local_parquet_metadata_count(source, filesystem, partitioning),
     )
     return _deferred_arrow_source(records, descriptor)
 

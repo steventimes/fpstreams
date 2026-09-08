@@ -8,8 +8,6 @@ from typing import Any, cast
 from ..planning.async_ import AsyncLogicalPlan, _AsyncSource
 from ..planning.async_utils import closing_async_iterators
 
-_RETAINED_TYPES = (list, tuple, range)
-
 
 async def _consume_opened_identity(iterator: AsyncIterator[Any], terminal: str) -> Any:
     """Run one identity terminal after ownership has already opened its source."""
@@ -83,7 +81,10 @@ def try_retained_identity_terminal(
     if type(source) is not _AsyncSource:
         return None
     retained = source._retained_sequence
-    if source._opener is not source._retained_opener or type(retained) not in _RETAINED_TYPES:
+    retained_type = type(retained)
+    if source._opener is not source._retained_opener or (
+        retained_type is not list and retained_type is not tuple and retained_type is not range
+    ):
         return None
     if terminal not in {"count", "list", "tuple"}:
         return None

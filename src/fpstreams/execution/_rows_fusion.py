@@ -8,6 +8,7 @@ from itertools import chain
 from typing import Any, cast
 
 from ..errors import SelectionError
+from ..expressions._codegen import locate_generated_ast
 from ..expressions.row import RowExpr
 from ..expressions.row_ir import (
     Binary,
@@ -507,7 +508,7 @@ class _RowsLoopBuilder:
             "_fpstreams_slots": tuple(self._slots),
         }
         code = compile(
-            ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+            locate_generated_ast(ast.Module(body=[function], type_ignores=[])),
             filename,
             "exec",
         )
@@ -565,7 +566,16 @@ class _RowsLoopBuilder:
             ast.Assign([ast.Name(id="_current", ctx=ast.Store())], self._name("_row")),
         ]
         for operation, descriptor in zip(self._operations, self._descriptors, strict=True):
-            if isinstance(operation, MapOp):
+            if isinstance(operation, MapOp) and descriptor.kind in {"select", "with_columns"}:
+                # The compiled accessors can change while the source is being consumed.
+                # Calling the original transform also keeps sibling selector ordering intact.
+                exact_body.append(
+                    ast.Assign(
+                        [ast.Name(id="_current", ctx=ast.Store())],
+                        ast.Call(self._slot(operation.function), [self._name("_current")], []),
+                    )
+                )
+            elif isinstance(operation, MapOp):
                 exact_body.extend(self._map_stage(descriptor))
             else:
                 exact_body.extend(self._filter_stage(operation, descriptor))
@@ -587,9 +597,9 @@ class _RowsLoopBuilder:
         return body
 
     def _map_stage(self, descriptor: RowStageDescriptor) -> list[ast.stmt]:
-        """Copy/enrich or project a dictionary while preserving selector declaration order."""
+        """Copy a dictionary before applying casts or null replacements in order."""
         output_name = self._temp("record")
-        if descriptor.kind in {"with_columns", "cast", "fill_nulls"}:
+        if descriptor.kind in {"cast", "fill_nulls"}:
             statements: list[ast.stmt] = [
                 ast.Assign(
                     [ast.Name(id=output_name, ctx=ast.Store())],
@@ -600,30 +610,11 @@ class _RowsLoopBuilder:
                     ),
                 )
             ]
-        elif descriptor.kind == "select":
-            statements = [
-                ast.Assign(
-                    [ast.Name(id=output_name, ctx=ast.Store())],
-                    ast.Dict(keys=[], values=[]),
-                )
-            ]
         else:
             raise ValueError("filter descriptor used for a map stage")
 
         record = ast.Name(id=output_name, ctx=ast.Load())
-        if descriptor.kind in {"with_columns", "select"}:
-            # Every sibling selector receives the pre-stage dictionary, even after an earlier
-            # output column has been assigned to the copied result.
-            for name, selector in descriptor.selectors:
-                expression_statements, value = self._selector(selector, self._name("_current"))
-                statements.extend(expression_statements)
-                statements.append(
-                    ast.Assign(
-                        [ast.Subscript(record, ast.Constant(name), ast.Store())],
-                        value,
-                    )
-                )
-        elif descriptor.kind == "cast":
+        if descriptor.kind == "cast":
             for name, converter in descriptor.selectors:
                 statements.append(
                     ast.If(

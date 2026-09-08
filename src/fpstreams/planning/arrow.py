@@ -139,8 +139,21 @@ def _direct_projection(operation: MapOp | FilterOp) -> ArrowProjectionSpec | Non
     outputs = tuple(output for output, _selector in selectors)
     if len(set(outputs)) != len(outputs):
         return None
+    from ..tabular.rows import _materialized_select_spec
+
+    if _materialized_select_spec(operation.function) != selectors:
+        return None
     inputs = tuple(dict.fromkeys(selector for _output, selector in selectors))
     return ArrowProjectionSpec(selectors, inputs)
+
+
+def _projection_is_current(prefix: ArrowPrefixPlan) -> bool:
+    """Check the accessors behind a cached projection without consuming its source."""
+    if prefix.projection is None:
+        return True
+    return (
+        bool(prefix.operations) and _direct_projection(prefix.operations[-1]) == prefix.projection
+    )
 
 
 def _direct_primitive_filter(operation: MapOp | FilterOp) -> bool:
@@ -382,6 +395,8 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
 
 def supports_arrow_table_materialization(prefix: ArrowPrefixPlan) -> bool:
     """Return whether a complete prefix can stay columnar through table materialization."""
+    if not _projection_is_current(prefix):
+        return False
     operations = prefix.operations
     if not operations:
         return True

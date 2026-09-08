@@ -1,6 +1,51 @@
 //! Expression preparation, fused pipeline, frequency, and terminal coverage.
 
 use super::*;
+#[cfg(not(Py_GIL_DISABLED))]
+use crate::frequencies_exact_prefix_v1;
+#[cfg(not(Py_GIL_DISABLED))]
+use crate::frequencies_iter_prefix_v1;
+
+#[test]
+#[cfg(not(Py_GIL_DISABLED))]
+fn iterator_frequency_prefix_opens_once_and_leaves_custom_boundary_unhashed() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"events = []\nclass Key:\n    def __hash__(self):\n        raise AssertionError('hash called')\nkey = Key()\nclass Values:\n    def __iter__(self):\n        events.append('open')\n        yield 3\n        events.append('next')\n        yield 3\n        yield key\n        events.append('tail')\nvalues = iter(Values())\n",
+            c"iterator_frequency.py",
+            c"iterator_frequency",
+        ).unwrap();
+        let source = fixture.getattr("values").unwrap();
+        let (counts, boundary, exhausted) = frequencies_iter_prefix_v1(&source).unwrap().unwrap();
+        assert!(!exhausted);
+        assert!(
+            boundary
+                .unwrap()
+                .bind(py)
+                .is(fixture.getattr("key").unwrap())
+        );
+        assert_eq!(
+            counts
+                .bind(py)
+                .get_item(3)
+                .unwrap()
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            fixture
+                .getattr("events")
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap(),
+            ["open", "next"]
+        );
+    });
+}
 
 #[test]
 fn division_and_modulo_match_python_for_negative_operands() {
@@ -532,6 +577,127 @@ fn exact_i64_frequencies_handle_256_distinct_groups() {
             .expect("a bounded exact-i64 distribution should stay native");
 
         assert_eq!(counts.bind(py).len().unwrap(), 256);
+    });
+}
+
+#[test]
+#[cfg(not(Py_GIL_DISABLED))]
+fn frequency_continuation_stops_before_observing_a_custom_key() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"class Key:\n    calls = 0\n    def __hash__(self):\n        type(self).calls += 1\n        return 0\nkey = Key()\nvalues = [*range(700), key, 900]\n",
+            c"frequency_boundary.py",
+            c"frequency_boundary",
+        ).unwrap();
+        let values = fixture.getattr("values").unwrap();
+        let iterator = values.try_iter().unwrap();
+        let counts = PyDict::new(py);
+        let (boundary, exhausted) = frequencies_exact_prefix_v1(counts.as_any(), iterator.as_any())
+            .unwrap()
+            .unwrap();
+        assert!(!exhausted);
+        assert!(
+            boundary
+                .unwrap()
+                .bind(py)
+                .is(fixture.getattr("key").unwrap())
+        );
+        assert_eq!(counts.len(), 700);
+        assert_eq!(
+            fixture
+                .getattr("Key")
+                .unwrap()
+                .getattr("calls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            iterator
+                .call_method0("__next__")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            900
+        );
+    });
+}
+
+#[test]
+#[cfg(not(Py_GIL_DISABLED))]
+fn frequency_continuation_rejects_unsafe_seeds_and_iterators_before_consumption() {
+    Python::initialize();
+    Python::attach(|py| {
+        let fixture = PyModule::from_code(
+            py,
+            c"class Trap:\n    def __hash__(self):\n        raise AssertionError('hash called')\n    def __index__(self):\n        raise AssertionError('index called')\n    def __iter__(self):\n        raise AssertionError('iterator opened')\ntrap = Trap()\n",
+            c"frequency_seed.py",
+            c"frequency_seed",
+        ).unwrap();
+        let trap = fixture.getattr("trap").unwrap();
+        let values = PyList::new(py, [7]).unwrap();
+        let iterator = values.as_any().try_iter().unwrap();
+        let counts = PyDict::new(py);
+        counts.set_item(1, &trap).unwrap();
+        assert!(
+            frequencies_exact_prefix_v1(counts.as_any(), iterator.as_any())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            iterator
+                .call_method0("__next__")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            7
+        );
+        counts.clear();
+        assert!(
+            frequencies_exact_prefix_v1(counts.as_any(), &trap)
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[test]
+#[cfg(not(Py_GIL_DISABLED))]
+fn frequency_continuation_returns_the_boundary_before_count_overflow() {
+    Python::initialize();
+    Python::attach(|py| {
+        let counts = PyDict::new(py);
+        counts.set_item("key", usize::MAX).unwrap();
+        let values = PyList::new(py, ["key", "tail"]).unwrap();
+        let iterator = values.as_any().try_iter().unwrap();
+        let (boundary, exhausted) = frequencies_exact_prefix_v1(counts.as_any(), iterator.as_any())
+            .unwrap()
+            .unwrap();
+        assert!(!exhausted);
+        assert_eq!(
+            boundary.unwrap().bind(py).extract::<String>().unwrap(),
+            "key"
+        );
+        assert_eq!(
+            counts
+                .get_item("key")
+                .unwrap()
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            usize::MAX
+        );
+        assert_eq!(
+            iterator
+                .call_method0("__next__")
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "tail"
+        );
     });
 }
 

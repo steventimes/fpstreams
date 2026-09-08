@@ -37,14 +37,15 @@ def curry(function: Callable[..., T]) -> Callable[..., Any]:
 
     The wrapped callable executes as soon as every non-variadic parameter without a default
     has been bound. Arguments may still be supplied all at once, and invalid or duplicate
-    arguments raise the same binding errors produced by :func:`inspect.signature`.
+    arguments raise the same binding errors produced by `inspect.signature`.
 
     Args:
         function: A callable whose signature can be inspected.
 
     Returns:
-        A metadata-preserving callable that either executes `function` or returns another
-        argument-accepting stage.
+        A wrapper that preserves `function` metadata. It calls `function` once all
+            required arguments are bound; otherwise it returns a callable for the next
+            arguments.
     """
     signature = inspect.signature(function)
     required = tuple(

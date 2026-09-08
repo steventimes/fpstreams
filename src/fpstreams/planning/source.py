@@ -165,7 +165,12 @@ class Source(Generic[T]):
         Exact size is trusted only for built-in containers with side-effect-free ``len``;
         lists, tuples, and ranges are additionally retained as native-engine inputs.
         """
-        safely_sized = type(value) in _SAFE_SIZED_TYPES
+        value_type = _BUILTIN_TYPE(value)
+        # A custom metaclass can compare equal to a builtin without sharing its layout.
+        safely_sized = (
+            _BUILTIN_TYPE(value_type) is _BUILTIN_TYPE and value_type in _SAFE_SIZED_TYPES
+        )
+        native_sequence = safely_sized and value_type in _NATIVE_SOURCE_TYPES
         exact_size = len(cast(Any, value)) if safely_sized else None
         ordered = not isinstance(value, (set, frozenset))
         if not isinstance(value, Iterator):
@@ -176,11 +181,11 @@ class Source(Generic[T]):
                     exact_size=exact_size,
                     ordered=ordered,
                 ),
-                native_data=value if type(value) in _NATIVE_SOURCE_TYPES else None,
+                native_data=value if native_sequence else None,
                 live_size_data=value if safely_sized else _NO_LIVE_SIZE,
                 track_factory_code=False,
             )
-            if type(value) in _NATIVE_SOURCE_TYPES:
+            if native_sequence:
                 source._retained_sequence_data = cast(
                     "list[Any] | tuple[Any, ...] | range",
                     value,

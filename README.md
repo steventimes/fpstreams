@@ -7,8 +7,9 @@
 
 [Documentation](https://steventimes.github.io/fpstreams/) · [Browser playground](https://steventimes.github.io/fpstreams/playground/) · [Changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) · [Contributing](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
 
-Typed, lazy data pipelines for Python, with synchronous streams, structured
-asynchronous concurrency, record-oriented transforms, and optional Rust execution.
+Build lazy Python pipelines for values, records, and async iterables. fpstreams
+supports bounded async concurrency and uses Rust, Arrow, or NumPy for operations
+that can preserve the pipeline's Python behavior.
 
 > fpstreams 2 replaces the v1 implementation and retains the compatibility
 > aliases listed below.
@@ -19,8 +20,7 @@ asynchronous concurrency, record-oriented transforms, and optional Rust executio
   pipelines, including retained tabular sources.
 - `AsyncFlow[T]`: asynchronous transforms with bounded concurrency, ordering,
   timeouts, merging, debouncing, and cleanup of tasks created by the pipeline.
-- `Rows[T]`: an explicit relational and compatibility view for expressions,
-  joins, grouping, reshape operations, and record-oriented data I/O.
+- `Rows[T]`: a record view for expressions, joins, grouping, reshaping, and I/O.
 - `Pairs[K, V]`: key/value transforms and per-key collection or aggregation.
 - `Collector` and `Aggregator`: single-pass reductions, including named
   multi-aggregation.
@@ -218,10 +218,10 @@ assert totals == {
 
 ## Execution engines
 
-The default `auto` engine chooses among Python, native Rust, Arrow-native
-prefixes, and hybrid execution. Relational plans may also use guarded native
-subpaths while retaining their canonical Python fallback. Pass the terminal you
-intend to call to `explain()` so its answer matches execution:
+The default `auto` engine chooses Python, Rust, Arrow, NumPy, or a combination
+for each supported plan. Relational plans may use native shortcuts while keeping
+a Python fallback. Pass the terminal you intend to call to `explain()` so it
+can include that terminal in its planning decisions:
 
 ~~~python
 from fpstreams import flow, item
@@ -245,11 +245,23 @@ python_result = pipeline.with_engine("python").to_list()
 native_result = pipeline.with_engine("native").to_list()
 ~~~
 
+Use `run_with_report()` to execute a terminal and inspect its recorded route.
+The current source also supports Pairs terminals such as
+`flow([("a", 1)]).pairs().run_with_report("group_values")`. These Pairs reports
+are not part of the published 2.1.0 release. See the
+[execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
+for supported terminals and the limits of route reporting.
+
 A forced native plan raises `NativeUnsupportedError` if its complete types or
 operations cannot run natively. In particular, the presence of an internal
 native relational specialization does not make the complete relation eligible
 for `with_engine("native")`. An unsupported forced relational plan fails before
 claiming its one-shot sources; `auto` selects a legal fallback path.
+
+[`run_with_report()`](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
+returns a terminal's value, recorded route, and query-owned resource counts in
+one execution. It records the outer plan and some direct paths; it does not
+identify every internal kernel or runtime fallback.
 
 For an unchanged list or tuple, automatic `list`, `sum`, and `count` terminals
 stay in Python instead of scanning and copying the container into Rust. Numeric

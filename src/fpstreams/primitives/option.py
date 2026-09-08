@@ -15,7 +15,8 @@ class Option(Generic[T]):
     """Store either one non-`None` value or an empty state.
 
     Instances are immutable and cannot distinguish a present `None` from absence. Use
-    :meth:`of`, :meth:`of_nullable`, or :meth:`empty` to make that choice explicit.
+    [of()][fpstreams.Option.of], [of_nullable()][fpstreams.Option.of_nullable],
+    or [empty()][fpstreams.Option.empty] to make that choice explicit.
     """
 
     _value: T | None
@@ -102,15 +103,15 @@ class Option(Generic[T]):
     def map(self, mapper: Callable[[T], R | None]) -> Option[R]:
         """Map a present value and convert a mapped `None` to absence.
 
-        The mapper is skipped for an empty option. Unlike :class:`Result`, this method does
-        not capture mapper exceptions.
+        The mapper is skipped for an empty option. Unlike [Result][fpstreams.Result],
+        this method does not capture mapper exceptions.
 
         Args:
             mapper: Callable applied to the stored value.
 
         Returns:
-            An option containing the mapped value, or an empty option when either input or
-            output is `None`.
+            An option containing the mapped value, or an empty option if this option is
+                empty or the mapper returns `None`.
         """
         if self._value is None:
             return Option.empty()

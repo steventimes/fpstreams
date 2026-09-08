@@ -7,7 +7,10 @@ import operator
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
+from math import copysign
 from typing import Any, Literal, cast
+
+from ._codegen import locate_generated_ast
 
 ExpressionKind = Literal["int", "bool"]
 
@@ -150,7 +153,7 @@ def _ast_evaluator(
             body=values[0],
         )
     )
-    code = compile(ast.fix_missing_locations(expression), "<fpstreams-expression>", "eval")
+    code = compile(locate_generated_ast(expression), "<fpstreams-expression>", "eval")
     namespace = {"__builtins__": {}, "_abs": abs, "_bool": bool, "_float": float}
     return cast(Callable[[Any], Any], eval(code, namespace))
 
@@ -166,6 +169,7 @@ def _postorder_instructions(
     which is ignored by both Python evaluators and the native executor for non-constants.
     Unknown operation names fail through the opcode lookup.
     """
+    preserve_float_bits = type(default_operand) is float
     instructions: list[tuple[int, int | float]] = []
     pending = [(expression, False)]
     while pending:
@@ -178,7 +182,9 @@ def _postorder_instructions(
                 pending.append((current.left, False))
             continue
         operand = current.value if current.operation == "const" else default_operand
-        instructions.append((_OPCODES[current.operation], operand or default_operand))
+        if not preserve_float_bits or type(operand) is not float:
+            operand = operand or default_operand
+        instructions.append((_OPCODES[current.operation], operand))
     return tuple(instructions)
 
 
@@ -225,9 +231,54 @@ def _flat_int_evaluator(
     return evaluate
 
 
+def _has_exact_instruction_types(
+    instructions: object, operand_type: type[int] | type[float]
+) -> bool:
+    """Check instruction types without converting operands or invoking user protocols."""
+    if type(instructions) is not tuple:
+        return False
+    for instruction in instructions:
+        if type(instruction) is not tuple or len(instruction) != 2:
+            return False
+        opcode, operand = instruction
+        if type(opcode) is not int or type(operand) is not operand_type:
+            return False
+    return True
+
+
+def _noncanonical_instruction_ids(
+    instructions: object, operand_type: type[int] | type[float]
+) -> tuple[tuple[int, int, int], ...]:
+    """Keep nonstandard instruction objects separate without invoking their protocols.
+
+    Cache keys retain the original instructions, so these object identities cannot
+    be reused while an entry remains cached. Unknown containers are not traversed.
+    """
+    if _has_exact_instruction_types(instructions, operand_type):
+        return ()
+    if type(instructions) is not tuple:
+        return ((-1, id(instructions), 0),)
+    identities = []
+    for index, instruction in enumerate(instructions):
+        if type(instruction) is not tuple or len(instruction) != 2:
+            identities.append((index, id(instruction), 0))
+            continue
+        opcode, operand = instruction
+        if type(opcode) is not int or type(operand) is not operand_type:
+            identities.append(
+                (
+                    index,
+                    id(opcode) if type(opcode) is not int else 0,
+                    id(operand) if type(operand) is not operand_type else 0,
+                )
+            )
+    return tuple(identities)
+
+
 @lru_cache(maxsize=1_024)
 def _compile_int_evaluator(
     instructions: tuple[tuple[int, int], ...],
+    _instruction_ids: tuple[tuple[int, int, int], ...] = (),
 ) -> Callable[[int], int | bool]:
     """Compile and LRU-cache an integer evaluator for one instruction tuple.
 
@@ -414,7 +465,13 @@ class Expr:
         """
         evaluator = self._evaluator
         if evaluator is None:
-            evaluator = _compile_int_evaluator(self.native_instructions())
+            instructions = self.native_instructions()
+            instruction_ids = _noncanonical_instruction_ids(instructions, int)
+            evaluator = (
+                _compile_int_evaluator(instructions, instruction_ids)
+                if instruction_ids
+                else _compile_int_evaluator(instructions)
+            )
             object.__setattr__(self, "_evaluator", evaluator)
         return evaluator
 
@@ -500,12 +557,16 @@ def _flat_float_evaluator(
 @lru_cache(maxsize=1_024)
 def _compile_float_evaluator(
     instructions: tuple[tuple[int, float], ...],
+    _negative_zero_positions: tuple[int, ...] = (),
+    _instruction_ids: tuple[tuple[int, int, int], ...] = (),
 ) -> Callable[[float], float | bool]:
     """Compile and LRU-cache a float evaluator for one instruction tuple.
 
     Programs of at most 128 instructions use one restricted function and convert each item to
     float. Longer programs use the explicit value stack. The global cache retains up to 1,024
-    compiled evaluators.
+    compiled evaluators. The second key component distinguishes signed zero,
+    which Python's ordinary tuple equality otherwise treats as equal. Nonstandard
+    operands use an additional identity key instead of sharing numeric-value entries.
     """
     if len(instructions) > _AST_EVALUATOR_LIMIT:
         return _flat_float_evaluator(instructions)
@@ -546,7 +607,8 @@ class FExpr:
 
         The value is converted immediately to float. bool and every other type raise TypeError.
         """
-        if type(value) not in (int, float):
+        value_type = type(value)
+        if value_type is not int and value_type is not float:
             raise TypeError("native float expressions accept int or float constants")
         return FExpr("const", value=float(value))
 
@@ -558,7 +620,8 @@ class FExpr:
         """
         if isinstance(value, FExpr):
             return value
-        if type(value) in (int, float):
+        value_type = type(value)
+        if value_type is int or value_type is float:
             return FExpr.constant(value)  # type: ignore[arg-type]  # narrowed above
         raise TypeError(f"unsupported float expression operand: {type(value).__name__}")
 
@@ -683,7 +746,18 @@ class FExpr:
         """
         evaluator = self._evaluator
         if evaluator is None:
-            evaluator = _compile_float_evaluator(self.native_instructions())
+            instructions = self.native_instructions()
+            negative_zeros = tuple(
+                index
+                for index, (_opcode, operand) in enumerate(instructions)
+                if type(operand) is float and operand == 0.0 and copysign(1.0, operand) < 0.0
+            )
+            instruction_ids = _noncanonical_instruction_ids(instructions, float)
+            evaluator = (
+                _compile_float_evaluator(instructions, negative_zeros, instruction_ids)
+                if instruction_ids
+                else _compile_float_evaluator(instructions, negative_zeros)
+            )
             object.__setattr__(self, "_evaluator", evaluator)
         return evaluator
 

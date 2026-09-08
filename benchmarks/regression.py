@@ -5,27 +5,41 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import math
 import statistics
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
-METADATA_FIELDS = ("python_version", "platform", "machine")
+if __package__:
+    from .evidence import COMPARABLE_FIELDS, REPORT_SCHEMA_VERSION, metadata_errors
+else:
+    from evidence import COMPARABLE_FIELDS, REPORT_SCHEMA_VERSION, metadata_errors
+
+METADATA_FIELDS = COMPARABLE_FIELDS
 PEAK_RESOURCE_FIELDS = frozenset({"peak_rss_bytes", "peak_allocation_bytes"})
 ROOT = Path(__file__).parents[1]
 
 
 def _read(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data.get("metadata"), dict) or not isinstance(data.get("results"), list):
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("metadata"), dict)
+        or not isinstance(data.get("results"), list)
+    ):
         raise ValueError(f"invalid benchmark report: {path}")
     return data
 
 
 def _read_baseline(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data.get("metadata"), dict) or not isinstance(data.get("scenarios"), dict):
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("metadata"), dict)
+        or not isinstance(data.get("scenarios"), dict)
+    ):
         raise ValueError(f"invalid benchmark baseline: {path}")
     return data
 
@@ -76,20 +90,83 @@ def _group_coverage_errors(
 
 
 def _comparable(reports: list[dict[str, Any]]) -> None:
-    expected = reports[0]["metadata"]
+    if not reports:
+        raise ValueError("baseline requires reports")
+    for report in reports:
+        errors = _report_errors(report)
+        if errors:
+            raise ValueError(errors[0])
     for report in reports[1:]:
-        for field in METADATA_FIELDS:
-            if report["metadata"].get(field) != expected.get(field):
-                raise ValueError(f"mixed benchmark metadata: {field}")
+        errors = _metadata_errors(reports[0]["metadata"], report["metadata"])
+        if report.get("schema_version") != reports[0].get("schema_version"):
+            errors.insert(0, "mixed benchmark report schema")
+        if errors:
+            raise ValueError(errors[0])
         if {item["name"] for item in report["results"]} != {
             item["name"] for item in reports[0]["results"]
         }:
             raise ValueError("benchmark scenario sets differ")
 
 
+def _report_errors(report: dict[str, Any]) -> list[str]:
+    if report.get("schema_version") != REPORT_SCHEMA_VERSION:
+        return ["mixed benchmark report schema; recreate the baseline from current reports"]
+    errors = metadata_errors(report["metadata"])
+    if errors:
+        return errors
+    seen = set()
+    for item in report["results"]:
+        if not isinstance(item, dict):
+            return ["invalid benchmark scenario"]
+        name = item.get("name")
+        seconds = item.get("median_seconds")
+        if not isinstance(name, str) or not name or name in seen:
+            return ["invalid or duplicate benchmark scenario name"]
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0:
+            return [f"invalid benchmark timing: {name}"]
+        if report["metadata"]["suite"] == "competitive":
+            warmups = item.get("warmup_runs")
+            if (
+                not isinstance(warmups, list)
+                or not warmups
+                or len(warmups) != item.get("sample_count")
+                or any(type(count) is not int or count < 1 for count in warmups)
+            ):
+                return [f"invalid benchmark warmup evidence: {name}"]
+        errors = _resource_metric_errors(name, item.get("resources"))
+        if errors:
+            return errors
+        seen.add(name)
+    return [] if seen else ["benchmark report contains no scenarios"]
+
+
+def _metadata_errors(expected: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    # 规模和执行模式必须相同, 版本、提交与代码 hash 允许跨提交变化。
+    for field in METADATA_FIELDS:
+        if (field in current) != (field in expected) or current.get(field) != expected.get(field):
+            return [f"mixed benchmark metadata: {field}"]
+    expected_native = expected.get("native", {})
+    current_native = current.get("native", {})
+    if not isinstance(expected_native, dict) or not isinstance(current_native, dict):
+        return ["invalid benchmark native metadata"]
+    for field in ("available", "profile"):
+        if (field in expected_native) != (field in current_native) or expected_native.get(
+            field
+        ) != current_native.get(field):
+            return [f"mixed benchmark metadata: native.{field}"]
+    expected_libraries = expected.get("libraries", {})
+    current_libraries = current.get("libraries", {})
+    if not isinstance(expected_libraries, dict) or not isinstance(current_libraries, dict):
+        return ["invalid benchmark libraries metadata"]
+    for library in (expected_libraries.keys() | current_libraries.keys()) - {"fpstreams"}:
+        if expected_libraries.get(library) != current_libraries.get(library):
+            return [f"mixed benchmark metadata: libraries.{library}"]
+    return []
+
+
 def _baseline(reports: list[dict[str, Any]], provenance: str) -> dict[str, Any]:
     _comparable(reports)
-    scenarios: dict[str, dict[str, float]] = {}
+    scenarios: dict[str, dict[str, Any]] = {}
     for name in sorted(item["name"] for item in reports[0]["results"]):
         samples = [
             float(
@@ -105,6 +182,10 @@ def _baseline(reports: list[dict[str, Any]], provenance: str) -> dict[str, Any]:
         source_items = [
             next(item for item in report["results"] if item["name"] == name) for report in reports
         ]
+        if any("execution" in item for item in source_items):
+            scenario["executions"] = [
+                item.get("execution", {"status": "unknown"}) for item in source_items
+            ]
         first_row_samples = [
             float(item["first_row_seconds"]) for item in source_items if "first_row_seconds" in item
         ]
@@ -117,31 +198,40 @@ def _baseline(reports: list[dict[str, Any]], provenance: str) -> dict[str, Any]:
                 statistics.median(abs(sample - first_row_median) for sample in first_row_samples),
                 12,
             )
-        resource_names = {
-            resource for item in source_items for resource in item.get("resources", {})
+        resource_names = set(source_items[0]["resources"])
+        if any(set(item["resources"]) != resource_names for item in source_items[1:]):
+            raise ValueError(f"resource metric sets differ: {name}")
+        scenario["resources"] = {
+            resource: statistics.median(item["resources"][resource] for item in source_items)
+            for resource in sorted(resource_names)
         }
-        if resource_names:
-            scenario["resources"] = {
-                resource: statistics.median(
-                    float(item.get("resources", {}).get(resource, 0)) for item in source_items
-                )
-                for resource in sorted(resource_names)
-            }
         scenarios[name] = scenario
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "report_schema_version": reports[0].get("schema_version"),
         "provenance": provenance,
         "metadata": reports[0]["metadata"],
         "scenarios": scenarios,
+        "runs": [report["metadata"] for report in reports],
     }
 
 
 def _comparison_errors(
     baseline: dict[str, Any], current: dict[str, Any], groups: dict[str, tuple[str, ...]]
 ) -> list[str]:
-    for field in METADATA_FIELDS:
-        if current["metadata"].get(field) != baseline["metadata"].get(field):
-            return [f"mixed benchmark metadata: {field}"]
+    if baseline.get("schema_version") != 2:
+        return ["unsupported benchmark baseline schema; recreate the baseline"]
+    errors = _report_errors(current) or metadata_errors(baseline["metadata"])
+    if errors:
+        return errors
+    if current.get("schema_version") != baseline.get("report_schema_version"):
+        return ["mixed benchmark report schema; recreate the baseline from comparable reports"]
+    provenance_errors = _baseline_provenance_errors(baseline)
+    if provenance_errors:
+        return provenance_errors
+    comparison_errors = _metadata_errors(baseline["metadata"], current["metadata"])
+    if comparison_errors:
+        return comparison_errors
     expected = baseline.get("scenarios", {})
     actual = {item["name"]: float(item["median_seconds"]) for item in current["results"]}
     current_by_name: dict[str, dict[str, Any]] = {}
@@ -165,6 +255,19 @@ def _comparison_errors(
     return errors
 
 
+def _baseline_provenance_errors(baseline: dict[str, Any]) -> list[str]:
+    runs = baseline.get("runs")
+    if not isinstance(runs, list) or not runs:
+        return ["missing baseline run provenance; recreate the baseline"]
+    for run in runs:
+        if not isinstance(run, dict):
+            return ["invalid baseline run provenance"]
+        errors = metadata_errors(run) or _metadata_errors(baseline["metadata"], run)
+        if errors:
+            return errors
+    return []
+
+
 def _scenario_errors(
     name: str,
     expected: dict[str, Any],
@@ -173,7 +276,7 @@ def _scenario_errors(
 ) -> tuple[list[str], bool]:
     """Compare one scenario while preserving timing, latency, then resource error order."""
     median = float(expected["median_seconds"])
-    if median <= 0:
+    if not math.isfinite(median) or median <= 0:
         return [f"invalid baseline timing: {name}"], False
 
     errors: list[str] = []
@@ -200,10 +303,29 @@ def _first_row_errors(name: str, expected: dict[str, Any], current: dict[str, An
     return [f"hard first-row regression: {name} ({ratio:.3f}x)"] if ratio > 1.30 else []
 
 
+def _resource_metric_errors(name: str, resources: Any) -> list[str]:
+    """Require measured allocation evidence and finite, nonnegative resource values."""
+    if not isinstance(resources, dict) or "peak_allocation_bytes" not in resources:
+        return [f"missing benchmark resource: {name}.peak_allocation_bytes"]
+    for resource, value in resources.items():
+        if (
+            not isinstance(resource, str)
+            or not resource
+            or type(value) not in (int, float)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            return [f"invalid benchmark resource: {name}.{resource}"]
+    return []
+
+
 def _resource_errors(name: str, expected: dict[str, Any], current: dict[str, Any]) -> list[str]:
     """Compare exact counters and bounded peak resource metrics for one scenario."""
-    expected_resources = expected.get("resources", {})
-    actual_resources = current.get("resources", {})
+    errors = _resource_metric_errors(name, expected.get("resources"))
+    if errors:
+        return errors
+    expected_resources = expected["resources"]
+    actual_resources = current["resources"]
     if set(actual_resources) != set(expected_resources):
         return [f"resource metric sets differ: {name}"]
 
@@ -212,7 +334,13 @@ def _resource_errors(name: str, expected: dict[str, Any], current: dict[str, Any
         actual_value = float(actual_resources[resource])
         baseline_value = float(expected_value)
         if resource in PEAK_RESOURCE_FIELDS:
-            if baseline_value <= 0 or actual_value / baseline_value > 1.30:
+            if (
+                not math.isfinite(baseline_value)
+                or not math.isfinite(actual_value)
+                or baseline_value < 0
+                or actual_value < 0
+                or actual_value > baseline_value * 1.30
+            ):
                 errors.append(f"hard peak resource regression: {name}.{resource}")
         elif actual_value != baseline_value:
             errors.append(f"hard resource invariant: {name}.{resource}")

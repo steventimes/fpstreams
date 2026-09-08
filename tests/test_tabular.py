@@ -355,6 +355,46 @@ def test_from_columns_validates_its_boundary_before_arrow_planning() -> None:
         fpstreams.rows.from_columns({"value": [1]}, batch_size=0)
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_select_snapshot_retains_replaced_sibling_until_row_finishes(raises: bool) -> None:
+    """Selector-list edits affect the next row without releasing a current sibling early."""
+    from fpstreams.tabular.rows import _build_select_project
+
+    events = []
+    failure = RuntimeError("original selector failure")
+
+    class Sibling:
+        def __call__(self, row):
+            events.append("original sibling")
+            if raises:
+                raise failure
+            return row["right"]
+
+        def __del__(self):
+            events.append("released sibling")
+
+    aliases = [("right", Sibling())]
+
+    def replace_sibling(row):
+        events.append("replace sibling")
+        aliases[:] = [("replacement", lambda item: item["new"])]
+        return row["left"]
+
+    project = _build_select_project([("left", replace_sibling)], aliases)
+    record = {"left": 1, "right": 2, "new": 3}
+    if raises:
+        with pytest.raises(RuntimeError) as caught:
+            project(record)
+        assert caught.value is failure
+        # The exception traceback owns the active selector until it is cleared.
+        failure.__traceback__ = None
+        del caught
+    else:
+        assert project(record) == {"left": 1, "right": 2}
+    assert events == ["replace sibling", "original sibling", "released sibling"]
+    assert project(record) == {"left": 1, "replacement": 3}
+
+
 def test_column_expressions_remove_row_lambda_noise() -> None:
     orders = [
         {"customer": "Ada", "status": "paid", "amount": 20},
@@ -476,6 +516,636 @@ def test_structured_rows_fusion_preserves_map_exhaustion_and_lookup_translation(
         fpstreams.rows([collision] * 384).select("id").to_list()
     assert isinstance(captured.value.__cause__, TypeError)
     assert str(captured.value.__cause__) == "collision equality"
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_rows_with_columns_keeps_live_sibling_list_and_original_row(monkeypatch, engine):
+    """Enrichment copies first, then reads the live selector list against the input row."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_build = rows_module._CANONICAL_BUILD_WITH_COLUMNS_ENRICHER
+    captured = []
+
+    def capture(selectors):
+        captured.append(selectors)
+        return original_build(selectors)
+
+    monkeypatch.setattr(rows_module, "_CANONICAL_BUILD_WITH_COLUMNS_ENRICHER", capture)
+    query = fpstreams.rows([{"value": 2, "replacement": 30} for _ in range(600)])
+    query = query.with_engine(engine).with_columns(copy="value", second="replacement")
+    selectors = captured[0]
+    changed = []
+
+    def first(row):
+        row["replacement"] = 99
+        if not changed:
+            changed.append(True)
+            selectors[1] = ("second", lambda original: original["replacement"] + 10)
+            selectors.append(("third", lambda original: original["value"] + 20))
+        return row["value"]
+
+    def replacement(selector):
+        def invoke(row):
+            return selector(row)
+
+        return invoke
+
+    function = selectors[0][1]
+    function.__code__ = replacement(first).__code__
+    function.__closure__[0].cell_contents = first
+    assert query.to_list() == [
+        {"value": 2, "replacement": 30, "copy": 2, "second": 109, "third": 22} for _ in range(600)
+    ]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("source_kind", ["dict", "numpy"])
+@pytest.mark.parametrize("boundary", ["before_execution", "source_open"])
+@pytest.mark.parametrize("terminal", ["to_list", "to_columns"])
+def test_rows_with_columns_uses_live_expression_evaluator(
+    monkeypatch, engine, source_kind, boundary, terminal
+):
+    """Computed-column terminals recheck evaluators after claiming their source."""
+    from fpstreams.planning.source import Source
+
+    size = 600
+    calls = []
+    opened = []
+    expression = fpstreams.col("value") + 1
+    assert expression({"value": 2}) == 3
+    if source_kind == "numpy":
+        np = pytest.importorskip("numpy")
+        source = fpstreams.rows.from_numpy(
+            np.asarray([[2, 30]] * size), columns=["value", "replacement"]
+        )
+    else:
+        source = fpstreams.rows([{"value": 2, "replacement": 30} for _ in range(size)])
+    query = source.with_engine(engine).with_columns(score=expression)
+
+    def evaluate(row):
+        calls.append(row["value"])
+        return row["replacement"] + 1
+
+    if boundary == "before_execution":
+        object.__setattr__(expression, "_evaluate", evaluate)
+    else:
+        name = "open_native" if source_kind == "numpy" and engine == "auto" else "open"
+        original = getattr(Source, name)
+
+        def changed_open(owner, *args, **kwargs):
+            opened.append(True)
+            object.__setattr__(expression, "_evaluate", evaluate)
+            return original(owner, *args, **kwargs)
+
+        monkeypatch.setattr(Source, name, changed_open)
+    result = getattr(query, terminal)()
+    if terminal == "to_list":
+        assert result == [{"value": 2, "replacement": 30, "score": 31} for _ in range(size)]
+    else:
+        assert result == {"value": [2] * size, "replacement": [30] * size, "score": [31] * size}
+    assert calls == [2] * size
+    if boundary == "source_open":
+        assert opened == [True]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("boundary", [0, 512, 550])
+@pytest.mark.parametrize("raises", [False, True])
+def test_rows_with_columns_observes_accessor_changes_during_consumption(
+    monkeypatch, engine, boundary, raises
+):
+    """A live accessor controls later rows, errors, and the number of source pulls."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = []
+    pulled = []
+    calls = []
+    failure = RuntimeError("changed accessor")
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured.append(function)
+        return function
+
+    def replacement(selector):
+        def changed(row):
+            return selector(row)
+
+        return changed
+
+    def live(row):
+        calls.append(row["index"])
+        if raises:
+            raise failure
+        return row["replacement"]
+
+    def source():
+        for index in range(600):
+            if index == boundary:
+                function = captured[0]
+                function.__code__ = replacement(live).__code__
+                function.__closure__[0].cell_contents = live
+            pulled.append(index)
+            yield {"index": index, "value": 2, "replacement": 30}
+
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = fpstreams.rows(source()).with_engine(engine).with_columns(copy="value")
+    if raises:
+        with pytest.raises(RuntimeError) as caught:
+            query.to_list()
+        assert caught.value is failure
+        assert pulled == list(range(boundary + 1))
+        assert calls == [boundary]
+    else:
+        result = query.to_list()
+        assert [row["copy"] for row in result] == [2] * boundary + [30] * (600 - boundary)
+        assert pulled == list(range(600))
+        assert calls == list(range(boundary, 600))
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("source_kind", ["dict", "numpy", "arrow"])
+@pytest.mark.parametrize("mutation", ["closure", "code"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rows_with_columns_reads_captured_accessor_bindings(
+    monkeypatch, engine, source_kind, mutation, compiled
+):
+    """Computed columns use the current accessor even through a retained plan."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = []
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured.append(function)
+        return function
+
+    size = 600
+    if source_kind == "numpy":
+        np = pytest.importorskip("numpy")
+        source = fpstreams.rows.from_numpy(
+            np.asarray([[2, 30]] * size), columns=["value", "replacement"]
+        )
+    elif source_kind == "arrow":
+        source = fpstreams.rows.from_columns(
+            {"value": [2] * size, "replacement": [30] * size}, batch_size=7
+        )
+    else:
+        source = fpstreams.rows([{"value": 2, "replacement": 30} for _ in range(size)])
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = source.with_engine(engine).with_columns(copy="value")
+    if compiled:
+        context = query._flow._terminal_context("list")
+        owner_type = type(query._flow)
+        original_context = owner_type._terminal_context
+
+        def retained_context(owner, terminal):
+            if owner is query._flow and terminal == "list":
+                return context
+            return original_context(owner, terminal)
+
+        monkeypatch.setattr(owner_type, "_terminal_context", retained_context)
+    function = captured[0]
+    if mutation == "closure":
+        function.__closure__[0].cell_contents = "replacement"
+    else:
+
+        def replacement(selector):
+            def changed(row):
+                assert selector == "value"
+                return row["replacement"]
+
+            return changed
+
+        function.__code__ = replacement("value").__code__
+    assert query.to_list() == [{"value": 2, "replacement": 30, "copy": 30} for _ in range(size)]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("source_kind", ["dict", "numpy", "arrow"])
+@pytest.mark.parametrize("mutation", ["closure", "code"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rows_select_revalidates_captured_accessors(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: str,
+    source_kind: str,
+    mutation: str,
+    compiled: bool,
+) -> None:
+    """Terminal shortcuts and retained physical plans read the live selected field."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = {}
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured[selector] = function
+        return function
+
+    size = 2048 if source_kind == "dict" else 16
+    if source_kind == "numpy":
+        np = pytest.importorskip("numpy")
+        source = fpstreams.rows.from_numpy(
+            np.asarray([[2, 30]] * size), columns=["value", "replacement"]
+        )
+    elif source_kind == "arrow":
+        pytest.importorskip("pyarrow")
+        source = fpstreams.rows.from_columns({"value": [2] * size, "replacement": [30] * size})
+    else:
+        source = fpstreams.rows([{"value": 2, "replacement": 30} for _ in range(size)])
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = source.with_engine(engine).select(value="value")
+    if compiled:
+        context = query._flow._terminal_context("list")
+        owner_type = type(query._flow)
+        original_context = owner_type._terminal_context
+
+        def retained_context(owner, terminal):
+            if owner is query._flow and terminal == "list":
+                return context
+            return original_context(owner, terminal)
+
+        monkeypatch.setattr(owner_type, "_terminal_context", retained_context)
+
+    function = captured["value"]
+    if mutation == "closure":
+        cells = dict(zip(function.__code__.co_freevars, function.__closure__, strict=True))
+        cells["selector"].cell_contents = "replacement"
+    else:
+        selector = "value"
+
+        def replacement(row):
+            return row["replacement"] if selector else None
+
+        function.__code__ = replacement.__code__
+
+    assert query.to_list() == [{"value": 30}] * size
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("change_at", [0, 1024])
+def test_rows_select_keeps_accessor_changes_during_source_reads(
+    monkeypatch: pytest.MonkeyPatch, engine: str, change_at: int
+) -> None:
+    """A one-shot source can change an accessor before or after the generated loop starts."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = {}
+    pulls = []
+    closed = []
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured[selector] = function
+        return function
+
+    def source():
+        try:
+            for index in range(2048):
+                if index == change_at:
+                    function = captured["value"]
+                    cells = dict(
+                        zip(function.__code__.co_freevars, function.__closure__, strict=True)
+                    )
+                    cells["selector"].cell_contents = "replacement"
+                pulls.append(index)
+                yield {"value": 2, "replacement": 30}
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = fpstreams.rows(source()).with_engine(engine).select(value="value")
+    assert query.to_list() == [{"value": 2}] * change_at + [{"value": 30}] * (2048 - change_at)
+    assert pulls == list(range(2048))
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("terminal", ["to_list", "to_columns"])
+def test_numpy_select_revalidates_after_native_source_open(
+    monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    """A native source-open callback cannot leave a cached projection reading an old field."""
+    np = pytest.importorskip("numpy")
+    from fpstreams.planning.source import Source
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = {}
+    opened = []
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured[selector] = function
+        return function
+
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = fpstreams.rows.from_numpy(
+        np.asarray([[2, 30]] * 16), columns=["value", "replacement"]
+    ).select(value="value")
+    target = query._flow._terminal_context("list")[1].source
+    original_open = Source.open_native
+
+    def changing_open(source, expected_type):
+        result = original_open(source, expected_type)
+        if source is target:
+            opened.append(True)
+            function = captured["value"]
+            function.__closure__[0].cell_contents = "replacement"
+        return result
+
+    monkeypatch.setattr(Source, "open_native", changing_open)
+    expected = [{"value": 30}] * 16 if terminal == "to_list" else {"value": [30] * 16}
+    assert getattr(query, terminal)() == expected
+    assert opened == [True]
+
+
+@pytest.mark.parametrize("terminal", ["to_list", "to_arrow", "arrow_batches", "count"])
+@pytest.mark.parametrize("change_at", [0, 1])
+@pytest.mark.parametrize("raises", [False, True])
+@pytest.mark.parametrize("reiterable", [False, True])
+def test_arrow_select_keeps_live_accessors_and_batch_fields(
+    monkeypatch: pytest.MonkeyPatch, terminal: str, change_at: int, raises: bool, reiterable: bool
+) -> None:
+    """Batch callbacks preserve unprojected fields for fallback without reopening the stream."""
+    pa = pytest.importorskip("pyarrow")
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = {}
+    selected = []
+    opened = []
+    closed = []
+    failure = RuntimeError("changed projection accessor")
+    selector = {"selected": selected, "raises": raises, "failure": failure}
+    batches = [
+        pa.record_batch({"value": [2], "replacement": [30]}),
+        pa.record_batch({"value": [3], "replacement": [40]}),
+    ]
+
+    def capture(field):
+        function = original_compile(field)
+        captured[field] = function
+        return function
+
+    def replacement(row):
+        value = row["replacement"]
+        selector["selected"].append(value)
+        if selector["raises"]:
+            raise selector["failure"]
+        return value
+
+    def open_batches(columns=None):
+        opened.append(columns)
+        try:
+            for index, batch in enumerate(batches):
+                if index == change_at:
+                    function = captured["value"]
+                    function.__code__ = replacement.__code__
+                    function.__closure__[0].cell_contents = selector
+                yield batch if columns is None else batch.select(list(columns))
+        finally:
+            closed.append(True)
+
+    descriptor = ArrowBatchSource(
+        open_batches,
+        "reader",
+        1,
+        batches[0].schema,
+        reiterable,
+        projection_opener=lambda columns: open_batches(columns),
+    )
+
+    def row_source():
+        yield from (row for batch in open_batches() for row in batch.to_pylist())
+
+    source = Source(
+        row_source,
+        SourceCapabilities(reiterable=reiterable, exact_size=None),
+        native_data=descriptor,
+    )
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = fpstreams.Rows(fpstreams.Flow(source)).select(value="value")
+
+    def run():
+        if terminal == "to_arrow":
+            return query.to_arrow(batch_size=1).to_pylist()
+        if terminal == "arrow_batches":
+            result = query.arrow_batches(batch_size=1).to_list()
+            return pa.Table.from_batches(result).to_pylist()
+        return getattr(query, terminal)()
+
+    if raises:
+        with pytest.raises(RuntimeError) as raised:
+            run()
+        assert raised.value is failure
+        assert selected == [30 if change_at == 0 else 40]
+    else:
+        result = run()
+        assert result == (
+            2 if terminal == "count" else [{"value": 30 if change_at == 0 else 2}, {"value": 40}]
+        )
+        assert selected == ([30, 40] if change_at == 0 else [40])
+    assert len(opened) == 1
+    assert closed == [True]
+    if not reiterable:
+        with pytest.raises(fpstreams.FlowConsumedError):
+            query.to_list()
+        assert len(opened) == 1
+
+
+@pytest.mark.parametrize(
+    "terminal", ["to_list", "to_arrow", "arrow_batches", "count", "preserved_table"]
+)
+def test_arrow_select_rechecks_projection_after_source_claim(
+    monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    """A source claim can change a projected field and its dtype before a scan starts."""
+    pa = pytest.importorskip("pyarrow")
+    from fpstreams.planning.arrow_source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    compile_selector = rows_module.compile_selector
+    captured = {}
+    opened = []
+    closed = []
+    batch = pa.record_batch({"value": [2], "replacement": ["changed"]})
+
+    def capture(field):
+        accessor = compile_selector(field)
+        captured[field] = accessor
+        return accessor
+
+    def batches(columns=None):
+        opened.append(columns)
+        try:
+            yield batch if columns is None else batch.select(list(columns))
+        finally:
+            closed.append(True)
+
+    descriptor = ArrowBatchSource(
+        batches,
+        "reader",
+        1,
+        batch.schema,
+        False,
+        projection_opener=batches,
+        projection_safe=True,
+    )
+    source = Source(
+        lambda: iter(batch.to_pylist()),
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    query = fpstreams.Rows(fpstreams.Flow(source)).select(value="value")
+    native_open = Source.open_native
+    claims = []
+
+    def changing_open(self, expected):
+        result = native_open(self, expected)
+        if self is source:
+            claims.append(True)
+            captured["value"].__closure__[0].cell_contents = "replacement"
+        return result
+
+    monkeypatch.setattr(Source, "open_native", changing_open)
+    if terminal == "preserved_table":
+        from fpstreams.execution.arrow import try_arrow_table
+
+        handled, table = try_arrow_table(
+            query._flow._terminal_context("list")[1], batch_size=1, preserve_source_schema=True
+        )
+        assert handled
+        result = table.to_pylist()
+    elif terminal == "arrow_batches":
+        result = pa.Table.from_batches(query.arrow_batches(batch_size=1).to_list()).to_pylist()
+    elif terminal == "to_arrow":
+        result = query.to_arrow(batch_size=1).to_pylist()
+    else:
+        result = getattr(query, terminal)()
+    assert result == (1 if terminal == "count" else [{"value": "changed"}])
+    assert opened == [None]
+    assert claims == closed == [True]
+
+
+@pytest.mark.parametrize("hook", ["csv_reader", "csv_stream", "parquet_dataset", "parquet_code"])
+@pytest.mark.parametrize("terminal", ["to_list", "to_arrow", "arrow_batches", "count", "first"])
+@pytest.mark.parametrize("raises", [False, True])
+@pytest.mark.parametrize("before_query", [False, True])
+def test_arrow_projection_preserves_replaced_library_openers(  # noqa: C901 - opener/terminal matrix
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hook: str,
+    terminal: str,
+    raises: bool,
+    before_query: bool,
+    public_filter: bool = False,
+) -> None:
+    """A changed library opener keeps selector callbacks and their errors observable."""
+    pa = pytest.importorskip("pyarrow")
+    import pyarrow.csv as csv
+    import pyarrow.dataset as dataset
+    import pyarrow.parquet as parquet
+
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    compile_selector = rows_module.compile_selector
+    captured = {}
+    selected = []
+    calls = []
+    failure = RuntimeError("changed scan selector")
+    selector = {"selected": selected, "failure": failure, "raises": raises}
+
+    def capture(field):
+        accessor = compile_selector(field)
+        captured[field] = accessor
+        return accessor
+
+    def replacement(row):
+        value = row["replacement"]
+        selector["selected"].append(value)
+        if selector["raises"]:
+            raise selector["failure"]
+        return value
+
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    if hook.startswith("parquet"):
+        path = tmp_path / "input.parquet"
+        parquet.write_table(pa.table({"value": [2], "replacement": [30]}), path)
+
+        def make_query():
+            predicate = dataset.field("value") == 2 if public_filter else None
+            return fpstreams.Rows.from_parquet(path, filter=predicate).select(value="value")
+
+        module, name = dataset, "dataset"
+    else:
+        path = tmp_path / "input.csv"
+        path.write_text("value,replacement\n2,30\n")
+
+        def make_query():
+            return fpstreams.Rows.scan_csv(path).select(value="value")
+
+        module, name = (csv, "open_csv") if hook == "csv_reader" else (pa, "input_stream")
+    query = None if before_query else make_query()
+    original = getattr(module, name)
+    if hook == "parquet_code":
+        from types import FunctionType
+
+        live_function = original
+        original = FunctionType(
+            live_function.__code__,
+            live_function.__globals__,
+            live_function.__name__,
+            live_function.__defaults__,
+            live_function.__closure__,
+        )
+        original.__kwdefaults__ = live_function.__kwdefaults__
+
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(True)
+        captured["value"].__code__ = replacement.__code__
+        captured["value"].__closure__[0].cell_contents = selector
+        return result
+
+    if hook == "parquet_code":
+
+        def changed_code(*args, **kwargs):
+            return _fpstreams_test_scan_changed_call(*args, **kwargs)  # noqa: F821
+
+        monkeypatch.setitem(live_function.__globals__, "_fpstreams_test_scan_changed_call", changed)
+        monkeypatch.setattr(live_function, "__code__", changed_code.__code__)
+    else:
+        monkeypatch.setattr(module, name, changed)
+
+    if before_query:
+        query = make_query()
+
+    def run():
+        if terminal == "to_arrow":
+            return query.to_arrow().to_pylist()
+        if terminal == "arrow_batches":
+            return pa.Table.from_batches(query.arrow_batches().to_list()).to_pylist()
+        return getattr(query, terminal)()
+
+    if raises:
+        with pytest.raises(RuntimeError) as caught:
+            run()
+        assert caught.value is failure
+    else:
+        assert run() == {"count": 1, "first": {"value": 30}}.get(terminal, [{"value": 30}])
+    assert selected == [30]
+    assert calls == [True]
+
+
+@pytest.mark.parametrize("terminal", ["to_list", "to_arrow", "arrow_batches", "count", "first"])
+def test_changed_parquet_opener_preserves_explicit_source_filter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terminal: str
+) -> None:
+    test_arrow_projection_preserves_replaced_library_openers(
+        monkeypatch, tmp_path, "parquet_dataset", terminal, False, True, public_filter=True
+    )
 
 
 def test_retained_direct_select_uses_one_native_pass_only_for_auto(
@@ -925,6 +1595,71 @@ def test_left_driven_join_outputs_own_independent_snapshots() -> None:
     assert source == {"id": 1, "left": payload}
 
 
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("safe_names", [False, True])
+def test_general_left_join_retains_its_snapshot_after_output_mutation(
+    engine: str, safe_names: bool
+) -> None:
+    """The next source row sees values retained by the unmatched row's private snapshot."""
+
+    class Marker:
+        pass
+
+    class FieldName(str):
+        pass
+
+    payload_name = "payload" if safe_names else FieldName("payload")
+    references = []
+    closed = []
+
+    def left_source():
+        try:
+            row = {"id": 1, payload_name: Marker()}
+            references.append(weakref.ref(row[payload_name]))
+            yield row
+            yield {"id": 3, "previous_payload_alive": references[0]() is not None}
+        finally:
+            closed.append("left")
+
+    def right_source():
+        try:
+            yield {"id": 2, "right": True}
+        finally:
+            closed.append("right")
+
+    def select_left(row):
+        row.pop(payload_name, None)
+        return row["id"]
+
+    iterator = iter(
+        fpstreams.rows(left_source())
+        .with_engine(engine)
+        .join(
+            right_source(),
+            left_on=select_left,
+            right_on="id",
+            how="left",
+            validate="m:m",
+        )
+    )
+    try:
+        first = next(iterator)
+        assert closed == ["right"]
+        first.pop(payload_name)
+        assert references[0]() is not None
+        second = next(iterator)
+        assert second == {
+            "id": 3,
+            "previous_payload_alive": True,
+            "id_right": None,
+            "right": None,
+        }
+        assert references[0]() is None
+    finally:
+        iterator.close()
+    assert closed == ["right", "left"]
+
+
 def test_mapping_proxy_records_keep_dict_conversion_protocol_and_owned_join_outputs() -> None:
     """The exact proxy fast path remains equivalent to dict(proxy), including callbacks."""
     from types import MappingProxyType
@@ -1158,6 +1893,111 @@ def test_join_target_cache_preserves_original_and_generated_key_identity() -> No
     assert generated[0] is not generated[1]
 
 
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_join_target_cache_handles_repeated_changes_in_layout_width(
+    validate: str, engine: str, monkeypatch
+) -> None:
+    """Switching between cached narrow and wide shapes retains the canonical outputs."""
+    from fpstreams.tabular.join import _JoinTargetCache
+
+    names = tuple(f"field_{index}" for index in range(31))
+    widths = (2, 8, 3, 8, 32, 4, 32, 2, 9, 5, 9)
+    left = [
+        {"id": 1, **{name: row_index for name in names[: width - 1]}}
+        for row_index, width in enumerate(widths)
+    ]
+    right = [{"id": 1, "right": "first"}]
+    if validate == "m:m":
+        right.append({"id": 1, "right": "second"})
+
+    def execute():
+        return (
+            fpstreams.rows(iter(left))
+            .with_engine(engine)
+            .join(right, on="id", validate=validate)
+            .to_list()
+        )
+
+    actual = execute()
+    monkeypatch.setattr(_JoinTargetCache, "target_plan", lambda *args, **kwargs: None)
+    expected = execute()
+    assert actual == expected
+    assert len(actual) == len(left) * len(right)
+    for row, reference in zip(actual, expected, strict=True):
+        assert list(row) == list(reference)
+        assert all(name is other for name, other in zip(row, reference, strict=True))
+
+
+@pytest.mark.parametrize("width", [2, 8, 32])
+@pytest.mark.parametrize("reset_cache", [False, True])
+def test_join_target_cache_keeps_dictionary_subclass_iteration(
+    width: int, reset_cache: bool
+) -> None:
+    """A custom names iterator can reset the cache before the snapshot is inspected."""
+    from fpstreams.tabular.join import _JoinTargetCache
+
+    cache = _JoinTargetCache()
+    names = {f"left_{index}": index for index in range(width)}
+    right_name = "right_payload"
+    expected = ((right_name, right_name),)
+    events = []
+
+    class Names(dict):
+        def __iter__(self):
+            events.append("iter")
+            if reset_cache:
+                cache._disable()
+            return super().__iter__()
+
+        def __len__(self):
+            events.append("len")
+            return super().__len__()
+
+    tuple(Names(names))
+    expected_events = list(events)
+    events.clear()
+    cache = _JoinTargetCache()
+    assert cache.target_plan(names, (right_name,), shared_names=set(), suffix="_right") == expected
+    assert (
+        cache.target_plan(Names(names), (right_name,), shared_names=set(), suffix="_right")
+        == expected
+    )
+    assert events == expected_events
+
+
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_join_target_cache_keeps_a_replaced_field_snapshot_constructor(
+    validate: str, engine: str, monkeypatch
+) -> None:
+    """A source can replace the tuple constructor after a wide layout has warmed the cache."""
+    import fpstreams.tabular.join as joins
+
+    names = tuple(f"field_{index}" for index in range(7))
+    calls = []
+
+    def snapshot(value):
+        calls.append(type(value))
+        return tuple(value)
+
+    def source():
+        yield {"id": 1, **dict.fromkeys(names, "first")}
+        monkeypatch.setattr(joins, "tuple", snapshot, raising=False)
+        yield {"id": 1, **dict.fromkeys(names, "second")}
+
+    result = (
+        fpstreams.rows(source())
+        .with_engine(engine)
+        .join([{"id": 1, "right": True}], on="id", validate=validate)
+        .to_list()
+    )
+    assert result == [
+        {"id": 1, **dict.fromkeys(names, value), "right": True} for value in ("first", "second")
+    ]
+    assert calls == [dict]
+
+
 def test_join_target_plan_reuses_one_generated_key_for_duplicate_matches() -> None:
     """All outputs from one left row retain the same per-row generated suffix key."""
 
@@ -1218,6 +2058,131 @@ def test_join_target_cache_does_not_rehash_protocol_sensitive_field_names() -> N
         suffix="_right",
     )
     assert collided_cache.enabled
+
+
+@pytest.mark.parametrize("width", [8, 32])
+@pytest.mark.parametrize("layout", ["repeated", "equal_names", "capacity", "unsafe"])
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+@pytest.mark.parametrize("how", ["inner", "left"])
+def test_wide_join_layout_cache_matches_uncached_output_and_protocol(
+    monkeypatch: pytest.MonkeyPatch, width: int, layout: str, validate: str, how: str
+) -> None:
+    from fpstreams.tabular.join import _JoinTargetCache
+
+    events = []
+
+    class FieldName(str):
+        def __hash__(self):
+            events.append(("field_hash", str(self)))
+            return super().__hash__()
+
+        def __eq__(self, other):
+            events.append(("field_equal", str(self)))
+            return super().__eq__(other)
+
+    names = tuple(f"left_field_{offset}" for offset in range(width - 2))
+    count = 67 if layout == "capacity" else 4
+    records = []
+    for index in range(count):
+        row_names = list(names)
+        if layout == "equal_names":
+            row_names = [name.encode().decode() for name in names]
+        elif layout == "capacity":
+            row_names[-1] = f"shape_{index}"
+        elif layout == "unsafe" and index == 2:
+            row_names[-1] = FieldName(row_names[-1])
+        records.append(
+            {
+                "id": 2 if index == count - 1 else 1,
+                "value": index,
+                **dict.fromkeys(row_names, index),
+            }
+        )
+    right_name = "".join(("right", "_payload"))
+    right = [
+        {"id": 1, "value": label, right_name: label}
+        for label in ("a", "b")[: 2 if validate == "m:m" else 1]
+    ]
+
+    def execute():
+        events.clear()
+
+        def source():
+            try:
+                for row in records:
+                    events.append(("pull", row["value"]))
+                    yield row
+            finally:
+                events.append(("close",))
+
+        def select_left(row):
+            events.append(("left_key", row["value"]))
+            return row["id"]
+
+        def select_right(row):
+            events.append(("right_key", row["value"]))
+            return row["id"]
+
+        result = (
+            fpstreams.rows(source())
+            .with_engine("python")
+            .join(right, left_on=select_left, right_on=select_right, how=how, validate=validate)
+            .to_list()
+        )
+        protocol = list(events)
+        assert protocol.count(("close",)) == 1
+        assert len({id(row) for row in result}) == len(result)
+        generated = {}
+        for row in result:
+            original = records[row["value"]]
+            assert all(
+                actual is expected
+                for actual, expected in zip(tuple(row)[:width], original, strict=True)
+            )
+            assert next(name for name in row if name == right_name) is right_name
+            generated.setdefault(row["value"], []).append(
+                next(name for name in row if name == "value_right")
+            )
+        for keys in generated.values():
+            assert all(name is keys[0] for name in keys)
+        assert len({id(keys[0]) for keys in generated.values()}) == len(generated)
+        return [list(row.items()) for row in result], protocol
+
+    actual, actual_protocol = execute()
+    monkeypatch.setattr(_JoinTargetCache, "target_plan", lambda *args, **kwargs: None)
+    expected, expected_protocol = execute()
+
+    assert actual == expected
+    assert actual_protocol == expected_protocol
+    assert len(actual) == (count - 1) * len(right) + (how == "left")
+
+
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+def test_wide_join_layout_change_reports_suffix_collision_after_first_output(validate: str) -> None:
+    from fpstreams.errors import DuplicateKeyError
+
+    fields = {f"field_{index}": index for index in range(8)}
+    records = [
+        {"id": 1, "value": "first", **fields},
+        {"id": 1, "value": "second", **fields, "value_right": "collision"},
+    ]
+    closed = []
+
+    def source():
+        try:
+            yield from records
+        finally:
+            closed.append(True)
+
+    iterator = iter(
+        fpstreams.rows(source())
+        .with_engine("python")
+        .join([{"id": 1, "value": "right"}], on="id", validate=validate)
+    )
+    assert next(iterator)["value_right"] == "right"
+    with pytest.raises(DuplicateKeyError, match="value_right"):
+        next(iterator)
+    assert closed == [True]
 
 
 def test_hash_join_bucket_promotion_does_not_repeat_key_protocols() -> None:
@@ -1868,6 +2833,64 @@ def test_generic_multi_key_group_uses_one_composite_selector_and_keeps_identity(
         "key", "band"
     ).aggregate(rows=count).to_list() == [{"key": 1, "band": "mapped", "rows": 1}]
     assert calls == ["key", "band"]
+
+
+@pytest.mark.parametrize("metaclass_result", [False, True, "raise"])
+@pytest.mark.parametrize("builtin_prefix", [False, True])
+def test_composite_group_type_guard_does_not_compare_metaclasses(
+    metaclass_result: bool | str,
+    builtin_prefix: bool,
+) -> None:
+    """Recognizing exact keys must not call class equality or skip custom key hashes."""
+    class_comparisons: list[object] = []
+    key_calls: list[str] = []
+
+    class Meta(type):
+        def __eq__(cls, other: object) -> bool:
+            class_comparisons.append(other)
+            if metaclass_result == "raise":
+                raise RuntimeError("type guard called user code")
+            return bool(metaclass_result)
+
+        __hash__ = type.__hash__
+
+    class Key(metaclass=Meta):
+        def __hash__(self) -> int:
+            key_calls.append("hash")
+            return 1
+
+        def __eq__(self, other: object) -> bool:
+            key_calls.append("eq")
+            return self is other
+
+    key = Key()
+    records = ([(0, 2, 1)] if builtin_prefix else []) + [(key, 2, 3), (key, 2, 4)]
+    query = (
+        fpstreams.rows(records)
+        .group_by(first=0, second=1)
+        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(2))
+    )
+    reference = (
+        fpstreams.rows(records)
+        .group_by(first=0, second=1)
+        .aggregate(
+            count=fpstreams.Aggregator(lambda: 0, lambda state, _row: state + 1),
+            total=fpstreams.agg.sum(2),
+        )
+    )
+    expected = reference.to_list()
+    expected_calls = key_calls.copy()
+    key_calls.clear()
+    class_comparisons.clear()
+
+    result = query.to_list()
+
+    assert class_comparisons == []
+    assert key_calls == expected_calls
+    assert result == expected
+    assert result[-1]["first"] is key
+    assert result[-1]["count"] == 2
+    assert result[-1]["total"] == 7
 
 
 def test_generic_composite_group_closes_one_shot_on_selection_and_failpoint() -> None:
@@ -3331,6 +4354,178 @@ def test_rows_pivot_native_gate_preserves_dynamic_and_instrumented_execution(
     assert raised.value is failure
 
 
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("field", ["id", "column", "value"])
+@pytest.mark.parametrize("when", ["before", "open", "second_row"])
+@pytest.mark.parametrize("mutation", ["closure", "code"])
+def test_rows_pivot_calls_live_field_selectors(
+    monkeypatch: pytest.MonkeyPatch, engine: str, field: str, when: str, mutation: str
+) -> None:
+    """Direct dictionaries use the same live selector functions as other mappings."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    original_compile = rows_module.compile_selector
+    captured = {}
+    closed = []
+    records = [
+        {"id": 1, "column": "x", "value": 2, "new_id": 10, "new_column": "u", "new_value": 30},
+        {"id": 1, "column": "y", "value": 3, "new_id": 20, "new_column": "v", "new_value": 40},
+    ]
+
+    def capture(selector):
+        function = original_compile(selector)
+        captured[selector] = function
+        return function
+
+    def change():
+        function = captured[field]
+        if mutation == "closure":
+            cells = dict(zip(function.__code__.co_freevars, function.__closure__, strict=True))
+            cells["selector"].cell_contents = f"new_{field}"
+        else:
+            selector = field
+
+            def replacement(row):
+                return row[f"new_{selector}"]
+
+            function.__code__ = replacement.__code__
+
+    def source():
+        try:
+            if when == "open":
+                change()
+            yield records[0]
+            if when == "second_row":
+                change()
+            yield records[1]
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(rows_module, "compile_selector", capture)
+    pipeline = (
+        fpstreams.rows(records if when == "before" else source())
+        .with_engine(engine)
+        .pivot(index="id", columns="column", values="value", fill=-1)
+    )
+    if when == "before":
+        change()
+
+    changed_first = when != "second_row"
+    if field == "id":
+        expected = [
+            {"id": 10 if changed_first else 1, "x": 2, "y": -1},
+            {"id": 20, "x": -1, "y": 3},
+        ]
+    elif field == "column":
+        expected = [{"id": 1, "u" if changed_first else "x": 2, "v": 3}]
+    else:
+        expected = [{"id": 1, "x": 30 if changed_first else 2, "y": 40}]
+    assert pipeline.to_list() == expected
+    assert closed == ([] if when == "before" else [True])
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_rows_pivot_keeps_selector_global_callbacks(
+    monkeypatch: pytest.MonkeyPatch, engine: str, raises: bool
+) -> None:
+    """Selector environment changes remain visible, including their original exceptions."""
+    rows_module = sys.modules["fpstreams.tabular.rows"]
+    record = {"id": 1, "column": "x", "value": 2}
+    pipeline = (
+        fpstreams.rows([record])
+        .with_engine(engine)
+        .pivot(index="id", columns="column", values="value")
+    )
+    calls = []
+    failure = RuntimeError("selector environment changed")
+
+    def live_type(value):
+        calls.append(value)
+        if raises:
+            raise failure
+        record["value"] = 30
+        return type(value)
+
+    monkeypatch.setitem(rows_module.compile_selector.__globals__, "type", live_type)
+    if raises:
+        with pytest.raises(RuntimeError) as captured:
+            pipeline.to_list()
+        assert captured.value is failure
+        assert len(calls) == 1
+    else:
+        assert pipeline.to_list() == [{"id": 1, "x": 30}]
+        assert len(calls) == 3
+    assert all(value is record for value in calls)
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("boundary", ["rows", "flow", "source"])
+@pytest.mark.parametrize("raise_on_open", [False, True])
+@pytest.mark.parametrize("replacement_kind", ["method", "code"])
+def test_rows_pivot_keeps_replaced_iteration_boundaries(
+    engine: str,
+    boundary: str,
+    raise_on_open: bool,
+    replacement_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pivot must consume the live opener, including its errors and iterator cleanup."""
+    from fpstreams.planning.source import Source
+    from fpstreams.streams.flow import Flow
+    from fpstreams.tabular.rows import Rows
+
+    rows = fpstreams.rows([{"id": 1, "metric": "reading", "value": 2}]).with_engine(engine)
+    source = rows._flow._logical_plan.root.source
+    owner, target, method = {
+        "rows": (Rows, rows, "__iter__"),
+        "flow": (Flow, rows._flow, "__iter__"),
+        "source": (Source, source, "open"),
+    }[boundary]
+    original = getattr(owner, method)
+    events = []
+    failure = RuntimeError("replacement opener failed")
+
+    def replacement_rows():
+        try:
+            yield {"id": 1, "metric": "reading", "value": 30}
+        finally:
+            events.append("close")
+
+    def replacement(instance):
+        if instance is target:
+            events.append("open")
+            if raise_on_open:
+                raise failure
+            return replacement_rows()
+        return original(instance)
+
+    if replacement_kind == "code":
+        from types import FunctionType
+
+        target_function = original
+        original = FunctionType(
+            original.__code__, original.__globals__, original.__name__, original.__defaults__
+        )
+
+        def replacement_code(instance):
+            return _pivot_replacement(instance)  # noqa: F821 - installed in the target globals
+
+        monkeypatch.setitem(target_function.__globals__, "_pivot_replacement", replacement)
+        monkeypatch.setattr(target_function, "__code__", replacement_code.__code__)
+    else:
+        monkeypatch.setattr(owner, method, replacement)
+    pivoted = rows.pivot(index="id", columns="metric", values="value")
+    assert events == []
+    if raise_on_open:
+        with pytest.raises(RuntimeError) as raised:
+            pivoted.to_list()
+        assert raised.value is failure
+        assert events == ["open"]
+    else:
+        assert pivoted.to_list() == [{"id": 1, "reading": 30}]
+        assert events == ["open", "close"]
+
+
 def test_rows_pivot_handles_general_columns_and_every_duplicate_policy() -> None:
     readings = [
         {"device": "alpha", "metric": "cpu", "reading": 3},
@@ -4258,35 +5453,38 @@ def test_scan_csv_pushes_query_projection_with_filter_dependencies(
     assert schemas == [("payload", "id"), ("payload", "id")]
 
 
-def test_scan_csv_uses_a_bounded_default_projection_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Projection discovery reads a small header block before the ordinary typed stream."""
-    import pyarrow.csv as pacsv
+def _observe_csv_reader_options(query, block_sizes):
+    """Observe fpstreams reader setup without replacing the guarded PyArrow entrypoint."""
+    descriptor = query._flow._terminal_context("list")[1].source.native_data
+    project = descriptor.projection_opener
+    cells = dict(zip(project.__code__.co_freevars, project.__closure__, strict=True))
+    open_reader = cells["open_reader"].cell_contents
 
+    def traced_open_reader(*args, **options):
+        configured = options.get("input_read_options")
+        block_sizes.append(None if configured is None else configured.block_size)
+        return open_reader(*args, **options)
+
+    cells["open_reader"].cell_contents = traced_open_reader
+
+
+def test_scan_csv_uses_a_bounded_default_projection_probe(tmp_path: Path) -> None:
+    """Projection discovery reads a small header block before the ordinary typed stream."""
     path = tmp_path / "probe.csv"
     path.write_text("id,unused\n1,10\n2,20\n", encoding="utf-8")
     block_sizes: list[int | None] = []
-    open_csv = pacsv.open_csv
+    query = fpstreams.rows.scan_csv(path).select("id")
+    _observe_csv_reader_options(query, block_sizes)
 
-    def traced_open_csv(*args: object, **options: object) -> object:
-        configured = options.get("read_options")
-        block_sizes.append(None if configured is None else configured.block_size)  # type: ignore[attr-defined]
-        return open_csv(*args, **options)
-
-    monkeypatch.setattr(pacsv, "open_csv", traced_open_csv)
-
-    assert fpstreams.rows.scan_csv(path).select("id").to_list() == [{"id": 1}, {"id": 2}]
+    assert query.to_list() == [{"id": 1}, {"id": 2}]
     assert block_sizes == [64 * 1024, None]
 
 
 @pytest.mark.parametrize("long_header", [False, True])
 def test_scan_csv_projection_probe_retries_records_larger_than_its_block(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, long_header: bool
+    tmp_path: Path, long_header: bool
 ) -> None:
     """A straddling header or first record falls back to Arrow's default inference block."""
-    import pyarrow.csv as pacsv
-
     path = tmp_path / "long.csv"
     long_value = "x" * 150_000
     if long_header:
@@ -4294,16 +5492,10 @@ def test_scan_csv_projection_probe_retries_records_larger_than_its_block(
     else:
         path.write_text(f"payload,id\n{long_value},1\n", encoding="utf-8")
     block_sizes: list[int | None] = []
-    open_csv = pacsv.open_csv
+    query = fpstreams.rows.scan_csv(path).select("id")
+    _observe_csv_reader_options(query, block_sizes)
 
-    def traced_open_csv(*args: object, **options: object) -> object:
-        configured = options.get("read_options")
-        block_sizes.append(None if configured is None else configured.block_size)  # type: ignore[attr-defined]
-        return open_csv(*args, **options)
-
-    monkeypatch.setattr(pacsv, "open_csv", traced_open_csv)
-
-    assert fpstreams.rows.scan_csv(path).select("id").to_list() == [{"id": 1}]
+    assert query.to_list() == [{"id": 1}]
     assert block_sizes == [64 * 1024, None, None]
 
 
@@ -4353,14 +5545,16 @@ def test_scan_csv_closes_early_terminal_and_projected_streams(
     path = tmp_path / "close.csv"
     path.write_text("id,unused\n1,10\n2,20\n", encoding="utf-8")
     opened: list[object] = []
-    input_stream = pa.input_stream
+    from fpstreams.tabular import arrow as arrow_adapter
 
-    def tracked_input_stream(*args: object, **kwargs: object) -> object:
-        stream = input_stream(*args, **kwargs)
-        opened.append(stream)
-        return stream
+    close = arrow_adapter._close
 
-    monkeypatch.setattr(pa, "input_stream", tracked_input_stream)
+    def tracked_close(resource: object) -> None:
+        if isinstance(resource, pa.NativeFile):
+            opened.append(resource)
+        close(resource)
+
+    monkeypatch.setattr(arrow_adapter, "_close", tracked_close)
 
     assert fpstreams.rows.scan_csv(path).first() == {"id": 1, "unused": 10}
     assert len(opened) == 1
@@ -7263,7 +8457,7 @@ def test_arrow_count_scan_setup_fails_before_reader_claim(
     query = fpstreams.rows.from_arrow(reader).where(fpstreams.col("value") == 1)
     count_columns = arrow_execution._count_scan_columns
 
-    def fail_columns(_prefix: object) -> tuple[str, ...] | None:
+    def fail_columns(_prefix: object, *, descriptor: object = None) -> tuple[str, ...] | None:
         raise MemoryError("count scan setup")
 
     monkeypatch.setattr(arrow_execution, "_count_scan_columns", fail_columns)
@@ -8829,6 +10023,180 @@ def test_group_sum_deopts_after_any_lifecycle_code_change(
     ]
     assert canonical_grouped.to_list() == expected_groups
     assert automatic_grouped.to_list() == expected_groups
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+@pytest.mark.parametrize("phase", ["source", "key"])
+@pytest.mark.parametrize(
+    "mutation", ["step_code", "selector_cell", "initializer_code", "finish_code"]
+)
+def test_group_sum_observes_lifecycle_mutations_during_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: str,
+    phase: str,
+    mutation: str,
+) -> None:
+    """Callbacks can change a factory function without replacing its collector slot."""
+    total = fpstreams.agg.sum("value")
+    events: list[tuple[str, int]] = []
+
+    def replacement_factory() -> Callable[[int, dict[str, int]], int]:
+        def select(row: dict[str, int]) -> int:
+            return row["value"]
+
+        def step(state: int, row: dict[str, int]) -> int:
+            return state + select(row) * 10
+
+        return step
+
+    def initializer() -> int:
+        return 100
+
+    def finish(state: int) -> int:
+        return state * 10
+
+    def mutate() -> None:
+        if mutation == "step_code":
+            monkeypatch.setattr(total.step, "__code__", replacement_factory().__code__)
+        elif mutation == "selector_cell":
+            assert total.step.__closure__ is not None
+            monkeypatch.setattr(
+                total.step.__closure__[0], "cell_contents", lambda row: row["value"] * 10
+            )
+        elif mutation == "initializer_code":
+            monkeypatch.setattr(total.initializer, "__code__", initializer.__code__)
+        else:
+            monkeypatch.setattr(total.finish, "__code__", finish.__code__)
+
+    def source() -> Iterator[dict[str, int]]:
+        try:
+            for value in (1, 2, 3):
+                events.append(("source", value))
+                if phase == "source" and value == 2:
+                    mutate()
+                yield {"key": value % 2, "value": value}
+        finally:
+            events.append(("close", 0))
+
+    def key(row: dict[str, int]) -> int:
+        events.append(("key", row["value"]))
+        if phase == "key" and row["value"] == 2:
+            mutate()
+        return row["key"]
+
+    result = (
+        fpstreams.rows(source())
+        .with_engine(engine)
+        .group_by(key=key)
+        .aggregate(total=total)
+        .to_list()
+    )
+    expected = {
+        "step_code": (31, 20),
+        "selector_cell": (31, 20),
+        "initializer_code": (4, 102),
+        "finish_code": (40, 20),
+    }[mutation]
+    assert result == [{"key": 1, "total": expected[0]}, {"key": 0, "total": expected[1]}]
+    assert events == [
+        ("source", 1),
+        ("key", 1),
+        ("source", 2),
+        ("key", 2),
+        ("source", 3),
+        ("key", 3),
+        ("close", 0),
+    ]
+
+
+@pytest.mark.parametrize("single", [True, False])
+@pytest.mark.parametrize("accessor", ["getattribute", "property"])
+def test_group_aggregation_reads_dynamic_step_like_the_general_collector_program(
+    single: bool, accessor: str
+) -> None:
+    reads: list[int] = []
+
+    def read_step() -> Any:
+        factor = len(reads) + 1
+        reads.append(factor)
+        return lambda state, row: state + row["value"] * factor
+
+    class DynamicAggregator(fpstreams.Aggregator):
+        __slots__ = ()
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "step":
+                return read_step()
+            return super().__getattribute__(name)
+
+    class PropertyAggregator(fpstreams.Aggregator):
+        __slots__ = ("_step",)
+
+        @property
+        def step(self) -> Any:
+            return read_step()
+
+        @step.setter
+        def step(self, value: Any) -> None:
+            object.__setattr__(self, "_step", value)
+
+    constructor = DynamicAggregator if accessor == "getattribute" else PropertyAggregator
+    aggregation = constructor(lambda: 0, lambda state, row: state)
+    items = {"total": aggregation}
+    if not single:
+        items["count"] = fpstreams.agg.count()
+    query = (
+        fpstreams.rows([{"key": 0, "value": value} for value in (1, 2, 3)])
+        .group_by(key=lambda row: row["key"])
+        .aggregate(**items)
+    )
+    reads.clear()
+    expected = {"key": 0, "total": 14}
+    if not single:
+        expected["count"] = 3
+    assert query.to_list() == [expected]
+    assert reads == [1, 2, 3]
+
+
+def test_group_collector_guard_does_not_read_custom_metaclass_namespaces() -> None:
+    checking = False
+
+    class Meta(type):
+        def __getattribute__(cls, name: str) -> Any:
+            if checking and name in ("__mro__", "__dict__"):
+                raise AssertionError("metaclass namespace read")
+            return super().__getattribute__(name)
+
+    class CustomAggregator(fpstreams.Aggregator, metaclass=Meta):
+        __slots__ = ()
+
+    total = CustomAggregator(lambda: 0, lambda state, row: state + row["value"])
+    query = (
+        fpstreams.rows([{"value": value} for value in (1, 2, 3)])
+        .group_by(key=lambda row: 0)
+        .aggregate(total=total)
+    )
+    checking = True
+    assert query.to_list() == [{"key": 0, "total": 6}]
+
+
+def test_group_sum_reads_finisher_code_between_output_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    total = fpstreams.agg.sum("value")
+    result = iter(
+        fpstreams.rows([{"key": 1, "value": 2}, {"key": 2, "value": 3}])
+        .with_engine("python")
+        .group_by(key=lambda row: row["key"])
+        .aggregate(total=total)
+    )
+    assert next(result) == {"key": 1, "total": 2}
+
+    def finish(state: int) -> int:
+        return state * 10
+
+    monkeypatch.setattr(total.finish, "__code__", finish.__code__)
+    assert list(result) == [{"key": 2, "total": 30}]
 
 
 def test_numpy_aggregates_safely_deopt_for_an_empty_selector_cell(
@@ -17672,6 +19040,128 @@ def test_flow_from_numpy_f64_fuses_expression_pipelines_without_layout_coercion(
     opposite = fpstreams.flow.from_numpy(np.asarray([1.0, 2.0, 3.0], dtype=opposite_dtype))
     assert opposite.sum() == 6.0
     assert opposite.explain("sum").to_dict()["selected_engine"] == "python"
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+@pytest.mark.parametrize("size", [3, 16])
+def test_numpy_frequencies_reads_after_each_key_callback(
+    engine: str, dtype: str, size: int
+) -> None:
+    """A key callback's array edit must be visible when the next value is read."""
+    np = pytest.importorskip("numpy")
+    values = np.arange(1, size + 1, dtype=dtype)
+    calls = []
+
+    def select(value):
+        calls.append(value)
+        if len(calls) == 1:
+            values[1] = 9
+        return value
+
+    counts = fpstreams.flow.from_numpy(values).with_engine(engine).frequencies(select)
+    expected_values = values.tolist()
+    expected = {}
+    for value in expected_values:
+        expected[value] = expected.get(value, 0) + 1
+    assert calls == expected_values
+    assert counts == expected
+    assert list(counts) == list(expected)
+
+
+@pytest.mark.parametrize("dtype", ["int64", "float64"])
+def test_numpy_frequency_report_records_callback_sensitive_python_execution(dtype: str) -> None:
+    """The report separates a compiled native plan from the callback-safe terminal route."""
+    np = pytest.importorskip("numpy")
+    calls = []
+
+    def select(value):
+        calls.append(value)
+        return value % 3
+
+    result = fpstreams.flow.from_numpy(np.arange(16, dtype=dtype)).run_with_report(
+        "frequencies", select
+    )
+    assert result.value == {0: 6, 1: 5, 2: 5}
+    assert len(calls) == 16
+    assert result.report.requested_engine == "auto"
+    assert result.report.compiler_engine == "native"
+    assert result.report.strategy == "python_frequency"
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("change", ["grow", "shrink", "reshape", "dtype_width"])
+@pytest.mark.filterwarnings("ignore:Setting the dtype on a NumPy array:DeprecationWarning")
+def test_numpy_scalar_iteration_rejects_structure_changes_from_key(
+    engine: str, change: str
+) -> None:
+    """Structural edits fail before a second value reaches the key callback."""
+    np = pytest.importorskip("numpy")
+    values = np.arange(16, dtype=np.int64)
+    calls = []
+
+    def select(value):
+        calls.append(value)
+        if change == "grow":
+            values.resize(20, refcheck=False)
+        elif change == "shrink":
+            values.resize(0, refcheck=False)
+        elif change == "reshape":
+            values.resize((4, 4), refcheck=False)
+        else:
+            values.dtype = np.int32
+        return value
+
+    with pytest.raises(ValueError, match="retained array length changed during iteration"):
+        fpstreams.flow.from_numpy(values).with_engine(engine).frequencies(select)
+    assert calls == [0]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.filterwarnings("ignore:Setting the dtype on a NumPy array:DeprecationWarning")
+def test_numpy_scalar_iteration_reads_live_same_width_dtype(engine: str) -> None:
+    """Changing dtype without changing length affects the next scalar's type and value."""
+    np = pytest.importorskip("numpy")
+    values = np.arange(16, dtype=np.int64)
+    calls = []
+
+    def select(value):
+        calls.append(value)
+        if len(calls) == 1:
+            values.dtype = np.float64
+            values[1:] = 3.5
+        return value
+
+    counts = fpstreams.flow.from_numpy(values).with_engine(engine).frequencies(select)
+    assert counts == {0: 1, 3.5: 15}
+    assert type(calls[0]) is int
+    assert all(type(value) is float for value in calls[1:])
+
+
+def test_numpy_scalar_iteration_keeps_custom_shape_protocol() -> None:
+    """Nonstandard scalar sources keep their shape reads and never need a size property."""
+    from fpstreams.tabular.numpy import _numpy_scalars
+
+    calls = []
+
+    class Array:
+        ndim = 1
+
+        @property
+        def shape(self):
+            calls.append("shape")
+            return (2,)
+
+        def item(self, index):
+            calls.append(index)
+            return index + 1
+
+        @property
+        def size(self):
+            raise AssertionError("custom array size must not be read")
+
+    assert list(_numpy_scalars(Array())) == [1, 2]
+    assert calls == ["shape", "shape", 0, "shape", 1]
 
 
 def test_numpy_adapter_count_tracks_a_resized_retained_array() -> None:

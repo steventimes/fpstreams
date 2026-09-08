@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator
 from functools import lru_cache
 from typing import Any, Literal, cast
 
+from ..expressions._codegen import locate_generated_ast
 from ..expressions.scalar import (
     _OPCODE_NAMES,
     _OPCODES,
@@ -187,7 +188,7 @@ def _compile_scalar_loop(stages: tuple[ScalarStage, ...]) -> ScalarLoop:
         "_float": float,
     }
     code = compile(
-        ast.fix_missing_locations(module),
+        locate_generated_ast(module),
         "<fpstreams-scalar-fusion>",
         "exec",
     )

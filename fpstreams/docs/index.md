@@ -1,17 +1,18 @@
 # fpstreams v2
 
-fpstreams builds typed, lazy data pipelines over ordinary Python iterables,
-retained tabular inputs, and async iterables. The v2 API has four construction
-namespaces; `flow` is the primary synchronous entry point:
+fpstreams lets you filter, transform, and aggregate data in lazy Python
+pipelines. Start with `flow()` for synchronous values and records, including
+supported Arrow tables and dataframes. Use `aflow()` for async work:
 
 | Entry point | Use it for |
 | --- | --- |
 | `flow(source)` | Synchronous value or record pipelines, including supported tabular sources |
 | `aflow(source)` | Asynchronous I/O, merging, time-based operators, bounded concurrency |
-| `rows(source)` | An explicit relational/compatibility view and record-specific data I/O |
+| `rows(source)` | Record operations, relational joins, and record-specific I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-These docs target `2.1.0`.
+The examples use the `2.1` API. Sections marked unreleased describe changes
+available in the source tree that are not yet included in the PyPI release.
 
 The [2.1 changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
 summarizes the new public APIs and execution changes.
@@ -22,10 +23,9 @@ summarizes the new public APIs and execution changes.
 pip install fpstreams
 ~~~
 
-Python 3.11 or newer is required. Standard CPython 3.11 through 3.14 is covered
-by release testing. Free-threaded CPython 3.14t currently has an experimental,
-non-blocking job that builds the extension on a 3.14t interpreter rather than
-producing release wheels. Optional integrations are installed separately:
+Python 3.11 or newer is required. Release testing covers standard CPython 3.11
+through 3.14. Free-threaded 3.14t support is experimental and has no release
+wheels. Install optional integrations as needed:
 
 ~~~bash
 pip install "fpstreams[async]"
@@ -83,9 +83,8 @@ Use a `Collector` when the result is a general container or reduction. Use an
 
 ## Work with records
 
-`flow()` also starts record pipelines. String selectors address record fields,
-and `col()` builds row expressions without repetitive lambdas. Nonconflicting
-record methods enter a Rows view automatically.
+Use string selectors to read record fields and `col()` to build expressions.
+Methods such as `select()` and `group_by()` enter a Rows view from `flow()`:
 
 ~~~python
 from fpstreams import agg, col, flow
@@ -161,10 +160,9 @@ fpstreams cancels outstanding tasks and closes the owned async iterator.
 
 ## Understand execution
 
-The default engine is `auto`. It selects a fused Python loop, a native Rust
-kernel, an Arrow-native prefix, or a hybrid plan based on the source,
-operations, and requested terminal. Relational plans can use guarded native
-subpaths while keeping their canonical fallback.
+The default engine, `auto`, selects Python, Rust, Arrow, NumPy, or a combination
+based on the source, operations, and terminal. It uses an optimized path only
+when that path can preserve the pipeline's Python behavior.
 
 ~~~python
 from fpstreams import flow, item
@@ -187,8 +185,8 @@ known exact size can answer `count()` without opening the source.
 
 ## Keep memory bounded
 
-Most transformations stream values without materializing the source. Some
-operations inherently need retained state. v2 exposes bounded alternatives:
+`map`, `filter`, and `take` stream values. Sorting, joins, and grouping need
+more state; use these options to limit their in-memory working set:
 
 - `external_sort(buffer_size=..., tempdir=...)` writes sorted runs to temporary files.
 - `Rows.join(..., partitions=..., tempdir=..., limits=...)` partitions large joins.
@@ -197,8 +195,7 @@ operations inherently need retained state. v2 exposes bounded alternatives:
 
 `SpillLimits` has finite defaults for partition rows and bytes, per-key matches,
 total output, and repartition depth. Highly skewed or expanding inputs can fail
-at those limits; “bounded” means bounded by configuration, not guaranteed
-completion. Temporary resources are cleaned up on normal completion, errors,
+at those limits. Temporary resources are cleaned up on normal completion, errors,
 limit failures, and early exit.
 
 CSV is written raw by default. Enable `spreadsheet_safe=True` for untrusted text

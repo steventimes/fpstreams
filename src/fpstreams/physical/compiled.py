@@ -65,26 +65,46 @@ def _encode_integer_instructions(
     instructions: tuple[tuple[int, int], ...],
 ) -> bytes:
     """Encode integer opcodes and arbitrary-size operands without textual delimiters."""
-    return _record(
-        b"expr",
-        *(
-            _record(b"instruction", _encode_integer(opcode), _encode_integer(operand))
-            for opcode, operand in instructions
-        ),
-    )
+    if type(instructions) is not tuple:
+        raise ValueError("integer fingerprints require exact int instructions")
+    parts = [_frame(b"expr")]
+    for instruction in instructions:
+        if type(instruction) is not tuple or len(instruction) != 2:
+            raise ValueError("integer fingerprints require exact int instructions")
+        opcode, operand = instruction
+        if type(opcode) is not int or type(operand) is not int:
+            raise ValueError("integer fingerprints require exact int instructions")
+        prefix = (
+            _BYTE_OPCODE_PREFIXES[opcode]
+            if 0 <= opcode < 256
+            else _SCALAR_INSTRUCTION_TAG + _frame(_encode_integer(opcode))
+        )
+        encoded_operand = _encode_integer(operand)
+        parts.append(_frame(prefix + _frame(encoded_operand)))
+    return b"".join(parts)
 
 
 def _encode_float_instructions(
     instructions: tuple[tuple[int, float], ...],
 ) -> bytes:
     """Encode float instructions while retaining each IEEE-754 payload bit."""
-    return _record(
-        b"fexpr",
-        *(
-            _record(b"instruction", _encode_integer(opcode), struct.pack("!d", operand))
-            for opcode, operand in instructions
-        ),
-    )
+    if type(instructions) is not tuple:
+        raise ValueError("float fingerprints require exact float operands and int opcodes")
+    parts = [_frame(b"fexpr")]
+    for instruction in instructions:
+        if type(instruction) is not tuple or len(instruction) != 2:
+            raise ValueError("float fingerprints require exact float operands and int opcodes")
+        opcode, operand = instruction
+        if type(opcode) is not int or type(operand) is not float:
+            raise ValueError("float fingerprints require exact float operands and int opcodes")
+        prefix = (
+            _BYTE_OPCODE_PREFIXES[opcode]
+            if 0 <= opcode < 256
+            else _SCALAR_INSTRUCTION_TAG + _frame(_encode_integer(opcode))
+        )
+        encoded_operand = struct.pack("!d", operand)
+        parts.append(_frame(prefix + _frame(encoded_operand)))
+    return b"".join(parts)
 
 
 def _encode_row_leaf(value: Any) -> bytes | None:
@@ -154,6 +174,14 @@ def _encode_integer(value: int) -> bytes:
     magnitude = abs(value)
     width = max(1, (magnitude.bit_length() + 7) // 8)
     return (b"\x01" if value < 0 else b"\x00") + magnitude.to_bytes(width, "big")
+
+
+# Binary-format constants, independent of expression objects and source data.
+# Wider and negative opcodes retain the general arbitrary-integer encoding.
+_SCALAR_INSTRUCTION_TAG = _frame(b"instruction")
+_BYTE_OPCODE_PREFIXES = tuple(
+    _SCALAR_INSTRUCTION_TAG + _frame(_encode_integer(opcode)) for opcode in range(256)
+)
 
 
 def _literal(value: object) -> bytes:

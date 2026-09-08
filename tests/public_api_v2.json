@@ -8,7 +8,13 @@
     "Aggregator": {
       "callables": {},
       "kind": "class",
-      "properties": [],
+      "properties": [
+        "combine",
+        "done",
+        "finish",
+        "initializer",
+        "step"
+      ],
       "signature": {
         "parameters": [
           {
@@ -2787,7 +2793,13 @@
     "Collector": {
       "callables": {},
       "kind": "class",
-      "properties": [],
+      "properties": [
+        "combine",
+        "done",
+        "finish",
+        "initializer",
+        "step"
+      ],
       "signature": {
         "parameters": [
           {
@@ -8343,6 +8355,47 @@
           ],
           "return": "Pairs[K, R]"
         },
+        "run_with_report": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_ONLY",
+              "name": "terminal"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "args"
+            },
+            {
+              "annotation": "Any",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "return": "ExecutionResult[Any]"
+        },
         "sort_by_key": {
           "parameters": [
             {
@@ -8569,7 +8622,13 @@
         }
       },
       "kind": "class",
-      "properties": [],
+      "properties": [
+        "combine",
+        "done",
+        "finish",
+        "initializer",
+        "step"
+      ],
       "signature": {
         "parameters": [
           {
@@ -8643,7 +8702,13 @@
     "ReducerAggregator": {
       "callables": {},
       "kind": "class",
-      "properties": [],
+      "properties": [
+        "combine",
+        "done",
+        "finish",
+        "initializer",
+        "step"
+      ],
       "signature": {
         "parameters": [
           {

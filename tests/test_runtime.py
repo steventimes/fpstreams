@@ -1195,6 +1195,42 @@ def test_spilled_count_gate_stops_rechecking_a_still_unique_stream(monkeypatch) 
     assert purity_checks <= 512
 
 
+def test_spilled_count_type_guard_keeps_custom_serialization_calls(monkeypatch) -> None:
+    """A class equating itself to int must still flush the hot cache before pickling."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    calls: list[str] = []
+
+    class Meta(type):
+        def __hash__(cls) -> int:
+            calls.append("class hash")
+            return hash(int)
+
+        def __eq__(cls, other: object) -> bool:
+            calls.append("class equality")
+            return other is int or other is cls
+
+    class Payload(metaclass=Meta):
+        def __reduce__(self):
+            calls.append("reduce")
+            return int, (7,)
+
+    records = [{"id": 0, "payload": 7} for _ in range(256)] + [
+        {"id": 0, "payload": Payload()} for _ in range(32)
+    ]
+    query = fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+    with monkeypatch.context() as scoped:
+        scoped.setattr(spill, "_pickle_pure_row", lambda _row, _key: False)
+        expected = query.to_list()
+    expected_calls = calls.copy()
+    calls.clear()
+
+    assert query.to_list() == expected == [{"id": 0, "total": 288}]
+    assert calls == expected_calls
+    assert calls.count("reduce") == 32
+
+
 class _SpillPickleObserved:
     calls = 0
 

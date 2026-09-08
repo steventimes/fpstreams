@@ -63,7 +63,6 @@ _HOT_COUNT_MAX_SAMPLE_WINDOWS = _HOT_COUNT_ADMISSION
 _HOT_COUNT_DOMINANT_DIVISOR = 2
 _HOT_COUNT_PRODUCTIVITY_DIVISOR = 8
 _PICKLE_PURE_SCAN_LIMIT = 256
-_PICKLE_PURE_VALUES = frozenset({type(None), bool, int, float, str, bytes})
 JoinRow = tuple[int, Any, dict[str, Any] | None]
 JoinTargets = tuple[tuple[str, str], ...]
 JoinTargetBuilder = Callable[..., JoinTargets]
@@ -162,7 +161,14 @@ def _pickle_pure_row(row: Any, key: Any) -> bool:
     multiple_bytes = False
     for field, value in row.items():
         value_type = type(value)
-        if type(field) is not str or value_type not in _PICKLE_PURE_VALUES:
+        if type(field) is not str or not (
+            value_type is int
+            or value_type is float
+            or value_type is str
+            or value_type is bytes
+            or value_type is bool
+            or value is None
+        ):
             return False
         if value_type is str:
             has_string_value = True

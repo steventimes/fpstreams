@@ -15,7 +15,8 @@ mod endpoints;
 pub(crate) use endpoints::{
     I64Range, aggregate_i64, aggregate_i64_buffer_masked_v1, aggregate_i64_buffer_masked_v2,
     aggregate_i64_masked, aggregate_i64_range, aggregate_i64_range_masked, execute_i64,
-    execute_i64_buffer_v1, execute_i64_range, frequencies_i64_exact_v1, materialize_i64,
+    execute_i64_buffer_v1, execute_i64_range, frequencies_exact_prefix_v1,
+    frequencies_i64_exact_v1, frequencies_iter_prefix_v1, materialize_i64,
     materialize_i64_buffer_v1, materialize_i64_range, mean_i64, mean_i64_buffer_v1,
     mean_i64_buffer_v2, mean_i64_range, statistics_i64, statistics_i64_range, terminal_i64,
     terminal_i64_probe, terminal_i64_range,

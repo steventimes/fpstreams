@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from ..errors import NativeUnsupportedError
-from ..expressions.scalar import Expr, FExpr
+from ..expressions.scalar import Expr, FExpr, _has_exact_instruction_types
 from .logical import Pipeline
 from .sync import (
     DropOp,
@@ -327,6 +327,13 @@ def _compile(
         if stage is None:
             assert reason is not None
             return None, reason
+        if stage[0] in {0, 1, 2, 6, 7, 8}:
+            operand_type = int if kind == "i64" else float
+            if not _has_exact_instruction_types(stage[1], operand_type):
+                return (
+                    None,
+                    f"native {kind} expressions require exact {operand_type.__name__} operands",
+                )
         stages.append(stage)
 
     if not stages:

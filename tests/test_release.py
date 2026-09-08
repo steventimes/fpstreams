@@ -12,7 +12,10 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import re
+import shutil
+import struct
 import subprocess
 import sys
 import textwrap
@@ -23,6 +26,8 @@ from datetime import datetime
 from email.parser import Parser
 from fnmatch import fnmatch
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 COMPARE = ROOT / "benchmarks" / "regression.py"
@@ -60,22 +65,232 @@ def _benchmark_module() -> object:
     return module
 
 
+def test_benchmark_source_override_records_the_imported_checkout(tmp_path: Path) -> None:
+    from benchmarks.evidence import python_package_sha256
+
+    source = tmp_path / "src"
+    shutil.copytree(
+        ROOT / "src" / "fpstreams",
+        source / "fpstreams",
+        ignore=shutil.ignore_patterns("__pycache__", "cosi*", "Cosi*"),
+    )
+    package = source / "fpstreams"
+    with (package / "__init__.py").open("a") as handle:
+        handle.write("\n# A distinct source snapshot for the baseline runner.\n")
+    output = tmp_path / "report.json"
+    command = [
+        sys.executable,
+        str(ROOT / "benchmark.py"),
+        "--size",
+        "8",
+        "--repeats",
+        "1",
+        "--quick",
+        "--include",
+        "fpstreams_auto/list/identity/count",
+        "--json",
+        str(output),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "FPSTREAMS_BENCHMARK_SOURCE": str(source)},
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(output.read_text())["metadata"]
+    assert metadata["python_package_sha256"] == python_package_sha256(package)
+    assert metadata["python_package_sha256"] != python_package_sha256(ROOT / "src" / "fpstreams")
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "FPSTREAMS_BENCHMARK_SOURCE": str(tmp_path / "missing")},
+    )
+    assert result.returncode != 0
+    assert "must name a checkout's src directory" in result.stderr
+
+
+def test_frequency_benchmark_covers_other_key_types_and_skew(tmp_path: Path) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    specs = [
+        spec for spec in competitive._CASE_SPECS if spec.case_id.startswith("terminal.frequencies.")
+    ]
+    for size in (3, 1027):
+        for spec in specs:
+            case = competitive._build_case(spec, size, np, pd, tmp_path)
+            competitive._assert_equivalent_outputs(case)
+    for kind, expected_type in (("str", str), ("big_int", int), ("float", float)):
+        spec = next(
+            spec
+            for spec in specs
+            if spec.case_id == f"terminal.frequencies.{kind}.high_cardinality"
+        )
+        case = competitive._build_case(spec, 7, np, pd, tmp_path)
+        for implementation in (case.candidate, *case.references):
+            result = implementation.task()
+            assert len(result) == 7
+            assert all(type(key) is expected_type for key in result)
+            assert all(type(count) is int for count in result.values())
+            if kind == "big_int":
+                assert all(key > 2**63 for key in result)
+
+
+@pytest.mark.parametrize("size", [0, 17, 64])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        f"terminal.numpy.{kind}frequencies.{selection}{cardinality}"
+        for kind in ("", "float.")
+        for selection in ("", "key.")
+        for cardinality in ("low_cardinality", "high_cardinality")
+    ],
+)
+def test_numpy_frequency_benchmarks_preserve_counts_types_and_first_key_order(
+    case_id: str, size: int, tmp_path: Path
+) -> None:
+    from collections import Counter
+
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._build_case(spec, size, np, pd, tmp_path)
+    cardinality = max(1, size if case_id.endswith("high_cardinality") else min(16, size))
+    floating = ".float." in case_id
+    expected = dict(
+        Counter(
+            value % cardinality + 0.5 if floating else value % cardinality
+            for value in reversed(range(size))
+        )
+    )
+    for implementation in (case.candidate, *case.references):
+        actual = implementation.normalize(implementation.task())
+        assert case.outputs_equal(actual, expected)
+        assert all(type(key) is (float if floating else int) for key in actual)
+        assert all(type(count) is int for count in actual.values())
+    if len(expected) > 1:
+        assert not case.outputs_equal(expected, dict(reversed(list(expected.items()))))
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    [
+        ({1: 2}, {1.0: 2}, False),
+        ({1: 2}, {True: 2}, False),
+        ({1: 1}, {1: True}, False),
+        ({1: 2}, {1: 2.0}, False),
+        ({-0.0: 2}, {0.0: 2}, False),
+        ({2: 1, 1: 2}, {1: 2, 2: 1}, False),
+        ({float("nan"): 1, float("nan"): 1}, {float("nan"): 2}, False),
+        ({float("nan"): 1, float("nan"): 1}, {float("nan"): 1, float("nan"): 1}, True),
+        ({-0.0: 2, float("inf"): 1}, {-0.0: 2, float("inf"): 1}, True),
+        ({2: 1, 1: 2}, {2: 1, 1: 2}, True),
+        ({}, {}, True),
+    ],
+)
+def test_numpy_frequency_benchmark_comparison_checks_key_and_count_representation(
+    left: dict[object, object], right: dict[object, object], equal: bool, tmp_path: Path
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    spec = next(
+        spec
+        for spec in competitive._CASE_SPECS
+        if spec.case_id == "terminal.numpy.frequencies.low_cardinality"
+    )
+    case = competitive._build_case(spec, 3, np, pd, tmp_path)
+    assert case.outputs_equal(left, right) is equal
+
+
+@pytest.mark.parametrize("other_bits", ["7ff8000000000002", "fff8000000000001"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_numpy_frequency_benchmark_rejects_changed_nan_bits(other_bits: str, reverse: bool) -> None:
+    from benchmarks.competitive import _frequency_outputs_equal
+
+    first = struct.unpack("!d", bytes.fromhex("7ff8000000000001"))[0]
+    other = struct.unpack("!d", bytes.fromhex(other_bits))[0]
+    left, right = ({first: 1}, {other: 1})
+    if reverse:
+        left, right = right, left
+    assert not _frequency_outputs_equal(left, right)
+    same_bits = struct.unpack("!d", bytes.fromhex(other_bits))[0]
+    assert _frequency_outputs_equal({other: 1}, {same_bits: 1})
+
+
 def _report(
     seconds: float,
     *,
     first_row_seconds: float | None = None,
     resources: dict[str, float | int] | None = None,
 ) -> dict[str, object]:
+    from benchmarks.evidence import RUNTIME_ENVIRONMENT
+
     result: dict[str, object] = {
         "name": "sync.map",
         "median_seconds": seconds,
     }
     if first_row_seconds is not None:
         result["first_row_seconds"] = first_row_seconds
-    if resources is not None:
-        result["resources"] = resources
+    result["resources"] = {"peak_allocation_bytes": 100, **(resources or {})}
     return {
-        "metadata": {"python_version": "3.12", "platform": "linux", "machine": "x86_64"},
+        "schema_version": 6,
+        "metadata": {
+            "suite": "engine",
+            "python_version": "3.12",
+            "platform": "linux",
+            "machine": "x86_64",
+            "implementation": "CPython",
+            "processor": "test-cpu",
+            "runtime_configuration": {
+                "cpu_affinity": [0, 1],
+                "environment": {name: None for name in RUNTIME_ENVIRONMENT},
+                "numpy": {
+                    "cpu_baseline": ["SSE2"],
+                    "cpu_dispatch": ["AVX2"],
+                    "cpu_features": {"SSE2": True, "AVX2": True},
+                    "active_targets_sha256": "a" * 64,
+                },
+            },
+            "fpstreams_version": "2.1.0",
+            "size": 100,
+            "domain": "int",
+            "quick": True,
+            "repeats": 3,
+            "methodology": {},
+            "native": {
+                "available": True,
+                "profile": "release",
+                "path": "extension.so",
+                "sha256": "c" * 64,
+            },
+            "libraries": {
+                "fpstreams": "2.1.0",
+                "numpy": "2.0",
+                "pandas": None,
+                "pyarrow": None,
+                "polars": None,
+                "aiofiles": None,
+            },
+            "git_sha": "a" * 40,
+            "git_dirty": False,
+            "git_available": True,
+            "python_package_sha256": "b" * 64,
+            "benchmark_matrix_sha256": "d" * 64,
+            "generated_at_utc": "2026-09-06T00:00:00+00:00",
+            "provenance_verified_unchanged": True,
+        },
         "results": [result],
     }
 
@@ -105,10 +320,12 @@ def _create_baseline(tmp_path: Path, reports: list[dict[str, object]]) -> Path:
 
 
 def _multi_report(*items: tuple[str, float]) -> dict[str, object]:
-    return {
-        "metadata": {"python_version": "3.12", "platform": "linux", "machine": "x86_64"},
-        "results": [{"name": name, "median_seconds": seconds} for name, seconds in items],
-    }
+    report = _report(1.0)
+    report["results"] = [
+        {"name": name, "median_seconds": seconds, "resources": {"peak_allocation_bytes": 100}}
+        for name, seconds in items
+    ]
+    return report
 
 
 def test_create_baseline_records_median_and_mad_from_three_comparable_runs(tmp_path: Path) -> None:
@@ -140,7 +357,93 @@ def test_create_baseline_records_median_and_mad_from_three_comparable_runs(tmp_p
     assert result.returncode == 0, result.stderr
     baseline = json.loads(output.read_text(encoding="utf-8"))
     assert baseline["provenance"] == "local_one_shot_unreviewed"
-    assert baseline["scenarios"]["sync.map"] == {"mad_seconds": 0.1, "median_seconds": 1.1}
+    assert baseline["scenarios"]["sync.map"] == {
+        "mad_seconds": 0.1,
+        "median_seconds": 1.1,
+        "resources": {"peak_allocation_bytes": 100},
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("size", 1000000),
+        ("domain", "float"),
+        ("quick", False),
+        ("benchmark_matrix_sha256", "e" * 64),
+        ("native", {"available": True, "profile": "debug"}),
+        ("libraries", {"numpy": "3.0"}),
+    ],
+)
+def test_regression_rejects_incomparable_workloads_in_creation_and_comparison(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    from copy import deepcopy
+
+    report = _report(1.0)
+    baseline = _create_baseline(tmp_path, [report] * 3)
+    different = deepcopy(report)
+    if field in {"native", "libraries"}:
+        different["metadata"][field].update(value)
+    else:
+        different["metadata"][field] = value
+    current = tmp_path / "different.json"
+    current.write_text(json.dumps(different), encoding="utf-8")
+    comparison = subprocess.run(
+        [sys.executable, str(COMPARE), str(baseline), str(current)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert comparison.returncode == 1
+    assert f"mixed benchmark metadata: {field}" in comparison.stderr
+    creation = subprocess.run(
+        [
+            sys.executable,
+            str(COMPARE),
+            "--create-baseline",
+            "--provenance",
+            "local_one_shot_unreviewed",
+            "--output",
+            str(tmp_path / "invalid.json"),
+            str(tmp_path / "run-1.json"),
+            str(tmp_path / "run-2.json"),
+            str(current),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert creation.returncode != 0
+    assert f"mixed benchmark metadata: {field}" in creation.stderr
+
+
+def test_regression_checks_report_schema_but_allows_code_provenance_to_change(
+    tmp_path: Path,
+) -> None:
+    from copy import deepcopy
+
+    from benchmarks import regression
+
+    report = _report(1.0)
+    changed = deepcopy(report)
+    changed["metadata"].update(
+        git_sha="f" * 40,
+        git_dirty=True,
+        python_package_sha256="e" * 64,
+        fpstreams_version="2.1.1",
+    )
+    changed["metadata"]["native"]["sha256"] = "d" * 64
+    changed["metadata"]["libraries"]["fpstreams"] = "2.1.1"
+    baseline = regression._baseline([report, changed, report], "local_one_shot_unreviewed")
+    assert regression._comparison_errors(baseline, changed, {}) == []
+    assert baseline["runs"] == [report["metadata"], changed["metadata"], report["metadata"]]
+    changed["schema_version"] = report["schema_version"] + 1
+    with pytest.raises(ValueError, match="mixed benchmark report schema"):
+        regression._comparable([report, changed])
+    assert (
+        "mixed benchmark report schema" in regression._comparison_errors(baseline, changed, {})[0]
+    )
 
 
 def test_compare_rejects_a_single_scenario_over_the_hard_25_percent_cap(tmp_path: Path) -> None:
@@ -178,6 +481,320 @@ def test_compare_rejects_a_single_scenario_over_the_hard_25_percent_cap(tmp_path
 
     assert result.returncode == 1
     assert "hard timing regression: sync.map" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "benchmark_matrix_sha256",
+        "python_package_sha256",
+        "git_sha",
+        "git_dirty",
+        "libraries",
+        "native",
+        "size",
+        "methodology",
+        "runtime_configuration",
+        "provenance_verified_unchanged",
+    ],
+)
+def test_benchmark_evidence_cannot_be_missing_from_both_sides(field: str) -> None:
+    from copy import deepcopy
+
+    from benchmarks import regression
+
+    report = _report(1.0)
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    incomplete = deepcopy(report)
+    del incomplete["metadata"][field]
+    with pytest.raises(ValueError, match=f"missing benchmark metadata: {field}"):
+        regression._baseline([incomplete] * 3, "local_one_shot_unreviewed")
+    del baseline["metadata"][field]
+    assert (
+        f"missing benchmark metadata: {field}"
+        in regression._comparison_errors(baseline, incomplete, {})[0]
+    )
+
+
+@pytest.mark.parametrize("schema", [None, 1, 2, 3, 4, 5, 999])
+def test_benchmark_evidence_rejects_legacy_and_unknown_report_schemas(schema: int | None) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    report["schema_version"] = schema
+    with pytest.raises(ValueError, match="report schema"):
+        regression._baseline([report] * 3, "local_one_shot_unreviewed")
+
+
+@pytest.mark.parametrize("field", ["affinity", "environment", "numpy"])
+def test_benchmark_rejects_different_runtime_configurations(field: str) -> None:
+    from copy import deepcopy
+
+    from benchmarks import regression
+
+    original = _report(1.0)
+    changed = deepcopy(original)
+    runtime = changed["metadata"]["runtime_configuration"]
+    if field == "affinity":
+        runtime["cpu_affinity"] = [0]
+    elif field == "environment":
+        runtime["environment"]["NPY_DISABLE_CPU_FEATURES"] = "AVX2"
+    else:
+        runtime["numpy"]["active_targets_sha256"] = "b" * 64
+    with pytest.raises(ValueError, match="mixed benchmark metadata: runtime_configuration"):
+        regression._baseline([original, changed, original], "local_one_shot_unreviewed")
+    baseline = regression._baseline([original] * 3, "local_one_shot_unreviewed")
+    assert regression._comparison_errors(baseline, changed, {}) == [
+        "mixed benchmark metadata: runtime_configuration"
+    ]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["cpu_affinity", "environment", "numpy", "numpy.cpu_features", "environment.OMP_NUM_THREADS"],
+)
+def test_benchmark_rejects_missing_runtime_evidence(field: str) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    runtime = report["metadata"]["runtime_configuration"]
+    owner = runtime
+    parts = field.split(".")
+    for part in parts[:-1]:
+        owner = owner[part]
+    del owner[parts[-1]]
+    with pytest.raises(ValueError, match="invalid benchmark runtime configuration"):
+        regression._baseline([report] * 3, "local_one_shot_unreviewed")
+
+
+@pytest.mark.parametrize(
+    "field", ["sample_warmup_min_seconds", "gc_before_sample_warmup", "warmup_runs"]
+)
+def test_benchmark_rejects_missing_competitive_warmup_evidence(field: str) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    report["metadata"].update(
+        suite="competitive",
+        domain="mixed",
+        methodology={"sample_warmup_min_seconds": 0.001, "gc_before_sample_warmup": True},
+    )
+    report["results"][0].update(sample_count=3, warmup_runs=[2, 3, 2])
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    if field == "warmup_runs":
+        del report["results"][0][field]
+    else:
+        del report["metadata"]["methodology"][field]
+    with pytest.raises(ValueError, match="warmup"):
+        regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    assert "warmup" in regression._comparison_errors(baseline, report, {})[0]
+
+
+def test_benchmark_runtime_configuration_preserves_missing_numpy_and_import_failures(
+    monkeypatch,
+) -> None:
+    from benchmarks import evidence
+
+    original_import = evidence.importlib.import_module
+
+    def missing_numpy(name):
+        if name == "numpy":
+            raise ModuleNotFoundError("numpy is not installed", name="numpy")
+        return original_import(name)
+
+    monkeypatch.setattr(evidence.importlib, "import_module", missing_numpy)
+    assert evidence.runtime_configuration()["numpy"] is None
+
+    def broken_numpy(name):
+        raise ModuleNotFoundError("a numpy dependency is missing", name="broken_numpy_dependency")
+
+    monkeypatch.setattr(evidence.importlib, "import_module", broken_numpy)
+    with pytest.raises(ModuleNotFoundError, match="a numpy dependency is missing"):
+        evidence.runtime_configuration()
+
+
+def test_benchmark_runtime_configuration_records_only_allowed_environment(monkeypatch) -> None:
+    from benchmarks import evidence
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    monkeypatch.setenv("PRIVATE_TEST_TOKEN", "never-record-this-value")
+    runtime = evidence.runtime_configuration()
+    assert runtime["environment"]["OMP_NUM_THREADS"] == "3"
+    assert set(runtime["environment"]) == set(evidence.RUNTIME_ENVIRONMENT)
+    assert "never-record-this-value" not in json.dumps(runtime)
+    assert runtime["numpy"]["cpu_features"]
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "PYTHONMALLOC",
+        "PYTHONMALLOCSTATS",
+        "GLIBC_TUNABLES",
+        "MALLOC_ARENA_MAX",
+        "MALLOC_ARENA_TEST",
+        "MALLOC_CHECK_",
+        "MALLOC_MMAP_MAX_",
+        "MALLOC_MMAP_THRESHOLD_",
+        "MALLOC_PERTURB_",
+        "MALLOC_TOP_PAD_",
+        "MALLOC_TRIM_THRESHOLD_",
+    ],
+)
+def test_benchmark_allocator_settings_are_required_and_comparable(monkeypatch, setting) -> None:
+    from copy import deepcopy
+
+    from benchmarks import evidence, regression
+
+    monkeypatch.setenv(setting, "allocator-setting-for-evidence")
+    assert evidence.runtime_configuration()["environment"][setting] == (
+        "allocator-setting-for-evidence"
+    )
+    original = _report(1.0)
+    changed = deepcopy(original)
+    changed["metadata"]["runtime_configuration"]["environment"][setting] = "different"
+    with pytest.raises(ValueError, match="mixed benchmark metadata: runtime_configuration"):
+        regression._baseline([original, changed, original], "local_one_shot_unreviewed")
+    incomplete = deepcopy(original)
+    del incomplete["metadata"]["runtime_configuration"]["environment"][setting]
+    with pytest.raises(ValueError, match="invalid benchmark runtime configuration"):
+        regression._baseline([incomplete] * 3, "local_one_shot_unreviewed")
+    collected = evidence.BenchmarkEvidence("engine", {})
+    monkeypatch.setenv(setting, "changed-during-run")
+    with pytest.raises(RuntimeError, match="runtime configuration changed"):
+        collected.finish()
+
+
+def test_benchmark_runtime_configuration_change_during_run_is_rejected(monkeypatch) -> None:
+    from benchmarks import evidence
+
+    collected = evidence.BenchmarkEvidence("engine", {})
+    monkeypatch.setenv("OMP_NUM_THREADS", "7")
+    if collected.metadata["runtime_configuration"]["environment"]["OMP_NUM_THREADS"] == "7":
+        monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    with pytest.raises(RuntimeError, match="runtime configuration changed"):
+        collected.finish()
+
+
+def test_benchmark_git_provenance_reports_unknown_without_git(tmp_path, monkeypatch) -> None:
+    from benchmarks import evidence, regression
+
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("git is not installed")
+
+    monkeypatch.setattr(evidence.subprocess, "run", unavailable)
+    unknown = evidence.git_provenance(tmp_path)
+    assert unknown == {"git_available": False, "git_sha": None, "git_dirty": None}
+    report = _report(1.0)
+    report["metadata"].update(unknown)
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    assert baseline["runs"][0]["git_available"] is False
+
+
+@pytest.mark.parametrize("runs", [None, [], [None], [{}]])
+def test_comparison_requires_original_baseline_run_provenance(runs) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    baseline["runs"] = runs
+    assert regression._comparison_errors(baseline, report, {})
+
+
+@pytest.mark.parametrize("suite", ["engine", "competitive"])
+def test_both_benchmark_producers_emit_comparable_evidence(suite: str) -> None:
+    from benchmarks import regression
+
+    module = _benchmark_module()
+    if suite == "engine":
+        report = module.run(
+            size=8, repeats=1, quick=True, include=("fpstreams_auto/list/identity/*",)
+        )
+    else:
+        report = module.run_competitive(size=8, repeats=1, include=("flow.map",))
+    assert report["metadata"]["suite"] == suite
+    assert report["metadata"]["git_available"] is True
+    assert (
+        report["metadata"]["git_sha"]
+        == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    )
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    assert regression._comparison_errors(baseline, report, regression._read_groups(GROUPS)) == []
+
+
+def test_engine_rejects_source_changes_during_measurement(monkeypatch) -> None:
+    from benchmarks import evidence
+
+    fingerprints = iter(("before", "after"))
+    monkeypatch.setattr(evidence, "python_package_sha256", lambda _: next(fingerprints))
+    with pytest.raises(RuntimeError, match="Python sources changed"):
+        _benchmark_module().run(
+            size=8, repeats=1, quick=True, include=("fpstreams_auto/list/identity/*",)
+        )
+
+
+def test_benchmark_observation_uses_fresh_sources_outside_timed_samples(monkeypatch) -> None:
+    from fpstreams import flow
+    from fpstreams.runtime.report import _current_recorder
+
+    module = _benchmark_module()
+    timed = False
+    events = []
+    closed = []
+
+    def task():
+        events.append((timed, _current_recorder() is not None))
+
+        def source():
+            try:
+                yield from (1, 2, 3)
+            finally:
+                closed.append(True)
+
+        return flow(source()).to_list()
+
+    original = module.measure
+
+    def measure(*args, **kwargs):
+        nonlocal timed
+        timed = True
+        try:
+            return original(*args, **kwargs)
+        finally:
+            timed = False
+
+    monkeypatch.setattr(module, "measure", measure)
+    record = module._record(module.Scenario("probe", task, "auto", "iterator", "to_list", None), 2)
+    assert events == [(False, True), (True, False), (True, False), (False, False)]
+    assert len(closed) == 4
+    assert record["execution"]["status"] == "observed"
+    assert record["execution"]["requested_engine"] == "auto"
+    assert _current_recorder() is None
+
+
+def test_benchmark_observation_handles_bound_metadata_terminals_and_unknown_tasks() -> None:
+    from benchmarks.evidence import observe_task
+    from fpstreams import flow
+
+    observed = observe_task(flow([1, 2]).count, "auto", "terminal.count")
+    assert observed["strategy"] == "metadata"
+    assert observed["compiler_engine"] == "not_compiled"
+    assert observe_task(lambda: 42, "auto", "planning")["status"] == "unknown"
+
+
+def test_benchmark_observation_preserves_task_error_and_resets_context() -> None:
+    from benchmarks.evidence import observe_task
+    from fpstreams.runtime.report import _current_recorder
+
+    failure = RuntimeError("task failure")
+
+    def task():
+        raise failure
+
+    with pytest.raises(RuntimeError) as captured:
+        observe_task(task, "auto", "to_list")
+    assert captured.value is failure
+    assert _current_recorder() is None
 
 
 def test_compare_allows_a_noisy_baseline_within_its_mad_tolerance(tmp_path: Path) -> None:
@@ -297,6 +914,124 @@ def test_real_benchmark_records_peak_python_allocation_per_scenario() -> None:
         assert result["resources"]["peak_allocation_bytes"] >= 0
 
 
+@pytest.mark.parametrize("suite", ["engine", "competitive"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {},
+        {"peak_allocation_bytes": None},
+        {"peak_allocation_bytes": -1},
+        {"peak_allocation_bytes": True},
+        {"peak_allocation_bytes": float("nan")},
+    ],
+)
+def test_benchmark_rejects_missing_or_invalid_allocation_evidence(suite, value):
+    from benchmarks import regression
+
+    report = _report(1.0)
+    if suite == "competitive":
+        report["metadata"].update(
+            suite="competitive",
+            domain="mixed",
+            methodology={"sample_warmup_min_seconds": 0.001, "gc_before_sample_warmup": True},
+        )
+        report["results"][0].update(sample_count=1, warmup_runs=[1])
+    if value is None:
+        report["results"][0].pop("resources", None)
+    else:
+        report["results"][0]["resources"] = value
+    with pytest.raises(ValueError, match="resource"):
+        regression._baseline([report] * 3, "local_one_shot_unreviewed")
+
+
+def test_baseline_rejects_inconsistent_resource_sets_instead_of_filling_zero():
+    from benchmarks import regression
+
+    reports = [
+        _report(1.0, resources={"peak_allocation_bytes": 100, "live_tasks": 0}),
+        _report(1.0, resources={"peak_allocation_bytes": 100}),
+        _report(1.0, resources={"peak_allocation_bytes": 100, "live_tasks": 0}),
+    ]
+    with pytest.raises(ValueError, match="resource metric sets differ"):
+        regression._baseline(reports, "local_one_shot_unreviewed")
+
+
+def test_competitive_records_real_allocation_after_timed_calls(monkeypatch):
+    import tracemalloc
+
+    from benchmarks import competitive
+
+    events = []
+    monkeypatch.setattr(competitive, "_SAMPLE_WARMUP_SECONDS", 0)
+
+    def task():
+        events.append(tracemalloc.is_tracing())
+        return bytearray(65536)
+
+    implementation = competitive.Implementation("fpstreams", task, competitive._identity)
+    case = competitive.CompetitiveCase(
+        competitive.CaseSpec("flow.map", "Flow.map"),
+        implementation,
+        (),
+        lambda left, right: left == right,
+    )
+    (record,) = competitive._measure_case(case, repeats=2)
+    assert events == [False, False, False, False, False, True]
+    assert record["resources"]["peak_allocation_bytes"] >= 65536
+    assert not tracemalloc.is_tracing()
+
+
+@pytest.mark.parametrize("failure", ["raises", "stops_tracing"])
+def test_allocation_measurement_stops_tracing_after_task_failure(failure):
+    import tracemalloc
+
+    from benchmarks.evidence import measure_python_allocation
+
+    calls = []
+
+    def task():
+        calls.append(1)
+        if failure == "raises":
+            raise LookupError("allocation task failed")
+        tracemalloc.stop()
+
+    error = LookupError if failure == "raises" else RuntimeError
+    with pytest.raises(error, match="allocation"):
+        measure_python_allocation(task)
+    assert calls == [1]
+    assert not tracemalloc.is_tracing()
+
+
+def test_allocation_measurement_preserves_existing_tracing():
+    import tracemalloc
+
+    from benchmarks.evidence import measure_python_allocation
+
+    calls = []
+    tracemalloc.start()
+    try:
+        with pytest.raises(RuntimeError, match="inactive tracemalloc"):
+            measure_python_allocation(lambda: calls.append(1))
+        assert tracemalloc.is_tracing()
+        assert calls == []
+    finally:
+        tracemalloc.stop()
+
+
+@pytest.mark.parametrize("resources", [None, {}, {"peak_allocation_bytes": float("inf")}])
+def test_comparison_rejects_incomplete_or_invalid_baseline_resources(resources):
+    from benchmarks import regression
+
+    report = _report(1.0)
+    baseline = regression._baseline([report] * 3, "local_one_shot_unreviewed")
+    if resources is None:
+        del baseline["scenarios"]["sync.map"]["resources"]
+    else:
+        baseline["scenarios"]["sync.map"]["resources"] = resources
+    assert any("resource" in error for error in regression._comparison_errors(baseline, report, {}))
+
+
 def test_operation_benchmarks_record_real_first_row_latency() -> None:
     """First-result policy is backed by a separate early-consumption measurement."""
     report = _benchmark_module().run(size=10, repeats=1, domain="int", quick=True)
@@ -336,6 +1071,34 @@ def test_first_row_latency_uses_enough_samples_to_absorb_startup_jitter() -> Non
     assert len(record["first_row_samples_seconds"]) == 15
 
 
+@pytest.mark.parametrize("size", [3, 17])
+def test_expression_planning_benchmark_separates_compile_and_matching_execution(size: int) -> None:
+    from fpstreams.physical.plan import PhysicalPlan
+
+    scenarios = _benchmark_module()._expression_compile_scenarios(size)
+    assert len(scenarios) == 6
+    for kind in ("int_expression", "float_expression", "callable"):
+        compile_case, run_case = (
+            next(
+                case
+                for case in scenarios
+                if case.name == f"fpstreams_planning/{kind}/{phase}/list/python"
+            )
+            for phase in ("compile", "run")
+        )
+        compiled = compile_case.task()
+        assert isinstance(compiled, PhysicalPlan)
+        assert compiled.terminal.name == "list"
+        assert compiled.engine == "python"
+        assert len(compiled.source.native_data) == size
+        expected = (
+            [float(value * 3 + 1) for value in range(size) if value * 3 + 1 > 4]
+            if kind == "float_expression"
+            else [value * 3 + 1 for value in range(size) if (value * 3 + 1) % 2 == 0]
+        )
+        assert run_case.task() == expected
+
+
 def test_logical_compile_keeps_the_pre_deletion_comparison_scenario() -> None:
     """The final benchmark remains comparable with the immutable one-shot baseline."""
     scenarios = _benchmark_module()._logical_compile_scenarios()
@@ -361,7 +1124,9 @@ def test_benchmark_include_partitions_scenarios_without_changing_metadata() -> N
         size=10, repeats=1, domain="int", quick=True, include=("fpstreams_operation/sync/*",)
     )
 
-    assert partial["metadata"] == full["metadata"]
+    assert {k: v for k, v in partial["metadata"].items() if k != "generated_at_utc"} == {
+        k: v for k, v in full["metadata"].items() if k != "generated_at_utc"
+    }
     assert partial["results"]
     assert all(item["name"].startswith("fpstreams_operation/sync/") for item in partial["results"])
 
@@ -372,7 +1137,7 @@ def test_competitive_benchmark_reports_versions_and_cross_library_matrix() -> No
     import pandas as pd
 
     import fpstreams
-    from benchmarks import competitive
+    from benchmarks import evidence
 
     module = _benchmark_module()
     release_names = {
@@ -383,7 +1148,12 @@ def test_competitive_benchmark_reports_versions_and_cross_library_matrix() -> No
     report = module.run_competitive(size=128, repeats=1, quick=True)
 
     assert report["metadata"]["suite"] == "competitive"
-    assert report["metadata"]["libraries"] == {
+    assert all(
+        type(row["resources"]["peak_allocation_bytes"]) is int
+        and row["resources"]["peak_allocation_bytes"] >= 0
+        for row in report["results"]
+    )
+    assert {k: report["metadata"]["libraries"][k] for k in ("fpstreams", "numpy", "pandas")} == {
         "fpstreams": fpstreams.__version__,
         "numpy": np.__version__,
         "pandas": pd.__version__,
@@ -391,17 +1161,19 @@ def test_competitive_benchmark_reports_versions_and_cross_library_matrix() -> No
     assert report["metadata"]["methodology"] == {
         "inputs_preconstructed": True,
         "correctness_warmup_runs": 1,
+        "sample_warmup_min_seconds": 0.001,
+        "gc_before_sample_warmup": True,
         "timed_tasks_fully_materialize_outputs": True,
         "timed_output_normalization": False,
+        "execution_observation_timed": False,
+        "execution_observation_runs": 1,
     }
     generated_at = datetime.fromisoformat(report["metadata"]["generated_at_utc"])
     assert generated_at.tzinfo is not None
-    with (ROOT / "benchmarks" / "competitive.py").open("rb") as handle:
-        assert (
-            report["metadata"]["benchmark_matrix_sha256"]
-            == hashlib.file_digest(handle, "sha256").hexdigest()
-        )
-    assert report["metadata"]["python_package_sha256"] == competitive._python_package_sha256(
+    from benchmarks.evidence import matrix_sha256
+
+    assert report["metadata"]["benchmark_matrix_sha256"] == matrix_sha256()
+    assert report["metadata"]["python_package_sha256"] == evidence.python_package_sha256(
         Path(fpstreams.__file__).resolve().parent
     )
     assert report["metadata"]["provenance_verified_unchanged"] is True
@@ -568,6 +1340,89 @@ def test_competitive_metrics_report_faster_slower_and_noise() -> None:
             competitive.comparison_metrics(1.0, 1.0, candidate_samples=(invalid,))
     with pytest.raises(ValueError, match="baseline duration must be positive"):
         competitive.comparison_metrics(0.0, 0.0)
+
+
+@pytest.mark.parametrize("storage", ["csv", "parquet"])
+@pytest.mark.parametrize("size", [1, 1000])
+def test_competitive_arrow_scan_projection_reads_current_file(
+    tmp_path: Path, storage: str, size: int
+) -> None:
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.csv as csv
+    import pyarrow.parquet as parquet
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    spec = next(
+        spec for spec in competitive._CASE_SPECS if spec.case_id == f"io.arrow.{storage}.select"
+    )
+    case = competitive._build_case(spec, size, np, pd, tmp_path)
+    expected = [{"id": i, "value": i} for i in range(size)]
+    assert case.candidate.task() == expected
+    assert case.references[0].task() == expected
+    report = observe_task(case.candidate.task, spec.engine, spec.case_id)
+    assert report["status"] == "observed"
+    table = pa.table({"id": [7], "value": [30], "unused": ["changed"]})
+    if storage == "csv":
+        csv.write_csv(table, tmp_path / "projection.csv")
+    else:
+        parquet.write_table(table, tmp_path / "projection.parquet")
+    assert case.candidate.task() == case.references[0].task() == [{"id": 7, "value": 30}]
+
+
+@pytest.mark.parametrize(
+    "case_id", ["rows.select", "rows.select.python", "rows.select.mapping", "rows.select.arrow"]
+)
+@pytest.mark.parametrize("size", [4, 2048, 4096])
+def test_competitive_select_variants_preserve_full_output_and_engine(
+    case_id: str, size: int
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._rows_case(spec, size, np, pd)
+    result = case.candidate.task()
+    expected = [{"id": index, "value": index} for index in range(size)]
+    assert result == expected
+    for reference in case.references:
+        assert case.outputs_equal(result, reference.normalize(reference.task()))
+    assert not case.outputs_equal(result, list(reversed(expected)))
+    report = observe_task(case.candidate.task, spec.engine, spec.case_id)
+    assert report["status"] == "observed"
+    assert report["requested_engine"] == spec.engine
+
+
+@pytest.mark.parametrize(
+    "case_id", ["rows.pivot", "rows.pivot.python", "rows.pivot.mapping", "rows.pivot.callable"]
+)
+@pytest.mark.parametrize("size", [4, 16, 64])
+def test_competitive_pivot_variants_preserve_full_output_and_engine(
+    case_id: str, size: int
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._rows_case(spec, size, np, pd)
+    result = case.candidate.task()
+    expected = [{"group": group, "left": group, "right": group * 2} for group in range(size // 2)]
+    assert result == expected
+    for reference in case.references:
+        assert case.outputs_equal(result, reference.normalize(reference.task()))
+    assert not case.outputs_equal(result, list(reversed(expected)))
+    report = observe_task(case.candidate.task, spec.engine, spec.case_id)
+    assert report["status"] == "observed"
+    assert report["requested_engine"] == spec.engine
 
 
 def test_competitive_pivot_python_baseline_consumes_the_long_records(
@@ -918,6 +1773,159 @@ def test_competitive_callable_mapping_join_snapshots_before_selectors(
     ]
 
 
+@pytest.mark.parametrize(
+    "record_shape", ["dict_fields", "dict_callable", "mapping_fields", "mapping_callable"]
+)
+@pytest.mark.parametrize("join_shape", ["inner.unique", "left.unique", "inner.many"])
+def test_competitive_python_join_controls_keep_shape_engine_and_output(
+    monkeypatch, tmp_path, record_shape, join_shape
+):
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    captured = []
+    real_rows = competitive.fpstreams.rows
+
+    def capture_rows(source):
+        captured.append(source)
+        return real_rows(source)
+
+    monkeypatch.setattr(competitive.fpstreams, "rows", capture_rows)
+    case_id = f"rows.join.{join_shape}.python.{record_shape}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    assert spec.engine == "python"
+    case = competitive._build_case(spec, 5, np, pd, tmp_path)
+    expected_type = competitive._NominalRecord if record_shape.startswith("mapping_") else dict
+    assert all(type(row) is expected_type for row in captured[0])
+    callable_keys = record_shape.endswith("_callable")
+    many = join_shape.endswith("many")
+    expected = []
+    for identifier in range(5):
+        if identifier % 2 == 0:
+            for duplicate in range(2 if many else 1):
+                record = {"id": identifier, "value": identifier}
+                if callable_keys:
+                    record["id_right"] = identifier
+                record["label"] = f"r{identifier}-{duplicate}" if many else f"r{identifier}"
+                expected.append(record)
+        elif join_shape.startswith("left"):
+            record = {"id": identifier, "value": identifier}
+            if callable_keys:
+                record["id_right"] = None
+            record["label"] = None
+            expected.append(record)
+    expected_normalized = case.candidate.normalize(expected)
+    assert case.candidate.normalize(case.candidate.task()) == expected_normalized
+    for reference in case.references:
+        assert case.outputs_equal(reference.normalize(reference.task()), expected_normalized)
+    report = observe_task(case.candidate.task, spec.engine, spec.case_id)
+    assert report["status"] == "observed"
+    assert report["requested_engine"] == report["compiler_engine"] == "python"
+    assert report["strategy"] == "python_join"
+
+
+@pytest.mark.parametrize("join_shape", ["inner.unique", "left.unique", "inner.many"])
+def test_competitive_dict_callable_join_peer_snapshots_before_selectors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, join_shape: str
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    case_id = f"rows.join.{join_shape}.python.dict_callable"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._build_case(spec, 3, np, pd, tmp_path)
+    assert [reference.library for reference in case.references] == ["python"]
+    peer = case.references[0].task
+    closure = dict(zip(peer.__code__.co_freevars, peer.__closure__, strict=True))
+    selector = closure["select_id"].cell_contents
+
+    def mutating_selector(row):
+        if "value" in row:
+            row["value"] = -1
+        if "label" in row:
+            row["label"] = "mutated"
+        return row["id"]
+
+    monkeypatch.setattr(selector, "__code__", mutating_selector.__code__)
+    expected = []
+    for identifier in range(3):
+        if identifier % 2 == 0:
+            for duplicate in range(2 if join_shape.endswith("many") else 1):
+                expected.append(
+                    {
+                        "id": identifier,
+                        "value": identifier,
+                        "id_right": identifier,
+                        "label": (
+                            f"r{identifier}-{duplicate}"
+                            if join_shape.endswith("many")
+                            else f"r{identifier}"
+                        ),
+                    }
+                )
+        elif join_shape.startswith("left"):
+            expected.append(
+                {"id": identifier, "value": identifier, "id_right": None, "label": None}
+            )
+
+    assert peer() == expected
+
+
+@pytest.mark.parametrize("width", [8, 32])
+@pytest.mark.parametrize(
+    ("join_shape", "record_shape"),
+    [
+        ("inner.unique", "dict_fields"),
+        ("left.unique", "dict_callable"),
+        ("inner.many", "mapping_fields"),
+    ],
+)
+def test_competitive_wide_join_controls_preserve_extra_fields(
+    tmp_path: Path, width: int, join_shape: str, record_shape: str
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    case_id = f"rows.join.{join_shape}.width{width}.python.{record_shape}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._build_case(spec, 5, np, pd, tmp_path)
+    result = case.candidate.task()
+    callable_keys = record_shape.endswith("callable")
+    many = join_shape.endswith("many")
+    expected_ids = (
+        [0, 0, 2, 2, 4, 4]
+        if many
+        else list(range(5))
+        if join_shape.startswith("left")
+        else [0, 2, 4]
+    )
+    assert [row["id"] for row in result] == expected_ids
+    for row in result:
+        assert len(row) == width + (2 if callable_keys else 1)
+        assert list(row)[:width] == [
+            "id",
+            "value",
+            *(f"left_{offset}" for offset in range(width - 2)),
+        ]
+        assert row["value"] == row["id"]
+        for offset in range(width - 2):
+            assert row[f"left_{offset}"] == row["id"] + offset
+    normalized = case.candidate.normalize(result)
+    for reference in case.references:
+        assert case.outputs_equal(normalized, reference.normalize(reference.task()))
+    observation = observe_task(case.candidate.task, spec.engine, spec.case_id)
+    assert observation["strategy"] == "python_join"
+    assert observation["requested_engine"] == observation["compiler_engine"] == "python"
+
+
 def test_competitive_group_peers_materialize_the_public_record_contract(
     tmp_path: Path,
 ) -> None:
@@ -941,6 +1949,95 @@ def test_competitive_group_peers_materialize_the_public_record_contract(
 
         if case_id.endswith(".mapping_callable"):
             assert [reference.library for reference in case.references] == ["python"]
+
+
+@pytest.mark.parametrize(
+    "selector", ["dict_fields", "dict_callable", "dict_done", "mapping_fields", "proxy_fields"]
+)
+@pytest.mark.parametrize("cardinality", ["low_cardinality", "high_cardinality"])
+def test_competitive_python_record_groups_measure_the_requested_selector_and_cardinality(
+    selector: str, cardinality: str
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    case_id = f"rows.group_sum.python.{selector}.{cardinality}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._group_case(spec, 24, np, pd)
+    expected = (
+        [{"key": key, "total": key + (key + 16 if key < 8 else 0)} for key in range(16)]
+        if cardinality == "low_cardinality"
+        else [{"key": key, "total": key} for key in range(24)]
+    )
+    assert case.candidate.task() == expected
+    assert all(reference.task() == expected for reference in case.references)
+    observed = observe_task(case.candidate.task, spec.engine, case_id)
+    assert observed["status"] == "observed"
+    assert observed["requested_engine"] == observed["compiler_engine"] == "python"
+
+
+@pytest.mark.parametrize("cardinality", ["low_cardinality", "high_cardinality"])
+def test_competitive_custom_done_group_checks_each_created_state(monkeypatch, cardinality):
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    checks = []
+    aggregator = competitive.fpstreams.Aggregator
+
+    def recorded_aggregator(initializer, step, *, done):
+        def recorded_done(state):
+            checks.append(state)
+            return done(state)
+
+        return aggregator(initializer, step, done=recorded_done)
+
+    monkeypatch.setattr(competitive.fpstreams, "Aggregator", recorded_aggregator)
+    case_id = f"rows.group_sum.python.dict_done.{cardinality}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._group_case(spec, 24, np, pd)
+    result = case.candidate.task()
+    groups = 16 if cardinality == "low_cardinality" else 24
+    assert len(result) == groups
+    assert len(checks) == groups + 24
+    assert sum(row["total"] for row in result) == sum(range(24))
+
+
+@pytest.mark.parametrize("cardinality", ["low_cardinality", "high_cardinality"])
+def test_competitive_first_group_stops_selecting_completed_values(
+    monkeypatch, cardinality, tmp_path
+):
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from fpstreams.expressions.selectors import compile_selector
+
+    selected = []
+    first = type(competitive.fpstreams.agg).first
+
+    def recorded_first(self, selector=None):
+        select = compile_selector(selector)
+
+        def record(row):
+            selected.append(row["value"])
+            return select(row)
+
+        return first(self, record)
+
+    monkeypatch.setattr(type(competitive.fpstreams.agg), "first", recorded_first)
+    case_id = f"rows.group_first.python.dict_fields.{cardinality}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._build_case(spec, 24, np, pd, tmp_path)
+    groups = 16 if cardinality == "low_cardinality" else 24
+    expected = [{"key": key, "first": key} for key in range(groups)]
+    assert case.candidate.task() == expected
+    assert selected == list(range(groups))
+    assert all(reference.task() == expected for reference in case.references)
 
 
 def test_competitive_pivot_python_baseline_rejects_duplicate_cells(
@@ -1047,6 +2144,7 @@ def test_competitive_measurement_interleaves_implementations_by_rotating_each_ro
     """A validation warm-up is followed by deterministic round-robin timing order."""
     from benchmarks import competitive
 
+    monkeypatch.setattr(competitive, "_SAMPLE_WARMUP_SECONDS", 0)
     calls: list[str] = []
 
     def implementation(library: competitive.Library, label: str) -> competitive.Implementation:
@@ -1087,6 +2185,8 @@ def test_competitive_measurement_interleaves_implementations_by_rotating_each_ro
         "candidate",
         "python",
         "numpy",
+        # Observe the original candidate once, before all timed rounds.
+        "candidate",
         # Each timed sample gets an implementation-local allocation warm-up.
         "candidate",
         "candidate",
@@ -1107,13 +2207,18 @@ def test_competitive_measurement_interleaves_implementations_by_rotating_each_ro
         "candidate",
         "python",
         "python",
+        # Allocation is measured separately after all timed rounds.
+        "candidate",
+        "python",
+        "numpy",
     ]
 
 
-def test_competitive_measurement_completes_a_full_position_rotation() -> None:
+def test_competitive_measurement_completes_a_full_position_rotation(monkeypatch) -> None:
     """Every peer owns every timing slot even when the requested repeat count is smaller."""
     from benchmarks import competitive
 
+    monkeypatch.setattr(competitive, "_SAMPLE_WARMUP_SECONDS", 0)
     calls: list[str] = []
 
     def implementation(library: competitive.Library) -> competitive.Implementation:
@@ -1135,6 +2240,7 @@ def test_competitive_measurement_completes_a_full_position_rotation() -> None:
 
     assert [record["sample_count"] for record in records] == [3, 3, 3]
     assert calls == [
+        "fpstreams",  # Untimed execution observation.
         "fpstreams",
         "fpstreams",
         "python",
@@ -1153,6 +2259,9 @@ def test_competitive_measurement_completes_a_full_position_rotation() -> None:
         "fpstreams",
         "python",
         "python",
+        "fpstreams",
+        "python",
+        "numpy",
     ]
 
 
@@ -1218,6 +2327,7 @@ def test_competitive_measurement_resets_gc_before_each_timed_sample(
     """Allocation-heavy peers start each timed sample from the same GC state."""
     from benchmarks import competitive
 
+    monkeypatch.setattr(competitive, "_SAMPLE_WARMUP_SECONDS", 0)
     events: list[str] = []
 
     def implementation(library: competitive.Library) -> competitive.Implementation:
@@ -1239,6 +2349,7 @@ def test_competitive_measurement_resets_gc_before_each_timed_sample(
     competitive._measure_case(case, repeats=2)
 
     assert events == [
+        "fpstreams",  # Observation precedes per-sample GC and warm-up.
         "gc",
         "fpstreams",
         "fpstreams",
@@ -1251,7 +2362,71 @@ def test_competitive_measurement_resets_gc_before_each_timed_sample(
         "gc",
         "fpstreams",
         "fpstreams",
+        "gc",
+        "fpstreams",
+        "gc",
+        "python",
     ]
+
+
+def test_competitive_warmup_runs_until_the_time_budget_and_releases_outputs(monkeypatch) -> None:
+    from benchmarks import competitive
+
+    now = 0.0
+    events: list[str] = []
+
+    class Result:
+        def __del__(self) -> None:
+            events.append("release")
+
+    def task() -> Result:
+        nonlocal now
+        now += 0.0003
+        events.append("run")
+        return Result()
+
+    monkeypatch.setattr(competitive.time, "perf_counter", lambda: now)
+    assert competitive._warmup_task(task) == 4
+    assert events == ["run", "release"] * 4
+
+
+def test_competitive_warmup_does_not_retry_failed_work() -> None:
+    from benchmarks import competitive
+
+    calls = 0
+
+    def fail() -> None:
+        nonlocal calls
+        calls += 1
+        raise ValueError("warmup failed")
+
+    with pytest.raises(ValueError, match="warmup failed"):
+        competitive._warmup_task(fail)
+    assert calls == 1
+
+
+def test_competitive_samples_record_warmup_counts_outside_timing(monkeypatch) -> None:
+    from benchmarks import competitive
+
+    now = 0.0
+
+    def task() -> int:
+        nonlocal now
+        now += 0.0004
+        return 1
+
+    monkeypatch.setattr(competitive.time, "perf_counter", lambda: now)
+    monkeypatch.setattr(competitive.gc, "collect", lambda: None)
+    implementation = competitive.Implementation("fpstreams", task, competitive._identity)
+    case = competitive.CompetitiveCase(
+        competitive.CaseSpec("flow.map", "Flow.map(...).to_list()"),
+        implementation,
+        (),
+        lambda left, right: left == right,
+    )
+    (record,) = competitive._measure_case(case, repeats=2)
+    assert record["warmup_runs"] == [3, 3]
+    assert record["samples_seconds"] == pytest.approx([0.0004, 0.0004])
 
 
 def test_competitive_include_selects_cases_before_execution() -> None:
@@ -1473,11 +2648,9 @@ def test_competitive_numpy_adapter_report_is_json_and_source_fingerprint_backed(
         json.loads(json.dumps(report))["metadata"]["benchmark_matrix_sha256"]
         == report["metadata"]["benchmark_matrix_sha256"]
     )
-    with (ROOT / "benchmarks" / "competitive.py").open("rb") as handle:
-        assert (
-            report["metadata"]["benchmark_matrix_sha256"]
-            == hashlib.file_digest(handle, "sha256").hexdigest()
-        )
+    from benchmarks.evidence import matrix_sha256
+
+    assert report["metadata"]["benchmark_matrix_sha256"] == matrix_sha256()
 
 
 def test_competitive_render_prints_a_percentage_table(capsys) -> None:
@@ -1545,6 +2718,185 @@ def test_competitive_cli_lists_filtered_cases_without_running_them() -> None:
     assert result.stdout.splitlines() == ["flow.map"]
 
 
+@pytest.mark.parametrize("domain", ["int", "float", "both"])
+@pytest.mark.parametrize("quick", [False, True])
+@pytest.mark.parametrize("native_available", [False, True])
+def test_engine_cli_lists_selected_scenarios_without_measurement(
+    domain: str, quick: bool, native_available: bool, monkeypatch, capsys
+) -> None:
+    """Listing keeps domain order and optional backends without collecting a report."""
+    module = _benchmark_module()
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("scenario listing executed benchmark measurement or evidence collection")
+
+    for name in (
+        "_record",
+        "measure",
+        "observe_task",
+        "measure_python_allocation",
+        "BenchmarkEvidence",
+    ):
+        monkeypatch.setattr(module, name, unexpected)
+    monkeypatch.setattr(
+        module,
+        "native_build_metadata",
+        lambda: {"available": native_available, "profile": "debug"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark.py",
+            "--list-scenarios",
+            "--domain",
+            domain,
+            "--include",
+            "*/identity/count",
+            "--include",
+            "*/float_map_filter/sum",
+            "--include",
+            "fpstreams_auto/*/identity/count",
+            "--fail-on-regression",
+            "--size",
+            "0",
+            "--repeats",
+            "0",
+            *(["--quick"] if quick else []),
+        ],
+    )
+
+    assert module.main() == 0
+
+    expected = []
+    if domain in {"int", "both"}:
+        for source in ("list", "range") if quick else ("list", "range", "tuple"):
+            for backend in ("python_builtin", "fpstreams_python", "fpstreams_auto"):
+                expected.append(f"{backend}/{source}/identity/count")
+    if domain in {"float", "both"}:
+        backends = ["lambda", "python", *(["native"] if native_available else []), "auto"]
+        expected.extend(f"fpstreams_{backend}/list/float_map_filter/sum" for backend in backends)
+    assert capsys.readouterr().out.splitlines() == expected
+
+
+@pytest.mark.parametrize("action", ["list", "run", "run_error", "no_match"])
+def test_engine_selection_releases_selected_and_excluded_fixtures(
+    action: str, monkeypatch, capsys
+) -> None:
+    """All created fixtures remain owned through selection, failure, and output."""
+    module = _benchmark_module()
+    events = []
+
+    def cleanup_first():
+        events.append("close-first")
+
+    def cleanup_second():
+        events.append("close-second")
+
+    def unexpected_task():
+        pytest.fail("listing executed a scenario task")
+
+    scenarios = [
+        module.Scenario(
+            name,
+            unexpected_task,
+            "python",
+            "list",
+            "sum",
+            None,
+            first_row_task=unexpected_task,
+            cleanup=cleanup,
+        )
+        for name, cleanup in (
+            ("fixture/keep/first", cleanup_first),
+            ("fixture/skip", cleanup_second),
+            ("fixture/keep/last", cleanup_first),
+        )
+    ]
+    monkeypatch.setattr(module, "_identity_scenarios", lambda *args, **kwargs: scenarios)
+
+    def record(scenario, repeats):
+        assert repeats == 3
+        events.append(scenario.name)
+        if action == "run_error":
+            raise RuntimeError("measurement failed")
+        return {"name": scenario.name}
+
+    monkeypatch.setattr(module, "_record", record)
+    monkeypatch.setattr(module, "render", lambda report: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark.py",
+            "--size",
+            "2",
+            "--repeats",
+            "3",
+            "--quick",
+            "--include",
+            "absent" if action == "no_match" else "fixture/keep/*",
+            *(["--list-scenarios"] if action in {"list", "no_match"} else []),
+        ],
+    )
+    if action in {"run_error", "no_match"}:
+        with pytest.raises(SystemExit) as error:
+            module.main()
+        assert error.value.code == 2
+        expected_error = "measurement failed" if action == "run_error" else "selected no scenarios"
+        assert expected_error in capsys.readouterr().err
+    else:
+        assert module.main() == 0
+        if action == "list":
+            assert capsys.readouterr().out.splitlines() == [
+                "fixture/keep/first",
+                "fixture/keep/last",
+            ]
+    measured = (
+        ["fixture/keep/first", "fixture/keep/last"]
+        if action == "run"
+        else ["fixture/keep/first"]
+        if action == "run_error"
+        else []
+    )
+    assert events == [*measured, "close-second", "close-first"]
+
+
+@pytest.mark.parametrize("listing", [False, True])
+def test_engine_cleans_earlier_fixtures_when_a_later_builder_fails(
+    listing: bool, tmp_path: Path, monkeypatch
+) -> None:
+    """A construction failure closes an acquired workspace even while its owner is alive."""
+    module = _benchmark_module()
+    workspace = module.TemporaryDirectory(dir=tmp_path)
+    fixture_path = Path(workspace.name)
+    cleanup = workspace.cleanup
+
+    def file_scenarios(size):
+        return [
+            module.Scenario(name, lambda: None, "python", "file", "sum", None, cleanup=cleanup)
+            for name in ("file/python", "file/auto")
+        ]
+
+    def fail_builder(size):
+        raise ValueError("later builder failed")
+
+    monkeypatch.setattr(module, "_arrow_file_group_scenarios", file_scenarios)
+    monkeypatch.setattr(module, "_arrow_dictionary_group_scenarios", fail_builder)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["benchmark.py", "--size", "1", "--quick", *(["--list-scenarios"] if listing else [])],
+    )
+    try:
+        with pytest.raises(SystemExit) as error:
+            module.main()
+        assert error.value.code == 2
+        assert not fixture_path.exists()
+    finally:
+        workspace.cleanup()
+
+
 def test_benchmark_json_writer_preserves_the_previous_report_on_failure(
     tmp_path: Path,
     monkeypatch,
@@ -1569,10 +2921,10 @@ def test_competitive_rejects_python_source_drift_during_measurement(
     monkeypatch,
 ) -> None:
     """A report is discarded when its imported Python source changes mid-run."""
-    from benchmarks import competitive
+    from benchmarks import competitive, evidence
 
     fingerprints = iter(("before", "after"))
-    monkeypatch.setattr(competitive, "_python_package_sha256", lambda _root: next(fingerprints))
+    monkeypatch.setattr(evidence, "python_package_sha256", lambda _root: next(fingerprints))
 
     with pytest.raises(RuntimeError, match="Python sources changed"):
         competitive.run_competitive(
@@ -1692,20 +3044,29 @@ def test_fixed_sparse_group_benchmarks_guard_tuple_and_dict_entry_paths(
     assert calls == ["tuple", "dict"]
 
 
-def test_composite_group_benchmark_guards_the_direct_count_sum_loop() -> None:
-    """Two-key grouping keeps an equivalent callable fallback and a same-run ratio gate."""
-    scenarios = _benchmark_module()._composite_group_scenarios(10)
-
-    assert [scenario.name for scenario in scenarios] == [
-        "fpstreams_group/tuple/callable_composite/count_sum/high_cardinality/python",
-        "fpstreams_group/tuple/direct_composite/count_sum/high_cardinality/auto",
-    ]
-    assert scenarios[1].baseline == scenarios[0].name
-    assert scenarios[1].maximum_ratio == 0.45
+@pytest.mark.parametrize("label,cardinality", [("high_cardinality", 24), ("low_cardinality", 16)])
+def test_composite_group_benchmark_covers_repeated_and_distinct_keys(
+    label: str, cardinality: int
+) -> None:
+    """Both key distributions retain equivalent selectors at a small input size."""
+    scenarios = {
+        scenario.name: scenario for scenario in _benchmark_module()._composite_group_scenarios(24)
+    }
+    assert len(scenarios) == 4
+    reference = scenarios[f"fpstreams_group/tuple/callable_composite/count_sum/{label}/python"]
+    direct = scenarios[f"fpstreams_group/tuple/direct_composite/count_sum/{label}/auto"]
+    assert direct.baseline == reference.name
+    assert direct.maximum_ratio is None
     expected = [
-        {"key_0": index, "key_1": index % 7, "count": 1, "total": index} for index in range(10)
+        {
+            "key_0": key,
+            "key_1": key % 7,
+            "count": len(range(key, 24, cardinality)),
+            "total": sum(range(key, 24, cardinality)),
+        }
+        for key in range(cardinality)
     ]
-    assert scenarios[0].task() == scenarios[1].task() == expected
+    assert reference.task() == direct.task() == expected
 
 
 def test_mapping_field_join_benchmarks_guard_unique_and_many_native_fallbacks(
@@ -1810,12 +3171,78 @@ def test_namedtuple_callable_join_benchmarks_guard_unique_and_many_v2(
     assert all(adapter is not _as_record for _cardinality, adapter in calls)
     automatic = {scenario.name: scenario for scenario in scenarios if scenario.backend == "auto"}
     assert {scenario.minimum_repeats for scenario in scenarios} == {15}
-    expected_ratios = {0.70, 0.66} if sys.version_info[:2] in {(3, 12), (3, 13)} else {0.55}
-    assert {scenario.maximum_ratio for scenario in automatic.values()} == expected_ratios
+    assert all(scenario.maximum_ratio is None for scenario in automatic.values())
     assert {scenario.baseline for scenario in automatic.values()} == {
         "fpstreams_join/namedtuple/callable/unique/python",
         "fpstreams_join/namedtuple/callable/many/python",
     }
+
+
+@pytest.mark.parametrize("size", [1, 16, 999, 1000, 4096, 300_000])
+@pytest.mark.parametrize("family", ["composite_group", "namedtuple_callable_join"])
+def test_relational_speedup_gates_start_at_the_validated_workload_size(
+    size: int, family: str
+) -> None:
+    """Small workloads still run; the original speedup gates apply from 1,000 rows."""
+    module = _benchmark_module()
+    scenarios = getattr(module, f"_{family}_scenarios")(size)
+    original_limits = (
+        [0.45, 0.45]
+        if family == "composite_group"
+        else [0.70, 0.66]
+        if sys.version_info[:2] in {(3, 12), (3, 13)}
+        else [0.55, 0.55]
+    )
+    references = [scenario for scenario in scenarios if scenario.baseline is None]
+    candidates = [scenario for scenario in scenarios if scenario.baseline is not None]
+    assert len(references) == len(candidates) == 2
+    assert [scenario.maximum_ratio for scenario in candidates] == (
+        original_limits if size >= 1000 else [None, None]
+    )
+    records = [
+        {"name": scenario.name, "median_seconds": 1.0, "backend": scenario.backend}
+        for scenario in references
+    ]
+    records.extend(
+        {
+            "name": scenario.name,
+            "median_seconds": limit + 0.01,
+            "backend": scenario.backend,
+            "baseline": scenario.baseline,
+            "maximum_ratio": scenario.maximum_ratio,
+        }
+        for scenario, limit in zip(candidates, original_limits, strict=True)
+    )
+    regressions = module.find_regressions(records)
+    assert [item["name"] for item in regressions] == (
+        [scenario.name for scenario in candidates] if size >= 1000 else []
+    )
+
+
+@pytest.mark.parametrize("family", ["composite_group", "namedtuple_callable_join"])
+@pytest.mark.parametrize("metric", ["timing", "allocation"])
+def test_small_relational_scenarios_keep_cross_run_regression_checks(
+    family: str, metric: str
+) -> None:
+    """Removing a small-input speedup requirement does not exempt a task from regression checks."""
+    from benchmarks import regression
+
+    scenarios = getattr(_benchmark_module(), f"_{family}_scenarios")(16)
+    candidate = next(scenario for scenario in scenarios if scenario.baseline is not None)
+    assert candidate.maximum_ratio is None
+    before = _report(1.0)
+    after = _report(2.0 if metric == "timing" else 1.0)
+    for report in (before, after):
+        report["metadata"]["size"] = 16
+        report["results"][0].update(
+            name=candidate.name, backend=candidate.backend, maximum_ratio=candidate.maximum_ratio
+        )
+    if metric == "allocation":
+        after["results"][0]["resources"]["peak_allocation_bytes"] = 200
+    baseline = regression._baseline([before] * 3, "local_one_shot_unreviewed")
+    errors = regression._comparison_errors(baseline, after, {})
+    expected = "hard timing regression" if metric == "timing" else "hard peak resource regression"
+    assert any(f"{expected}: {candidate.name}" in error for error in errors)
 
 
 def test_wide_callable_join_benchmarks_guard_right_schema_cache_workloads(
@@ -2215,8 +3642,6 @@ def test_every_planned_failpoint_is_reachable_from_production_code() -> None:
 
 
 import asyncio
-
-import pytest
 
 import fpstreams
 from fpstreams.planning.source import Source
@@ -2750,6 +4175,10 @@ import fpstreams
 
 values = fpstreams.flow(range(8)).map(lambda value: value * 2)
 assert values.filter(lambda value: value > 5).sum() == 50
+assert fpstreams.flow(['a', 'b', 'a']).frequencies() == {'a': 2, 'b': 1}
+assert fpstreams.flow(list(range(600))).run_with_report('frequencies').value == {
+    key: 1 for key in range(600)
+}
 left = fpstreams.rows([{'id': 2, 'name': 'b'}, {'id': 1, 'name': 'a'}])
 right = fpstreams.rows([{'id': 1, 'score': 10}, {'id': 2, 'score': 20}])
 assert left.sort_by('id').join(right, on='id').to_list() == [

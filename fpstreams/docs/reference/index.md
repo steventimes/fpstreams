@@ -2,8 +2,7 @@
 
 Use this page to find an operation by task. Detailed signatures, parameter
 defaults, return types, and exceptions are rendered on the linked class pages.
-The leftmost name in each row is the canonical spelling; aliases are listed
-separately so search results do not imply several different behaviors.
+The final table lists aliases alongside their canonical names.
 
 ## Construct a pipeline
 
@@ -76,8 +75,7 @@ AsyncFlow adds `merge`, `combine_latest`, `flat_map_merge`, `merge_map`, and
 | Planning and observation | `explain`, `run_with_report` |
 
 Terminals that require an element document their empty-input policy. Statistical
-terminals return `None` where the statistic is undefined rather than inventing a
-value.
+terminals return `None` where the statistic is undefined.
 
 ## Work with records
 
@@ -92,7 +90,7 @@ value.
 | Ordering/deduplication | `sort_by`, `external_sort_by`, `unique_by`, `distinct_by` |
 | Reshape | `explode`, `unnest`, `unpivot`, `pivot` |
 | Row materialization | `to_list`, `to_columns`, `first`, `last`, `count` |
-| Flow view and planning | `to_flow`, `explain` |
+| Flow view and observation | `to_flow`, `explain`, `run_with_report` |
 | NumPy/Arrow/dataframes | `from_columns`, `from_numpy`, `to_numpy`, `arrow_batches`, `polars_batches`, `to_arrow`, `to_pandas`, `to_polars` |
 
 See [Rows](rows.md), [expressions](expressions.md), and [I/O](io.md).
@@ -125,6 +123,7 @@ proof.
 | Per-key values | `group_values`, `collect_values`, `aggregate_values` |
 | Views and execution policy | `keys`, `values`, `items`, `invert`, `to_flow`, `with_engine` |
 | Terminal | `to_dict` |
+| Execution report | `run_with_report` |
 
 See [Pairs](pairs.md).
 
@@ -140,8 +139,9 @@ async-only groups are:
 | Concurrent callbacks | `map_async`, `flat_map_merge`, `merge_map`, `switch_map` |
 | Multiple async sources | `merge`, `combine_latest` |
 | Rate and time | `delay`, `interval`, `spaceout`, `throttle`, `debounce`, `timeout` |
-| Time-bounded buffers | `batch_timeout`, `buffer_timeout` |
-| External sources | `from_file`, `paginate` |
+| Time and session buffers | `batch_timeout`, `buffer_timeout`, `session_window` |
+| Pull-ahead buffering | `prefetch` |
+| External sources | `from_queue`, `from_file`, `paginate` |
 
 Concurrency, ordering, cancellation, and buffer bounds are documented with each
 method on [AsyncFlow](async_flow.md).
@@ -154,7 +154,7 @@ method on [AsyncFlow](async_flow.md).
 | `fitem` | Floating expression and native floating kernels |
 | `col(name)` | Read a record column or path |
 | `lit(value)` | Embed a literal in a row expression |
-| `when(condition, value)` | Conditional row expression builder |
+| `when(condition, then, otherwise=None)` | Choose a value; the false branch defaults to `None` |
 | `coalesce(*values)` | First non-`None` row expression |
 
 See the full operator and precedence notes under [expressions](expressions.md).
@@ -180,9 +180,9 @@ name in the left column.
 
 | Canonical | Aliases |
 | --- | --- |
-| `take` | `limit`, `head` (Rows) |
-| `drop` | `skip`, `offset` (Rows) |
-| `filter` | `where`; `reject` negates the predicate |
+| `take` | Flow: `limit`; Rows: `limit`, `head` |
+| `Flow.drop` / `Rows.skip` | Flow: `skip`; Rows: `offset` |
+| `filter` | Flow: `where`; Rows: `where` also accepts field equalities |
 | `unique` / `unique_by` | `distinct` / `distinct_by` |
 | `mean` | `average` |
 | `map_parallel` | `parallel_map` |
@@ -194,5 +194,5 @@ name in the left column.
 | `Flow` | `Stream`; `ParallelStream` is a compatibility alias |
 | `AsyncFlow` | `AsyncStream` |
 
-Aliases have the same execution semantics unless their signature explicitly
-narrows the canonical method.
+`Rows.drop(*columns)` removes fields; use `Rows.skip(count)` to skip records.
+`reject` negates a predicate and is listed with filtering operations above.

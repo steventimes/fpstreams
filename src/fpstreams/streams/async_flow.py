@@ -463,8 +463,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             function: Sync or async mapper returning a sync or async iterable for each item.
 
         Returns:
-            An async flow that drains each mapped iterable in source order before mapping the next
-            item.
+            An async flow that drains each mapped iterable in source order before
+                mapping the next item.
         """
         return cast(AsyncFlow[R], self._append(_FlatMap(function)))
 
@@ -495,8 +495,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             *others: Sync or async sources whose latest values join this flow's latest value.
 
         Returns:
-            A flow of latest-value tuples in source argument order. Emission starts only after every
-            source has produced once; completed sources retain their final value.
+            A flow of latest-value tuples in source argument order. It starts emitting
+                after every source has produced a value. Completed sources keep their
+                final value in later tuples.
         """
         sources = tuple(_AsyncSource.from_value(other) for other in others)
         return cast(AsyncFlow[tuple[Any, ...]], self._append(_CombineLatest(sources)))
@@ -638,8 +639,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             seconds: Quiet interval required before the latest pending item is emitted.
 
         Returns:
-            An async flow that drops superseded pending items and flushes the latest item when the
-            source completes.
+            An async flow that replaces a pending item whenever a newer one arrives.
+                The final pending item is emitted when the source completes.
         """
         if seconds < 0:
             raise ValueError("seconds cannot be negative")
@@ -758,8 +759,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 determines whether the original item is retained.
 
         Returns:
-            An async flow retaining only items with truthy selected values; without a selector,
-            falsey items such as `None`, `0`, and empty containers are omitted.
+            An async flow keeping items whose own or selected value is truthy. Without
+                a selector, this drops `None`, `0`, `False`, and empty containers.
         """
         select = bool if selector is None else compile_selector(selector)
         return self.filter(select)
@@ -776,8 +777,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Keep the first occurrence of each value in source order.
 
         Returns:
-            An async flow containing the first occurrence of each distinct value; unhashable values
-            are compared by equality.
+            An async flow keeping the first occurrence of each distinct value.
+                Unhashable values are compared by equality.
         """
         return cast(AsyncFlow[T], self._append(_Unique(lambda item: item)))
 
@@ -823,8 +824,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             count: Maximum number of leading items to emit.
 
         Returns:
-            An async flow containing only the first `count` items, with upstream work cancelled
-            and closed after the limit.
+            An async flow of at most `count` items. Reaching the limit cancels pending
+                upstream work and closes its iterators.
 
         Raises:
             ValueError: If count is negative.
@@ -886,8 +887,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             predicate: Sync or async callable resolved only while leading items are truthy.
 
         Returns:
-            An async flow beginning with the first falsey-predicate item; later items are emitted
-            without further predicate calls.
+            An async flow starting with the first item for which `predicate` is falsey.
+                Remaining items pass through without further predicate calls.
         """
         return cast(AsyncFlow[T], self._append(_DropWhile(predicate)))
 
@@ -917,8 +918,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             step: Number of source items consumed between successive windows.
 
         Returns:
-            A flow of full sliding windows; a non-empty source shorter than `size` produces one
-            partial window, but no trailing partial window is emitted otherwise.
+            A flow of full sliding windows. A non-empty source shorter than `size`
+                produces one partial window; otherwise, partial trailing windows are omitted.
 
         Raises:
             ValueError: If size or step is less than one.
@@ -933,8 +934,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """Emit each adjacent pair of items.
 
         Returns:
-            An async flow of overlapping `(previous, current)` pairs; fewer than two items emit
-            nothing.
+            An async flow of overlapping `(previous, current)` pairs. Fewer than two
+                items produce no pairs.
         """
         return cast(AsyncFlow[tuple[T, T]], self._append(_Pairwise()))
 
@@ -1059,8 +1060,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             max_right: Optional maximum number of right-side items that may be buffered.
 
         Returns:
-            An async flow of `(left, right)` pairs with every right item repeated for each left
-            item.
+            An async flow of `(left, right)` pairs. For each left item, it emits a pair
+                with every buffered right item in order.
 
         Raises:
             BufferLimitError: During consumption if `other` contains more than `max_right` items.
@@ -1199,8 +1200,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             function: Sync or async callback invoked as `function(state, item)`.
 
         Returns:
-            An async flow emitting exactly one final state, including the initializer for an empty
-            source.
+            An async flow containing one final state. For an empty source, that state
+                is the resolved result of `initializer()`.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -1227,8 +1228,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 singleton batch.
 
         Returns:
-            An async flow of non-empty tuples packed within both limits, except for non-strict
-            oversized singleton items.
+            An async flow of non-empty tuple batches within the size and count limits.
+                With `strict=False`, an item larger than `max_size` is emitted in its own
+                batch.
         """
         if max_size <= 0:
             raise ValueError("max_size must be positive")

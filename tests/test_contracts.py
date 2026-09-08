@@ -182,6 +182,101 @@ def test_sync_source_replayability_contract() -> None:
     assert reopened == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("one_shot", [False, True])
+@pytest.mark.parametrize("operated", [False, True])
+@pytest.mark.parametrize("metaclass_result", [False, True, "raise"])
+async def test_source_metadata_does_not_compare_metaclasses(
+    asynchronous: bool,
+    one_shot: bool,
+    operated: bool,
+    metaclass_result: bool | str,
+) -> None:
+    """Only exact builtin containers may answer count without traversing their source."""
+    from fpstreams import aflow
+
+    events: list[str] = []
+
+    class Meta(type):
+        def __eq__(cls, other: object) -> bool:
+            # ABC caches may compare a class with itself during normal iteration.
+            if other is cls:
+                return True
+            if not any(
+                other is kind
+                for kind in (
+                    list,
+                    tuple,
+                    range,
+                    str,
+                    bytes,
+                    dict,
+                    set,
+                    frozenset,
+                    type(iter([])),
+                    type(iter(())),
+                    type(iter(range(0))),
+                )
+            ):
+                return False
+            events.append("class equality")
+            if metaclass_result == "raise":
+                raise RuntimeError("source guard called user code")
+            return bool(metaclass_result)
+
+        __hash__ = type.__hash__
+
+    class Source(metaclass=Meta):
+        def __len__(self) -> int:
+            events.append("len")
+            return 99
+
+        def __iter__(self) -> Iterator[int]:
+            return traced_source((1, 2, 3), events)
+
+    class OneShot(Source):
+        def __init__(self) -> None:
+            self.iterator = traced_source((1, 2, 3), events)
+
+        def __iter__(self) -> Iterator[int]:
+            return self
+
+        def __next__(self) -> int:
+            return next(self.iterator)
+
+        def __length_hint__(self) -> int:
+            events.append("length hint")
+            return 99
+
+        def close(self) -> None:
+            self.iterator.close()
+
+    source = OneShot() if one_shot else Source()
+    pipeline = aflow(source) if asynchronous else flow(source)
+    if operated:
+        pipeline = (
+            pipeline.map_async(lambda value: value + 1, concurrency=1)
+            if asynchronous
+            else pipeline.map(lambda value: value + 1)
+        ).filter(lambda value: value > 0)
+    assert events == []
+
+    async def count() -> int:
+        return await pipeline.count() if asynchronous else pipeline.count()
+
+    assert await count() == 3
+    assert events == ["pull:1", "pull:2", "pull:3", "close"]
+    if one_shot:
+        with pytest.raises(FlowConsumedError):
+            await count()
+        assert events == ["pull:1", "pull:2", "pull:3", "close"]
+    else:
+        events.clear()
+        assert await count() == 3
+        assert events == ["pull:1", "pull:2", "pull:3", "close"]
+
+
 # --- Consolidated from contracts/test_async_semantics.py ---
 
 import asyncio

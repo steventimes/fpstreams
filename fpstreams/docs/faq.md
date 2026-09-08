@@ -20,10 +20,12 @@ a method whose Flow spelling already has another meaning.
 
 ## What does the `auto` engine do?
 
-`auto` chooses a legal Python, Rust, Arrow, NumPy, or hybrid path for the source,
+`auto` chooses a Python, Rust, Arrow, NumPy, or hybrid path based on the source,
 operations, and terminal. It falls back when an optimization cannot preserve
-Python behavior. Use `explain(terminal=...)` before execution or
-`run_with_report(...)` to inspect what actually ran.
+Python behavior. Use `explain(terminal=...)` to inspect the plan.
+[`run_with_report(...)`](user-guide/execution-reports.md) adds the recorded
+terminal route and query-owned resource counts, though it does not identify
+every internal kernel or fallback.
 
 Forcing `native` is mainly useful for parity checks and diagnosis. It raises
 `NativeUnsupportedError` when the complete requested plan is unsupported.
@@ -44,10 +46,9 @@ execution should acquire a fresh resource.
 
 ## Is fpstreams a distributed or GPU engine?
 
-No. fpstreams is a local pipeline library. It can retain Arrow and NumPy data and
-use guarded Rust kernels, but it does not silently move work to a cluster or GPU.
-Use explicit interoperability boundaries when another system should own that
-execution.
+fpstreams executes locally using Python and supported Rust, Arrow, and NumPy
+paths. It has no distributed or GPU backend. Export data to another library
+when you need that execution model.
 
 ## How should I report a performance problem?
 

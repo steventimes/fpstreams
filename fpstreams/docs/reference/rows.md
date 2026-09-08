@@ -1,8 +1,7 @@
 # Rows
 
-`Rows[T]` is the explicit relational and compatibility view over a lazy Flow. It
-adds record selectors, expressions, joins, grouping, reshape operations, and
-record-oriented data-system adapters.
+`Rows[T]` adds record operations to a lazy Flow: field selection, joins,
+grouping, reshaping, and record I/O.
 
 Enter it with `flow(source).rows()`, construct it with `rows(source)`, or use one
 of the adapter factories. A Rows view shares its Flow's plan and source
@@ -67,8 +66,9 @@ once at construction and treated as one-shot. Adapter docstrings list the exact
 options and return types.
 
 Use `from_csv()` when Python `csv.DictReader` compatibility and string-valued
-cells matter. Use `scan_csv()` for typed inference and wide analytical scans;
-direct `select()` queries are pushed into Arrow CSV conversion. Arrow's
+cells matter. Use `scan_csv()` for typed inference and wide analytical scans.
+With a plain local path and default reader options, direct `select()` queries
+can prune columns during Arrow CSV conversion. Arrow's
 incremental reader is single-threaded and freezes inferred types after its first
 byte block, so pass `ReadOptions` or `ConvertOptions.column_types` when the
 default inference is not appropriate.
@@ -156,8 +156,8 @@ exceeds another limit, the operation raises `BufferLimitError` before loading an
 unbounded bucket. Temporary files are removed. Pass a custom `SpillLimits` to
 `join(..., partitions=..., limits=...)` or `group_by(...).spill(limits=...)`.
 
-This is bounded processing up to configured limits, not guaranteed completion
-for every skewed or many-to-many input.
+Highly skewed or many-to-many input may exceed these limits even with spill
+enabled.
 
 ## Methods
 
@@ -171,6 +171,16 @@ for every skewed or many-to-many input.
 
 `group_by()` returns a grouped plan. Call `aggregate()` directly, or call
 `spill()` first to use partitioned temporary storage.
+
+In the unreleased version, Python grouping uses the current selector if a source
+or callback changes its code or closure. The previous field shortcut could keep
+using an old field and merge distinct groups.
+
+Grouping with one collector also uses the current `step` after truth-testing a
+custom `done` result. Temporary states and unused keys are released at the same
+points as in the general collector path, including when the output iterator is
+closed early. Release callbacks can therefore affect the next row or finisher as
+expected. These fixes are not included in `2.1.0`.
 
 ::: fpstreams.tabular.GroupedRows
     options:

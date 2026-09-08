@@ -36,9 +36,8 @@ message. A missing optional integration is not converted to `FlowError`.
 
 ## SpillLimits
 
-`SpillLimits` is an immutable set of hard relational budgets. It protects the
-application from skew, underestimated rows, explosive many-to-many joins, and
-unbounded repartition attempts.
+`SpillLimits` sets hard limits for partitioned joins and grouping. These cover
+partition size, matches per key, output rows, and repartition depth.
 
 ::: fpstreams.SpillLimits
     options:
@@ -54,7 +53,7 @@ unbounded repartition attempts.
 | `max_repartition_depth` | 3 | Maximum recursive repartition attempts |
 
 Limits must be positive integers except repartition depth, which may be zero.
-Exceeding a budget raises before the operation silently becomes unbounded.
+Exceeding a limit raises `BufferLimitError` and triggers query cleanup.
 
 ## SummaryStatistics
 

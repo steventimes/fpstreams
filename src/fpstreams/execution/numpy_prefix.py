@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..errors import _CANONICAL_SELECTION_ERROR
@@ -603,6 +604,20 @@ def _numpy_prefix_is_live(pipeline: Pipeline, prefix: NumpyPrefixPlan) -> bool:
     return live == prefix
 
 
+@contextmanager
+def _opened_numpy_python_values(
+    pipeline: Pipeline, source: Any
+) -> Generator[Iterator[Any], None, None]:
+    """Finish an already-claimed NumPy source through its canonical row adapter."""
+    from ..runtime.iterators import closing_iterators
+    from ..tabular.numpy import _numpy_records
+    from .sync import execute_operations
+
+    iterator = execute_operations(_numpy_records(source.array, source.columns), pipeline.operations)
+    with closing_iterators((iterator,)):
+        yield iterator
+
+
 def try_numpy_prefix_list(
     owner: Any,
     physical: PhysicalPlan,
@@ -641,6 +656,12 @@ def try_numpy_prefix_list(
     _descriptor, expected_dtype = guarded
     opened = pipeline.source.open_native(NumpyRowSource)
     hit("source.open.after")
+    if not _numpy_prefix_is_live(pipeline, prefix):
+        _record_direct_strategy(
+            physical, "python_direct", "NumPy row prefix changed while opening its source"
+        )
+        with _opened_numpy_python_values(pipeline, opened) as iterator:
+            return True, list(iterator)
     result = numpy_prefix_rows(
         opened,
         prefix,
@@ -669,4 +690,14 @@ def try_numpy_prefix_columns(
     _descriptor, expected_dtype = guarded
     opened = pipeline.source.open_native(NumpyRowSource)
     hit("source.open.after")
+    if not _numpy_prefix_is_live(pipeline, prefix):
+        from ..collecting.collector import _collect_columns
+        from ..runtime.report import _record_direct_strategy
+        from ..tabular.records import _as_record
+
+        _record_direct_strategy(
+            None, "python_direct", "NumPy row prefix changed while opening its source"
+        )
+        with _opened_numpy_python_values(pipeline, opened) as iterator:
+            return True, _collect_columns(_as_record(row) for row in iterator)
     return True, numpy_prefix_columns(opened, prefix, expected_dtype=expected_dtype)

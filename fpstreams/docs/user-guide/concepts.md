@@ -1,8 +1,8 @@
 # Core concepts
 
-fpstreams describes work before it performs it. A pipeline contains a source,
-ordered transformations, and enough facts for the planner to select a safe
-executor. A terminal turns that description into values.
+A pipeline stores a source and its transformations. Building the pipeline does
+not pull items from an ordinary iterable; iteration or a terminal such as
+`to_list()` starts execution.
 
 ```python
 from fpstreams import flow, item
@@ -24,7 +24,7 @@ value, write output, or perform a side effect.
 | Kind | Examples | Result |
 | --- | --- | --- |
 | Lazy transformation | `map`, `filter`, `take`, `select` | A `Flow` or `Rows` plan |
-| Lazy relational operation | `group_by`, `join`, `pivot` | A relational plan |
+| Lazy relational operation | `group_by`, `Rows.join`, `pivot` | A relational plan |
 | Materializing terminal | `to_list`, `to_dict`, `partition` | A container in memory |
 | Scalar terminal | `count`, `sum`, `first`, `variance` | One scalar or optional value |
 | Effect terminal | `for_each`, `to_csv`, `to_jsonl` | Performs the requested effect |
@@ -34,7 +34,7 @@ iterator in the same way as a terminal.
 
 ## Source replayability
 
-The source, not the pipeline syntax, determines whether a plan can be run again.
+A plan can run again if its source can be reopened.
 
 ```python
 from fpstreams import flow
@@ -56,8 +56,12 @@ pipeline = flow.defer(lambda: iter([1, 2, 3]))
 assert pipeline.sum() == pipeline.sum() == 6
 ```
 
-fpstreams does not silently cache a generator. That would change memory use,
-resource lifetime, callback timing, and visibility of upstream changes.
+A generator is consumed once. To reuse its results, materialize them explicitly;
+this retains the values in memory and runs upstream callbacks at that point.
+
+A custom iterable's `__len__()` does not prove how many items it will yield.
+`count()` traverses such a source. Only trusted source metadata, such as the
+current length of an exact builtin list, can avoid that traversal.
 
 ## One synchronous entry point
 
@@ -121,13 +125,14 @@ Python's `and`, `or`, and `not` cannot be overloaded into expression trees.
 | `rows(source)` | Explicit relational view | Record I/O, joins, grouping and reshape |
 | `pairs(source)` | Key/value data | Per-key transforms and aggregation |
 
-These are views over a small number of execution models, not independent data
-containers that eagerly copy inputs.
+These entry points construct plans and share source ownership when you switch
+views. Each adapter defines when it imports or converts its input; see the
+[I/O matrix](../reference/io.md).
 
 ## Planning and engines
 
-The default `auto` engine chooses among canonical Python iteration, compiled
-Rust kernels, Arrow-native prefixes, and guarded hybrid plans. Engine selection
+The default `auto` engine chooses among Python iteration, Rust kernels,
+Arrow and NumPy operations, and plans that combine them. Engine selection
 must preserve values, exceptions, ordering, one-shot behavior, and callback
 effects.
 
@@ -148,8 +153,7 @@ pipeline.with_engine("python").sum()
 pipeline.with_engine("native").sum()  # raises if the exact plan is unsupported
 ```
 
-`auto` falling back to Python is normal. It is not an error and does not mean
-the whole library is running eagerly.
+If `auto` falls back to Python, streaming operations still pull values lazily.
 
 ## Streaming, buffering, and materialization
 
@@ -162,10 +166,9 @@ Operations fall into three broad memory shapes:
 - global operators such as in-memory sorting, exact grouping, pivoting, and
   `to_list` must retain data proportional to the input or output.
 
-Large global work can use explicit spill settings. Limits are correctness and
-operational controls, not tuning hints: exceeding a configured partition,
-fan-out, output, or byte budget raises `BufferLimitError` instead of quietly
-using unbounded memory.
+Large global operations can use spill settings. Exceeding a configured
+partition, fan-out, output, or byte budget raises `BufferLimitError` and ends
+the query.
 
 ## Resource ownership
 
@@ -183,6 +186,8 @@ An optimized path is eligible only when it can preserve the canonical behavior.
 Important boundaries include:
 
 - record and container subclasses may override Python protocols;
+- custom metaclasses may override class equality, so equality with `list` or
+  `int` cannot establish an exact builtin type;
 - mapping lookup can invoke custom hash and equality code;
 - a selector or aggregation callable can mutate live input;
 - an iterator cannot be replayed after a speculative executor has pulled it;

@@ -91,10 +91,10 @@ An Arrow-capable plan reports its retained prefix and any guarded transition to
 Python rows in `arrow_prefix` and `boundaries`. Relational plans additionally
 report their selected tree and strategy in `relations`.
 
-Use [`run_with_report()`](../user-guide/execution-reports.md) when you need the
-strategy and query-owned resource measurements from an execution that actually
-ran. It returns the terminal value and its report without evaluating the source
-twice.
+[`run_with_report()`](../user-guide/execution-reports.md) returns the terminal
+value, its recorded route, and query-owned resource counts in one execution.
+The report covers the outer plan and some direct paths; internal kernels and
+fallbacks are not all recorded.
 
 An identity list or tuple remains in Python under `auto` when a terminal would
 otherwise scan and copy it. An identity range can still use native numeric

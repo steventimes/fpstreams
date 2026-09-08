@@ -17,6 +17,7 @@ class ArrowScanRequest:
     equality: tuple[str, object] | None = None
     first_only: bool = False
     range_predicate: RangePredicate | None = None
+    projection_check: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,8 @@ class ArrowBatchSource:
     columnar_opener: Callable[[], Any] | None = None
     count_opener: Callable[[], int | None] | None = None
     byte_size_opener: Callable[[], int | None] | None = None
+    # Set only when opening batches cannot invoke caller-defined Python callbacks.
+    projection_safe: bool = False
 
     def open_batches(
         self,
@@ -42,6 +45,7 @@ class ArrowBatchSource:
         equality: tuple[str, object] | None = None,
         first_only: bool = False,
         range_predicate: RangePredicate | None = None,
+        projection_check: Callable[[], bool] | None = None,
     ) -> Iterator[Any]:
         """Open batches, passing only explicitly supported source-level scan hints."""
         if self.request_opener is not None and (
@@ -53,6 +57,7 @@ class ArrowBatchSource:
                     equality=equality,
                     first_only=first_only,
                     range_predicate=range_predicate,
+                    projection_check=projection_check,
                 )
             )
         if columns is not None and self.projection_opener is not None:

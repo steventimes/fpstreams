@@ -36,7 +36,9 @@ use crate::relational::{
     join_hashable_unique_records_v2, join_i64_many_dict_rows_v1, join_i64_unique_dict_rows_v1,
     join_i64_unique_dict_rows_v2,
 };
-use crate::relational_fixed::{group_fixed_i64_dict_rows_v1, group_fixed_i64_rows_v1};
+use crate::relational_fixed::{
+    group_count_sum_i64_two_key_rows_v1, group_fixed_i64_dict_rows_v1, group_fixed_i64_rows_v1,
+};
 #[cfg(not(Py_GIL_DISABLED))]
 use pyo3::IntoPyObject;
 use pyo3::types::{

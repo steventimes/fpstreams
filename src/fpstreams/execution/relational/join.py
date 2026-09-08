@@ -1,4 +1,4 @@
-"""Canonical Python execution for physical record joins."""
+"""Record join execution and guarded materialization adapters."""
 
 from __future__ import annotations
 
@@ -47,12 +47,67 @@ _EXPECTED_ARROW_JOIN_ERRORS = (
 RelationalExecutor = Callable[[PhysicalRelNode, QueryRuntime], Iterator[Any]]
 
 
+def _try_native_i64_record_join(
+    native_module: Any,
+    root: JoinPhysicalNode,
+    left: list[Any] | tuple[Any, ...],
+    right: list[Any] | tuple[Any, ...],
+    max_supported_fields: int,
+) -> list[dict[str, Any]] | None:
+    """Try the narrow exact-dict integer-key ABI before broader guarded kernels."""
+    max_fields = getattr(native_module, "record_join_v1_max_fields", None)
+    if type(max_fields) is not int or max_fields != max_supported_fields:
+        return None
+    native = root.native_record_i64
+    assert native is not None
+    left_join = root.spec.logical.how == "left"
+    many_kernel = getattr(native_module, "join_i64_many_dict_rows_v1", None)
+    if root.spec.logical.validate == "m:m" and callable(many_kernel):
+        return cast(
+            list[dict[str, Any]] | None,
+            many_kernel(
+                left,
+                right,
+                native.left_field,
+                native.right_field,
+                left_join,
+            ),
+        )
+
+    arguments = (
+        left,
+        right,
+        native.left_field,
+        native.right_field,
+        left_join,
+    )
+    borrowed_kernel = getattr(native_module, "join_i64_unique_dict_rows_v2", None)
+    if callable(borrowed_kernel):
+        joined = cast(list[dict[str, Any]] | None, borrowed_kernel(*arguments))
+        if joined is not None:
+            return joined
+
+    snapshot_kernel = getattr(native_module, "join_i64_unique_dict_rows_v1", None)
+    if not callable(snapshot_kernel):
+        return None
+    return cast(list[dict[str, Any]] | None, snapshot_kernel(*arguments))
+
+
 def _execute_join(
     node: JoinPhysicalNode,
     runtime: QueryRuntime,
     execute_relational: RelationalExecutor,
+    outer_plan: PhysicalPlan | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Execute the selected stable hash-compatible join strategy."""
+    if outer_plan is not None:
+        from ...runtime.report import _record_direct_strategy
+
+        _record_direct_strategy(
+            outer_plan,
+            "python_join",
+            "Python record executor handles the join, including configured spill storage",
+        )
     left = execute_relational(node.left, runtime)
     right = execute_relational(node.right, runtime)
     spec = node.spec

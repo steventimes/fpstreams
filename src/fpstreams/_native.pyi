@@ -29,10 +29,13 @@ __all__ = [
     "execute_i64_buffer_v1",
     "execute_i64_range",
     "filter_i64_expr_exact_dict_prefix_v1",
+    "frequencies_exact_prefix_v1",
     "frequencies_i64_exact_v1",
+    "frequencies_iter_prefix_v1",
     "global_multi_i64_dict_rows_v1",
     "global_multi_i64_rows_v1",
     "global_sum_i64_dict_rows_v1",
+    "group_count_sum_i64_two_key_rows_v1",
     "group_fixed_i64_dict_rows_v1",
     "group_fixed_i64_rows_v1",
     "group_multi_i64_dict_rows_v1",
@@ -213,9 +216,16 @@ def pivot_exact_dict_rows_v1(
     duplicate_error_type: type[BaseException],
 ) -> list[dict[str, object]] | None: ...
 def exact_container_extraction_v1() -> bool: ...
+def frequencies_exact_prefix_v1(
+    counts: object,
+    source: object,
+) -> tuple[object, bool] | None: ...
 def frequencies_i64_exact_v1(
     source: object,
 ) -> dict[int, int] | tuple[dict[int, int], Iterator[object]] | None: ...
+def frequencies_iter_prefix_v1(
+    source: object,
+) -> tuple[dict[object, int], object, bool] | None: ...
 def mean_exact_iterator_chunk_v1(
     source: Iterator[object],
     count: int,
@@ -279,6 +289,11 @@ def global_multi_i64_dict_rows_v1(
     lanes: tuple[tuple[int, str | None, str], ...],
 ) -> dict[str, object] | None: ...
 def global_sum_i64_dict_rows_v1(source: object, value_field: str) -> int | None: ...
+def group_count_sum_i64_two_key_rows_v1(
+    source: object,
+    indices: tuple[int, int, int],
+    output_names: tuple[str, str, str, str],
+) -> list[dict[str, object]] | None: ...
 def group_fixed_i64_rows_v1(
     source: object,
     key_index: int,

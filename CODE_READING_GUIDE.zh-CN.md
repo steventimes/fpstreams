@@ -1,6 +1,6 @@
 # fpstreams 代码阅读指南
 
-这份指南不按目录逐个介绍文件，而是跟着一条查询真正经过的路径来读。同步代码先从 `Flow` 开始；记录数据仍由 `Rows` 实现关系操作，但用户不必先换入口。读懂这条主线以后，再看异步和 Rust。直接从 `rust/` 或外排代码开始，很容易只看到局部循环，不知道它们在整个查询里负责什么。
+这份指南跟着一条查询的执行路径来读。同步代码先从 `Flow` 开始；记录数据由 `Rows` 实现关系操作，同名方法的语义区别见下文。读懂同步主线以后，再看异步、外排和 Rust，就容易判断各段代码负责什么。
 
 ## 先记住一张图
 
@@ -32,6 +32,10 @@ terminal                            to_list、count、sum、first……
 
 最重要的边界是：构建逻辑计划时不能偷读数据源。`flow(iterator)` 可能是一次性的，编译器如果为了猜类型先取一项，用户真正执行时就会少一项。
 
+这里说的是普通 iterable 的逐项读取。适配器有各自的构建约定：自定义 Arrow C stream
+在构建时导入，`from_columns()` 当场构建 Arrow table，`from_numpy()` 当场调用
+`numpy.asarray()`。这些都不能被概括成“所有输入都到 executor 才处理”。
+
 ## 第一次阅读：跟一条普通 Flow 走到底
 
 先用这段查询当路标：
@@ -60,6 +64,9 @@ result = query.to_list()
 4. `src/fpstreams/planning/source.py`
 
    重点看 `Source.from_iterable()`、`open()` 和 source capabilities。列表可以重复打开，迭代器只能消费一次，`range` 还带有精确长度和原生数据能力。很多优化是否安全，取决于这些事实。
+
+   精确内置类型要按身份判断。自定义元类可以让一个类与 `list` 比较相等，却没有列表的
+   长度和迭代约定。源码已修正这类判断；同步和异步的自定义 iterable 都按实际遍历计数。
 
 5. `src/fpstreams/planning/logical.py`
 
@@ -104,7 +111,11 @@ lambda 是不透明的 Python 回调。`item * 3 + 1` 则是一棵可以检查�
 2. `expressions/row.py` 与 `row_ir.py`：`col("price") * col("count")` 的记录表达式节点。
 3. `expressions/typed_ir.py`：编译前保存的保守 effect 和来源信息。遇到 Python UDF 时，优化器必须承认它可能有副作用。
 4. `expressions/program.py`：把公开表达式变成可执行 program。
-5. `expressions/_row_codegen.py` 与 `execution/_rows_fusion.py`：对安全的 exact-dict 记录链生成并融合 Python 代码；遇到自定义 Mapping、Path、UDF 等边界时回到规范解释路径。
+5. `expressions/_row_codegen.py`：把支持的记录表达式转成 AST，通过 slots 保存本次查询的 selector 和 literal。selector 仍可读取自定义 Mapping。
+6. `execution/_rows_fusion.py`：把可融合的记录操作合进一条 Python 循环；遇到不满足 exact-dict 约定的行或不支持的操作时保留回退。
+
+标量表达式、记录表达式和两种融合循环共用 `expressions/_codegen.py` 补齐生成代码的
+位置。它保留原遍历顺序和 traceback 中的行号；只处理这里生成的新 AST。
 
 这里不要把“相同表达式”想成普通字符串替换。literal 可能保存有身份的 Python 对象，callback 也可能有状态。缓存必须避免把上一次查询绑定的对象带进下一次查询。
 
@@ -148,16 +159,67 @@ paid = (
   换成列表，不会重新向 hash index 写入用户的 key。这个细节是为了避免额外调用自定义
   `__hash__` 或 `__eq__`。固定 exact-string schema 的字段冲突分析会缓存成蓝图；真正生成的
   suffix 字符串仍然逐输出创建，所以键对象身份没有被缓存偷换。
+  超过四列的重复布局直接比较私有 dict 快照的字段身份，省去临时字段名 tuple；
+  字典子类和被替换的 tuple 构造器仍走原路径。记录快照及其释放时机不变。
 - `tabular/grouped.py`：`group_by(...).aggregate(...)` 怎样建立关系节点。
 - `physical/relational.py`：join/group 的物理策略值。
 - `execution/relational/`：`__init__.py` 负责关系树和通用 group state，`join.py` 负责
-  内存 hash join，`arrow_group.py` 与 `arrow_global.py` 处理列式聚合。精确字段的单键循环和
+  内存 hash join、Arrow join 和窄整数键 native join 的 ABI 适配；`arrow_group.py` 与
+  `arrow_global.py` 处理列式聚合。Python 单键聚合循环和
   Rust tuple/record 快路也从这个包分派；记录太宽、字段形状复杂或类型混杂时会回到 Python。
 
-`Rows.to_list()` 还有一条很窄的 record join 快路：两边必须是可重复打开的 exact
-list/tuple，记录是窄 exact dict，连接字段是 exact integer，而且右键实际唯一。Rust 会先完整
-证明这些条件，再生成结果；任一条件不成立就从未打开的 source 走原 Python join。普通迭代、
-`first()` 和提前关闭仍使用流式执行，不会被 eager 快路接管。
+`Rows.to_list()` 会经由 `Flow.to_list()` 尝试原生 record join。两边须是可重复打开的
+exact list/tuple；先试窄 exact-dict 整数键内核，再试受保护的直接字段和 callable 内核。
+后者还覆盖部分 Mapping、namedtuple 和显式 `m:m` 形状，不能把全部 native join 都理解成
+“整数键、右侧唯一”。类型和 MRO 检查、记录快照、selector 调用与 fallback 的边界都要一起读。
+普通迭代、`first()` 和提前关闭仍使用流式执行。
+
+通用 Mapping/callable 分组直接通过 selector 读取原记录；join 的浅拷贝约定不能套到
+这里。单个聚合器走 `_execute_single_collector_group()`，检查 slot revision，并调用
+当前 initializer、step 和 finish。key selector 也逐行调用，不再从一次入口检查中
+缓存字段名：source、hash 或 value 回调可能修改函数代码、闭包或全局名称，下一行
+必须读取更新后的函数。selector 的异常类型和 cause 也由原函数处理。
+完成标记只存放在分组状态中，替换后及时释放，不再用局部变量多持有一份。自定义
+`done` 结果的求真回调也可能替换 step，因此在求真后检查 revision，再处理当前行。
+step 的返回值直接写回分组 entry，已经完成的组不再读取存储的 state。输入 entry 与输出
+entry 分开持有，输出沿用 items 迭代，保持提前关闭时的状态释放顺序；读取 finisher
+前先重绑输出 key，及时释放最后一次输入中未被组保留的临时键。
+单独内联求和的循环已移除：修改函数 `__code__`
+或 closure 不会更新 slot revision，继续使用缓存的求和逻辑会算错。双键 count/sum
+也改用 `_execute_authoritative_group()`：原专用循环会跳过 count 和 sum 的 initializer、
+step 及 selector 闭包变化，恢复状态代码已一并删除。
+
+`auto` 另有双整数键 count/sum 路径，入口为 `_try_native_composite_group()`，内核在
+`rust/src/relational_fixed/composite.rs`。它只扫描保留的 exact list/tuple 中的 exact
+tuple 行；先核对 source、collector 和两个 key selector 的实际绑定，再进入 Rust。
+不满足这些条件就回到 Python program，不预读 one-shot 源。Rust 的键对映射记录组位置，
+输出保留首次出现顺序和两个键对象；不要把只保留最后一次整数写入的单键 hasher 用于键对。
+后续拆分应保留现有调用顺序，不要重放 source、selector 或聚合回调。
+
+`collecting/_collector_base.py` 的生命周期字段由 property 直接读取原 slot，显式替换
+字段时仍更新 revision。分组在键查表后刷新缓存：key 回调可能安装临时函数，随后的
+hash 又将它替换，提前缓存会推迟临时对象的释放。分组只在属性访问和 slot 描述器
+未被改写时缓存函数；自定义 getter、property 或元类会回到通用 collector program，
+逐行读取需要调用的函数。
+
+`execute_physical()` 在 runtime 启动后才打开源。线性 `values()` 是 generator，
+因此 opener 的 `StopIteration` 会先转换成 `RuntimeError`，再交给 runtime 清理。
+Arrow 排序结果在异常 traceback 中继续保留，其他委托没有额外的命名局部引用。
+减少转交层时，需要同时保留延迟打开、异常转换、提前关闭和对象释放时点；
+`tests/test_engine.py` 中的 15 项 forwarding 检查覆盖这些边界。
+
+NumPy 无 key 的频次计数由 `flow_terminals._try_numpy_frequency_iterator()` 接入。
+只在 auto 已选中 native、没有后续算子时使用新入口。Rust 按次读取原来的迭代器，
+执行器仍处理 source 回退和 QueryRuntime 清理；不要为了拿到内部 list 而绕过这些层。
+`frequencies_iter_prefix_v1()` 自己创建计数字典，不把累积状态交给源回调。遇到自定义
+键时返回当前项，由 Python 完成哈希、比较和后续计数。计数异常与源执行异常的清理
+参数不同，修改此处时同时检查两条路径。旧 wheel 缺少入口时沿用原计数循环。
+
+`run_with_report()` 记录外层计划和直接终端路径。当前源码已补上顶层 join 的记录：Rust
+快捷路径成功后写入 `rust_direct`，保留 Arrow 列的直接 join 写入 `arrow_direct`，Python
+join 执行器写入 `python_join`。外层的 `compiler_engine` 仍可能是 Python。子计划不会覆盖
+外层路线，所以复合查询仍需结合具体调用路径分析。`Pairs.run_with_report()` 也已接入原有
+recorder，支持四个 pair 终端，不额外读取 source；这些更新尚未包含在已发布的 2.1.0 中。
 
 Arrow 也采用同样的保守边界。`Rows.from_dataframe()` 和 `Rows.from_polars()` 会同时保留
 规范 row opener 与惰性 `ArrowBatchSource`；普通迭代和强制 Python 仍走前者，自动物化终端
@@ -165,6 +227,29 @@ Arrow 也采用同样的保守边界。`Rows.from_dataframe()` 和 `Rows.from_po
 比较 → 直接 select”，可以在 `planning/arrow.py` 得到批计划，由 `execution/arrow.py` 先过滤、
 裁列，再转成 Python 记录。算术、null、literal 子类、路径 selector、Mapping 或用户回调仍在
 打开 source 前回到规范路径。重点读这里的“证明与拒绝条件”；Arrow compute 调用本身很短。
+
+投影的字段元数据不是永久有效的。`tabular/rows.py` 中的
+`_materialized_select_spec()` 会检查实际 accessor 的代码和闭包绑定；生成的 Python
+Rows 循环直接调用原 projection。NumPy 在 source claim 后再次检查，Arrow 在 claim
+后和批次之间检查。回退需要读取已经打开的批次，不能为了取回裁掉的字段重开源。
+未知批次 opener 因此保留完整字段；`ArrowBatchSource.projection_safe` 目前用于保留
+普通本地扫描的裁列路径。CSV 还会比对公开读取函数与扩展入口；自定义包装器
+保留完整字段。Parquet 通过 `ArrowScanRequest.projection_check` 在 dataset 已打开、
+scanner 尚未创建时复核绑定，覆盖 query 构造前已存在的包装器。带显式 source filter
+的请求也会传递检查，但保留原先的过滤和 first-only 提示边界。
+
+单阶段 select 也不能直接全部换成 `map`。现有自适应循环在向源索取下一行时
+仍保留当前行；`map` 会更早释放被丢弃字段的值，源恢复时能观察到析构回调。
+四个 CPython 版本均有反例。生成器中已不可达的 select AST 分支已删除，
+后续简化仍需检查输入行、前一输出和提前关闭时的释放顺序。
+`_build_select_project()` 每行合并 positional 与 aliases 为临时列表后直接遍历，
+省去原来的转元组步骤。这里仍需要当行快照：回调替换 sibling 后，旧 selector
+须活到本行结束，替换只影响后续行，不能把合并结果移到 query 构造阶段缓存。
+
+`with_columns` 的生成循环调用原 enrich，不能只按登记时的字段或表达式元数据
+内联。它先复制输入行，再遍历实时 selector 列表；回调替换或追加 sibling 时，
+后续 selector 仍读原始输入行。因此它和 select 的当行快照不能合成同一个实现。
+NumPy 计算列已有 evaluator 与 program 的实时检查，失效后也要回到这些回调语义。
 
 读 join 时可以一直问三个问题：build 哪一侧、输出顺序是否稳定、用户 selector 在哪一刻被调用。只看 hash 表代码会漏掉后两个语义约束。
 

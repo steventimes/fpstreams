@@ -6,6 +6,7 @@ import builtins
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from math import copysign
 from typing import Any, Literal, cast
 
 from ..errors import DuplicateKeyError
@@ -633,7 +634,13 @@ def _validated_pair_value_filter_predicate(
         ):
             return None
         expected = _CANONICAL_COMPILE_FLOAT_EVALUATOR(
-            cast(tuple[tuple[int, float], ...], instructions)
+            cast(tuple[tuple[int, float], ...], instructions),
+            # Keep the same signed-zero cache discriminator as FExpr's evaluator.
+            _BUILTIN_TUPLE(
+                index
+                for index, (_opcode, operand) in enumerate(instructions)
+                if operand == 0.0 and copysign(1.0, operand) < 0.0
+            ),
         )
     predicate = _compile_scalar_callable(callback)
     return predicate if predicate is expected else None

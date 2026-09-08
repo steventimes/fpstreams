@@ -577,12 +577,14 @@ impl ObjectKeyGroupState {
     }
 }
 
+mod composite;
 #[path = "relational_fixed/global_multi.rs"]
 mod global_multi;
 #[path = "relational_fixed/group_multi.rs"]
 mod group_multi;
 mod single;
 
+pub(crate) use composite::group_count_sum_i64_two_key_rows_v1;
 #[allow(unused_imports)]
 pub(crate) use global_multi::{global_multi_i64_dict_rows_v1, global_multi_i64_rows_v1};
 pub(crate) use single::{group_fixed_i64_dict_rows_v1, group_fixed_i64_rows_v1};
@@ -590,6 +592,10 @@ pub(crate) use single::{group_fixed_i64_dict_rows_v1, group_fixed_i64_rows_v1};
 /// Keep optional fixed-schema PyO3 definitions out of the legacy module initializer body.
 #[inline(never)]
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(
+        group_count_sum_i64_two_key_rows_v1,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(group_fixed_i64_rows_v1, module)?)?;
     module.add_function(wrap_pyfunction!(group_fixed_i64_dict_rows_v1, module)?)?;
     group_multi::register(module)?;

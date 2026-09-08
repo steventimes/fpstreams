@@ -24,6 +24,9 @@ uv run maturin develop --release
   package over adding another top-level facade or one-file helper.
 - Add regression coverage to the closest existing test module. Avoid creating a
   new test file for a single case.
+- Write public docstrings with Google sections and Markdown references. Indent
+  continuation lines within a `Returns:` item by four extra spaces; name tuple
+  elements when describing them separately. Check the rendered tables after editing.
 - Do not add a fast path that recognizes benchmark fixtures or only wins at one
   fixed size, type, or cardinality.
 
@@ -52,6 +55,13 @@ Run `./run_benchmark.sh` when a change can affect execution. Compare more than
 one input size, and include different data types or key cardinalities where they
 change the algorithm. Report the environment and raw result rather than a
 standalone speedup claim.
+
+Use a patched interpreter for allocation measurements. CPython 3.12.3 can
+segfault when `tracemalloc.stop()` overlaps native thread initialization
+([CPython #128679](https://github.com/python/cpython/issues/128679)). The local
+file-scan stress check passes on CPython 3.12.13 with the same dependencies.
+Keep tracing enabled, record the full Python version, and rerun both baseline
+and candidate after changing interpreters.
 
 ## Open a pull request
 

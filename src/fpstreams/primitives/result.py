@@ -11,11 +11,11 @@ R = TypeVar("R")
 
 
 class Result(Generic[T]):
-    """Common interface for a successful :class:`Ok` or failed :class:`Err` value."""
+    """Common interface for a successful `Ok` or failed `Err` value."""
 
     @classmethod
     def success(cls, value: T) -> Result[T]:
-        """Create an :class:`Ok` containing `value`.
+        """Create an `Ok` containing `value`.
 
         Args:
             value: Successful value to store.
@@ -27,7 +27,7 @@ class Result(Generic[T]):
 
     @classmethod
     def failure(cls, error: Exception) -> Result[T]:
-        """Create an :class:`Err` containing `error`.
+        """Create an `Err` containing `error`.
 
         Args:
             error: The exception stored in a failed result.
@@ -41,7 +41,7 @@ class Result(Generic[T]):
     def of(cls, function: Callable[[], T]) -> Result[T]:
         """Call a zero-argument function and capture ordinary exceptions as failure.
 
-        A normal return becomes :class:`Ok`; an :class:`Exception` becomes :class:`Err`.
+        A normal return becomes `Ok`; an `Exception` becomes `Err`.
         Exceptions outside the `Exception` hierarchy, such as `KeyboardInterrupt`, propagate.
 
         Args:
@@ -60,12 +60,12 @@ class Result(Generic[T]):
         """Expose the stored failure exception, or `None` for success.
 
         Returns:
-            The :class:`Err` exception or `None` for :class:`Ok`.
+            The exception stored by `Err`, or `None` for `Ok`.
         """
         raise NotImplementedError
 
     def is_success(self) -> bool:
-        """Report whether this instance is an :class:`Ok`.
+        """Report whether this instance is an `Ok`.
 
         Returns:
             `True` for `Ok` and `False` for `Err`.
@@ -73,7 +73,7 @@ class Result(Generic[T]):
         return isinstance(self, Ok)
 
     def is_failure(self) -> bool:
-        """Report whether this instance is an :class:`Err`.
+        """Report whether this instance is an `Err`.
 
         Returns:
             `True` for `Err` and `False` for `Ok`.
@@ -109,7 +109,7 @@ class Result(Generic[T]):
         raise NotImplementedError
 
     def flat_map(self, mapper: Callable[[T], Result[R]]) -> Result[R]:
-        """Alias :meth:`and_then` for chaining result-returning computations.
+        """Alias [and_then()][fpstreams.Result.and_then] for chaining result computations.
 
         The callable runs only for success; existing failures pass through unchanged.
 
@@ -135,7 +135,7 @@ class Result(Generic[T]):
         raise NotImplementedError
 
     def map_error(self, mapper: Callable[[Exception], Exception]) -> Result[T]:
-        """Alias :meth:`map_err` for transforming a stored exception.
+        """Alias [map_err()][fpstreams.Result.map_err] for transforming a stored exception.
 
         Args:
             mapper: Callable that converts the stored exception.
@@ -187,7 +187,7 @@ class Result(Generic[T]):
         raise NotImplementedError
 
     def get_or_throw(self) -> T:
-        """Alias :meth:`unwrap` for extracting success or raising failure.
+        """Alias [unwrap()][fpstreams.Result.unwrap] for extracting success or raising failure.
 
         Returns:
             The successful value.

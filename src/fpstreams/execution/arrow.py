@@ -25,6 +25,8 @@ from ..planning.arrow import (
     ArrowPrefixPlan,
     ArrowProjectionSpec,
     _direct_primitive_filter,
+    _direct_projection,
+    _projection_is_current,
     direct_exact_equality,
     direct_exact_i64_range,
     plan_arrow_prefix,
@@ -444,6 +446,8 @@ def _can_execute_batch_program(
     form a multi-stage program; all other multi-stage shapes stay on the canonical row path.
     """
     if projection is not None:
+        if not operations or _direct_projection(operations[-1]) != projection:
+            return False
         return (len(operations) == 1 and isinstance(operations[0], MapOp)) or (
             len(operations) == 2
             and _direct_primitive_filter(operations[0])
@@ -488,9 +492,15 @@ def _execute_batch_program(
     yield from batch_to_rows(current)
 
 
-def _projection_scan_columns(prefix: ArrowPrefixPlan) -> tuple[str, ...] | None:
+def _projection_scan_columns(
+    prefix: ArrowPrefixPlan, *, descriptor: ArrowBatchSource | None = None
+) -> tuple[str, ...] | None:
     """Return source fields needed by a closed projection and its optional filter."""
     if prefix.projection is None:
+        return None
+    if descriptor is not None and not descriptor.projection_safe:
+        # A batch opener can change the accessor. Dropped fields cannot be recovered
+        # when that batch needs Python fallback, even if the opener is reusable.
         return None
     required = list(prefix.projection.inputs)
     seen = set(required)
@@ -502,8 +512,12 @@ def _projection_scan_columns(prefix: ArrowPrefixPlan) -> tuple[str, ...] | None:
     return tuple(required)
 
 
-def _count_scan_columns(prefix: ArrowPrefixPlan) -> tuple[str, ...] | None:
+def _count_scan_columns(
+    prefix: ArrowPrefixPlan, *, descriptor: ArrowBatchSource | None = None
+) -> tuple[str, ...] | None:
     """Return direct source fields needed to evaluate a count's complete batch program."""
+    if prefix.projection is not None and descriptor is not None and not descriptor.projection_safe:
+        return None
     required: list[str] = []
     seen: set[str] = set()
     if prefix.projection is not None:
@@ -678,7 +692,11 @@ def try_arrow_count(
 ) -> tuple[bool, int]:
     """Count one complete guarded Arrow program without materializing accepted rows."""
     prefix = plan_arrow_prefix(plan) if prefix is None else prefix
-    if prefix is None or prefix.operation_count != len(plan.operations):
+    if (
+        prefix is None
+        or prefix.operation_count != len(plan.operations)
+        or not _projection_is_current(prefix)
+    ):
         return False, 0
 
     from ..runtime.failpoints import has_active_failpoints
@@ -693,18 +711,21 @@ def try_arrow_count(
         return False, 0
     equality = _scan_equality(prefix) if descriptor.kind == "parquet" else None
     range_predicate = _scan_range_predicate(prefix) if descriptor.kind == "parquet" else None
-    columns = _count_scan_columns(prefix)
+    columns = _count_scan_columns(prefix, descriptor=descriptor)
     expression_operations = (
         prefix.operations[:-1] if prefix.projection is not None else prefix.operations
     )
 
     plan.source.open_native(ArrowBatchSource)
+    if not _projection_is_current(prefix):
+        columns = None
     if not prefix.operations and descriptor.count_opener is not None:
         count = descriptor.count_opener()
         if count is not None:
             return True, count
     batches = descriptor.open_batches(
         columns=columns,
+        projection_check=lambda: _projection_is_current(prefix),
         equality=equality,
         range_predicate=range_predicate,
     )
@@ -1394,7 +1415,7 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
     pa, _pc = _arrow_modules()
     equality = _scan_equality(prefix) if descriptor.kind == "parquet" else None
     range_predicate = _scan_range_predicate(prefix) if descriptor.kind == "parquet" else None
-    columns = _projection_scan_columns(prefix)
+    columns = _projection_scan_columns(prefix, descriptor=descriptor)
     expression_operations = (
         prefix.operations[:-1] if prefix.projection is not None else prefix.operations
     )
@@ -1434,7 +1455,8 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
 
         plan.source.open_native(ArrowBatchSource)
         opened = descriptor.open_batches(
-            columns=columns,
+            columns=columns if _projection_is_current(prefix) else None,
+            projection_check=lambda: _projection_is_current(prefix),
             equality=equality,
             range_predicate=range_predicate,
         )
@@ -1454,7 +1476,11 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
                     expression_operations,
                     projection=prefix.projection,
                 )
-                if safety.safe and _table_output_types_are_canonical(pa, batch, prefix.projection):
+                if (
+                    safety.safe
+                    and _projection_is_current(prefix)
+                    and _table_output_types_are_canonical(pa, batch, prefix.projection)
+                ):
                     try:
                         output = _materialize_table_batch(
                             batch, prefix.operations, prefix.projection
@@ -1521,7 +1547,7 @@ def try_arrow_table(
     pa, _pc = _arrow_modules()
     equality = _scan_equality(prefix) if descriptor.kind == "parquet" else None
     range_predicate = _scan_range_predicate(prefix) if descriptor.kind == "parquet" else None
-    columns = _projection_scan_columns(prefix)
+    columns = _projection_scan_columns(prefix, descriptor=descriptor)
     outputs: list[Any] = []
     inference = _OutputSchemaInference(batch_size)
     fallback_schema = (
@@ -1535,8 +1561,11 @@ def try_arrow_table(
     )
 
     plan.source.open_native(ArrowBatchSource)
+    if not _projection_is_current(prefix):
+        fallback_schema = fixed_output_schema = None
     batches = descriptor.open_batches(
-        columns=columns,
+        columns=columns if _projection_is_current(prefix) else None,
+        projection_check=lambda: _projection_is_current(prefix),
         equality=equality,
         range_predicate=range_predicate,
     )
@@ -1549,13 +1578,20 @@ def try_arrow_table(
                 batch_size=batch_size,
             )
         for batch in batches:
+            if not _projection_is_current(prefix):
+                # The former selected field no longer determines the output dtype.
+                fallback_schema = fixed_output_schema = None
             observe_arrow_batch_rows(batch)
             safety = prove_batch_safe(
                 batch,
                 expression_operations,
                 projection=prefix.projection,
             )
-            if safety.safe and _table_output_types_are_canonical(pa, batch, prefix.projection):
+            if (
+                safety.safe
+                and _projection_is_current(prefix)
+                and _table_output_types_are_canonical(pa, batch, prefix.projection)
+            ):
                 try:
                     output = _materialize_table_batch(batch, prefix.operations, prefix.projection)
                 except _EXPECTED_ARROW_ERRORS:
@@ -1611,6 +1647,7 @@ def _execute_arrow_first(
     """Yield at most one row from a complete, short-circuit-safe Arrow program."""
     batches = descriptor.open_batches(
         columns=columns,
+        projection_check=lambda: _projection_is_current(prefix),
         equality=equality,
         first_only=True,
     )
@@ -1664,7 +1701,11 @@ def execute_arrow_prefix(
     # the prefix selected from the original logical operations when supplied; recomputing it on
     # that compatibility pipeline can shorten the prefix and make suffix slicing skip work.
     prefix = plan_arrow_prefix(plan) if prefix is None else prefix
-    if prefix is None or (prefix.operation_count == 0 and not prefix.first_only):
+    if (
+        prefix is None
+        or (prefix.operation_count == 0 and not prefix.first_only)
+        or not _projection_is_current(prefix)
+    ):
         return None
     if prefix.first_only and prefix.operation_count != len(plan.operations):
         return None
@@ -1677,7 +1718,7 @@ def execute_arrow_prefix(
         return None
     equality = _scan_equality(prefix) if descriptor.kind == "parquet" else None
     range_predicate = _scan_range_predicate(prefix) if descriptor.kind == "parquet" else None
-    columns = _projection_scan_columns(prefix)
+    columns = _projection_scan_columns(prefix, descriptor=descriptor)
     expression_operations = (
         prefix.operations[:-1] if prefix.projection is not None else prefix.operations
     )
@@ -1685,16 +1726,18 @@ def execute_arrow_prefix(
     def values() -> Iterator[Any]:
         """Process batches lazily and close the opened batch stream on every exit."""
         plan.source.open_native(ArrowBatchSource)
+        current_columns = columns if _projection_is_current(prefix) else None
         if prefix.first_only:
             yield from _execute_arrow_first(
                 descriptor,
                 prefix,
-                columns=columns,
+                columns=current_columns,
                 equality=equality,
             )
             return
         batches = descriptor.open_batches(
-            columns=columns,
+            columns=current_columns,
+            projection_check=lambda: _projection_is_current(prefix),
             equality=equality,
             range_predicate=range_predicate,
         )

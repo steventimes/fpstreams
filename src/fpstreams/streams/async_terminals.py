@@ -219,8 +219,8 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """Separate Result values into successes and failures.
 
         Returns:
-            `(success_values, exceptions)`, with `Ok` and `Err` payloads unwrapped in their
-            respective encounter orders.
+            success_values (list[Any]): Unwrapped `Ok` values in encounter order.
+            exceptions (list[Exception]): Exceptions stored by `Err`, in encounter order.
 
         Raises:
             TypeError: If any emitted item is neither `Ok` nor `Err`.

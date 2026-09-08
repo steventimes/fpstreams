@@ -10,24 +10,22 @@ from collections import namedtuple as _namedtuple
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from importlib import import_module
-from itertools import chain
 from types import BuiltinFunctionType, CodeType, FunctionType, MappingProxyType
 from typing import Any, cast
 
+from ..._provenance import function_environment_is_current, function_environment_snapshot
 from ...collecting._collector_base import Collector, _never_done
 from ...collecting.aggregation import (
-    _MISSING,
     AggregationItems,
+    Aggregator,
     native_group_aggregation,
     project_count_aggregation,
 )
 from ...collecting.program import (
-    CollectorState,
     collector_program_fast_path_is_live,
     run_collector_program,
 )
-from ...errors import SelectionError
-from ...expressions.selectors import _direct_field, compile_selector
+from ...expressions.selectors import _normalize_direct_row_selector, compile_selector
 from ...physical.plan import (
     CompiledExpressionPhysicalNode,
     PhysicalNode,
@@ -72,7 +70,7 @@ from ...planning.source import (
 from ...runtime.failpoints import has_active_failpoints as _has_active_failpoints
 from ...runtime.query import QueryRuntime
 from ...tabular import records as _records
-from ...tabular.join import _direct_mapping_mro
+from ...tabular.join import _compose_composite_selector, _direct_mapping_mro
 from ...tabular.records import _as_record
 from ...tabular.spill import require_spill_file_budget, spilled_group_aggregate
 from ...tabular.spill_limits import SpillLimits
@@ -102,7 +100,7 @@ from .arrow_group_rows import (
     _ordered_arrow_group_rows,
 )
 from .arrow_group_rows import _materialize_arrow_group_rows as _materialize_arrow_group_rows_impl
-from .join import _execute_join, _try_retained_arrow_unique_join
+from .join import _execute_join, _try_native_i64_record_join, _try_retained_arrow_unique_join
 
 _RECORD_JOIN_V1_MAX_FIELDS = 64
 _ARROW_GROUP_TABLE_MIN_GROUPS = 4_096
@@ -117,7 +115,6 @@ _ARROW_READER_GROUP_MAX_DISTINCT_RATIO = 0.5
 _NUMPY_GLOBAL_CHUNK_ROWS = 65_536
 _NUMPY_GROUP_CHUNK_ROWS = 65_536
 _SYS_MAXSIZE = _sys.maxsize
-_NONE_TYPE = type(None)
 _BUILTINS_DICT = _builtins.__dict__
 _BUILTIN_HASH = _BUILTINS_DICT["hash"]
 _RECORD_GLOBALS = vars(_records)
@@ -128,21 +125,21 @@ _CANONICAL_BUILTIN_HASH = (
     and _BUILTIN_HASH.__module__ == "builtins"
     and _BUILTIN_HASH.__name__ == "hash"
 )
-_BUILTIN_ATTRIBUTE_ERROR = AttributeError
 _BUILTIN_ANY = any
 _BUILTIN_CALLABLE = callable
-_BUILTIN_DICT = dict
 _BUILTIN_GETATTR = getattr
 _BUILTIN_INT = int
-_BUILTIN_ISINSTANCE = isinstance
-_BUILTIN_KEY_ERROR = KeyError
 _BUILTIN_LIST = list
+_BUILTIN_STR = str
 _BUILTIN_TUPLE: Any = tuple
 _BUILTIN_TYPE = type
-_BUILTIN_TYPE_ERROR = TypeError
-_CANONICAL_MAPPING = Mapping
-_CANONICAL_SELECTION_ERROR = SelectionError
-_CANONICAL_GROUP_FIELD_SELECTOR_CODE = compile_selector("__fpstreams_group_field_probe__").__code__
+_CANONICAL_GROUP_INDEX_SELECTOR = cast(FunctionType, compile_selector(0))
+_CANONICAL_GROUP_PAIR_SELECTOR = cast(
+    FunctionType,
+    _compose_composite_selector((0, 1), (_CANONICAL_GROUP_INDEX_SELECTOR, compile_selector(1))),
+)
+_CANONICAL_GROUP_INDEX_ENVIRONMENT = function_environment_snapshot(_CANONICAL_GROUP_INDEX_SELECTOR)
+_CANONICAL_GROUP_PAIR_ENVIRONMENT = function_environment_snapshot(_CANONICAL_GROUP_PAIR_SELECTOR)
 _SYS_IS_GIL_ENABLED = getattr(_sys, "_is_gil_enabled", None)
 _SIGNAL_GETITIMER = getattr(_signal, "getitimer", None)
 _SIGNAL_SETITIMER = getattr(_signal, "setitimer", None)
@@ -164,11 +161,6 @@ def _group_hash_replaced() -> bool:
         or _RELATIONAL_GLOBALS.get("hash", _BUILTIN_HASH) is not _BUILTIN_HASH
         or _BUILTINS_DICT.get("hash") is not _BUILTIN_HASH
     )
-
-
-def _exact_builtin_group_key_type(key_type: type[Any]) -> bool:
-    """Return whether a dict lookup's implicit hash is the only observable hash call."""
-    return key_type in (int, str, bytes, bool, float, complex, _NONE_TYPE)
 
 
 def _retained_aggregations_are_live(aggregations: tuple[Any, ...]) -> bool:
@@ -290,11 +282,6 @@ def _native_execution_unsafe() -> bool:
             return True
 
     return _native_multi_group_timer_active()
-
-
-def _python_group_fast_environment_is_pristine() -> bool:
-    """Keep failpoints and concurrent mutation on the authoritative row loop."""
-    return not (_has_active_failpoints() or _native_execution_unsafe() or _group_hash_replaced())
 
 
 def _standard_namedtuple_record_type(row_type: type[Any]) -> bool:
@@ -554,51 +541,6 @@ def _try_native_direct_record_join(
     )
 
 
-def _try_native_i64_record_join(
-    native_module: Any,
-    root: JoinPhysicalNode,
-    left: list[Any] | tuple[Any, ...],
-    right: list[Any] | tuple[Any, ...],
-) -> list[dict[str, Any]] | None:
-    """Try the narrow exact-dict integer-key ABI before broader guarded kernels."""
-    max_fields = getattr(native_module, "record_join_v1_max_fields", None)
-    if type(max_fields) is not int or max_fields != _RECORD_JOIN_V1_MAX_FIELDS:
-        return None
-    native = root.native_record_i64
-    assert native is not None
-    left_join = root.spec.logical.how == "left"
-    many_kernel = getattr(native_module, "join_i64_many_dict_rows_v1", None)
-    if root.spec.logical.validate == "m:m" and callable(many_kernel):
-        return cast(
-            list[dict[str, Any]] | None,
-            many_kernel(
-                left,
-                right,
-                native.left_field,
-                native.right_field,
-                left_join,
-            ),
-        )
-
-    arguments = (
-        left,
-        right,
-        native.left_field,
-        native.right_field,
-        left_join,
-    )
-    borrowed_kernel = getattr(native_module, "join_i64_unique_dict_rows_v2", None)
-    if callable(borrowed_kernel):
-        joined = cast(list[dict[str, Any]] | None, borrowed_kernel(*arguments))
-        if joined is not None:
-            return joined
-
-    snapshot_kernel = getattr(native_module, "join_i64_unique_dict_rows_v1", None)
-    if not callable(snapshot_kernel):
-        return None
-    return cast(list[dict[str, Any]] | None, snapshot_kernel(*arguments))
-
-
 def _try_native_pair_sum_rows(
     native_module: Any,
     rows: object,
@@ -737,7 +679,9 @@ def try_native_record_join(plan: PhysicalPlan) -> list[dict[str, Any]] | None:
     direct = root.native_direct_fields
     if direct is not None:
         if root.native_record_i64 is not None:
-            direct_rows = _try_native_i64_record_join(_native, root, left, right)
+            direct_rows = _try_native_i64_record_join(
+                _native, root, left, right, _RECORD_JOIN_V1_MAX_FIELDS
+            )
             if direct_rows is not None:
                 return direct_rows
         direct_rows = _try_native_direct_record_join(
@@ -804,7 +748,8 @@ def try_direct_group_list(
     if revalidated_root is not root:
         return None, replace(plan, root=revalidated_root)
     has_backend_marker = not (
-        root.arrow_i64_sum is None
+        root.composite_count_sum is None
+        and root.arrow_i64_sum is None
         and root.numpy_group is None
         and root.native_pair_i64_expr_sum is None
         and root.native_i64_sum is None
@@ -843,6 +788,7 @@ def try_direct_group_list(
         return group_rows, plan
     fallback_root = replace(
         root,
+        composite_count_sum=None,
         arrow_i64_sum=None,
         native_pair_i64_expr_sum=None,
         native_i64_sum=None,
@@ -924,7 +870,7 @@ def execute_relational(
         )
         return
     if isinstance(root, JoinPhysicalNode):
-        yield from _execute_join(root, runtime, execute_relational)
+        yield from _execute_join(root, runtime, execute_relational, outer_plan)
         return
     if isinstance(root, GroupAggregatePhysicalNode):
         yield from _execute_group_aggregate(root, runtime, outer_plan)
@@ -1015,6 +961,35 @@ def _arrow_planning_operations(nodes: tuple[PhysicalNode, ...]) -> tuple[Any, ..
     return tuple(operations)
 
 
+_CANONICAL_COLLECTOR_ACCESS = (
+    ("__getattribute__", object.__getattribute__),
+    *(
+        (name, Collector.__dict__[name])
+        for name in ("initializer", "step", "done", "_lifecycle_revision")
+    ),
+)
+
+
+def _collector_lifecycle_is_static(collector: Collector[Any, Any, Any]) -> bool:
+    """Cache only inherited slot reads; dynamic getters use the collector program."""
+    owner = _BUILTIN_TYPE(collector)
+    if _BUILTIN_TYPE(owner) is not _BUILTIN_TYPE:
+        return False
+    lineage = owner.__mro__
+    if any(_BUILTIN_TYPE(base) is not _BUILTIN_TYPE for base in lineage):
+        return False
+    for name, expected in _CANONICAL_COLLECTOR_ACCESS:
+        for base in lineage:
+            namespace = base.__dict__
+            if name in namespace:
+                if namespace[name] is not expected:
+                    return False
+                break
+        else:
+            return False
+    return True
+
+
 def _single_collector_lifecycle(
     collector: Collector[Any, Any, Any],
 ) -> tuple[
@@ -1033,377 +1008,7 @@ def _single_collector_lifecycle(
             return revision, initializer, step, done
 
 
-def _stable_direct_group_field(selector: Callable[[Any], Any]) -> str | None:
-    """Recover one unmodified generated field selector for the local group loop."""
-    if _BUILTIN_TYPE(selector) is not FunctionType:
-        return None
-    function = selector
-    field = _direct_field(selector)
-    selector_globals = function.__globals__
-    selector_builtins = _BUILTIN_GETATTR(function, "__builtins__", None)
-    if (
-        field is None
-        or _BUILTIN_TYPE(selector_builtins) is not _BUILTIN_DICT
-        or function.__code__ is not _CANONICAL_GROUP_FIELD_SELECTOR_CODE
-    ):
-        return None
-    selector_builtins = cast(dict[str, Any], selector_builtins)
-    for name, canonical in (
-        ("AttributeError", _BUILTIN_ATTRIBUTE_ERROR),
-        ("KeyError", _BUILTIN_KEY_ERROR),
-        ("TypeError", _BUILTIN_TYPE_ERROR),
-        ("dict", _BUILTIN_DICT),
-        ("getattr", _BUILTIN_GETATTR),
-        ("isinstance", _BUILTIN_ISINSTANCE),
-        ("type", _BUILTIN_TYPE),
-        ("Mapping", _CANONICAL_MAPPING),
-        ("SelectionError", _CANONICAL_SELECTION_ERROR),
-    ):
-        if selector_globals.get(name, selector_builtins.get(name)) is not canonical:
-            return None
-    cells = function.__closure__
-    if cells is None:
-        return None
-    try:
-        return field if cells[0].cell_contents is field else None
-    except ValueError:
-        return None
-
-
-_GROUP_SUM_AFTER_KEY = 1
-_GROUP_SUM_AFTER_LOOKUP = 2
-_GROUP_SUM_AFTER_INSERT = 3
-_GROUP_SUM_AFTER_ADD = 4
-
-
-def _continue_factory_sum_group(  # noqa: C901 - cold lifecycle state machine
-    iterator: Iterator[Any],
-    node: GroupAggregatePhysicalNode,
-    collector: Collector[Any, Any, Any],
-    positions: dict[Any, int],
-    keys: list[Any],
-    states: list[Any],
-    completed: list[Any],
-    *,
-    phase: int,
-    row: Any,
-    key: Any = None,
-    position: int | None = None,
-) -> None:
-    """Finish one interrupted row, then consume into the same dense state."""
-    revision, initializer, step, done = _single_collector_lifecycle(collector)
-
-    if phase == _GROUP_SUM_AFTER_ADD:
-        assert position is not None
-        if done is not _never_done:
-            completed[position] = done(states[position])
-    else:
-        if phase == _GROUP_SUM_AFTER_KEY:
-            try:
-                hash(key)
-                position = positions.get(key)
-            except TypeError:
-                raise TypeError("group_by keys must be hashable") from None
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
-
-        if phase in (_GROUP_SUM_AFTER_KEY, _GROUP_SUM_AFTER_LOOKUP):
-            if position is None:
-                state = initializer()
-                live_revision = collector._lifecycle_revision
-                if live_revision != revision:
-                    revision, initializer, step, done = _single_collector_lifecycle(collector)
-                is_completed = done(state) if done is not _never_done else False
-                live_revision = collector._lifecycle_revision
-                if live_revision != revision:
-                    revision, initializer, step, done = _single_collector_lifecycle(collector)
-                proposed = len(keys)
-                position = positions.setdefault(key, proposed)
-                if position == proposed:
-                    keys.append(key)
-                    states.append(state)
-                    completed.append(is_completed)
-                else:
-                    # A key can change its equality/hash behavior between get and insert.
-                    # Exact dict assignment keeps the old slot but replaces its entry.
-                    keys[position] = key
-                    states[position] = state
-                    completed[position] = is_completed
-                live_revision = collector._lifecycle_revision
-                if live_revision != revision:
-                    revision, initializer, step, done = _single_collector_lifecycle(collector)
-            else:
-                state = states[position]
-                is_completed = completed[position]
-        else:
-            assert phase == _GROUP_SUM_AFTER_INSERT and position is not None
-            state = states[position]
-            is_completed = completed[position]
-
-        if not (done is not _never_done and is_completed):
-            state = step(state, row)
-            states[position] = state
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
-            if done is not _never_done:
-                completed[position] = done(state)
-
-    select_key = node.select_key
-    for row in iterator:
-        key = select_key(row)
-        live_revision = collector._lifecycle_revision
-        if live_revision != revision:
-            revision, initializer, step, done = _single_collector_lifecycle(collector)
-        try:
-            hash(key)
-            position = positions.get(key)
-        except TypeError:
-            raise TypeError("group_by keys must be hashable") from None
-        live_revision = collector._lifecycle_revision
-        if live_revision != revision:
-            revision, initializer, step, done = _single_collector_lifecycle(collector)
-        if position is None:
-            state = initializer()
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
-            is_completed = done(state) if done is not _never_done else False
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
-            proposed = len(keys)
-            position = positions.setdefault(key, proposed)
-            if position == proposed:
-                keys.append(key)
-                states.append(state)
-                completed.append(is_completed)
-            else:
-                keys[position] = key
-                states[position] = state
-                completed[position] = is_completed
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
-        else:
-            state = states[position]
-            is_completed = completed[position]
-        if done is not _never_done and is_completed:
-            continue
-        state = step(state, row)
-        states[position] = state
-        live_revision = collector._lifecycle_revision
-        if live_revision != revision:
-            revision, initializer, step, done = _single_collector_lifecycle(collector)
-        if done is not _never_done:
-            completed[position] = done(state)
-
-
-def _execute_factory_sum_group(  # noqa: C901 - hot PIC and cold deopt stay adjacent
-    values: Iterator[Any],
-    node: GroupAggregatePhysicalNode,
-    collector: Collector[Any, Any, Any],
-    output_name: str,
-    revision: int,
-    sum_select: Callable[[Any], Any],
-) -> Iterator[dict[str, Any]]:
-    """Run one canonical sum densely and permanently continue cold after mutation."""
-    positions: dict[Any, int] = {}
-    keys: list[Any] = []
-    states: list[Any] = []
-    deopted = False
-    multiple = len(node.keys) > 1
-    iterator = iter(values)
-    select_key = node.select_key
-    direct_key = _stable_direct_group_field(select_key)
-    selector_globals = (
-        cast(FunctionType, select_key).__globals__ if direct_key is not None else None
-    )
-    direct_value = _stable_direct_group_field(sum_select)
-    value_selector_globals = (
-        cast(FunctionType, sum_select).__globals__ if direct_value is not None else None
-    )
-    mapping_protocol_globals = _direct_mapping_mro.__globals__
-    direct_mapping_type_0: type[Any] | None = None
-    direct_mapping_mro_0: tuple[type[Any], ...] | None = None
-    direct_mapping_type_1: type[Any] | None = None
-    direct_mapping_mro_1: tuple[type[Any], ...] | None = None
-    active_error: BaseException | None = None
-    try:
-        for row in iterator:
-            if direct_key is None:
-                key = select_key(row)
-            else:
-                try:
-                    row_type = _BUILTIN_TYPE(row)
-                    if row_type is _BUILTIN_DICT:
-                        key = row[direct_key]
-                    elif (
-                        selector_globals is None
-                        or selector_globals.get("Mapping") is not _CANONICAL_MAPPING
-                        or mapping_protocol_globals.get("Mapping") is not _CANONICAL_MAPPING
-                    ):
-                        key = select_key(row)
-                        direct_key = None
-                    elif (
-                        row_type is MappingProxyType
-                        or (
-                            row_type is direct_mapping_type_0
-                            and row_type.__mro__ is direct_mapping_mro_0
-                        )
-                        or (
-                            row_type is direct_mapping_type_1
-                            and row_type.__mro__ is direct_mapping_mro_1
-                        )
-                    ):
-                        key = row[direct_key]
-                    else:
-                        mapping_mro = _direct_mapping_mro(row_type)
-                        if mapping_mro is not None and row_type.__mro__ is mapping_mro:
-                            key = row[direct_key]
-                            if row_type is direct_mapping_type_0:
-                                direct_mapping_mro_0 = mapping_mro
-                            elif row_type is direct_mapping_type_1:
-                                direct_mapping_mro_1 = mapping_mro
-                            elif direct_mapping_type_0 is None:
-                                direct_mapping_type_0 = row_type
-                                direct_mapping_mro_0 = mapping_mro
-                            elif direct_mapping_type_1 is None:
-                                direct_mapping_type_1 = row_type
-                                direct_mapping_mro_1 = mapping_mro
-                            else:
-                                direct_key = None
-                        else:
-                            key = select_key(row)
-                            direct_key = None
-                except (AttributeError, KeyError, TypeError) as error:
-                    raise _CANONICAL_SELECTION_ERROR(
-                        f"Could not resolve selector {direct_key!r}; failed at {direct_key!r}"
-                    ) from error
-
-            try:
-                hash(key)
-                position = positions.get(key)
-            except TypeError:
-                raise TypeError("group_by keys must be hashable") from None
-            if collector._lifecycle_revision != revision:
-                deopted = True
-                _continue_factory_sum_group(
-                    iterator,
-                    node,
-                    collector,
-                    positions,
-                    keys,
-                    states,
-                    [False] * len(states),
-                    phase=_GROUP_SUM_AFTER_LOOKUP,
-                    row=row,
-                    key=key,
-                    position=position,
-                )
-                break
-            if position is None:
-                proposed = len(keys)
-                position = positions.setdefault(key, proposed)
-                if position == proposed:
-                    keys.append(key)
-                    states.append(0)
-                else:
-                    keys[position] = key
-                    states[position] = 0
-                if collector._lifecycle_revision != revision:
-                    deopted = True
-                    _continue_factory_sum_group(
-                        iterator,
-                        node,
-                        collector,
-                        positions,
-                        keys,
-                        states,
-                        [False] * len(states),
-                        phase=_GROUP_SUM_AFTER_INSERT,
-                        row=row,
-                        key=key,
-                        position=position,
-                    )
-                    break
-            if direct_value is None or direct_key is None:
-                selected = sum_select(row)
-            else:
-                try:
-                    row_type = _BUILTIN_TYPE(row)
-                    if row_type is _BUILTIN_DICT:
-                        selected = row[direct_value]
-                    elif (
-                        value_selector_globals is None
-                        or value_selector_globals.get("Mapping") is not _CANONICAL_MAPPING
-                    ):
-                        direct_value = None
-                        selected = sum_select(row)
-                    elif (
-                        row_type is MappingProxyType
-                        or (
-                            row_type is direct_mapping_type_0
-                            and row_type.__mro__ is direct_mapping_mro_0
-                        )
-                        or (
-                            row_type is direct_mapping_type_1
-                            and row_type.__mro__ is direct_mapping_mro_1
-                        )
-                    ):
-                        selected = row[direct_value]
-                    else:
-                        direct_value = None
-                        selected = sum_select(row)
-                except (AttributeError, KeyError, TypeError) as error:
-                    raise _CANONICAL_SELECTION_ERROR(
-                        f"Could not resolve selector {direct_value!r}; failed at {direct_value!r}"
-                    ) from error
-            states[position] = states[position] + selected
-            if collector._lifecycle_revision != revision:
-                deopted = True
-                _continue_factory_sum_group(
-                    iterator,
-                    node,
-                    collector,
-                    positions,
-                    keys,
-                    states,
-                    [False] * len(states),
-                    phase=_GROUP_SUM_AFTER_ADD,
-                    row=row,
-                    key=key,
-                    position=position,
-                )
-                break
-    except BaseException as error:
-        active_error = error
-        raise
-    finally:
-        close_iterators((iterator,), active_error=active_error)
-
-    direct_finish = not deopted and collector._lifecycle_revision == revision
-
-    if not multiple:
-        key_name = node.key_names[0]
-        for key, state in zip(keys, states, strict=True):
-            result = {key_name: key}
-            if direct_finish and collector._lifecycle_revision != revision:
-                direct_finish = False
-            result[output_name] = state if direct_finish else collector.finish(state)
-            yield result
-        return
-    key_names = node.key_names
-    for key, state in zip(keys, states, strict=True):
-        result = dict(zip(key_names, key, strict=True))
-        if direct_finish and collector._lifecycle_revision != revision:
-            direct_finish = False
-        result[output_name] = state if direct_finish else collector.finish(state)
-        yield result
-
-
-def _execute_single_collector_group(  # noqa: C901 - lifecycle guards and key PIC stay inline
+def _execute_single_collector_group(  # noqa: C901 - lifecycle mutation boundaries stay inline
     values: Iterator[Any],
     node: GroupAggregatePhysicalNode,
 ) -> Iterator[dict[str, Any]]:
@@ -1415,90 +1020,16 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle guards and key PI
     output_name = program.layout.names[0]
     revision, initializer, step, done = _single_collector_lifecycle(collector)
     instrumented = has_active_failpoints()
-    if not instrumented:
-        sum_hint = native_group_aggregation(cast(Any, collector))
-        if sum_hint is not None and sum_hint.kind == "sum":
-            sum_cells = step.__closure__
-            if sum_cells is not None:
-                yield from _execute_factory_sum_group(
-                    values,
-                    node,
-                    collector,
-                    output_name,
-                    revision,
-                    sum_cells[0].cell_contents,
-                )
-                return
     groups: dict[Any, list[Any]] = {}
     multiple = len(node.keys) > 1
     iterator = iter(values)
     select_key = node.select_key
-    direct_key = _stable_direct_group_field(select_key)
-    selector_globals = (
-        cast(FunctionType, select_key).__globals__ if direct_key is not None else None
-    )
-    mapping_protocol_globals = _direct_mapping_mro.__globals__
-    direct_mapping_type_0: type[Any] | None = None
-    direct_mapping_mro_0: tuple[type[Any], ...] | None = None
-    direct_mapping_type_1: type[Any] | None = None
-    direct_mapping_mro_1: tuple[type[Any], ...] | None = None
     active_error: BaseException | None = None
     try:
         for row in iterator:
-            if direct_key is None:
-                key = select_key(row)
-            else:
-                try:
-                    row_type = _BUILTIN_TYPE(row)
-                    if row_type is _BUILTIN_DICT:
-                        key = row[direct_key]
-                    elif (
-                        selector_globals is None
-                        or selector_globals.get("Mapping") is not _CANONICAL_MAPPING
-                        or mapping_protocol_globals.get("Mapping") is not _CANONICAL_MAPPING
-                    ):
-                        key = select_key(row)
-                        direct_key = None
-                    elif (
-                        row_type is MappingProxyType
-                        or (
-                            row_type is direct_mapping_type_0
-                            and row_type.__mro__ is direct_mapping_mro_0
-                        )
-                        or (
-                            row_type is direct_mapping_type_1
-                            and row_type.__mro__ is direct_mapping_mro_1
-                        )
-                    ):
-                        key = row[direct_key]
-                    else:
-                        mapping_mro = _direct_mapping_mro(row_type)
-                        if mapping_mro is not None and row_type.__mro__ is mapping_mro:
-                            key = row[direct_key]
-                            if row_type is direct_mapping_type_0:
-                                direct_mapping_mro_0 = mapping_mro
-                            elif row_type is direct_mapping_type_1:
-                                direct_mapping_mro_1 = mapping_mro
-                            elif direct_mapping_type_0 is None:
-                                direct_mapping_type_0 = row_type
-                                direct_mapping_mro_0 = mapping_mro
-                            elif direct_mapping_type_1 is None:
-                                direct_mapping_type_1 = row_type
-                                direct_mapping_mro_1 = mapping_mro
-                            else:
-                                # Highly polymorphic streams already benefit from the ABC's
-                                # own cache; avoid turning two local slots into a miss loop.
-                                direct_key = None
-                        else:
-                            key = select_key(row)
-                            direct_key = None
-                except (AttributeError, KeyError, TypeError) as error:
-                    raise _CANONICAL_SELECTION_ERROR(
-                        f"Could not resolve selector {direct_key!r}; failed at {direct_key!r}"
-                    ) from error
-            live_revision = collector._lifecycle_revision
-            if live_revision != revision:
-                revision, initializer, step, done = _single_collector_lifecycle(collector)
+            key = select_key(row)
+            # Hashing may replace a hook just installed by key selection. Refresh
+            # after lookup so the cache does not extend that transient hook's life.
             try:
                 hash(key)
                 entry = groups.get(key)
@@ -1512,11 +1043,11 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle guards and key PI
                 live_revision = collector._lifecycle_revision
                 if live_revision != revision:
                     revision, initializer, step, done = _single_collector_lifecycle(collector)
-                completed = done(state) if done is not _never_done else False
+                entry = [key, state, done(state) if done is not _never_done else False]
+                del state
                 live_revision = collector._lifecycle_revision
                 if live_revision != revision:
                     revision, initializer, step, done = _single_collector_lifecycle(collector)
-                entry = [key, state, completed]
                 groups[key] = entry
                 live_revision = collector._lifecycle_revision
                 if live_revision != revision:
@@ -1524,195 +1055,65 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle guards and key PI
                 if instrumented:
                     hit("group.state.create.after")
                     revision, initializer, step, done = _single_collector_lifecycle(collector)
-            else:
-                state = entry[1]
-                completed = entry[2]
-            if done is not _never_done and completed:
-                continue
-            state = step(state, row)
-            entry[1] = state
+            if done is not _never_done:
+                if entry[2]:
+                    continue
+                # Truth testing can replace the step needed for this same row.
+                live_revision = collector._lifecycle_revision
+                if live_revision != revision:
+                    revision, initializer, step, done = _single_collector_lifecycle(collector)
+            entry[1] = step(entry[1], row)
             live_revision = collector._lifecycle_revision
             if live_revision != revision:
                 revision, initializer, step, done = _single_collector_lifecycle(collector)
             if done is not _never_done:
-                entry[2] = done(state)
+                entry[2] = done(entry[1])
     except BaseException as error:
         active_error = error
         raise
     finally:
         close_iterators((iterator,), active_error=active_error)
+    # Keep the input entry and items iterator lifetimes aligned with the general program.
     if not multiple:
         key_name = node.key_names[0]
-        for entry in groups.values():
-            # Materialize the key before invoking a live finisher, matching the
-            # general zip-then-update ordering without its temporary dictionaries.
-            result = {key_name: entry[0]}
-            result[output_name] = collector.finish(entry[1])
+        for _group_key, output_entry in groups.items():
+            # Rebind the key before a live finisher so an unused input key is released
+            # at the same point as in the general program.
+            key = output_entry[0]
+            result = {key_name: key}
+            result[output_name] = collector.finish(output_entry[1])
             yield result
         return
     key_names = node.key_names
-    for entry in groups.values():
-        result = dict(zip(key_names, entry[0], strict=True))
-        result[output_name] = collector.finish(entry[1])
+    for _group_key, output_entry in groups.items():
+        key = output_entry[0]
+        result = dict(zip(key_names, key, strict=True))
+        result[output_name] = collector.finish(output_entry[1])
         yield result
-
-
-def _composite_count_sum_groups(
-    compact: dict[tuple[Any, Any], list[Any]],
-) -> dict[Any, tuple[Any, CollectorState]]:
-    """Convert exact compact states only when the composite loop must deopt."""
-    return {
-        state[0]: (
-            state[0],
-            CollectorState([state[1], state[2]], [False, False]),
-        )
-        for state in compact.values()
-    }
-
-
-def _execute_composite_count_sum(
-    values: Iterator[Any],
-    node: GroupAggregatePhysicalNode,
-    spec: CompositeCountSumSpec,
-) -> Iterator[dict[str, Any]]:
-    """Group the closed exact two-key count/sum shape, deopting without replay."""
-    first_index, second_index = spec.key_selectors
-    value_index = spec.value_selector
-    if (
-        _BUILTIN_TYPE(first_index) is not _BUILTIN_INT
-        or _BUILTIN_TYPE(second_index) is not _BUILTIN_INT
-        or _BUILTIN_TYPE(value_index) is not _BUILTIN_INT
-        or not _python_group_fast_environment_is_pristine()
-    ):
-        yield from _execute_authoritative_group(values, node)
-        return
-
-    program = node.aggregations.collectors
-    count_collector, sum_collector = program.layout.collectors
-    count_revision = count_collector._lifecycle_revision
-    sum_revision = sum_collector._lifecycle_revision
-    compact: dict[tuple[Any, Any], list[Any]] = {}
-    iterator = iter(values)
-    handed_off = False
-    active_error: BaseException | None = None
-
-    def deopt(row: Any) -> Iterator[dict[str, Any]]:
-        nonlocal handed_off
-        groups = _composite_count_sum_groups(compact)
-        handed_off = True
-        return _execute_authoritative_group(
-            iterator,
-            node,
-            initial_groups=groups,
-            first_row=row,
-        )
-
-    try:
-        for row in iterator:
-            if (
-                count_collector._lifecycle_revision != count_revision
-                or sum_collector._lifecycle_revision != sum_revision
-            ):
-                continuation = deopt(row)
-                del row
-                yield from continuation
-                return
-
-            row_type = _BUILTIN_TYPE(row)
-            if row_type is not _BUILTIN_TUPLE and row_type is not _BUILTIN_LIST:
-                continuation = deopt(row)
-                del row
-                yield from continuation
-                return
-            try:
-                first = row[first_index]
-                second = row[second_index]
-                selected = row[value_index]
-            except (IndexError, TypeError):
-                continuation = deopt(row)
-                del row
-                yield from continuation
-                return
-            if (
-                not _exact_builtin_group_key_type(_BUILTIN_TYPE(first))
-                or not _exact_builtin_group_key_type(_BUILTIN_TYPE(second))
-                or _BUILTIN_TYPE(selected) is not _BUILTIN_INT
-            ):
-                continuation = deopt(row)
-                del row
-                yield from continuation
-                return
-
-            key = (first, second)
-            state = compact.get(key)
-            is_new = state is None
-            if state is None:
-                state = [key, 1, selected]
-                compact[key] = state
-            else:
-                previous_count = state[1]
-                previous_total = state[2]
-                state[1] = previous_count + 1
-                state[2] = previous_total + selected
-
-            if (
-                count_collector._lifecycle_revision == count_revision
-                and sum_collector._lifecycle_revision == sum_revision
-            ):
-                continue
-            if is_new:
-                del compact[key]
-            else:
-                state[1] = previous_count
-                state[2] = previous_total
-            continuation = deopt(row)
-            del row
-            yield from continuation
-            return
-    except BaseException as error:
-        active_error = error
-        raise
-    finally:
-        if not handed_off:
-            close_iterators((iterator,), active_error=active_error)
-
-    first_name, second_name = node.key_names
-    for key, count, total in compact.values():
-        yield {
-            first_name: key[0],
-            second_name: key[1],
-            spec.count_name: count_collector.finish(count),
-            spec.sum_name: sum_collector.finish(total),
-        }
 
 
 def _execute_authoritative_group(
     values: Iterator[Any],
     node: GroupAggregatePhysicalNode,
-    *,
-    initial_groups: dict[Any, tuple[Any, CollectorState]] | None = None,
-    first_row: Any = _MISSING,
 ) -> Iterator[dict[str, Any]]:
     """Run live collector lifecycles while retaining compact first-seen group state."""
     program = node.aggregations.collectors
     if (
-        initial_groups is None
-        and first_row is _MISSING
-        and program.single
+        program.single
         and not _native_execution_unsafe()
+        and _collector_lifecycle_is_static(program.layout.collectors[0])
     ):
         yield from _execute_single_collector_group(values, node)
         return
     from ...runtime.failpoints import has_active_failpoints, hit
 
-    groups: dict[Any, tuple[Any, Any]] = {} if initial_groups is None else initial_groups
+    groups: dict[Any, tuple[Any, Any]] = {}
     instrumented = has_active_failpoints()
     multiple = len(node.keys) > 1
     iterator = iter(values)
-    rows = iterator if first_row is _MISSING else chain((first_row,), iterator)
     active_error: BaseException | None = None
     try:
-        for row in rows:
+        for row in iterator:
             key = node.select_key(row)
             try:
                 hash(key)
@@ -1743,11 +1144,8 @@ def _execute_python_group_values(
     values: Iterator[Any],
     node: GroupAggregatePhysicalNode,
 ) -> Iterator[dict[str, Any]]:
-    """Run the live collector program after every source-open mutation boundary."""
-    if node.composite_count_sum is not None:
-        yield from _execute_composite_count_sum(values, node, node.composite_count_sum)
-        return
-    yield from _execute_authoritative_group(values, node)
+    """Return the lazy collector iterator after the source-open mutation boundary."""
+    return _execute_authoritative_group(values, node)
 
 
 def _execute_group_aggregate(
@@ -2241,7 +1639,7 @@ def _try_native_pair_i64_expr_group_sum(
     return [{key_name: key, spec.output_name: total} for key, total in groups]
 
 
-def _retained_pair_i64_expr_group_source(
+def _retained_native_group_source(
     node: GroupAggregatePhysicalNode,
 ) -> list[Any] | tuple[Any, ...] | None:
     """Recover the exact retained source only while every source proof remains live."""
@@ -2266,9 +1664,105 @@ def _retained_pair_i64_expr_group_source(
     ):
         return None
     retained = source_owner.retained_sequence()
-    if type(retained) not in (list, tuple) or retained is not source_owner.native_data:
+    if (
+        _BUILTIN_TYPE(retained) is not _BUILTIN_LIST
+        and _BUILTIN_TYPE(retained) is not _BUILTIN_TUPLE
+    ) or retained is not source_owner.native_data:
         return None
     return cast(list[Any] | tuple[Any, ...], retained)
+
+
+def _group_selector_matches_template(function: Any, template: FunctionType) -> bool:
+    """Match generated code and lookup context before checking its bound indices."""
+    return (
+        _BUILTIN_TYPE(function) is FunctionType
+        and function.__code__ is template.__code__
+        and function.__globals__ is template.__globals__
+        and _BUILTIN_GETATTR(function, "__builtins__", None)
+        is _BUILTIN_GETATTR(template, "__builtins__", None)
+        and function.__defaults__ is template.__defaults__
+        and function.__kwdefaults__ is template.__kwdefaults__
+    )
+
+
+def _composite_group_keys_are_live(
+    node: GroupAggregatePhysicalNode, spec: CompositeCountSumSpec
+) -> bool:
+    """Prove both generated index selectors and their query-bound composition."""
+    if (
+        len(node.keys) != 2
+        or not function_environment_is_current(_CANONICAL_GROUP_INDEX_ENVIRONMENT)
+        or not function_environment_is_current(_CANONICAL_GROUP_PAIR_ENVIRONMENT)
+        or not _group_selector_matches_template(node.select_key, _CANONICAL_GROUP_PAIR_SELECTOR)
+    ):
+        return False
+    pair = cast(FunctionType, node.select_key)
+    try:
+        first, second, selectors = (cell.cell_contents for cell in pair.__closure__ or ())
+        if (
+            _BUILTIN_TYPE(first) is not _BUILTIN_INT
+            or _BUILTIN_TYPE(second) is not _BUILTIN_INT
+            or (first, second) != spec.key_selectors
+            or selectors is not node.keys
+        ):
+            return False
+        for function, index in zip(node.keys, spec.key_selectors, strict=True):
+            if not _group_selector_matches_template(function, _CANONICAL_GROUP_INDEX_SELECTOR):
+                return False
+            (cell,) = cast(FunctionType, function).__closure__ or ()
+            captured = cell.cell_contents
+            if _BUILTIN_TYPE(captured) is not _BUILTIN_INT or captured != index:
+                return False
+    except ValueError:
+        return False
+    return True
+
+
+def _try_native_composite_group(
+    native_module: Any,
+    node: GroupAggregatePhysicalNode,
+    source: list[Any] | tuple[Any, ...],
+    spec: CompositeCountSumSpec,
+) -> list[dict[str, Any]] | None:
+    """Run the two-key ABI only for live count/sum factories and index selectors."""
+    if (
+        _BUILTIN_TYPE(spec) is not CompositeCountSumSpec
+        or _BUILTIN_TYPE(spec.key_selectors) is not _BUILTIN_TUPLE
+        or _group_hash_replaced()
+        or _native_execution_unsafe()
+    ):
+        return None
+    indices = (*spec.key_selectors, spec.value_selector)
+    if len(indices) != 3 or any(
+        _BUILTIN_TYPE(index) is not _BUILTIN_INT or not -_SYS_MAXSIZE - 1 <= index <= _SYS_MAXSIZE
+        for index in indices
+    ):
+        return None
+    program = node.aggregations.collectors
+    collectors = program.layout.collectors
+    if (
+        len(node.key_names) != 2
+        or len(collectors) != 2
+        or not collector_program_fast_path_is_live(program)
+        or not all(_collector_lifecycle_is_static(collector) for collector in collectors)
+        or program.layout.names != (spec.count_name, spec.sum_name)
+        or not project_count_aggregation(cast(Aggregator, collectors[0]))
+        or not _composite_group_keys_are_live(node, spec)
+    ):
+        return None
+    native_sum = native_group_aggregation(cast(Aggregator, collectors[1]))
+    if native_sum is None or native_sum.kind != "sum" or native_sum.selector is None:
+        return None
+    value_selector = _normalize_direct_row_selector(native_sum.selector)
+    if _BUILTIN_TYPE(value_selector) is not _BUILTIN_INT or value_selector != spec.value_selector:
+        return None
+    kernel = _BUILTIN_GETATTR(native_module, "group_count_sum_i64_two_key_rows_v1", None)
+    if not _BUILTIN_CALLABLE(kernel):
+        return None
+    return cast(
+        list[dict[str, Any]] | None,
+        kernel(source, indices, (*node.key_names, spec.count_name, spec.sum_name)),
+    )
 
 
 def _try_native_fixed_group(
@@ -2366,20 +1860,23 @@ def _try_native_group_sum(  # noqa: C901 - guarded source and kernel dispatch
     if has_active_failpoints():
         return None
     fixed_spec = node.native_fixed_i64_group
+    composite_spec = node.composite_count_sum
     pair_expr_spec = node.native_pair_i64_expr_sum
     tuple_spec = node.native_i64_sum
     record_spec = node.native_record_i64_sum
     if not _BUILTIN_ANY(
-        spec is not None for spec in (fixed_spec, pair_expr_spec, tuple_spec, record_spec)
+        spec is not None
+        for spec in (fixed_spec, composite_spec, pair_expr_spec, tuple_spec, record_spec)
     ) or not isinstance(node.input, SourcePhysicalNode):
         return None
-    if pair_expr_spec is not None:
-        source = _retained_pair_i64_expr_group_source(node)
+    if pair_expr_spec is not None or composite_spec is not None:
+        source = _retained_native_group_source(node)
         if source is None:
             return None
     else:
         source = node.input.source.native_data
     exact_container = type(source) is list or type(source) is tuple
+    composite_eligible = composite_spec is not None and exact_container
     fixed_eligible = fixed_spec is not None and exact_container
     pair_expr_eligible = pair_expr_spec is not None and exact_container
     tuple_eligible = tuple_spec is not None and exact_container
@@ -2387,7 +1884,9 @@ def _try_native_group_sum(  # noqa: C901 - guarded source and kernel dispatch
     fixed_record_eligible = (
         fixed_eligible and fixed_spec is not None and fixed_spec.row_kind == "dict"
     )
-    if not pair_expr_eligible and not tuple_eligible and not record_eligible and not fixed_eligible:
+    if not any(
+        (composite_eligible, pair_expr_eligible, tuple_eligible, record_eligible, fixed_eligible)
+    ):
         return None
 
     try:
@@ -2396,6 +1895,10 @@ def _try_native_group_sum(  # noqa: C901 - guarded source and kernel dispatch
         # The Rust extension is optional. Source data has not been opened yet,
         # so declining this speculative fast path preserves a clean Python run.
         return None
+
+    if composite_eligible:
+        assert composite_spec is not None
+        return _try_native_composite_group(_native, node, source, composite_spec)
 
     if pair_expr_eligible:
         assert pair_expr_spec is not None

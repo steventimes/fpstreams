@@ -66,7 +66,12 @@ class _AsyncSource(Generic[T]):
     def from_value(cls, source: AsyncIterable[T] | Iterable[T]) -> _AsyncSource[T]:
         """Wrap a sync or async iterable and infer one-shot, exact-size, and ordering facts."""
         one_shot = isinstance(source, (AsyncIterator, Iterator))
-        exact_size = len(source) if type(source) in (list, tuple, range, str, bytes, dict) else None  # type: ignore[arg-type]
+        source_type = type(source)
+        native_sequence = source_type is list or source_type is tuple or source_type is range
+        safely_sized = (
+            native_sequence or source_type is str or source_type is bytes or source_type is dict
+        )
+        exact_size = len(source) if safely_sized else None  # type: ignore[arg-type]
         ordered = not isinstance(source, (set, frozenset))
         facts = facts_from_capabilities(
             reiterable=not one_shot,
@@ -79,7 +84,7 @@ class _AsyncSource(Generic[T]):
             return _to_async_iterator(source)
 
         result = cls(opener, reiterable=not one_shot, facts=facts)
-        if type(source) in (list, tuple, range):
+        if native_sequence:
             result._retained_opener = opener
             result._retained_sequence = source
         return result
@@ -118,7 +123,8 @@ class _AsyncSource(Generic[T]):
         retained = self._retained_sequence
         if self._opener is not self._retained_opener:
             return None
-        if type(retained) in (list, tuple, range):
+        retained_type = type(retained)
+        if retained_type is list or retained_type is tuple or retained_type is range:
             return cast(list[Any] | tuple[Any, ...] | range, retained)
         return None
 

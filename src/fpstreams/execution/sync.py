@@ -115,7 +115,12 @@ def _map_filter_chain(
     fuse_callable_map_filter: bool,
 ) -> Iterator[Any]:
     """Compose callback-only map/filter stages from CPython's lazy C iterators."""
-    exact_rows = length_hint(iterator) if type(iterator) in _EXACT_SIZED_ITERATORS else None
+    iterator_type = type(iterator)
+    exact_rows = (
+        length_hint(iterator)
+        if type(iterator_type) is type and iterator_type in _EXACT_SIZED_ITERATORS
+        else None
+    )
     rows = execute_rows_fusion(iterator, operations, exact_rows=exact_rows, eager=eager)
     if rows is not None:
         return rows

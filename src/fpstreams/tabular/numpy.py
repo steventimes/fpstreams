@@ -562,6 +562,14 @@ def _numpy_scalars(values: Any) -> Iterator[Any]:
     if values.ndim != 1:
         raise ValueError(f"from_numpy() retained array changed to {values.ndim} dimensions")
     length = int(values.shape[0])
+    np = sys.modules.get("numpy")
+    if np is not None and _BUILTIN_TYPE(values) is _BUILTIN_GETATTR(np, "ndarray", None):
+        # In one dimension, size avoids allocating a shape tuple for each value.
+        for index in range(length):
+            if values.ndim != 1 or int(values.size) != length:
+                raise ValueError("from_numpy() retained array length changed during iteration")
+            yield values.item(index)
+        return
     for index in range(length):
         if values.ndim != 1 or int(values.shape[0]) != length:
             raise ValueError("from_numpy() retained array length changed during iteration")

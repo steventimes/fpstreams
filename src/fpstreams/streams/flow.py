@@ -324,8 +324,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             function: Receives each source item and returns its replacement value.
 
         Returns:
-            A flow of mapped values; current plan-level parallel settings, if any, apply to this
-            map.
+            A lazy flow of mapped values. Any parallel settings on the current plan
+                apply to this map.
         """
         # Store the transform in the immutable plan; no item is mapped yet.
         if self._logical_plan.parallel is not None:
@@ -468,8 +468,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
                 value is checked for `None`; without one, each item is checked directly.
 
         Returns:
-            A flow that omits items whose selected value is `None` while retaining other falsey
-            values.
+            A flow excluding items whose own or selected value is `None`. Other falsey
+                values, such as `0` and `False`, are kept.
         """
         if selector is None:
             return self.filter(lambda item: item is not None)
@@ -706,8 +706,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
                 singleton batch.
 
         Returns:
-            A flow of non-empty tuples packed without exceeding either configured limit, except
-            for non-strict oversized singleton items.
+            A flow of non-empty tuple batches within the size and count limits. With
+                `strict=False`, an item larger than `max_size` is emitted in its own batch.
         """
         if max_size <= 0:
             raise ValueError("max_size must be positive")
@@ -756,8 +756,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             step: Number of source items consumed between successive windows.
 
         Returns:
-            A flow of full sliding windows; a non-empty source shorter than `size` produces one
-            partial window, but no trailing partial window is emitted otherwise.
+            A flow of full sliding windows. A non-empty source shorter than `size`
+                produces one partial window; otherwise, partial trailing windows are omitted.
 
         Raises:
             ValueError: If size or step is less than one.
@@ -1255,8 +1255,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             predicate: Called only while leading items produce truthy results.
 
         Returns:
-            A flow beginning with the first item whose predicate result is falsey; later items are
-            emitted without further predicate calls.
+            A flow starting with the first item for which `predicate` is falsey.
+                Remaining items pass through without further predicate calls.
         """
         return self._append(DropWhileOp(predicate))
 

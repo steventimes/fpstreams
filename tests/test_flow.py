@@ -3496,7 +3496,9 @@ def test_frequencies_selector_runs_once_per_item_and_closes_after_failure() -> N
     assert events == ["select:1", "select:2", "close"]
 
 
-def test_identity_frequencies_preserves_custom_key_hashing() -> None:
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("keyed", [False, True])
+def test_frequencies_preserves_custom_key_hashing(engine: str, keyed: bool) -> None:
     """Retained sources keep the canonical lookup-then-assignment key protocol."""
 
     class FailsOnSecondHash:
@@ -3511,7 +3513,7 @@ def test_identity_frequencies_preserves_custom_key_hashing() -> None:
 
     key = FailsOnSecondHash()
     with pytest.raises(RuntimeError, match=r"^second hash$"):
-        flow([key]).frequencies()
+        flow([key]).with_engine(engine).frequencies((lambda value: value) if keyed else None)
     assert key.calls == 2
 
 
@@ -3563,6 +3565,101 @@ def test_identity_frequencies_resumes_after_a_bounded_native_prefix(
     assert counts == {value: 2 if value == 256 else 1 for value in range(258)}
 
 
+@pytest.mark.parametrize("container", [list, tuple])
+def test_frequencies_native_continuation_preserves_builtin_key_identity(container) -> None:
+    first = int("100000000000000000000000000000")
+    equal = int("100000000000000000000000000000")
+    nan = float("nan")
+    values = container(
+        [
+            first,
+            equal,
+            "中文",
+            b"a\0b",
+            True,
+            1,
+            1.0,
+            None,
+            nan,
+            nan,
+            float("inf"),
+            *range(600),
+            "中文",
+            b"a\0b",
+            -0.0,
+        ]
+    )
+    expected = flow(values).with_engine("python").frequencies()
+    observed = flow(values).run_with_report("frequencies")
+    assert observed.value == expected
+    assert all(left is right for left, right in zip(observed.value, expected, strict=True))
+    assert next(iter(observed.value)) is first
+    if not hasattr(sys, "_is_gil_enabled") or sys._is_gil_enabled():
+        assert observed.report.strategy == "rust_direct"
+
+
+@pytest.mark.parametrize("failure", [None, KeyError, TypeError, RuntimeError])
+def test_frequencies_native_boundary_preserves_custom_hashes_and_live_tail(failure) -> None:
+    def run(engine):
+        events = []
+        values = list(range(600))
+
+        class Key:
+            calls = 0
+
+            def __hash__(self):
+                self.calls += 1
+                events.append(("hash", self.calls))
+                if self.calls == 1:
+                    values[-1] = "replaced"
+                if failure is not None and self.calls == 2:
+                    raise failure("second hash")
+                return 300
+
+            def __eq__(self, other):
+                events.append(("equal", type(other).__name__))
+                return other == 300
+
+        key = Key()
+        values.extend((key, 999))
+        try:
+            observed = flow(values).with_engine(engine).run_with_report("frequencies")
+            if engine == "auto":
+                assert observed.report.strategy == "python_frequency"
+            outcome = list(observed.value.items())
+        except (KeyError, TypeError, RuntimeError) as error:
+            outcome = (type(error), str(error), type(error.__cause__))
+        return outcome, events
+
+    assert run("auto") == run("python")
+
+
+def test_frequencies_continuation_preserves_one_shot_cleanup_and_older_extensions(monkeypatch):
+    from fpstreams import _native
+
+    def forbidden(*args):
+        raise AssertionError("a one-shot source must not enter retained native frequency counting")
+
+    closed = []
+
+    def source():
+        try:
+            yield "a"
+            yield "b"
+            yield "a"
+        finally:
+            closed.append(True)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_native, "frequencies_i64_exact_v1", forbidden)
+        patch.setattr(_native, "frequencies_exact_prefix_v1", forbidden)
+        assert flow(source()).frequencies() == {"a": 2, "b": 1}
+    assert closed == [True]
+    monkeypatch.delattr(_native, "frequencies_exact_prefix_v1")
+    values = [*range(600), "a", "a", 400]
+    assert flow(values).frequencies() == flow(values).with_engine("python").frequencies()
+
+
 def test_operated_frequencies_uses_the_compiled_native_iterate_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3590,6 +3687,30 @@ def test_operated_frequencies_uses_the_compiled_native_iterate_route(
     assert len(counts) == 4_096
     assert counts[1] == counts[4_096] == 1
     assert executions == 1
+
+
+def test_keyed_frequencies_keeps_forced_native_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A terminal callback does not turn an explicitly native pipeline into Python."""
+    from fpstreams.streams import flow_terminals
+
+    def unexpected(_pipeline):
+        raise AssertionError("forced native pipeline was reopened as Python")
+
+    monkeypatch.setattr(flow_terminals, "_open_python_pipeline_values", unexpected)
+    values = flow(range(16)).map(fpstreams.item + 1).with_engine("native")
+    assert values.frequencies(lambda value: value % 3) == {1: 6, 2: 5, 0: 5}
+
+
+def test_keyed_frequencies_consumes_its_relational_input() -> None:
+    """Frequency counting must execute the grouped plan before selecting result keys."""
+    values = (
+        flow([{"group": "a", "value": 1}, {"group": "a", "value": 2}])
+        .rows()
+        .group_by("group")
+        .aggregate(total=fpstreams.agg.sum("value"))
+        .to_flow()
+    )
+    assert values.frequencies("total") == {3: 1}
 
 
 def test_operated_frequencies_preserves_active_source_failpoints() -> None:
@@ -4905,6 +5026,34 @@ def test_exact_container_python_scalar_sum_bypasses_stage_callbacks(
     assert evaluator_calls == 0
 
 
+@pytest.mark.parametrize("coerce", [False, True])
+def test_float_expression_rejects_custom_metaclass_before_conversion(coerce: bool) -> None:
+    from fpstreams.expressions.scalar import FExpr
+
+    calls: list[str] = []
+
+    class Meta(type):
+        def __eq__(cls, other: object) -> bool:
+            calls.append("class equality")
+            return True
+
+        __hash__ = type.__hash__
+
+    class Numeric(metaclass=Meta):
+        def __float__(self) -> float:
+            calls.append("float")
+            return 7.0
+
+    value = Numeric()
+    message = "unsupported float expression operand" if coerce else "accept int or float constants"
+    with pytest.raises(TypeError, match=message):
+        if coerce:
+            fpstreams.fitem + value
+        else:
+            FExpr.constant(value)  # type: ignore[arg-type]
+    assert calls == []
+
+
 def test_scalar_python_fusion_declines_noncanonical_float_constant_without_rounding() -> None:
     from fpstreams.expressions.scalar import FExpr
 
@@ -5346,6 +5495,25 @@ def test_identity_indexed_terminals_preserve_active_failpoints() -> None:
         pytest.raises(RuntimeError, match="canonical indexed terminal"),
     ):
         flow([1, 2, 3]).last()
+
+
+def test_index_of_custom_metaclass_uses_value_equality() -> None:
+    calls: list[int] = []
+
+    class Meta(type):
+        def __eq__(cls, other: object) -> bool:
+            raise RuntimeError("index_of compared a metaclass")
+
+        __hash__ = type.__hash__
+
+    class Target(metaclass=Meta):
+        def __eq__(self, other: object) -> bool:
+            calls.append(other)  # type: ignore[arg-type]
+            return other == 2
+
+    target = Target()
+    assert flow(range(4)).index_of(target) == 2  # type: ignore[arg-type]
+    assert calls == [0, 1, 2]
 
 
 def test_identity_index_of_reports_only_the_range_direct_path() -> None:
@@ -8311,7 +8479,7 @@ REQUIRED_RESULT_KEYS = {
 def test_quick_benchmark_emits_machine_readable_identity_baselines() -> None:
     report = benchmark.run(size=32, repeats=2, domain="int", quick=True)
 
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 6
     assert report["metadata"]["size"] == 32
     assert report["metadata"]["repeats"] == 2
     results = report["results"]
@@ -8517,6 +8685,86 @@ def test_run_with_report_allows_nested_reported_terminals_in_callbacks() -> None
 def test_run_with_report_rejects_lazy_operations_before_execution() -> None:
     with pytest.raises(ValueError, match="eager terminal"):
         fpstreams.flow([1, 2, 3]).run_with_report("map", lambda value: value)
+
+
+@pytest.mark.parametrize(
+    "terminal", ["to_dict", "group_values", "collect_values", "aggregate_values"]
+)
+def test_pairs_run_with_report_preserves_single_consumption_and_arguments(terminal) -> None:
+    events = []
+    marker = object()
+
+    def source():
+        try:
+            events.append("yield")
+            yield ("a", marker)
+        finally:
+            events.append("close")
+
+    pipeline = fpstreams.pairs(source())
+    kwargs = (
+        {"on_duplicate": "first"}
+        if terminal == "to_dict"
+        else {"total": fpstreams.agg.count()}
+        if terminal == "aggregate_values"
+        else {}
+    )
+    args = (list,) if terminal == "collect_values" else ()
+    execution = pipeline.run_with_report(terminal, *args, **kwargs)
+    assert events == ["yield", "close"]
+    expected = (
+        {"a": marker}
+        if terminal == "to_dict"
+        else {"a": {"total": 1}}
+        if terminal == "aggregate_values"
+        else {"a": [marker]}
+    )
+    assert execution.value == expected
+    assert execution.report.terminal == terminal
+    assert execution.report.requested_engine == "auto"
+    with pytest.raises(fpstreams.FlowConsumedError):
+        pipeline.to_dict()
+
+
+def test_pairs_run_with_report_native_and_python_aggregation_routes(monkeypatch) -> None:
+    from fpstreams.execution import relational
+
+    values = [(1, 1), (1, 2), (2, 4)]
+    native = fpstreams.pairs(values).run_with_report("aggregate_values", total=fpstreams.agg.sum())
+    assert native.value == {1: {"total": 3}, 2: {"total": 4}}
+    assert native.report.strategy == "rust_direct"
+    monkeypatch.setattr(relational, "try_native_pair_aggregations", lambda *_args: None)
+    fallback = fpstreams.pairs(values).run_with_report(
+        "aggregate_values", total=fpstreams.agg.sum()
+    )
+    assert fallback.value == native.value
+    assert fallback.report.strategy == "planned:python"
+
+
+def test_pairs_run_with_report_errors_and_nested_reports_leave_outer_context_intact() -> None:
+    from fpstreams.runtime.report import _current_recorder
+
+    failure = RuntimeError("callback failed")
+
+    def fail(_key, _value):
+        raise failure
+
+    with pytest.raises(RuntimeError) as captured:
+        fpstreams.pairs([("a", 1)]).map_pairs(fail).run_with_report("to_dict")
+    assert captured.value is failure
+    assert _current_recorder() is None
+    pipeline = fpstreams.pairs(iter([("a", 2)]))
+    with pytest.raises(ValueError, match="Pairs terminal"):
+        pipeline.run_with_report("map_values", lambda v: v)
+    assert pipeline.to_dict() == {"a": 2}
+    outer = (
+        fpstreams.flow([1, 2])
+        .map(lambda value: fpstreams.pairs([("a", value)]).run_with_report("to_dict").value)
+        .run_with_report("to_list")
+    )
+    assert outer.value == [{"a": 1}, {"a": 2}]
+    assert outer.report.terminal == "to_list"
+    assert _current_recorder() is None
 
 
 def test_auto_exact_i64_map_list_accepts_the_canonical_warmed_evaluator(
