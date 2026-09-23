@@ -7,9 +7,72 @@
 
 [Documentation](https://steventimes.github.io/fpstreams/) · [Browser playground](https://steventimes.github.io/fpstreams/playground/) · [Changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) · [Contributing](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
 
-Build lazy Python pipelines for values, records, and async iterables. fpstreams
-supports bounded async concurrency and uses Rust, Arrow, or NumPy for operations
-that can preserve the pipeline's Python behavior.
+Lazy Python pipelines for iterables and records, with bounded async concurrency.
+Read the [documentation](https://steventimes.github.io/fpstreams/) or try the
+[Python engine in the browser playground](https://steventimes.github.io/fpstreams/playground/).
+
+Python 3.11 or newer is required.
+
+## Install
+
+Install the latest stable release:
+
+~~~bash
+python -m pip install fpstreams
+~~~
+
+The `async` extra installs `aiofiles` for async file adapters. Core async
+pipelines do not require an extra. Install other adapters only when needed:
+
+~~~bash
+python -m pip install "fpstreams[async]"   # aiofiles for async file adapters
+python -m pip install "fpstreams[arrow]"   # PyArrow and Parquet
+python -m pip install "fpstreams[data]"    # NumPy, pandas, and PyArrow
+python -m pip install "fpstreams[polars]"  # Polars and PyArrow
+~~~
+
+## Quick start
+
+This example filters paid orders, groups them by region, and reports both the
+number of orders and their revenue:
+
+~~~python
+from fpstreams import agg, col, flow
+
+orders = [
+    {"region": "eu", "status": "paid", "amount": 24},
+    {"region": "us", "status": "paid", "amount": 20},
+    {"region": "eu", "status": "cancelled", "amount": 99},
+    {"region": "eu", "status": "paid", "amount": 24},
+]
+
+result = (
+    flow(orders)
+    .filter(col("status") == "paid")
+    .group_by("region")
+    .aggregate(
+        orders=agg.count(),
+        revenue=agg.sum("amount"),
+    )
+    .sort_by("region")
+    .to_list()
+)
+
+print(result)
+# [{'region': 'eu', 'orders': 2, 'revenue': 48},
+#  {'region': 'us', 'orders': 1, 'revenue': 20}]
+~~~
+
+## When to use fpstreams
+
+For a short, local transformation, a comprehension is often enough. fpstreams
+is useful when a pipeline needs grouped aggregations, early termination,
+resource cleanup, or async work with a concurrency limit. Small pipelines may
+be slower because planning and dispatch add overhead.
+
+Lazy execution does not mean every operation uses constant memory. Sorting,
+grouping, and joins need additional state; use the documented limits and spill
+options when the input may not fit in memory.
 
 > fpstreams 2 replaces the v1 implementation and retains the compatibility
 > aliases listed below.
@@ -35,30 +98,12 @@ standard Arrow/dataframe protocol routing, retained NumPy execution, and new
 async queue, prefetch, window, and numeric terminal APIs. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for the release summary.
 
-Python 3.11 or newer is required. Release testing covers standard CPython 3.11
-through 3.14. Free-threaded CPython 3.14t is exercised by an experimental,
-non-blocking job that builds the native extension on a 3.14t interpreter; it is
-not currently a release-wheel target, and unsupported fast paths fall back
-conservatively.
+Release testing covers standard CPython 3.11 through 3.14. Free-threaded
+CPython 3.14t is exercised by an experimental, non-blocking job that builds the
+native extension; it is not currently a release-wheel target, and unsupported
+fast paths fall back conservatively.
 
-## Installation
-
-Install the latest stable release:
-
-~~~bash
-pip install fpstreams
-~~~
-
-Install optional integrations only when needed:
-
-~~~bash
-pip install "fpstreams[async]"   # aiofiles
-pip install "fpstreams[arrow]"   # PyArrow and Parquet
-pip install "fpstreams[data]"    # NumPy, pandas, and PyArrow
-pip install "fpstreams[polars]"  # Polars and PyArrow
-~~~
-
-## Quick start
+### Value pipelines
 
 Pipelines are lazy. Transformations build a plan; terminal operations such as
 `to_list()`, `aggregate()`, `first()`, and `count()` execute it.
@@ -173,6 +218,9 @@ active.to_parquet("active-accounts.parquet")
 `map_async` accepts synchronous or asynchronous callables. `concurrency` bounds
 in-flight tasks, while `ordered=True` preserves input order.
 
+The core async API needs no optional extra. Install `fpstreams[async]` when you
+also need the `aiofiles`-based async file adapters.
+
 ~~~python
 import asyncio
 
@@ -191,7 +239,8 @@ async def main() -> None:
         .filter(lambda value: value >= 20)
         .to_list()
     )
-    assert result == [20, 30, 40]
+    print(result)
+    # [20, 30, 40]
 
 
 asyncio.run(main())

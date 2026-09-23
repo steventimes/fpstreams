@@ -8,6 +8,7 @@ from types import CodeType, FunctionType, MappingProxyType
 from typing import Any, Literal, cast
 
 from ..expressions.selectors import Selector, compile_selector
+from ..runtime._distinct import DistinctKey, HashFailure
 from . import _collector_base
 from ._collector_base import Aggregator as Aggregator
 from .collector import (
@@ -696,8 +697,10 @@ class _DistinctState:
     def add(self, value: Any) -> None:
         """Add a value once, falling back to equality-based list membership if unhashable."""
         try:
-            self.hashable.add(value)
-        except TypeError:
+            self.hashable.add(
+                value if type(value) is int or type(value) is str else DistinctKey(value)
+            )
+        except HashFailure:
             if value not in self.unhashable:
                 self.unhashable.append(value)
 

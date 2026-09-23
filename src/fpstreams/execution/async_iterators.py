@@ -43,6 +43,7 @@ from ..planning.async_ import (
     _ZipLongest,
 )
 from ..planning.async_utils import _resolve, closing_async_iterators
+from ..runtime._distinct import DistinctKey, HashFailure
 from ..runtime.iterators import closing_iterators
 
 
@@ -271,11 +272,12 @@ async def _unique(source: AsyncIterator[Any], operation: _Unique) -> AsyncIterat
     async with closing_async_iterators((source,)):
         async for item in source:
             key = await _resolve(operation.key(item))
+            wrapped = key if type(key) is int or type(key) is str else DistinctKey(key)
             try:
-                if key in hashable:
+                if wrapped in hashable:
                     continue
-                hashable.add(key)
-            except TypeError:
+                hashable.add(wrapped)
+            except HashFailure:
                 if any(key == seen for seen in unhashable):
                     continue
                 unhashable.append(key)

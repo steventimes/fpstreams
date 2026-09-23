@@ -133,11 +133,67 @@ def _report_errors(report: dict[str, Any]) -> list[str]:
                 or any(type(count) is not int or count < 1 for count in warmups)
             ):
                 return [f"invalid benchmark warmup evidence: {name}"]
+        if report["metadata"]["methodology"].get("timing") == "calibrated_blocks_v1":
+            errors = _timing_block_errors(item, report["metadata"]["methodology"])
+            if errors:
+                return errors
         errors = _resource_metric_errors(name, item.get("resources"))
         if errors:
             return errors
         seen.add(name)
     return [] if seen else ["benchmark report contains no scenarios"]
+
+
+def _timing_block_errors(item: dict[str, Any], methodology: dict[str, Any]) -> list[str]:
+    """Reject incomplete or inconsistent calibrated timing evidence."""
+    error = [f"invalid benchmark timing block evidence: {item['name']}"]
+    minimum = methodology.get("timing_block_min_seconds")
+    if type(minimum) not in (int, float) or not math.isfinite(minimum) or minimum <= 0:
+        return error
+    metrics = [("timing_blocks", "samples_seconds", "median_seconds")]
+    if "first_row_seconds" in item:
+        metrics.append(
+            ("first_row_timing_blocks", "first_row_samples_seconds", "first_row_seconds")
+        )
+    for field, sample_field, median_field in metrics:
+        evidence = item.get(field)
+        samples = item.get(sample_field)
+        if not isinstance(evidence, dict) or not isinstance(samples, list) or not samples:
+            return error
+        calibration, blocks = evidence.get("calibration"), evidence.get("samples")
+        if not isinstance(calibration, list) or not calibration or not isinstance(blocks, list):
+            return error
+        if len(blocks) != len(samples) or (
+            field == "timing_blocks" and len(samples) != item.get("sample_count")
+        ):
+            return error
+        for block in calibration + blocks:
+            if not isinstance(block, dict):
+                return error
+            elapsed, loops = block.get("elapsed_seconds"), block.get("loops")
+            if (
+                type(loops) is not int
+                or loops < 1
+                or type(elapsed) not in (int, float)
+                or not math.isfinite(elapsed)
+                or elapsed <= 0
+            ):
+                return error
+        if calibration[-1]["elapsed_seconds"] < minimum:
+            return error
+        for block, sample in zip(blocks, samples, strict=True):
+            if (
+                type(sample) not in (int, float)
+                or not math.isfinite(sample)
+                or block["loops"] != calibration[-1]["loops"]
+                or not math.isclose(
+                    sample, block["elapsed_seconds"] / block["loops"], rel_tol=1e-12
+                )
+            ):
+                return error
+        if not math.isclose(item[median_field], statistics.median(samples), rel_tol=1e-12):
+            return error
+    return []
 
 
 def _metadata_errors(expected: dict[str, Any], current: dict[str, Any]) -> list[str]:

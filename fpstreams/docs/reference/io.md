@@ -5,6 +5,17 @@ Use an explicit factory for files, named columns, and NumPy arrays.
 ordinary iterables as supplied. It does not infer a file format from a path or
 sample nested lists to decide whether they are tables.
 
+Owned Arrow readers and iterators report `close()` failures. If a query has
+already failed, its original exception is preserved and cleanup failures are
+attached as exception notes, including diagnostics from nested cleanup. A successful
+read or write can therefore raise while closing its resources, including after an
+early `first()` result.
+
+Parquet writes publish a completed temporary file in the destination directory.
+With `if_exists="error"`, publication uses a hard link that fails if the destination
+exists, including when another process creates it during the write. The filesystem
+must support hard links. `if_exists="replace"` uses an atomic replacement instead.
+
 ## Input matrix
 
 | Entry point | Input | Output | Evaluation | Replayability | Extra |

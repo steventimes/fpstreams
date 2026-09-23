@@ -6,7 +6,7 @@ import operator
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import suppress
+from contextlib import contextmanager
 from importlib import import_module
 from itertools import islice
 from pathlib import Path
@@ -22,6 +22,7 @@ from ..planning.arrow_source import (
 from ..planning.arrow_source import batch_to_rows as batch_to_rows
 from ..planning.semantics import facts_from_capabilities
 from ..planning.source import Source, SourceCapabilities, _function_code
+from ..runtime.resources import _add_cleanup_failure
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
 _CSV_PROJECTION_PROBE_BYTES = 64 * 1024
@@ -58,11 +59,33 @@ def _positive_size(value: int, *, name: str = "batch_size") -> int:
 
 
 def _close(resource: Any) -> None:
-    """Best-effort close an Arrow resource without masking the active error."""
+    """Close an owned Arrow resource, reporting failures to its owning scope."""
     close = getattr(resource, "close", None)
     if callable(close):
-        with suppress(Exception):
-            close()
+        close()
+
+
+def _close_resources(resources: Iterable[Any], active: BaseException | None = None) -> None:
+    errors: list[BaseException] = []
+    for resource in resources:
+        try:
+            _close(resource)
+        except BaseException as error:
+            errors.append(error)
+    _add_cleanup_failure(None if isinstance(active, GeneratorExit) else active, errors)
+
+
+@contextmanager
+def _closing(*resources: Any) -> Iterator[None]:
+    """Attempt every owned close, distinguishing a local failure from ambient errors."""
+    active: BaseException | None = None
+    try:
+        yield
+    except BaseException as error:
+        active = error
+        raise
+    finally:
+        _close_resources(resources, active)
 
 
 _CANONICAL_ARROW_BATCH_TO_ROWS = cast(FunctionType, batch_to_rows)
@@ -94,19 +117,16 @@ class _OwnedReaderRows(Iterator[dict[str, Any]]):
         if self._closed:
             return
         self._closed = True
-        _close(self._iterator)
-        _close(self._reader)
+        _close_resources((self._iterator, self._reader))
 
 
 def _bounded_batches(source: Iterable[Any], size: int) -> Iterator[Any]:
     """Slice an Arrow batch stream to the configured row bound and own its iterator."""
     iterator = iter(source)
-    try:
+    with _closing(iterator):
         for batch in iterator:
             for offset in range(0, batch.num_rows, size):
                 yield batch.slice(offset, size)
-    finally:
-        _close(iterator)
 
 
 def _column_names(names: Iterable[str], *, operation: str) -> tuple[str, ...]:
@@ -174,14 +194,12 @@ def arrow_batch_factory(
         """Read at most `batch_size` rows at a time and close the source on exit."""
         current_schema = schema
         iterator = iter(source)
-        try:
+        with _closing(iterator):
             while records := [as_record(row) for row in islice(iterator, size)]:
                 batch = _batch_from_records(pa, records, current_schema)
                 if current_schema is None:
                     current_schema = batch.schema
                 yield batch
-        finally:
-            _close(iterator)
 
     return batches
 
@@ -222,17 +240,15 @@ def arrow_row_source(
     if isinstance(source, pa.RecordBatchReader):
         try:
             _schema_names(source.schema)
-        except BaseException:
-            _close(source)
+        except BaseException as error:
+            _close_resources((source,), error)
             raise
 
         def reader_rows() -> Iterator[dict[str, Any]]:
             """Consume the one-shot RecordBatchReader and always close it afterward."""
-            try:
+            with _closing(source):
                 for batch in source:
                     yield from batch_rows(batch)
-            finally:
-                _close(source)
 
         return reader_rows, False
 
@@ -273,8 +289,8 @@ def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, A
     elif isinstance(source, pa.RecordBatchReader):
         try:
             _schema_names(source.schema)
-        except BaseException:
-            _close(source)
+        except BaseException as error:
+            _close_resources((source,), error)
             raise
         descriptor = ArrowBatchSource(
             lambda: _bounded_batches(source, size),
@@ -293,7 +309,7 @@ def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, A
 
         instrumented = has_active_failpoints()
         batches = descriptor.open_batches()
-        try:
+        with _closing(batches, *((source,) if descriptor.kind == "reader" else ())):
             if instrumented:
                 hit("arrow.reader.after")
             for batch in batches:
@@ -301,10 +317,6 @@ def arrow_source(source: Any, *, batch_size: int = 65_536) -> Source[dict[str, A
                     if instrumented:
                         hit("arrow.batch.after")
                     yield row
-        finally:
-            _close(batches)
-            if descriptor.kind == "reader":
-                _close(source)
 
     def open_rows() -> Iterator[dict[str, Any]]:
         """Wrap one-shot readers so close-before-first-pull still owns the native handle."""
@@ -437,20 +449,16 @@ def csv_source(
                 memory_pool=memory_pool,
             )
             _schema_names(reader.schema)
-        except BaseException:
-            _close(reader)
-            _close(input_stream)
+        except BaseException as error:
+            _close_resources((reader, input_stream), error)
             raise
         return reader, input_stream
 
     def stream(options: Any) -> Iterator[Any]:
         """Own one incremental reader and bound every emitted batch by row count."""
         reader, input_stream = open_reader(options)
-        try:
+        with _closing(reader, input_stream):
             yield from _bounded_batches(reader, size)
-        finally:
-            _close(reader)
-            _close(input_stream)
 
     def batches() -> Iterator[Any]:
         """Read the complete caller-visible CSV schema."""
@@ -484,11 +492,8 @@ def csv_source(
                 probe, input_stream = open_reader(None)
         else:
             probe, input_stream = open_reader(None)
-        try:
+        with _closing(probe, input_stream):
             available = set(probe.schema.names)
-        finally:
-            _close(probe)
-            _close(input_stream)
         if any(name not in available for name in requested):
             # Preserve lazy Rows selection semantics for missing fields: header-only inputs
             # remain empty, while nonempty inputs fail through the canonical selector path.
@@ -499,11 +504,9 @@ def csv_source(
 
     def records() -> Iterator[dict[str, Any]]:
         iterator = batches()
-        try:
+        with _closing(iterator):
             for batch in iterator:
                 yield from batch_to_rows(batch)
-        finally:
-            _close(iterator)
 
     def byte_size() -> int | None:
         """Return cheap local-file evidence without changing an eventual open failure."""
@@ -810,10 +813,8 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
         )
         _schema_names(scanner.projected_schema)
         iterator = iter(scanner.to_batches())
-        try:
+        with _closing(iterator):
             yield from iterator
-        finally:
-            _close(iterator)
 
     def batches() -> Iterator[Any]:
         """Create a fresh scanner using the public source projection."""
@@ -892,11 +893,9 @@ def parquet_source(
 
     def records() -> Iterator[dict[str, Any]]:
         iterator = batches()
-        try:
+        with _closing(iterator):
             for batch in iterator:
                 yield from batch_to_rows(batch)
-        finally:
-            _close(iterator)
 
     descriptor = ArrowBatchSource(
         batches,
@@ -955,7 +954,7 @@ def write_parquet_rows(
     if "://" in path_value:
         raise ValueError("to_parquet() atomic writes currently require a local path")
     target = Path(path_value)
-    if target.exists() and if_exists == "error":
+    if os.path.lexists(target) and if_exists == "error":
         raise FileExistsError(f"Parquet target already exists: {target}")
 
     options = dict(writer_options or {})
@@ -982,6 +981,7 @@ def write_parquet_rows(
     writer: Any = None
     published = False
     count = 0
+    active_error: BaseException | None = None
     try:
         for batch in iterator:
             if writer is None:
@@ -1009,15 +1009,27 @@ def write_parquet_rows(
             )
 
         _close(iterator)
-        writer.close()
-        writer = None
-        if target.exists() and if_exists == "error":
-            raise FileExistsError(f"Parquet target already exists: {target}")
-        os.replace(temporary, target)
+        closing_writer, writer = writer, None
+        closing_writer.close()
+        if if_exists == "error":
+            os.link(temporary, target)
+            temporary.unlink()
+        else:
+            os.replace(temporary, target)
         published = True
         return count
+    except BaseException as error:
+        active_error = error
+        raise
     finally:
-        _close(iterator)
-        _close(writer)
+        cleanup_errors: list[BaseException] = []
+        try:
+            _close_resources((iterator, writer))
+        except BaseException as error:
+            cleanup_errors.append(error)
         if not published:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as error:
+                cleanup_errors.append(error)
+        _add_cleanup_failure(active_error, cleanup_errors)

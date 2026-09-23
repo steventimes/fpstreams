@@ -80,12 +80,38 @@ class Scenario:
     cleanup: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
-def measure(function: Task, repeats: int) -> list[float]:
+_MIN_TIMING_BLOCK_SECONDS = 0.005
+_MAX_TIMING_BLOCK_LOOPS = 1_048_576
+
+
+def measure(function: Task, repeats: int, *, evidence: dict[str, Any] | None = None) -> list[float]:
+    """Measure warmed calls in calibrated blocks, keeping every formal sample."""
+    calibration: list[dict[str, Any]] = []
+    blocks: list[dict[str, Any]] = []
+    if evidence is not None:
+        evidence.update(calibration=calibration, samples=blocks)
+
+    def block(loops: int) -> float:
+        started = time.perf_counter()
+        for _ in range(loops):
+            function()
+        return time.perf_counter() - started
+
+    loops = 1
+    while True:
+        elapsed = block(loops)
+        calibration.append({"elapsed_seconds": elapsed, "loops": loops})
+        if elapsed >= _MIN_TIMING_BLOCK_SECONDS:
+            break
+        if loops >= _MAX_TIMING_BLOCK_LOOPS:
+            raise RuntimeError("benchmark timing block could not reach its calibration target")
+        loops *= 2
+
     durations: list[float] = []
     for _ in range(repeats):
-        started = time.perf_counter()
-        function()
-        durations.append(time.perf_counter() - started)
+        elapsed = block(loops)
+        blocks.append({"elapsed_seconds": elapsed, "loops": loops})
+        durations.append(elapsed / loops)
     return durations
 
 
@@ -98,12 +124,14 @@ def _record(scenario: Scenario, repeats: int) -> dict[str, Any]:
         else {"status": "not_applicable", "reason": "Python reference task"}
     )
     sample_count = max(repeats, scenario.minimum_repeats)
-    samples = measure(scenario.task, sample_count)
+    timing_blocks: dict[str, Any] = {}
+    samples = measure(scenario.task, sample_count, evidence=timing_blocks)
     resources = measure_python_allocation(scenario.task)
     record: dict[str, Any] = {
         "name": scenario.name,
         "sample_count": sample_count,
         "samples_seconds": samples,
+        "timing_blocks": timing_blocks,
         "median_seconds": statistics.median(samples),
         "stdev_seconds": statistics.stdev(samples) if len(samples) > 1 else 0.0,
         "backend": scenario.backend,
@@ -115,11 +143,14 @@ def _record(scenario: Scenario, repeats: int) -> dict[str, Any]:
         "resources": resources,
     }
     if scenario.first_row_task is not None:
+        first_row_blocks: dict[str, Any] = {}
         first_row_samples = measure(
             scenario.first_row_task,
             max(sample_count, _MIN_FIRST_ROW_SAMPLES),
+            evidence=first_row_blocks,
         )
         record["first_row_samples_seconds"] = first_row_samples
+        record["first_row_timing_blocks"] = first_row_blocks
         record["first_row_seconds"] = statistics.median(first_row_samples)
     return record
 
@@ -1997,6 +2028,8 @@ def run(
             "metadata": {
                 **evidence.finish(),
                 "methodology": {
+                    "timing": "calibrated_blocks_v1",
+                    "timing_block_min_seconds": _MIN_TIMING_BLOCK_SECONDS,
                     "timed_output_normalization": False,
                     "resource_measurement_timed": False,
                     "correctness_warmup_runs": 0,

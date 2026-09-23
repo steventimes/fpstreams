@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "fpstreams"
 version = "2.1.0"
-description = "Typed, lazy Python data pipelines with bounded async concurrency and optional Rust, Arrow, and NumPy acceleration."
+description = "Lazy Python pipelines for iterables and records, with bounded async concurrency."
 readme = "README.md"
 authors = [
   { name = "Steven Yang", email = "stevenyang0316@gmail.com" },

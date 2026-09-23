@@ -11,6 +11,10 @@ Small generic pipelines can be slower than a comprehension because planning and
 dispatch have a fixed cost. Measure the complete workload rather than assuming
 that every chain should use a native kernel.
 
+Lazy execution does not make every operation constant-memory. Sorting, grouping,
+and joins keep additional state; use the documented limits and spill options
+when the input may not fit in memory.
+
 ## Should record data start with `flow()` or `rows()`?
 
 Start new synchronous code with `flow()`. Nonconflicting record methods such as

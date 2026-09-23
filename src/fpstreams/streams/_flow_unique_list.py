@@ -127,7 +127,8 @@ def _resolved_unique_binding(name: str) -> Any:
 
 
 _CANONICAL_UNIQUE_START_BINDINGS = tuple(
-    (name, _resolved_unique_binding(name)) for name in ("set", "PAIR_KEY_SELECTOR")
+    (name, _resolved_unique_binding(name))
+    for name in ("set", "PAIR_KEY_SELECTOR", "_UniqueKey", "_UniqueHashFailure")
 )
 
 
@@ -250,11 +251,12 @@ def _seeded_unique_suffix(
     """Resume canonical keyless uniqueness inside a PEP 479 generator boundary."""
     unhashable: list[Any] = []
     for item in iterator:
+        wrapped = item if type(item) is int or type(item) is str else _sync_ops._UniqueKey(item)
         try:
-            if item in hashable:
+            if wrapped in hashable:
                 continue
-            hashable.add(item)
-        except _resolved_unique_binding("TypeError"):
+            hashable.add(wrapped)
+        except _sync_ops._UniqueHashFailure:
             live_any = cast(Callable[[object], bool], _resolved_unique_binding("any"))
             if live_any(item == seen for seen in unhashable):
                 continue

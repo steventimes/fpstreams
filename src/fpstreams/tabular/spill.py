@@ -632,9 +632,8 @@ def spilled_group_aggregate(
                 with _closing_iterator(_read(input_file.path, store=store)) as rows:
                     for spilled in rows:
                         first_position, key = spilled[0], spilled[1]
-                        try:
-                            entry = groups[key]
-                        except KeyError:
+                        entry = groups.get(key)
+                        if entry is None:
                             if len(groups) >= limits.max_partition_rows:
                                 raise_spill_limit(
                                     "group_by",

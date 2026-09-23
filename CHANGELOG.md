@@ -13,6 +13,29 @@ including changed defaults.
 
 ### Fixed
 
+- `unique()`, `unique_by()`, and `Pairs.unique_keys()` propagate equality errors
+  instead of treating them as unhashable keys. Hash callbacks keep their existing
+  lookup and insertion counts.
+- Async uniqueness, `agg.count_distinct()`, and native pair-uniqueness continuation
+  also propagate equality errors without extra hash calls. Iterator cleanup retains
+  nested exception notes when several owned resources fail to close.
+- Distinct operations avoid key-wrapper allocations for exact built-in strings.
+  String subclasses and custom keys retain guarded hash and equality handling.
+- Grouped reductions and frequency counts propagate `KeyError` raised by a key's
+  hash or equality method instead of treating it as a missing group. This includes
+  async reductions, grouping collectors, Pairs, and spilled grouping.
+- Parquet `if_exists="error"` publishes with an atomic no-overwrite hard link.
+  A concurrent creator or dangling symlink cannot be overwritten. Filesystems
+  without hard-link support report an error; `replace` still uses atomic rename.
+- Owned Arrow resources report close failures on successful queries and attach
+  cleanup diagnostics to an existing query error. Cleanup attempts every owned
+  resource. This also changes Arrow `first()`, which previously ignored close errors.
+
+- Engine benchmarks calibrate warmed timing blocks for short tasks and first-row
+  latency, retaining elapsed time and call counts in their reports. Rebuild
+  single-call baselines before comparing. Timing and resource regression limits
+  are unchanged; scheduled CI now uploads the three raw reference reports.
+
 - Benchmark report schema 6 records Python and glibc allocator environment
   settings. Baseline creation and comparison reject missing or mismatched
   settings; regenerate older reports. The runners do not change allocator defaults.

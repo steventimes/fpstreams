@@ -682,16 +682,17 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             raise TypeError("initializer must be callable")
         select = compile_selector(key)
         states: dict[Any, R] = {}
+        missing = cast(R, object())
         iterator = self.__aiter__()
         async with closing_async_iterators((iterator,)):
             async for item in iterator:
                 group = await _resolve(select(item))
                 try:
-                    state = states[group]
-                except KeyError:
-                    state = cast(R, await _resolve(initializer()))
+                    state = states.get(group, missing)
                 except TypeError:
                     raise TypeError("reduce_by() keys must be hashable") from None
+                if state is missing:
+                    state = cast(R, await _resolve(initializer()))
                 states[group] = cast(R, await _resolve(function(state, item)))
         return states
 

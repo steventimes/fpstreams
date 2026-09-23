@@ -399,13 +399,14 @@ class Pairs(Generic[K, V]):
 
             def consume_streaming(iterator: Iterator[tuple[K, V]]) -> dict[K, Any]:
                 states: dict[K, Any] = {}
+                missing = object()
                 for key, value in iterator:
                     try:
-                        state = states[key]
-                    except KeyError:
-                        state = collector.initializer()
+                        state = states.get(key, missing)
                     except TypeError:
                         raise TypeError("pair keys must be hashable") from None
+                    if state is missing:
+                        state = collector.initializer()
                     if not collector.done(state):
                         state = collector.step(state, value)
                     try:
@@ -470,13 +471,14 @@ class Pairs(Generic[K, V]):
 
         def consume(iterator: Iterator[tuple[K, V]]) -> dict[K, dict[str, Any]]:
             states_by_key: dict[K, dict[str, Any]] = {}
+            missing: dict[str, Any] = {}
             for key, value in iterator:
                 try:
-                    states = states_by_key[key]
-                except KeyError:
-                    states = initialize_aggregations(items)
+                    states = states_by_key.get(key, missing)
                 except TypeError:
                     raise TypeError("pair keys must be hashable") from None
+                if states is missing:
+                    states = initialize_aggregations(items)
                 step_aggregations(states, items, value)
                 try:
                     states_by_key[key] = states

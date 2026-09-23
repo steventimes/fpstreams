@@ -765,8 +765,11 @@ def test_benchmark_observation_uses_fresh_sources_outside_timed_samples(monkeypa
 
     monkeypatch.setattr(module, "measure", measure)
     record = module._record(module.Scenario("probe", task, "auto", "iterator", "to_list", None), 2)
-    assert events == [(False, True), (True, False), (True, False), (False, False)]
-    assert len(closed) == 4
+    measured_calls = sum(
+        block["loops"] for blocks in record["timing_blocks"].values() for block in blocks
+    )
+    assert events == [(False, True)] + [(True, False)] * measured_calls + [(False, False)]
+    assert len(closed) == measured_calls + 2
     assert record["execution"]["status"] == "observed"
     assert record["execution"]["requested_engine"] == "auto"
     assert _current_recorder() is None
@@ -1067,7 +1070,9 @@ def test_first_row_latency_uses_enough_samples_to_absorb_startup_jitter() -> Non
 
     record = module._record(scenario, repeats=5)
 
-    assert first_row_calls == 15
+    assert first_row_calls == sum(
+        block["loops"] for blocks in record["first_row_timing_blocks"].values() for block in blocks
+    )
     assert len(record["first_row_samples_seconds"]) == 15
 
 
@@ -4118,7 +4123,37 @@ def _build_browser_wheel(output_dir: Path) -> Path:
     manifest = json.loads((output_dir / "browser-wheel.json").read_text(encoding="utf-8"))
     assert manifest["version"] == project["version"]
     assert manifest["wheel"] == wheel.name
+    assert manifest["build"] in {"development", "release"}
+    assert re.fullmatch(r"[0-9a-f]{7,64}|unknown", manifest["commit"], re.IGNORECASE)
+    assert manifest["engine"] == "python"
+    assert manifest["ref"]
     return wheel
+
+
+def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path) -> None:
+    """A tag build must be distinguishable from the same-version source build."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GITHUB_REF_NAME": "v2.1.0",
+            "GITHUB_REF_TYPE": "tag",
+            "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, str(BROWSER_WHEEL_BUILDER), "--output-dir", str(tmp_path)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    manifest = json.loads((tmp_path / "browser-wheel.json").read_text(encoding="utf-8"))
+    assert manifest["build"] == "release"
+    assert manifest["commit"] == environment["GITHUB_SHA"]
+    assert manifest["ref"] == environment["GITHUB_REF_NAME"]
 
 
 def test_browser_wheel_has_standard_pure_python_contents(tmp_path: Path) -> None:
@@ -4283,3 +4318,123 @@ async def test_timer_node_owns_at_most_one_timer_task() -> None:
     assert [item async for item in execute_async_physical(physical, runtime)] == [0, 1, 2]
     assert runtime.metrics.high_water_tasks <= 1
     assert runtime.metrics.live_tasks == 0
+
+
+def test_engine_measure_calibrates_blocks_and_retains_raw_evidence(monkeypatch) -> None:
+    module = _benchmark_module()
+    clock = 0.0
+    calls = 0
+
+    def task():
+        nonlocal clock, calls
+        calls += 1
+        clock += 0.0001
+
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock)
+    evidence = {}
+    samples = module.measure(task, 3, evidence=evidence)
+    assert samples == pytest.approx([0.0001] * 3)
+    assert len(evidence["samples"]) == 3
+    assert evidence["calibration"][-1]["elapsed_seconds"] >= module._MIN_TIMING_BLOCK_SECONDS
+    assert calls == sum(b["loops"] for blocks in evidence.values() for b in blocks)
+    assert len({b["loops"] for b in evidence["samples"]}) == 1
+    for block, sample in zip(evidence["samples"], samples, strict=True):
+        assert block["elapsed_seconds"] / block["loops"] == sample
+
+
+def test_engine_measure_propagates_failure_without_retry() -> None:
+    module = _benchmark_module()
+    calls = 0
+
+    def fail():
+        nonlocal calls
+        calls += 1
+        raise ValueError("sample failed")
+
+    with pytest.raises(ValueError, match="sample failed"):
+        module.measure(fail, 3, evidence={})
+    assert calls == 1
+
+
+def test_engine_comparison_rejects_missing_block_evidence() -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    report["metadata"]["methodology"] = {
+        "timing": "calibrated_blocks_v1",
+        "timing_block_min_seconds": 0.005,
+    }
+    assert "block" in regression._report_errors(report)[0]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("loops", 0),
+        ("loops", True),
+        ("elapsed_seconds", float("nan")),
+        ("elapsed_seconds", float("inf")),
+        ("elapsed_seconds", -1),
+    ],
+)
+def test_engine_comparison_rejects_invalid_raw_blocks(field, value) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    report["metadata"]["methodology"] = {
+        "timing": "calibrated_blocks_v1",
+        "timing_block_min_seconds": 0.005,
+    }
+    row = report["results"][0]
+    row.update(
+        sample_count=1,
+        samples_seconds=[1.0],
+        timing_blocks={
+            "calibration": [{"elapsed_seconds": 1.0, "loops": 1}],
+            "samples": [{"elapsed_seconds": 1.0, "loops": 1}],
+        },
+    )
+    assert regression._report_errors(report) == []
+    row["timing_blocks"]["samples"][0][field] = value
+    assert "block" in regression._report_errors(report)[0]
+
+
+def test_engine_block_timing_keeps_regression_gate_and_methodology_boundary() -> None:
+    from benchmarks import regression
+
+    def report(seconds):
+        result = _report(seconds)
+        result["metadata"]["methodology"] = {
+            "timing": "calibrated_blocks_v1",
+            "timing_block_min_seconds": 0.005,
+        }
+        result["results"][0].update(
+            sample_count=1,
+            samples_seconds=[seconds],
+            timing_blocks={
+                "calibration": [{"elapsed_seconds": seconds, "loops": 1}],
+                "samples": [{"elapsed_seconds": seconds, "loops": 1}],
+            },
+        )
+        return result
+
+    baseline = regression._baseline([report(1.0)] * 3, "local_one_shot_unreviewed")
+    assert regression._comparison_errors(baseline, report(1.0), {}) == []
+    assert any(
+        "hard timing regression" in e
+        for e in regression._comparison_errors(baseline, report(1.5), {})
+    )
+    assert any(
+        "methodology" in e for e in regression._comparison_errors(baseline, _report(1.0), {})
+    )
+
+
+def test_engine_measure_bounds_calibration_for_a_stalled_clock(monkeypatch) -> None:
+    module = _benchmark_module()
+    monkeypatch.setattr(module.time, "perf_counter", lambda: 0.0)
+    monkeypatch.setattr(module, "_MAX_TIMING_BLOCK_LOOPS", 4)
+    evidence = {}
+    with pytest.raises(RuntimeError, match="calibration target"):
+        module.measure(lambda: None, 1, evidence=evidence)
+    assert [b["loops"] for b in evidence["calibration"]] == [1, 2, 4]
+    assert evidence["samples"] == []

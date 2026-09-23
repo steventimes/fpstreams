@@ -1,5 +1,5 @@
 site_name: fpstreams
-site_description: Typed, lazy data pipelines for Python
+site_description: Lazy Python pipelines for iterables and records, with bounded async concurrency.
 site_url: https://steventimes.github.io/fpstreams/
 repo_url: https://github.com/steventimes/fpstreams
 repo_name: steventimes/fpstreams

@@ -200,6 +200,9 @@ jobs:
             benchmark-full.json
             benchmark-competitive.json
             scheduled-local-baseline.json
+            run-1.json
+            run-2.json
+            run-3.json
           if-no-files-found: warn
 
   free-threaded:

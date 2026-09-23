@@ -197,11 +197,12 @@ def _seeded_pair_unique(
     unhashable: list[Any] = []
     for item in iterator:
         key = item[0]
+        wrapped = key if type(key) is int or type(key) is str else _sync_ops._UniqueKey(key)
         try:
-            if key in hashable:
+            if wrapped in hashable:
                 continue
-            hashable.add(key)
-        except TypeError:
+            hashable.add(wrapped)
+        except _sync_ops._UniqueHashFailure:
             if any(key == seen for seen in unhashable):
                 continue
             unhashable.append(key)

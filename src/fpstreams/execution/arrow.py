@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Iterator
-from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -598,14 +597,6 @@ def _execute_first_python_batch(
     return False, None
 
 
-def _close_batches(batches: Any) -> None:
-    """Best-effort close owned Arrow batches without replacing query outcomes."""
-    close = getattr(batches, "close", None)
-    if callable(close):
-        with suppress(Exception):
-            close()
-
-
 def _concat_record_batches(pa: Any, batches: list[Any]) -> Any:
     """Concatenate batches once, including on Arrow releases without ``concat_batches``."""
     concat_batches = getattr(pa, "concat_batches", None)
@@ -620,7 +611,7 @@ def _rechunk_batches(pa: Any, batches: Iterator[Any], batch_size: int) -> Iterat
     iterator = iter(batches)
     pending: list[Any] = []
     pending_rows = 0
-    try:
+    with closing_iterators((iterator,)):
         for batch in iterator:
             offset = 0
             rows = batch.num_rows
@@ -642,8 +633,6 @@ def _rechunk_batches(pa: Any, batches: Iterator[Any], batch_size: int) -> Iterat
                 pending_rows = rows - offset
         if pending:
             yield pending[0] if len(pending) == 1 else _concat_record_batches(pa, pending)
-    finally:
-        _close_batches(iterator)
 
 
 def _execute_python_batch(batch: Any, operations: tuple[Any, ...]) -> list[Any]:
@@ -730,7 +719,7 @@ def try_arrow_count(
         range_predicate=range_predicate,
     )
     total = 0
-    try:
+    with closing_iterators((batches,)):
         for batch in batches:
             observe_arrow_batch_rows(batch)
             if prefix.operation_count == 0:
@@ -748,8 +737,6 @@ def try_arrow_count(
                 except _EXPECTED_ARROW_ERRORS:
                     pass
             total += _count_python_batch(batch, prefix.operations)
-    finally:
-        _close_batches(batches)
     return True, total
 
 
@@ -1056,7 +1043,7 @@ def try_arrow_i64_field_reduction(
     except ValueError as error:
         identity = 0 if kind == "sum" else None
         return ArrowI64Reduction(False, identity, error)
-    try:
+    with closing_iterators((batches,)):
         if descriptor.kind == "reader" or selected_has_nulls:
             return reduce_arrow_i64_batches(
                 batches,
@@ -1077,8 +1064,6 @@ def try_arrow_i64_field_reduction(
             )
         except _EXPECTED_ARROW_ERRORS:
             return None
-    finally:
-        _close_batches(batches)
 
 
 def _guarded_arrow_direct_field(
@@ -1166,7 +1151,7 @@ def try_arrow_numeric_field_mean(
     plan.source.open_native(ArrowBatchSource)
     batches = descriptor.open_batches()
     state: tuple[int, float, float] = (0, 0.0, 0.0)
-    try:
+    with closing_iterators((batches,)):
         for batch in batches:
             observe_arrow_batch_rows(batch)
             values = batch.column(field_index)
@@ -1179,8 +1164,6 @@ def try_arrow_numeric_field_mean(
                 state = endpoint(view, *state)
             finally:
                 view.release()
-    finally:
-        _close_batches(batches)
     count, total, compensation = state
     return True, None if not count else (total + compensation) / count
 
@@ -1460,7 +1443,7 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
             equality=equality,
             range_predicate=range_predicate,
         )
-        try:
+        with closing_iterators((opened,)):
             if not prefix.operations:
                 for batch in opened:
                     yield from slices(batch)
@@ -1511,8 +1494,6 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
                     yield from converted(pending, None, iter(()), schema=None)
                 else:
                     yield from pending
-        finally:
-            _close_batches(opened)
 
     def native_batches() -> Iterator[Any]:
         yield from _rechunk_batches(pa, planned_batches(), batch_size)
@@ -1569,7 +1550,7 @@ def try_arrow_table(
         equality=equality,
         range_predicate=range_predicate,
     )
-    try:
+    with closing_iterators((batches,)):
         if not prefix.operations:
             return True, _identity_table(
                 pa,
@@ -1617,8 +1598,6 @@ def try_arrow_table(
                 batch_size=batch_size,
                 schema=fallback_schema,
             )
-    finally:
-        _close_batches(batches)
 
     if not outputs:
         empty = (
@@ -1651,7 +1630,7 @@ def _execute_arrow_first(
         equality=equality,
         first_only=True,
     )
-    try:
+    with closing_iterators((batches,)):
         for batch in batches:
             observe_arrow_batch_rows(batch)
             if prefix.operation_count == 0:
@@ -1683,8 +1662,6 @@ def _execute_arrow_first(
             if found:
                 yield value
                 return
-    finally:
-        _close_batches(batches)
 
 
 def execute_arrow_prefix(
@@ -1741,7 +1718,7 @@ def execute_arrow_prefix(
             equality=equality,
             range_predicate=range_predicate,
         )
-        try:
+        with closing_iterators((batches,)):
             for batch in batches:
                 observe_arrow_batch_rows(batch)
                 safety = prove_batch_safe(
@@ -1769,8 +1746,6 @@ def execute_arrow_prefix(
                             if bool(operation.predicate(item)) is not operation.negate
                         ]
                 yield from current
-        finally:
-            _close_batches(batches)
 
     return values()
 

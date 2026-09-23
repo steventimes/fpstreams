@@ -57,6 +57,7 @@ from ..planning.sync import (
     ZipLongestOp,
     ZipOp,
 )
+from ..runtime._distinct import DistinctKey, HashFailure
 from ..runtime.iterators import close_iterators as close_iterators
 from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
@@ -155,6 +156,21 @@ def _flat_map(iterator: Iterator[Any], operation: FlatMapOp) -> Iterator[Any]:
         yield from function(item)
 
 
+_UniqueHashFailure = HashFailure
+
+
+class _UniqueKey(DistinctKey):
+    """Preserve the synchronous operator's live hash and exception bindings."""
+
+    __slots__ = ()
+
+    def __hash__(self) -> int:
+        try:
+            return hash(self.value)
+        except TypeError as error:
+            raise _UniqueHashFailure from error
+
+
 def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
     """Yield the first item for each key while preserving source order.
 
@@ -166,11 +182,12 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
     if operation.key is PAIR_KEY_SELECTOR:
         for item in iterator:
             key = item[0]
+            wrapped = key if type(key) is int or type(key) is str else _UniqueKey(key)
             try:
-                if key in hashable:
+                if wrapped in hashable:
                     continue
-                hashable.add(key)
-            except TypeError:
+                hashable.add(wrapped)
+            except _UniqueHashFailure:
                 if any(key == seen for seen in unhashable):
                     continue
                 unhashable.append(key)
@@ -180,11 +197,12 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
     key_function = operation.key
     for item in iterator:
         key = key_function(item) if key_function is not None else item
+        wrapped = key if type(key) is int or type(key) is str else _UniqueKey(key)
         try:
-            if key in hashable:
+            if wrapped in hashable:
                 continue
-            hashable.add(key)
-        except TypeError:
+            hashable.add(wrapped)
+        except _UniqueHashFailure:
             if any(key == seen for seen in unhashable):
                 continue
             unhashable.append(key)

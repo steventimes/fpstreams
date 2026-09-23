@@ -83,10 +83,24 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
   let running = false;
   let requestId = 0;
   let startedAt = 0;
+  let readyStatusMessage = "Ready";
 
   function setStatus(kind, message) {
     status.dataset.status = kind;
     statusText.textContent = message;
+  }
+
+  function readyMessage(payload) {
+    const engine = !payload.engine || payload.engine === "python"
+      ? "Python engine"
+      : `${payload.engine} engine`;
+    if (payload.build === "release") {
+      return `Release build · fpstreams ${payload.version} · ${engine}`;
+    }
+    const commit = /^[0-9a-f]{7,64}$/i.test(payload.commit || "")
+      ? payload.commit.slice(0, 12)
+      : "unknown commit";
+    return `Development build · ${commit} · ${engine}`;
   }
 
   function setControls() {
@@ -136,7 +150,8 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
       }
       if (payload.type === "ready") {
         ready = true;
-        setStatus("ready", `Ready · fpstreams ${payload.version}`);
+        readyStatusMessage = readyMessage(payload);
+        setStatus("ready", readyStatusMessage);
         setControls();
         return;
       }
@@ -159,7 +174,7 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
       }
       if (payload.type === "result") {
         result.textContent = payload.result || "None";
-        finish("ready", "Ready");
+        finish("ready", readyStatusMessage);
         return;
       }
       if (payload.type === "error") {

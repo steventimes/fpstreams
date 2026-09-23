@@ -11,6 +11,38 @@ import pytest
 import fpstreams
 
 
+@pytest.mark.parametrize("keyed", [False, True])
+async def test_async_unique_propagates_equality_failure_and_closes_source(keyed):
+    failure = TypeError("async equality failed")
+    hashes = []
+    closed = []
+
+    class Key:
+        def __hash__(self):
+            hashes.append(self)
+            return 0
+
+        def __eq__(self, other):
+            raise failure
+
+    first, second = Key(), Key()
+
+    async def source():
+        try:
+            yield first
+            yield second
+        finally:
+            closed.append(True)
+
+    query = fpstreams.aflow(source())
+    with pytest.raises(TypeError) as caught:
+        await (query.unique_by(lambda x: x) if keyed else query.unique()).to_list()
+    assert caught.value is failure
+    assert len(hashes) == 3
+    assert hashes[0] is hashes[1] is first and hashes[2] is second
+    assert closed == [True]
+
+
 class _PrefetchBlockingSource:
     """Emit once when requested, then expose producer cancellation and close counts."""
 

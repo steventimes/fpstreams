@@ -277,13 +277,13 @@ class Collectors(Generic[T]):
         """
         classify = compile_selector(classifier)
         reduction = _as_collector(Collectors.to_list() if downstream is None else downstream)
+        missing = object()
 
         def step(groups: dict[Any, Any], value: T) -> dict[Any, Any]:
             """Initialize the selected group on first use and step its state with `value`."""
             key = classify(value)
-            try:
-                state = groups[key]
-            except KeyError:
+            state = groups.get(key, missing)
+            if state is missing:
                 state = reduction.initializer()
             groups[key] = reduction.step(state, value)
             return groups

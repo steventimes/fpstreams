@@ -9176,3 +9176,142 @@ def test_direct_i64_filter_preserves_retained_source_iter_hooks(
 
     assert query.to_list() == [1_002]
     assert calls == 1
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+@pytest.mark.parametrize("keyed", [False, True])
+def test_unique_propagates_equality_type_error_without_rehash(engine, keyed):
+    failure = TypeError("equality failed")
+    hashes = []
+    closed = []
+
+    class Key:
+        def __hash__(self):
+            hashes.append(self)
+            return 0
+
+        def __eq__(self, other):
+            raise failure
+
+    first, second = Key(), Key()
+
+    def source():
+        try:
+            yield first
+            yield second
+        finally:
+            closed.append(True)
+
+    query = flow(source()).with_engine(engine)
+    with pytest.raises(TypeError) as caught:
+        (query.unique_by(lambda x: x) if keyed else query.unique()).to_list()
+    assert caught.value is failure
+    assert len(hashes) == 3
+    assert hashes[0] is hashes[1] is first and hashes[2] is second
+    assert closed == [True]
+
+
+def test_unique_native_suffix_propagates_equality_type_error():
+    from fpstreams.streams._flow_unique_list import _seeded_unique_suffix
+
+    failure = TypeError("suffix equality failed")
+
+    class Key:
+        def __hash__(self):
+            return 1
+
+        def __eq__(self, other):
+            raise failure
+
+    with pytest.raises(TypeError) as caught:
+        list(_seeded_unique_suffix(iter([Key()]), {1}))
+    assert caught.value is failure
+
+
+def test_unique_hash_protocol_and_unhashable_fallback_are_preserved():
+    calls = []
+
+    class Key:
+        def __hash__(self):
+            calls.append("hash")
+            return 0
+
+        def __eq__(self, other):
+            calls.append("eq")
+            return True
+
+    first, second = Key(), Key()
+    result = flow([first, second]).with_engine("python").unique().to_list()
+    assert len(result) == 1 and result[0] is first
+    assert calls == ["hash", "hash", "hash", "eq"]
+    assert flow([([1],), ([1],), ([2],)]).unique().to_list() == [([1],), ([2],)]
+
+
+def test_unique_pair_keys_does_not_swallow_equality_type_error():
+    failure = TypeError("pair key equality")
+
+    class Key:
+        def __hash__(self):
+            return 0
+
+        def __eq__(self, other):
+            raise failure
+
+    with pytest.raises(TypeError) as caught:
+        list(flow([(Key(), 1), (Key(), 2)]).pairs().unique_keys())
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize("values", [[0, "key"], ["key", 0]])
+def test_unique_integer_and_custom_collision_preserves_comparison_operands(values):
+    events = []
+
+    class Key:
+        def __hash__(self):
+            return 0
+
+        def __eq__(self, other):
+            events.append(other)
+            return False
+
+    key = Key()
+    data = [key if value == "key" else value for value in values]
+    expected = set()
+    for value in data:
+        if value not in expected:
+            expected.add(value)
+    baseline = list(events)
+    events.clear()
+    result = flow(data).with_engine("python").unique().to_list()
+    assert len(result) == 2
+    assert events == baseline
+    assert all(value is original for value, original in zip(result, data, strict=True))
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_iterator_cleanup_preserves_nested_failure_notes(primary_failure):
+    from fpstreams.runtime.iterators import closing_iterators
+
+    primary = ValueError("query failed")
+    first = OSError("first close failed")
+    nested = OSError("nested close failed")
+    nested.add_note("another owned resource also failed")
+    events = []
+
+    class Resource:
+        def __init__(self, error):
+            self.error = error
+
+        def close(self):
+            events.append(self.error)
+            raise self.error
+
+    with (
+        pytest.raises(ValueError if primary_failure else OSError) as caught,
+        closing_iterators((Resource(first), Resource(nested))),
+    ):
+        if primary_failure:
+            raise primary
+    assert caught.value is (primary if primary_failure else first)
+    assert events == [first, nested]
+    assert "another owned resource also failed" in caught.value.__notes__

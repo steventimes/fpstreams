@@ -731,8 +731,6 @@ def _update_identity_frequency_counts(
     for selected in values:
         try:
             count = get_count(selected, 0)
-        except KeyError:
-            count = 0
         except TypeError:
             raise TypeError("reduce_by() keys must be hashable") from None
         counts[selected] = count + 1
@@ -2790,15 +2788,16 @@ class FlowTerminalsMixin(Generic[T]):
             raise TypeError("initializer must be callable")
         select = compile_selector(key)
         states: dict[Any, R] = {}
+        missing = cast(R, object())
         with self._open() as iterator:
             for item in iterator:
                 group = select(item)
                 try:
-                    state = states[group]
-                except KeyError:
-                    state = initializer()
+                    state = states.get(group, missing)
                 except TypeError:
                     raise TypeError("reduce_by() keys must be hashable") from None
+                if state is missing:
+                    state = initializer()
                 states[group] = function(state, item)
         return states
 
@@ -2856,8 +2855,6 @@ class FlowTerminalsMixin(Generic[T]):
                 selected = select(item)
                 try:
                     count = get_count(selected, 0)
-                except KeyError:
-                    count = 0
                 except TypeError:
                     raise TypeError("reduce_by() keys must be hashable") from None
                 counts[selected] = count + 1

@@ -37,7 +37,7 @@ del _fpstreams_wheel_url
       self.postMessage({ type: "stderr", id: activeId, text });
     },
   });
-  self.postMessage({ type: "ready", version: manifest.version });
+  self.postMessage({ type: "ready", ...manifest });
   return pyodide;
 }
 

@@ -2945,3 +2945,200 @@ def test_reducer_law_declarations_reject_invalid_contracts() -> None:
             merge=lambda left, _right: left,
             laws=object(),  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_count_distinct_propagates_equality_failure_without_extra_hashes(engine):
+    failure = TypeError("distinct equality failed")
+    hashes = []
+
+    class Key:
+        def __hash__(self):
+            hashes.append(self)
+            return 0
+
+        def __eq__(self, other):
+            raise failure
+
+    first, second = Key(), Key()
+    with pytest.raises(TypeError) as caught:
+        fpstreams.flow([first, second]).with_engine(engine).aggregate(
+            distinct=fpstreams.agg.count_distinct()
+        )
+    assert caught.value is failure
+    assert len(hashes) == 2 and hashes[0] is first and hashes[1] is second
+
+
+@pytest.mark.parametrize("policy", ["first", "last", "error"])
+def test_pair_unique_native_suffix_propagates_equality_failure(policy, monkeypatch):
+    from fpstreams import _native
+
+    failure = TypeError("pair suffix equality failed")
+    returned = []
+    comparisons = []
+    endpoint = _native.pair_unique_exact_prefix_v1
+
+    def observed(*args):
+        result = endpoint(*args)
+        returned.append(True)
+        return result
+
+    class Key:
+        def __hash__(self):
+            return 0
+
+        def __eq__(self, other):
+            comparisons.append(other)
+            if len(comparisons) == 1:
+                raise failure
+            return False
+
+    monkeypatch.setattr(_native, "pair_unique_exact_prefix_v1", observed)
+    data = [*_sequential_native_pairs(), (Key(), 0)]
+    with pytest.raises(TypeError) as caught:
+        fpstreams.pairs(data).unique_keys().to_dict(on_duplicate=policy)
+    assert caught.value is failure
+    assert returned
+    assert len(comparisons) == 1
+
+
+@pytest.mark.parametrize("hook", ["hash", "equality"])
+@pytest.mark.parametrize(
+    "terminal",
+    ["reduce", "frequency", "frequency_key", "group_collect", "pair_collect", "pair_aggregate"],
+)
+def test_group_lookup_does_not_treat_user_key_error_as_missing(hook, terminal):
+    failure = KeyError("user key protocol failed")
+    raised = []
+    closed = []
+
+    class Key:
+        def __hash__(self):
+            if hook == "hash" and not raised:
+                raised.append(True)
+                raise failure
+            return 0
+
+        def __eq__(self, other):
+            if hook == "equality" and not raised:
+                raised.append(True)
+                raise failure
+            return True
+
+    keys = [Key(), Key()]
+
+    def source():
+        try:
+            for index, key in enumerate(keys):
+                yield key if terminal == "frequency" else (key, index + 1)
+        finally:
+            closed.append(True)
+
+    with pytest.raises(KeyError) as caught:
+        query = fpstreams.flow(source())
+        if terminal == "reduce":
+            query.reduce_by(lambda p: p[0], lambda state, p: state + p[1], initializer=lambda: 0)
+        elif terminal == "frequency":
+            query.frequencies()
+        elif terminal == "frequency_key":
+            query.frequencies(lambda p: p[0])
+        elif terminal == "group_collect":
+            query.collect(fpstreams.Collectors.grouping_by(lambda p: p[0]))
+        elif terminal == "pair_collect":
+            query.pairs().collect_values(fpstreams.Collectors.summing())
+        else:
+            query.pairs().aggregate_values(total=fpstreams.agg.sum())
+    assert caught.value is failure
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("terminal", ["reduce", "frequency"])
+async def test_async_group_lookup_propagates_user_key_error(terminal):
+    failure = KeyError("async key protocol failed")
+    hashes = []
+    closed = []
+
+    class Key:
+        def __hash__(self):
+            hashes.append(True)
+            if len(hashes) == 1:
+                raise failure
+            return 0
+
+    async def source():
+        try:
+            yield Key()
+        finally:
+            closed.append(True)
+
+    with pytest.raises(KeyError) as caught:
+        query = fpstreams.aflow(source())
+        if terminal == "reduce":
+            await query.reduce_by(lambda x: x, lambda state, item: state + 1, initializer=lambda: 0)
+        else:
+            await query.frequencies()
+    assert caught.value is failure
+    assert hashes == [True]
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("operation", ["unique", "async_unique", "distinct"])
+@pytest.mark.parametrize("string_subclass", [False, True])
+@pytest.mark.parametrize("custom_first", [False, True])
+@pytest.mark.parametrize("comparison", ["equal", "different", "reflected", "raise", "truth_error"])
+async def test_distinct_string_collisions_preserve_protocol_trace(
+    operation, string_subclass, custom_first, comparison
+):
+    async def run(use_library):
+        events = []
+        failure = TypeError("string collision failed")
+
+        class Truth:
+            def __bool__(self):
+                events.append(("bool",))
+                raise failure
+
+        class Key(str if string_subclass else object):
+            def __hash__(self):
+                events.append(("hash",))
+                return hash("same")
+
+            def __eq__(self, other):
+                events.append(("eq", type(other).__name__))
+                if comparison == "raise":
+                    raise failure
+                if comparison == "truth_error":
+                    return Truth()
+                if comparison == "reflected":
+                    return NotImplemented
+                return comparison == "equal"
+
+        custom = Key("same") if string_subclass else Key()
+        data = [custom, "same"] if custom_first else ["same", custom]
+        data += ["same", custom]
+        try:
+            if use_library:
+                if operation == "distinct":
+                    result = fpstreams.flow(data).aggregate(n=fpstreams.agg.count_distinct())["n"]
+                elif operation == "async_unique":
+                    result = await fpstreams.aflow(data).unique().to_list()
+                else:
+                    result = fpstreams.flow(data).with_engine("python").unique().to_list()
+            else:
+                seen = set()
+                output = []
+                for value in data:
+                    if operation != "distinct" and value in seen:
+                        continue
+                    seen.add(value)
+                    output.append(value)
+                result = len(seen) if operation == "distinct" else output
+            if operation != "distinct":
+                result = ["custom" if value is custom else "plain" for value in result]
+            outcome = ("result", result)
+        except TypeError as error:
+            assert error is failure
+            outcome = ("error", str(error))
+        return outcome, events
+
+    assert await run(True) == await run(False)

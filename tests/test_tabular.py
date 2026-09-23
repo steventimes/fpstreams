@@ -16337,8 +16337,8 @@ def test_arrow_first_boxes_only_one_csv_or_parquet_row(
     assert converted_sizes == [1]
 
 
-def test_arrow_first_close_failure_does_not_replace_result_or_primary_error() -> None:
-    """Best-effort cleanup preserves both a found row and the query's own exception."""
+def test_arrow_first_close_failure_raises_or_annotates_primary_error() -> None:
+    """A found row cannot hide failed cleanup; a query failure remains primary."""
     from fpstreams.planning.arrow_source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
     from fpstreams.streams.flow import Flow
@@ -16375,9 +16375,11 @@ def test_arrow_first_close_failure_does_not_replace_result_or_primary_error() ->
         )
         return fpstreams.Rows(Flow(source)).select(field)
 
-    assert query("id").first() == {"id": 1}
-    with pytest.raises(fpstreams.SelectionError):
+    with pytest.raises(RuntimeError, match="close failed"):
+        query("id").first()
+    with pytest.raises(fpstreams.SelectionError) as caught:
         query("missing").first()
+    assert any("close failed" in note for note in caught.value.__notes__)
     assert closed == ["close", "close"]
 
 
@@ -22448,3 +22450,179 @@ def test_only_a_root_numpy_group_updates_non_list_execution_reports(prefixed: bo
     assert root_execution.report.strategy == "numpy_direct"
     assert nested_execution.value == root_execution.value
     assert nested_execution.report.strategy == "planned:python"
+
+
+def test_parquet_error_publish_does_not_overwrite_racing_creator(tmp_path, monkeypatch):
+    from fpstreams.tabular import arrow
+
+    target = tmp_path / "race.parquet"
+    sentinel = b"created by another writer"
+    replace, link = arrow.os.replace, arrow.os.link
+
+    def raced_replace(source, destination, **kwargs):
+        target.write_bytes(sentinel)
+        return replace(source, destination, **kwargs)
+
+    def raced_link(source, destination, **kwargs):
+        target.write_bytes(sentinel)
+        return link(source, destination, **kwargs)
+
+    monkeypatch.setattr(arrow.os, "replace", raced_replace)
+    monkeypatch.setattr(arrow.os, "link", raced_link)
+    with pytest.raises(FileExistsError):
+        fpstreams.rows([{"id": 1}]).to_parquet(target)
+    assert target.read_bytes() == sentinel
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("primary", [False, True])
+@pytest.mark.parametrize("sink", ["arrow", "parquet"])
+def test_arrow_owned_source_close_failure_is_not_silent(tmp_path, primary, sink):
+    from fpstreams.tabular import arrow
+
+    error = ValueError("source failed")
+    cleanup = OSError("source close failed")
+    closed = []
+
+    class Source:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if primary:
+                raise error
+            raise StopIteration
+
+        def close(self):
+            closed.append(True)
+            raise cleanup
+
+    schema = pa.schema([("id", pa.int64())])
+    with pytest.raises(ValueError if primary else OSError) as caught:
+        if sink == "arrow":
+            arrow.table_from_rows(Source(), schema=schema, as_record=lambda x: x)
+        else:
+            arrow.write_parquet_rows(
+                Source(), tmp_path / "failed.parquet", schema=schema, as_record=lambda x: x
+            )
+    assert caught.value is (error if primary else cleanup)
+    if primary:
+        assert any("source close failed" in note for note in error.__notes__)
+    assert closed == [True]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_arrow_cleanup_attempts_all_resources_and_preserves_ambient_exception():
+    from fpstreams.tabular import arrow
+
+    events = []
+    first, second = OSError("first close"), ValueError("second close")
+
+    class Resource:
+        def __init__(self, error):
+            self.error = error
+
+        def close(self):
+            events.append(self.error)
+            raise self.error
+
+    try:
+        raise RuntimeError("ambient handled error")
+    except RuntimeError:
+        with pytest.raises(OSError) as caught, arrow._closing(Resource(first), Resource(second)):
+            pass
+    assert caught.value is first
+    assert events == [first, second]
+    assert any("second close" in note for note in first.__notes__)
+
+
+def test_arrow_cleanup_keeps_primary_and_closes_all_resources():
+    from fpstreams.tabular import arrow
+
+    primary = ValueError("primary query failure")
+    closed = []
+
+    class Resource:
+        def close(self):
+            closed.append(True)
+            raise OSError("cleanup failure")
+
+    with pytest.raises(ValueError) as caught, arrow._closing(Resource(), Resource()):
+        raise primary
+    assert caught.value is primary
+    assert closed == [True, True]
+    assert len(primary.__notes__) == 2
+
+
+def test_parquet_error_rejects_dangling_symlink_before_consuming(tmp_path):
+    target = tmp_path / "target.parquet"
+    try:
+        target.symlink_to(tmp_path / "absent")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    consumed = []
+
+    def source():
+        consumed.append(True)
+        yield {"id": 1}
+
+    with pytest.raises(FileExistsError):
+        fpstreams.rows(source()).to_parquet(target)
+    assert consumed == []
+    assert target.is_symlink()
+
+
+def test_parquet_writer_close_failure_prevents_publish_and_removes_temporary(tmp_path, monkeypatch):
+    from fpstreams.tabular import arrow
+
+    real = pq.ParquetWriter
+    failure = OSError("writer finalization failed")
+    closes = []
+
+    class Writer:
+        def __init__(self, *args, **kwargs):
+            self.writer = real(*args, **kwargs)
+
+        def write_batch(self, *args, **kwargs):
+            return self.writer.write_batch(*args, **kwargs)
+
+        def close(self):
+            closes.append(True)
+            self.writer.close()
+            raise failure
+
+    monkeypatch.setattr(pq, "ParquetWriter", Writer)
+    with pytest.raises(OSError) as caught:
+        arrow.write_parquet_rows([{"id": 1}], tmp_path / "target.parquet", as_record=lambda x: x)
+    assert caught.value is failure
+    assert closes == [True]
+    assert list(tmp_path.iterdir()) == []
+
+
+class _RestoredHashFailureKey:
+    def __init__(self, restored=False):
+        self.restored = restored
+
+    def __hash__(self):
+        if self.restored:
+            self.restored = False
+            raise KeyError("restored key hash failed")
+        return 0
+
+    def __eq__(self, other):
+        return isinstance(other, _RestoredHashFailureKey)
+
+    def __reduce__(self):
+        return _RestoredHashFailureKey, (True,)
+
+
+def test_spilled_group_lookup_propagates_restored_key_error(tmp_path):
+    with pytest.raises(KeyError, match="restored key hash failed"):
+        (
+            fpstreams.rows([{"key": _RestoredHashFailureKey(), "value": 1}])
+            .group_by("key")
+            .spill(2, tempdir=tmp_path)
+            .aggregate(total=fpstreams.agg.sum("value"))
+            .to_list()
+        )
+    assert list(tmp_path.iterdir()) == []

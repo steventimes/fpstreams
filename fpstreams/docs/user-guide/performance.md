@@ -305,6 +305,16 @@ ratios. For comparisons across versions, `benchmarks/regression.py` checks each
 task's timing and allocation against the baseline; this includes reference tasks
 and small-input cases without a same-run speedup requirement.
 
+The engine runner warms each task while calibrating a block to at least 5ms,
+then uses the same call count for every timed sample. Sample times are block
+elapsed time divided by the call count. Reports retain raw blocks and separate
+calibration records for both full execution and first-row latency. These are
+warmed measurements of the existing tasks. Identity cases reuse prepared
+pipelines; operation cases retain their construction and cleanup work. They do
+not measure first-call startup. The runner does not disable GC. Different sampling methods
+cannot share a baseline, so regenerate references made with single-call timing.
+The scheduled workflow also uploads all three reference runs for diagnosis.
+
 The competitive runner rotates peer order, collects garbage, then warms the
 next task for at least 1ms before timing one call. Each result records the number
 of warmup calls. This measures warmed execution; first-call latency needs a

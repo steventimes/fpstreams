@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import tomllib
 import zipfile
@@ -36,6 +37,49 @@ def _load_project() -> Mapping[str, Any]:
 
 def _wheel_component(value: str) -> str:
     return re.sub(r"[^\w\d.]+", "_", value, flags=re.UNICODE)
+
+
+def _git_value(*arguments: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _build_provenance(version: str) -> dict[str, str]:
+    commit = os.environ.get("GITHUB_SHA", "").strip() or _git_value("rev-parse", "HEAD")
+    if commit and not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit):
+        commit = None
+
+    ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+    ref_type = os.environ.get("GITHUB_REF_TYPE", "").strip()
+    if not ref_name:
+        ref = os.environ.get("GITHUB_REF", "").strip()
+        if ref.startswith("refs/tags/"):
+            ref_name, ref_type = ref.removeprefix("refs/tags/"), "tag"
+        elif ref.startswith("refs/heads/"):
+            ref_name, ref_type = ref.removeprefix("refs/heads/"), "branch"
+    if not ref_name:
+        exact_tag = _git_value("describe", "--exact-match", "--tags", "HEAD")
+        if exact_tag:
+            ref_name, ref_type = exact_tag, "tag"
+
+    normalized_ref = ref_name.removeprefix("v")
+    is_release = ref_type == "tag" and normalized_ref == version
+    return {
+        "build": "release" if is_release else "development",
+        "commit": commit or "unknown",
+        "engine": "python",
+        "ref": ref_name or "unknown",
+    }
 
 
 def _metadata_header(value: object) -> str:
@@ -212,7 +256,11 @@ def build_browser_wheel(output_dir: Path) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
 
-    manifest = {"version": str(project["version"]), "wheel": wheel_name}
+    manifest = {
+        "version": str(project["version"]),
+        "wheel": wheel_name,
+        **_build_provenance(str(project["version"])),
+    }
     manifest_path = output_dir / MANIFEST_NAME
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=output_dir, suffix=".tmp", delete=False

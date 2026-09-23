@@ -29,12 +29,15 @@ def close_iterators(
             close_iterator(iterator)
         except BaseException as error:
             note = f"cleanup failed with {type(error).__name__}: {error}"
-            if active_error is not None:
-                active_error.add_note(note)
-            elif first_cleanup_error is None:
+            nested_notes = tuple(getattr(error, "__notes__", ()) or ())
+            target = active_error if active_error is not None else first_cleanup_error
+            if target is None:
                 first_cleanup_error = error
             else:
-                first_cleanup_error.add_note(note)
+                target.add_note(note)
+                if target is not error:
+                    for nested_note in nested_notes:
+                        target.add_note(nested_note)
 
     if first_cleanup_error is not None:
         raise first_cleanup_error
