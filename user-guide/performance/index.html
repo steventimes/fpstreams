@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, lazy data pipelines for Python">
+        <meta name="description" content="Lazy Python pipelines for iterables and records, with bounded async concurrency.">
       
       
       
@@ -1494,6 +1494,15 @@ allocation records, with <code>maximum_ratio=null</code> for these cases.</p>
 ratios. For comparisons across versions, <code>benchmarks/regression.py</code> checks each
 task's timing and allocation against the baseline; this includes reference tasks
 and small-input cases without a same-run speedup requirement.</p>
+<p>The engine runner warms each task while calibrating a block to at least 5ms,
+then uses the same call count for every timed sample. Sample times are block
+elapsed time divided by the call count. Reports retain raw blocks and separate
+calibration records for both full execution and first-row latency. These are
+warmed measurements of the existing tasks. Identity cases reuse prepared
+pipelines; operation cases retain their construction and cleanup work. They do
+not measure first-call startup. The runner does not disable GC. Different sampling methods
+cannot share a baseline, so regenerate references made with single-call timing.
+The scheduled workflow also uploads all three reference runs for diagnosis.</p>
 <p>The competitive runner rotates peer order, collects garbage, then warms the
 next task for at least 1ms before timing one call. Each result records the number
 of warmup calls. This measures warmed execution; first-call latency needs a

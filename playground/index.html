@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, lazy data pipelines for Python">
+        <meta name="description" content="Lazy Python pipelines for iterables and records, with bounded async concurrency.">
       
       
       
@@ -1006,7 +1006,8 @@
 <p>Edit an example and run it in your browser. The page downloads Python and the
 fpstreams pure-Python wheel, then runs your code in a separate worker. It does
 not send your code to an fpstreams server. The first load can take longer while
-the runtime downloads.</p>
+the runtime downloads. The status line identifies whether the wheel came from a
+release tag or from the development commit used to build the docs.</p>
 <div class="fp-playground" data-fp-playground>
   <div class="fp-playground__masthead">
     <div>
@@ -1074,6 +1075,8 @@ the runtime downloads.</p>
 <li><code>Flow</code>, <code>Rows</code>, <code>Pairs</code>, collectors, expressions, and <code>AsyncFlow</code> run locally;</li>
 <li>the <code>auto</code> engine selects the canonical Python path because the CPython/Rust
   extension is not a WebAssembly wheel;</li>
+<li>the status line shows the wheel version, build commit when applicable, and
+  Python engine so this page is not mistaken for the PyPI wheel;</li>
 <li>stopping code terminates the worker, including an accidental infinite loop;</li>
 <li>local operating-system paths, process pools, and native-only execution are not
   available inside the browser sandbox;</li>

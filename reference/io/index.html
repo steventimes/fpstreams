@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, lazy data pipelines for Python">
+        <meta name="description" content="Lazy Python pipelines for iterables and records, with bounded async concurrency.">
       
       
       
@@ -1351,6 +1351,15 @@
 <code>flow(source)</code> recognizes supported tabular objects and protocols, but treats
 ordinary iterables as supplied. It does not infer a file format from a path or
 sample nested lists to decide whether they are tables.</p>
+<p>Owned Arrow readers and iterators report <code>close()</code> failures. If a query has
+already failed, its original exception is preserved and cleanup failures are
+attached as exception notes, including diagnostics from nested cleanup. A successful
+read or write can therefore raise while closing its resources, including after an
+early <code>first()</code> result.</p>
+<p>Parquet writes publish a completed temporary file in the destination directory.
+With <code>if_exists="error"</code>, publication uses a hard link that fails if the destination
+exists, including when another process creates it during the write. The filesystem
+must support hard links. <code>if_exists="replace"</code> uses an atomic replacement instead.</p>
 <h2 id="input-matrix">Input matrix</h2>
 <table>
 <thead>

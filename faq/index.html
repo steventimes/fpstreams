@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, lazy data pipelines for Python">
+        <meta name="description" content="Lazy Python pipelines for iterables and records, with bounded async concurrency.">
       
       
       
@@ -1145,6 +1145,9 @@ cleanup, or optional native and columnar execution.</p>
 <p>Small generic pipelines can be slower than a comprehension because planning and
 dispatch have a fixed cost. Measure the complete workload rather than assuming
 that every chain should use a native kernel.</p>
+<p>Lazy execution does not make every operation constant-memory. Sorting, grouping,
+and joins keep additional state; use the documented limits and spill options
+when the input may not fit in memory.</p>
 <h2 id="should-record-data-start-with-flow-or-rows">Should record data start with <code>flow()</code> or <code>rows()</code>?</h2>
 <p>Start new synchronous code with <code>flow()</code>. Nonconflicting record methods such as
 <code>select()</code>, <code>with_columns()</code>, and <code>group_by()</code> enter a Rows view automatically.
