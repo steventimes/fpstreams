@@ -7564,33 +7564,55 @@ def test_numeric_buffer_reduction_survives_signal_handler_resize(
     """A signal may resize the exporter only after Rust finishes with its stable storage."""
     pytest.importorskip("numpy")
     code = f"""
+import dis
 import signal
 
 import numpy as np
 
 from fpstreams import _native
 
-values = np.arange({size}, dtype=np.int64)
-original_size = values.size
-handled_signal = False
+endpoint = getattr(_native, {endpoint_name!r})
 
 
-def resize_exporter(_signum, _frame):
+def invoke():
+    return endpoint(values, [])
+
+
+call_offset = next(
+    instruction.offset for instruction in dis.get_instructions(invoke)
+    if instruction.opname == "CALL"
+)
+
+
+def resize_exporter(_signum, frame):
     global handled_signal
-    handled_signal = True
-    values.resize(1, refcheck=False)
+    # A signal before entering the native call is not a buffer-safety probe.
+    if frame.f_code is invoke.__code__ and frame.f_lasti == call_offset:
+        handled_signal = True
+        values.resize(1, refcheck=False)
 
 
 signal.signal(signal.SIGALRM, resize_exporter)
-signal.setitimer(signal.ITIMER_REAL, 0.0005, 0)
-try:
-    result = getattr(_native, {endpoint_name!r})(values, [])
-finally:
-    signal.setitimer(signal.ITIMER_REAL, 0)
+for attempt in range(10):
+    values = np.arange({size}, dtype=np.int64)
+    original_size = values.size
+    handled_signal = False
+    # Fast release builds can finish before 0.5 ms. Retry only missed signal
+    # windows with a shorter delay; every computed result must still be correct.
+    signal.setitimer(signal.ITIMER_REAL, 0.0005 / (2 ** attempt), 0)
+    try:
+        result = invoke()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
-assert handled_signal
-assert values.size == 1
-assert result == (original_size - 1) / 2
+    assert result == (original_size - 1) / 2
+    if handled_signal:
+        assert values.size == 1
+        break
+    assert values.size == original_size
+else:
+    raise AssertionError("signal missed the native call in all 10 attempts")
+
 """
 
     completed = subprocess.run(
