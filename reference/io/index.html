@@ -1759,6 +1759,11 @@ untrusted values into SQL text.</p>
 <p>Rows-specific output signatures are available only after entering the Rows view.
 For example, <code>flow(records).rows().to_csv(...)</code> exposes <code>fieldnames</code>, header, and
 extra-field policies; <code>Flow.to_csv(...)</code> accepts arbitrary value shapes.</p>
+<p>Record conversion failures propagate, including <code>StopIteration</code> from a record’s
+<code>_asdict()</code> method. They do not mean that the source is empty. SQLite validates
+the first record before replacing an existing table, so a conversion failure
+leaves that table intact. CSV output is streamed to the destination and is not
+transactional.</p>
 <h2 id="spreadsheet-safety">Spreadsheet safety</h2>
 <p>CSV intended for Excel, Sheets, or similar applications can treat leading
 characters such as <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</code> as formulas. Set

@@ -1399,6 +1399,13 @@ for debugging or controlled deployment requirements:</p>
 <li>global operators such as in-memory sorting, exact grouping, pivoting, and
   <code>to_list</code> must retain data proportional to the input or output.</li>
 </ul>
+<p><code>chunk(size)</code>, <code>window(size, step=...)</code>, and <code>batch_by_size(max_size,
+max_count=...)</code> require positive integer bounds in both sync and async pipelines.
+They accept objects with <code>__index__</code>, normalize each bound when you build the
+pipeline, and reject floats (including NaN and infinity) before opening the source.
+For <code>batch_by_size</code>, <code>max_count=None</code> leaves the item count unlimited. If
+<code>get_size</code> can return zero, set <code>max_count</code> to bound the number of retained items;
+<code>max_size</code> measures your callback’s units, not the batch’s memory usage.</p>
 <p>Large global operations can use spill settings. Exceeding a configured
 partition, fan-out, output, or byte budget raises <code>BufferLimitError</code> and ends
 the query.</p>
