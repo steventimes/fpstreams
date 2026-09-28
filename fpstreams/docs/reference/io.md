@@ -282,6 +282,12 @@ Rows-specific output signatures are available only after entering the Rows view.
 For example, `flow(records).rows().to_csv(...)` exposes `fieldnames`, header, and
 extra-field policies; `Flow.to_csv(...)` accepts arbitrary value shapes.
 
+Record conversion failures propagate, including `StopIteration` from a record’s
+`_asdict()` method. They do not mean that the source is empty. SQLite validates
+the first record before replacing an existing table, so a conversion failure
+leaves that table intact. CSV output is streamed to the destination and is not
+transactional.
+
 ## Spreadsheet safety
 
 CSV intended for Excel, Sheets, or similar applications can treat leading

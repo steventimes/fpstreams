@@ -118,9 +118,10 @@ def _first_record(
 ) -> Mapping[str, Any] | None:
     """Read and convert the first source item, or return None for an empty source."""
     try:
-        return as_record(next(iterator))
+        first = next(iterator)
     except StopIteration:
         return None
+    return as_record(first)
 
 
 def _output_names(

@@ -13,6 +13,15 @@ including changed defaults.
 
 ### Fixed
 
+- CSV and SQLite record sinks propagate `StopIteration` from first-record
+  conversion instead of treating it as empty input. SQLite replacement leaves
+  the existing table intact when that conversion fails.
+
+- Sync and async `chunk`, `window`, and `batch_by_size` validate integer bounds
+  before execution, including their aliases. Floats, NaN, and infinity now raise
+  `TypeError` instead of failing after source consumption or leaving async batches
+  unbounded. Objects implementing `__index__` are normalized once per bound.
+
 - `unique()`, `unique_by()`, and `Pairs.unique_keys()` propagate equality errors
   instead of treating them as unhashable keys. Hash callbacks keep their existing
   lookup and insertion counts.

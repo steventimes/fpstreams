@@ -166,6 +166,14 @@ Operations fall into three broad memory shapes:
 - global operators such as in-memory sorting, exact grouping, pivoting, and
   `to_list` must retain data proportional to the input or output.
 
+`chunk(size)`, `window(size, step=...)`, and `batch_by_size(max_size,
+max_count=...)` require positive integer bounds in both sync and async pipelines.
+They accept objects with `__index__`, normalize each bound when you build the
+pipeline, and reject floats (including NaN and infinity) before opening the source.
+For `batch_by_size`, `max_count=None` leaves the item count unlimited. If
+`get_size` can return zero, set `max_count` to bound the number of retained items;
+`max_size` measures your callback’s units, not the batch’s memory usage.
+
 Large global operations can use spill settings. Exceeding a configured
 partition, fan-out, output, or byte budget raises `BufferLimitError` and ends
 the query.

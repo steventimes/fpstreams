@@ -902,8 +902,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow of non-overlapping tuples, including a final shorter tuple when needed.
 
         Raises:
+            TypeError: If size does not support the integer index protocol.
             ValueError: If size is less than one.
         """
+        size = operator.index(size)
         if size < 1:
             raise ValueError("size must be at least 1")
         return cast(AsyncFlow[tuple[T, ...]], self._append(_Chunk(size)))
@@ -922,8 +924,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 produces one partial window; otherwise, partial trailing windows are omitted.
 
         Raises:
+            TypeError: If size or step does not support the integer index protocol.
             ValueError: If size or step is less than one.
         """
+        size = operator.index(size)
+        step = operator.index(step)
         if size <= 0:
             raise ValueError("window size must be positive")
         if step <= 0:
@@ -1231,7 +1236,14 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow of non-empty tuple batches within the size and count limits.
                 With `strict=False`, an item larger than `max_size` is emitted in its own
                 batch.
+
+        Raises:
+            TypeError: If a bound does not support the integer index protocol.
+            ValueError: If a bound is less than one.
         """
+        max_size = operator.index(max_size)
+        if max_count is not None:
+            max_count = operator.index(max_count)
         if max_size <= 0:
             raise ValueError("max_size must be positive")
         if max_count is not None and max_count <= 0:

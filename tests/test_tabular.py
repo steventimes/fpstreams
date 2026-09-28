@@ -22626,3 +22626,42 @@ def test_spilled_group_lookup_propagates_restored_key_error(tmp_path):
             .to_list()
         )
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("destination", ["csv", "sqlite_append", "sqlite_replace"])
+@pytest.mark.parametrize("explicit_columns", [False, True])
+def test_record_sink_first_conversion_stopiteration_is_not_empty_input(
+    tmp_path, destination, explicit_columns
+):
+    failure = StopIteration("first record conversion failed")
+    events = []
+
+    class Record:
+        def _asdict(self):
+            events.append("convert")
+            raise failure
+
+    def source():
+        try:
+            yield Record()
+            events.append("unexpected second pull")
+            yield {"id": 9}
+        finally:
+            events.append("close")
+
+    database = tmp_path / "records.sqlite"
+    fpstreams.rows([{"id": 42}]).to_sqlite(database, "events")
+    query = fpstreams.rows(source())
+    with pytest.raises(StopIteration) as caught:
+        if destination == "csv":
+            query.to_csv(tmp_path / "records.csv", fieldnames=["id"] if explicit_columns else None)
+        else:
+            query.to_sqlite(
+                database,
+                "events",
+                if_exists=destination.removeprefix("sqlite_"),
+                columns=["id"] if explicit_columns else None,
+            )
+    assert caught.value is failure
+    assert events == ["convert", "close"]
+    assert fpstreams.rows.from_sqlite(database, "SELECT * FROM events").to_list() == [{"id": 42}]

@@ -558,11 +558,13 @@ class RowsIOMixin(Generic[T]):
             open(path, "w", encoding=encoding, newline="") as handle,
         ):
             try:
-                first = _as_record(next(iterator))
+                first_row = next(iterator)
             except StopIteration:
                 if names is not None and include_header:
                     csv.DictWriter(handle, fieldnames=names).writeheader()
                 return
+            first = _as_record(first_row)
+            del first_row
             output_names = names or tuple(first)
             if not output_names:
                 raise ValueError("cannot infer CSV columns from an empty record")

@@ -9315,3 +9315,114 @@ def test_iterator_cleanup_preserves_nested_failure_notes(primary_failure):
     assert caught.value is (primary if primary_failure else first)
     assert events == [first, nested]
     assert "another owned resource also failed" in caught.value.__notes__
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("operation", "parameter", "options"),
+    [
+        ("chunk", "size", {}),
+        ("batch", "size", {}),
+        ("window", "size", {}),
+        ("window", "step", {"size": 2}),
+        ("batch_by_size", "max_size", {}),
+        ("batch_by_size", "max_count", {"max_size": 4}),
+        ("constrained_batches", "max_size", {}),
+    ],
+)
+@pytest.mark.parametrize("invalid", [1.5, 2.0, float("nan"), float("inf"), "2", None])
+def test_batch_bounds_reject_non_integers_before_opening_source(
+    asynchronous, operation, parameter, options, invalid
+):
+    events = []
+
+    def source():
+        events.append("opened")
+        yield b"a"
+
+    query = fpstreams.aflow(source()) if asynchronous else flow(source())
+    if parameter == "max_count" and invalid is None:
+        assert getattr(query, operation)(**options, max_count=None) is not query
+    else:
+        with pytest.raises(TypeError):
+            getattr(query, operation)(**options, **{parameter: invalid})
+    assert events == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "operation", ["chunk", "batch", "window", "batch_by_size", "constrained_batches"]
+)
+async def test_batch_bounds_normalize_index_once(asynchronous, operation):
+    events = []
+
+    class Bound:
+        def __index__(self):
+            events.append("index")
+            return 2
+
+    def source():
+        events.append("opened")
+        yield from (b"a", b"b", b"c")
+
+    query = fpstreams.aflow(source()) if asynchronous else flow(source())
+    query = getattr(query, operation)(Bound())
+    assert events == ["index"]
+    actual = await query.to_list() if asynchronous else query.to_list()
+    expected = [(b"a", b"b"), (b"b", b"c")] if operation == "window" else [(b"a", b"b"), (b"c",)]
+    assert actual == expected
+    assert events == ["index", "opened"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("parameter", ["size", "step", "max_size", "max_count"])
+@pytest.mark.parametrize("bound", [0, -1])
+def test_batch_bounds_reject_nonpositive_integers(asynchronous, parameter, bound):
+    query = fpstreams.aflow([]) if asynchronous else flow([])
+    with pytest.raises(ValueError):
+        if parameter == "size":
+            query.chunk(bound)
+        elif parameter == "step":
+            query.window(2, step=bound)
+        elif parameter == "max_size":
+            query.batch_by_size(bound)
+        else:
+            query.batch_by_size(4, max_count=bound)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("parameter", ["step", "max_count"])
+async def test_batch_secondary_bounds_normalize_index_once(asynchronous, parameter):
+    calls = []
+
+    class Bound:
+        def __index__(self):
+            calls.append("index")
+            return 2
+
+    query = fpstreams.aflow([b"a", b"b", b"c"]) if asynchronous else flow([b"a", b"b", b"c"])
+    if parameter == "step":
+        query = query.window(2, step=Bound())
+        expected = [(b"a", b"b")]
+    else:
+        query = query.batch_by_size(10, max_count=Bound())
+        expected = [(b"a", b"b"), (b"c",)]
+    assert calls == ["index"]
+    actual = await query.to_list() if asynchronous else query.to_list()
+    assert actual == expected
+    assert calls == ["index"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("operation", ["chunk", "window", "batch_by_size"])
+def test_batch_bounds_preserve_index_exception(asynchronous, operation):
+    failure = TypeError("user index failed")
+
+    class Bound:
+        def __index__(self):
+            raise failure
+
+    query = fpstreams.aflow([]) if asynchronous else flow([])
+    with pytest.raises(TypeError) as caught:
+        getattr(query, operation)(Bound())
+    assert caught.value is failure
