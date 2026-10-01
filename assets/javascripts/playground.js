@@ -100,7 +100,10 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
     const commit = /^[0-9a-f]{7,64}$/i.test(payload.commit || "")
       ? payload.commit.slice(0, 12)
       : "unknown commit";
-    return `Development build · ${commit} · ${engine}`;
+    const changes = payload.dirty === true
+      ? " · local changes"
+      : payload.dirty === false ? "" : " · working tree unknown";
+    return `Development build · fpstreams ${payload.version} · ${commit}${changes} · ${engine}`;
   }
 
   function setControls() {

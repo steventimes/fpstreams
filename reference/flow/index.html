@@ -807,6 +807,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Flow.to_jsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_jsonl
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Flow.describe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1522,6 +1533,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Flow.merge_sorted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        merge_sorted
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Flow.concat" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1897,6 +1919,28 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#merging-sorted-inputs-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merging sorted inputs (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-exports-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File exports (current source)
+      
+    </span>
+  </a>
   
 </li>
       
@@ -2389,6 +2433,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Flow.to_jsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_jsonl
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Flow.describe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3104,6 +3159,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Flow.merge_sorted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        merge_sorted
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Flow.concat" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3479,6 +3545,28 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#merging-sorted-inputs-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merging sorted inputs (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-exports-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File exports (current source)
+      
+    </span>
+  </a>
   
 </li>
       
@@ -4048,7 +4136,9 @@ the file and returns <code>None</code>.</p>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">header</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">spreadsheet_safe</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">atomic</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">if_exists</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;replace&quot;</span><span class="p">,</span> <span class="s2">&quot;error&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;replace&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4124,12 +4214,45 @@ the file and returns <code>None</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Prefix formula-like string cells so spreadsheet software treats them
-as text.</p>
+                <p>Prefix formula-like string cells, including headers, so spreadsheet
+software treats them as text. Mapping keys used for lookup remain unchanged.</p>
               </div>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>atomic</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Publish after the writer and source close successfully.
+Writing or source-cleanup failures preserve the old target.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>if_exists</code>
+            </td>
+            <td>
+                  <code><span title="typing.Literal">Literal</span>[&#39;replace&#39;, &#39;error&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>With atomic=True, replace the target or fail if it already exists.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;replace&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -4154,7 +4277,9 @@ as text.</p>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ensure_ascii</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">default</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">atomic</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">if_exists</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;replace&quot;</span><span class="p">,</span> <span class="s2">&quot;error&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;replace&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4235,6 +4360,181 @@ as text.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>atomic</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Publish after the writer and source close successfully.
+Writing or source-cleanup failures preserve the old target.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>if_exists</code>
+            </td>
+            <td>
+                  <code><span title="typing.Literal">Literal</span>[&#39;replace&#39;, &#39;error&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>With atomic=True, replace the target or fail if it already exists.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;replace&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Flow.to_jsonl" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">to_jsonl</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">to_jsonl</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">encoding</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ensure_ascii</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">default</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">atomic</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">if_exists</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;replace&quot;</span><span class="p">,</span> <span class="s2">&quot;error&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;replace&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Stream each item as one JSON value followed by a newline.</p>
+<p>Values may be scalars, sequences, or records. An empty flow writes an empty file.
+This terminal consumes the source once without collecting the output in memory.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | <span title="os.PathLike">PathLike</span>[<span title="str">str</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Destination JSON Lines file.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>encoding</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Encoding used when opening the destination.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;utf-8&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>ensure_ascii</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whether JSON output escapes non-ASCII characters.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>default</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="typing.Any">Any</span>], <span title="typing.Any">Any</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional serializer called for objects the JSON encoder cannot handle.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>atomic</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Publish after the writer and source close successfully.
+Writing or source-cleanup failures preserve the old target.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>if_exists</code>
+            </td>
+            <td>
+                  <code><span title="typing.Literal">Literal</span>[&#39;replace&#39;, &#39;error&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>With atomic=True, replace the target or fail if it already exists.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;replace&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -9859,6 +10159,103 @@ lengths.</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="fpstreams.Flow.merge_sorted" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">merge_sorted</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">merge_sorted</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">other</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">T</span><span class="p">]</span> <span class="o">|</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">key</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Stably merge two ascending inputs, returning the original objects.</p>
+<p>Keys must have one fixed exact builtin int, str, bytes, or flat tuple shape.
+Checks cover consumed rows. Equal keys from the left are emitted first.
+Each input has at most one lookahead row; inputs are never sorted here.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>other</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Iterable">Iterable</span>[<span title="fpstreams.streams.flow.T">T</span>] | <a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Another sorted iterable or Flow.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>key</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.expressions.selectors.Selector">Selector</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Shared selector, or None to compare the items themselves.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A lazy two-input Flow. Closing it closes both owned input iterators.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="fpstreams.Flow.concat" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">concat</span>
 
@@ -11967,7 +12364,33 @@ Remaining items pass through without further predicate calls.</p>
 
     </div>
 
-</div>
+</div><h2 id="merging-sorted-inputs-current-source">Merging sorted inputs (current source)</h2>
+<p><code>merge_sorted(other, key=None)</code> checks ascending keys while consuming two inputs.
+Keys must be exact int, str, bytes, or nonempty flat tuples with one fixed type
+per position across both inputs. Equal keys from the left come first; output
+objects are the original inputs. Each side has one lookahead row.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">merge_sorted</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
+</code></pre></div>
+<p>The API is absent from the published 2.1.0 wheel. It uses Python in <code>auto</code> mode;
+forcing native is unsupported. Iterator aliasing is rejected before the first
+pull, and both owned inputs are closed on errors or early termination. Nested
+merges keep one pair of cursors per merge; they are not a heap-based k-way merge.</p>
+<p>Sorted paired operations acquire their branch source iterators left to right,
+without pulling rows, before either input runs. This includes source leaves in
+composed branches, so a shared underlying iterator can be rejected before it is
+read. Each acquired iterator closes once, even if a branch never yields a row.
+An outer <code>take(0)</code> does not start this acquisition phase.</p>
+<h2 id="file-exports-current-source">File exports (current source)</h2>
+<p><code>to_jsonl()</code> writes one JSON value per line, including scalars and records. Use
+<code>default</code> for custom serialization and <code>ensure_ascii</code> to control Unicode escaping.
+The source is consumed once and the output is written incrementally.</p>
+<p><code>to_csv()</code>, <code>to_json()</code>, and <code>to_jsonl()</code> accept <code>atomic=True</code> to preserve the old
+target until writing and source cleanup succeed. <code>if_exists="error"</code> requires
+atomic output and prevents overwriting a concurrently created target. See
+<a href="../io/#atomic-flow-file-output-current-source">atomic file output</a> for examples
+and filesystem limits. These additions are absent from published 2.1.0.</p>
 
 
 

@@ -488,6 +488,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#inputs-that-are-already-sorted-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs that are already sorted (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1182,6 +1193,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#inputs-that-are-already-sorted-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs that are already sorted (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1438,6 +1460,48 @@ different physical paths. They also keep engine choice from changing user code.<
 <li>Read <a href="../performance/">performance and execution</a> before tuning a workload.</li>
 <li>Use the <a href="../../playground/">browser playground</a> to try core APIs immediately.</li>
 </ul>
+<h2 id="inputs-that-are-already-sorted-current-source">Inputs that are already sorted (current source)</h2>
+<p>These APIs are available in the checkout, but are not part of published 2.1.0.
+They consume ascending inputs without building a hash index over the whole source.
+Keys must be exact built-in integers, strings, bytes, or nonempty flat tuples of
+these types. Each key position must keep the same type across both inputs.</p>
+<p>Group paid orders that already arrive in region order:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">orders</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">12</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">36</span><span class="p">},</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>          <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;us&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">20</span><span class="p">}]</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">flow</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span><span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">group_by_sorted</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">orders</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span> <span class="n">revenue</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;amount&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">())</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1"># [{&#39;region&#39;: &#39;eu&#39;, &#39;orders&#39;: 2, &#39;revenue&#39;: 48},</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="c1">#  {&#39;region&#39;: &#39;us&#39;, &#39;orders&#39;: 1, &#39;revenue&#39;: 20}]</span>
+</code></pre></div>
+<p>Merge two chronological logs. Equal timestamps keep the left input first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">left</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;time&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;event&quot;</span><span class="p">:</span> <span class="s2">&quot;start&quot;</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;time&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;event&quot;</span><span class="p">:</span> <span class="s2">&quot;end&quot;</span><span class="p">}]</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">right</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;time&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;event&quot;</span><span class="p">:</span> <span class="s2">&quot;update&quot;</span><span class="p">}]</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">flow</span><span class="p">(</span><span class="n">left</span><span class="p">)</span><span class="o">.</span><span class="n">merge_sorted</span><span class="p">(</span><span class="n">right</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;time&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">())</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="c1"># [{&#39;time&#39;: 1, &#39;event&#39;: &#39;start&#39;}, {&#39;time&#39;: 2, &#39;event&#39;: &#39;update&#39;},</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1">#  {&#39;time&#39;: 3, &#39;event&#39;: &#39;end&#39;}]</span>
+</code></pre></div>
+<p>Join sorted order details to a sorted customer table:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">orders</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;customer&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">12</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;customer&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">36</span><span class="p">}]</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">customers</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;customer&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Ana&quot;</span><span class="p">}]</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">flow</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span><span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">join_sorted</span><span class="p">(</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="n">customers</span><span class="p">,</span> <span class="n">on</span><span class="o">=</span><span class="s2">&quot;customer&quot;</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="s2">&quot;m:1&quot;</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">())</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="c1"># [{&#39;customer&#39;: 1, &#39;amount&#39;: 12, &#39;name&#39;: &#39;Ana&#39;},</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="c1">#  {&#39;customer&#39;: 1, &#39;amount&#39;: 36, &#39;name&#39;: &#39;Ana&#39;}]</span>
+</code></pre></div>
+<p>Ordering and cardinality checks apply only to consumed rows. <code>take()</code> does not
+scan the remainder for errors. Grouping keeps current collector state, which can
+still grow if a collector stores every value. A sorted join buffers the current
+right key group before its first match; a large duplicate group delays that result.
+Join limits count rows, not bytes, so one large record can still use substantial
+memory. These operations currently run in Python.</p>
 
 
 

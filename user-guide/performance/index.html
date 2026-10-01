@@ -516,6 +516,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#choosing-explicit-sorted-operations-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing explicit sorted operations (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1182,6 +1193,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#choosing-explicit-sorted-operations-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing explicit sorted operations (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1575,6 +1597,45 @@ lack the required fields need to be regenerated.</p>
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The <a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
+<h2 id="choosing-explicit-sorted-operations-current-source">Choosing explicit sorted operations (current source)</h2>
+<p>Use <code>group_by_sorted()</code>, <code>merge_sorted()</code>, and <code>join_sorted()</code> when inputs are
+already in ascending key order and you need incremental output or bounded state.
+They do not sort the input for you. They currently execute in Python and are
+absent from published 2.1.0.</p>
+<p>The sorted group holds current collector state and one lookahead row; collectors
+that retain values can still grow. A merge holds one lookahead per input. A join
+holds the current right key group and lookahead, with finite row budgets. Rows
+can contain large objects, so row limits are not byte limits. Large duplicate
+right groups delay the first joined row. Checks apply to the consumed prefix;
+short-circuiting does not validate an unread tail.</p>
+<p>The September 29 measurements on CPython 3.12.13 compared these APIs with ordinary grouping,
+concatenation plus stable sorting, and hash joins in the same checkout, using the
+Python engine. Inputs were prepared records in lists or fresh generator views,
+with duplicate and skewed keys, at 1,000, 10,000, and 100,000 rows. Three sequential
+workers recorded seven samples per task. Data construction, route observation,
+complete-content assertions, and allocation tracing were outside timing. Each
+sample ran the actual Flow/Rows operation, including construction and planning.</p>
+<p>Across these cases, complete consumption took about 4.93 times as long for sorted
+grouping, 12.38 times for sorted merging, and 3.71 times for sorted joins. First-row
+and early-stop cases were faster overall, but skewed joins could still regress.
+The worst individual case was a complete sorted merge at about 14.94 times its
+ordinary counterpart. All three workers agreed on the overall direction within
+each operation/consumption group. These results do not establish a universal
+speed advantage. Prefer ordinary operations when full-consumption throughput is
+the priority, and measure your actual data before choosing a sorted path.</p>
+<p>Measured Python allocation peaks were lower in aggregate. Those peaks exclude
+prepared input objects and untracked native allocations, and are not RSS. The
+raw local reports and worker summaries are under
+<code>artifacts/next-releases/20260929T210456Z/D03/</code>; generated reports are ignored and
+are not published as a CI baseline.</p>
+<p>The competitive runner includes 36 <code>sorted.*</code> cases for full consumption, first
+output, and stopping after 16 outputs. It validates complete ordered values
+before timing, including full-consumption tasks whose timed terminal is <code>count()</code>.
+For larger benchmark sizes, join row budgets explicitly scale to cover the
+fixture; library defaults remain unchanged. To reproduce this local comparison:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;sorted.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">7</span><span class="w"> </span>--json<span class="w"> </span>artifacts/sorted-10000.json
+</code></pre></div>
 
 
 

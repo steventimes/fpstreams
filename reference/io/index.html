@@ -934,6 +934,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#json-lines-output-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Lines output (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#atomic-flow-file-output-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Atomic file output (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1326,6 +1348,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#json-lines-output-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Lines output (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#atomic-flow-file-output-current-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Atomic file output (current source)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1701,6 +1745,12 @@ untrusted values into SQL text.</p>
 <td>None</td>
 </tr>
 <tr>
+<td><code>Flow.to_jsonl</code> (unreleased)</td>
+<td>One JSON value per line</td>
+<td>Streams values to the destination</td>
+<td>None</td>
+</tr>
+<tr>
 <td><code>Flow.to_csv</code></td>
 <td>scalar/sequence/mapping CSV file</td>
 <td>Streams rows to file</td>
@@ -1762,14 +1812,17 @@ extra-field policies; <code>Flow.to_csv(...)</code> accepts arbitrary value shap
 <p>Record conversion failures propagate, including <code>StopIteration</code> from a record’s
 <code>_asdict()</code> method. They do not mean that the source is empty. SQLite validates
 the first record before replacing an existing table, so a conversion failure
-leaves that table intact. CSV output is streamed to the destination and is not
-transactional.</p>
+leaves that table intact. CSV and JSONL write directly by default; use the
+unreleased <code>atomic=True</code> option below when a failed export must preserve the old file.</p>
 <h2 id="spreadsheet-safety">Spreadsheet safety</h2>
 <p>CSV intended for Excel, Sheets, or similar applications can treat leading
 characters such as <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</code> as formulas. Set
-<code>spreadsheet_safe=True</code> for untrusted text. fpstreams prefixes suspect cells with
-a single quote. Leave it disabled for machine interchange where byte-level value
-preservation is required.</p>
+<code>spreadsheet_safe=True</code> for untrusted text. fpstreams prefixes suspect strings with
+a single quote, including strings with leading whitespace. The current source
+also protects header cells, whether supplied explicitly or inferred from record
+keys. Header protection is not in the published 2.1.0 wheel. It changes the written
+labels, while record lookup still uses the original keys. Numeric values are
+unchanged. Leave this option disabled when a consumer needs the original strings.</p>
 <h2 id="files-errors-and-partial-effects">Files, errors, and partial effects</h2>
 <p>Read adapters close the files and connections they open on completion, early
 termination, and failure. Writers may stream directly, replace a completed file,
@@ -1791,6 +1844,53 @@ write may leave partial output.</p>
 Pyodide worker. It is meant for in-memory core examples. Browser security does
 not expose arbitrary local paths, normal process pools, or the CPython/Rust
 extension. Use the installed package for production I/O and native execution.</p>
+<h2 id="json-lines-output-current-source">JSON Lines output (current source)</h2>
+<p>Use <code>Flow.to_jsonl()</code> for arbitrary JSON values and <code>Rows.to_jsonl()</code> for records.
+Both write one value per line, consume the source once, and write an empty file
+for an empty input. Neither collects the whole result in memory. Flow's method
+is new; Rows now also accepts <code>default</code> to serialize dates and other custom values:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">date</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">rows</span><span class="p">([{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;day&quot;</span><span class="p">:</span> <span class="n">date</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">30</span><span class="p">)}])</span><span class="o">.</span><span class="n">to_jsonl</span><span class="p">(</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="s2">&quot;events.jsonl&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">default</span><span class="o">=</span><span class="n">date</span><span class="o">.</span><span class="n">isoformat</span><span class="p">,</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">atomic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">if_exists</span><span class="o">=</span><span class="s2">&quot;error&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">)</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="c1"># events.jsonl contains: {&quot;id&quot;: 1, &quot;day&quot;: &quot;2026-09-30&quot;}</span>
+</code></pre></div>
+<p><code>ensure_ascii=False</code> preserves Unicode text; <code>encoding</code> defaults to UTF-8.
+<code>rows.from_jsonl()</code> reads object records, so it cannot read scalar lines written
+by Flow. These additions are absent from the published 2.1.0 wheel.</p>
+<h2 id="atomic-flow-file-output-current-source">Atomic file output (current source)</h2>
+<p><code>Flow.to_csv()</code>, <code>Flow.to_json()</code>, <code>Flow.to_jsonl()</code>, <code>Rows.to_csv()</code>, and
+<code>Rows.to_jsonl()</code> accept <code>atomic=True</code>. They write a temporary
+file in the destination directory and publish it only after the writer and source
+close successfully. A serialization or cleanup error preserves the old target.
+Relative destinations are anchored to the working directory before the source
+opens, so a callback changing directories cannot redirect publication.
+Their default remains <code>atomic=False</code>, with the existing direct-write behavior.</p>
+<p>For example, export a report without replacing the last successful result if
+conversion fails halfway through:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">rows</span><span class="p">([{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;revenue&quot;</span><span class="p">:</span> <span class="mi">48</span><span class="p">}])</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="s2">&quot;report.csv&quot;</span><span class="p">,</span> <span class="n">atomic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">spreadsheet_safe</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">)</span>
+</code></pre></div>
+<p>With atomic output, <code>if_exists="replace"</code> replaces the destination directory entry.
+<code>if_exists="error"</code> uses an atomic no-overwrite operation and raises
+<code>FileExistsError</code> if another writer creates the target first. Filesystems that do
+not support this operation fail explicitly. Existing symlinks, including dangling
+ones, are rejected. <code>if_exists="error"</code> requires <code>atomic=True</code>.</p>
+<p>This is an atomic visibility guarantee for a file path, not a promise of durability
+after power loss or a transaction across a network filesystem. File handles are
+not accepted. The temporary file's permissions become the output permissions;
+replacement does not preserve the old file's mode or ownership. Destination
+directories must be trusted: anchoring a path does not protect against another
+process renaming its parent directories. These options are in the checkout and
+are absent from published 2.1.0.</p>
 
 
 
