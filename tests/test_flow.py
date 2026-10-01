@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import pytest
@@ -7302,10 +7303,13 @@ def test_exact_numeric_mean_abi_handles_mixed_builtins_without_protocol_dispatch
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
+@pytest.mark.parametrize("initial_delay", [0.0, 0.001], ids=["missed-first-alarm", "normal-alarm"])
 def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
     monkeypatch: pytest.MonkeyPatch,
+    initial_delay: float,
 ) -> None:
     """A late decline never replays a prefix mutated by a mid-probe signal callback."""
+    import dis
     import signal
     from fractions import Fraction
 
@@ -7315,24 +7319,46 @@ def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
     original_size = 600_000
     original: list[object] = list(range(original_size))
     original[400_000] = Fraction(1, 3)
-    values = original.copy()
+    original_mean = compensated_mean(original)
     expected_values = original[100_000:]
     expected_values[300_000] = 7
     expected = compensated_mean(expected_values)
     previous = signal.getsignal(signal.SIGALRM)
-    handled_signal = False
     extension = native._native
+
+    def invoke() -> object:
+        return extension.mean_exact_numbers_v1(values)
+
+    # CPython 3.11 can execute a specialized built-in call at PRECALL after warmup.
+    call_offsets = {
+        instruction.offset
+        for instruction in dis.get_instructions(invoke)
+        if instruction.opname in {"PRECALL", "CALL"}
+    }
 
     class AlarmNative:
         def mean_exact_numbers_v1(self, source: object) -> object:
-            signal.setitimer(signal.ITIMER_REAL, 0.001, 0)
-            return extension.mean_exact_numbers_v1(source)
+            assert source is values
+            signal.setitimer(signal.ITIMER_REAL, delay, 0)
+            try:
+                outcome = invoke()
+            finally:
+                # Never let a missed alarm mutate the subsequent Python fallback.
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            assert outcome == (False, None)
+            return outcome
 
         def __getattr__(self, name: str) -> object:
             return getattr(extension, name)
 
-    def shrink_front_and_replace_late_value(_signum: int, _frame: object) -> None:
+    def shrink_front_and_replace_late_value(_signum: int, frame: FrameType | None) -> None:
         nonlocal handled_signal
+        if (
+            frame is None
+            or frame.f_code is not invoke.__code__
+            or frame.f_lasti not in call_offsets
+        ):
+            return
         handled_signal = True
         del values[:100_000]
         values[300_000] = 7
@@ -7340,14 +7366,22 @@ def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
     signal.signal(signal.SIGALRM, shrink_front_and_replace_late_value)
     monkeypatch.setattr(native, "_native", AlarmNative())
     try:
-        result = fpstreams.flow(values).mean()
+        for attempt in range(10):
+            values = original.copy()
+            handled_signal = False
+            # Retry only missed signal windows, never an incorrect native or fallback result.
+            # A zero initial delay exercises a missed window without depending on CPU speed.
+            delay = initial_delay if attempt == 0 else 0.001 / (2**attempt)
+            result = fpstreams.flow(values).mean()
+            assert values == (expected_values if handled_signal else original)
+            assert result == (expected if handled_signal else original_mean)
+            if handled_signal:
+                break
+        else:
+            pytest.fail("signal missed the native mean call in all 10 attempts")
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
-
-    assert handled_signal is True
-    assert values == expected_values
-    assert result == expected
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
@@ -7375,41 +7409,77 @@ def test_exact_numeric_mean_delivers_pending_keyboard_interrupt_at_return_bounda
 
 @pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
 @pytest.mark.parametrize("kind", ["i64", "f64"])
-def test_typed_mean_late_mismatch_is_atomic_before_signal_mutation(kind: str) -> None:
+@pytest.mark.parametrize("initial_delay", [0.0, 0.001], ids=["missed-first-alarm", "normal-alarm"])
+def test_typed_mean_late_mismatch_is_atomic_before_signal_mutation(
+    kind: str,
+    initial_delay: float,
+) -> None:
     """Typed compatibility endpoints cannot turn a late mismatch into a replayed success."""
+    import dis
     import signal
 
     from fpstreams import _native
 
     if kind == "i64":
-        values: list[object] = [1] * 600_000
-        values[400_000] = 1.5
+        original: list[object] = [1] * 600_000
+        original[400_000] = 1.5
         replacement: object = 7
         endpoint = _native.mean_i64
     else:
-        values = [1.0] * 600_000
-        values[400_000] = 7
+        original = [1.0] * 600_000
+        original[400_000] = 7
         replacement = 7.0
         endpoint = _native.mean_f64
     previous = signal.getsignal(signal.SIGALRM)
-    handled_signal = False
 
-    def shrink_front_and_repair_mismatch(_signum: int, _frame: object) -> None:
+    def invoke() -> object:
+        try:
+            return endpoint(values, [])
+        finally:
+            # Disarm before propagating TypeError; this also delivers any signal
+            # still pending after the native exception, within the observed frame.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    call_offsets = {
+        instruction.offset
+        for instruction in dis.get_instructions(invoke)
+        if instruction.opname in {"PRECALL", "CALL"}
+    }
+
+    def shrink_front_and_repair_mismatch(_signum: int, frame: FrameType | None) -> None:
         nonlocal handled_signal
+        if (
+            frame is None
+            or frame.f_code is not invoke.__code__
+            or frame.f_lasti not in call_offsets
+        ):
+            return
         handled_signal = True
         del values[:100_000]
         values[300_000] = replacement
 
     signal.signal(signal.SIGALRM, shrink_front_and_repair_mismatch)
-    signal.setitimer(signal.ITIMER_REAL, 0.001, 0)
     try:
-        with pytest.raises(TypeError):
-            endpoint(values, [])
+        for attempt in range(10):
+            values = original.copy()
+            handled_signal = False
+            delay = initial_delay if attempt == 0 else 0.001 / (2**attempt)
+            try:
+                with pytest.raises(TypeError):
+                    signal.setitimer(signal.ITIMER_REAL, delay, 0)
+                    invoke()
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            if handled_signal:
+                assert len(values) == 500_000
+                assert values[300_000] == replacement
+                break
+            assert values == original
+        else:
+            pytest.fail("signal missed the native mean call in all 10 attempts")
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
-
-    assert handled_signal is True
 
 
 def test_numpy_f64_identity_terminals_prefer_borrowed_v2_endpoints(
