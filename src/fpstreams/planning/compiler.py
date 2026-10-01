@@ -45,6 +45,7 @@ from ..physical.relational import (
     GroupLane,
     JoinPhysicalNode,
     JoinStrategy,
+    MergeSortedPhysicalNode,
     NativeFixedI64GroupSpec,
     NativeGlobalI64AggregateSpec,
     NativeGlobalI64LaneSpec,
@@ -62,6 +63,8 @@ from ..physical.relational import (
     PhysicalRelNode,
     PipelinePhysicalNode,
     SimpleGroupSumSpec,
+    SortedGroupAggregatePhysicalNode,
+    SortedJoinPhysicalNode,
     SourcePhysicalNode,
     SpillCountSpec,
 )
@@ -79,8 +82,11 @@ from .logical import (
     JoinNode,
     LogicalNode,
     LogicalPlan,
+    MergeSortedNode,
     Pipeline,
     Query,
+    SortedGroupAggregateNode,
+    SortedJoinNode,
     SourceNode,
     TerminalSpec,
     UnaryNode,
@@ -130,6 +136,7 @@ _NUMPY_GLOBAL_MIN_ROWS = 32
 _SINGLE_INPUT_RELATIONS = (
     PipelinePhysicalNode,
     GroupAggregatePhysicalNode,
+    SortedGroupAggregatePhysicalNode,
     GlobalAggregatePhysicalNode,
 )
 _EXPRESSION_PROGRAM_CACHE = KernelCache()
@@ -1391,7 +1398,17 @@ def _numpy_prefix_cache_signature(payload: BackendPayload) -> tuple[str, ...]:
 def _contains_relational(root: LogicalNode) -> bool:
     """Return whether a logical tree requires recursive relational compilation."""
     return any(
-        isinstance(node, (JoinNode, GroupAggregateNode, GlobalAggregateNode))
+        isinstance(
+            node,
+            (
+                JoinNode,
+                MergeSortedNode,
+                SortedJoinNode,
+                GroupAggregateNode,
+                SortedGroupAggregateNode,
+                GlobalAggregateNode,
+            ),
+        )
         for node in walk_logical(root)
     )
 
@@ -1430,6 +1447,38 @@ def _compile_relational_node(
             query.logical.engine,
             query.logical.parallel,
             current.source,
+        )
+    elif isinstance(current, MergeSortedNode):
+        from ..expressions.selectors import compile_selector
+
+        child_query = Query(query.logical.with_engine("python"), query.terminal)
+        physical = MergeSortedPhysicalNode(
+            (identifiers[id(current)],),
+            query.logical.engine,
+            query.logical.parallel,
+            _compile_relational_node(current.left, child_query, identifiers),
+            _compile_relational_node(current.right, child_query, identifiers),
+            compile_selector(current.key),
+        )
+    elif isinstance(current, SortedJoinNode):
+        from ..tabular.join import _compile_join_selector, _shared_join_names
+
+        child_query = Query(query.logical.with_engine("python"), query.terminal)
+        physical = SortedJoinPhysicalNode(
+            (identifiers[id(current)],),
+            query.logical.engine,
+            query.logical.parallel,
+            _compile_relational_node(current.left, child_query, identifiers),
+            _compile_relational_node(current.right, child_query, identifiers),
+            CompiledJoinSpec(
+                current.spec,
+                _compile_join_selector(current.spec.left_on),
+                _compile_join_selector(current.spec.right_on),
+                frozenset(_shared_join_names(current.spec.left_on, current.spec.right_on)),
+            ),
+            current.max_right_group_rows,
+            current.max_matches_per_left,
+            current.max_output_rows,
         )
     elif isinstance(current, JoinNode):
         from ..tabular.join import _compile_join_selector, _shared_join_names
@@ -1472,6 +1521,20 @@ def _compile_relational_node(
             _native_i64_join_spec(direct_join, spec),
             callable_join_validation == "m:1",
             callable_join_validation == "m:m",
+        )
+    elif isinstance(current, SortedGroupAggregateNode):
+        from ..expressions.selectors import compile_selector
+
+        # Keep upstream row reads lazy: auto materialization would consume future groups.
+        child_query = Query(query.logical.with_engine("python"), query.terminal)
+        input_node = _compile_relational_node(current.input, child_query, identifiers)
+        physical = SortedGroupAggregatePhysicalNode(
+            (identifiers[id(current)],),
+            query.logical.engine,
+            query.logical.parallel,
+            input_node,
+            tuple((name, compile_selector(selector)) for name, selector in current.spec.keys),
+            current.spec.aggregations,
         )
     elif isinstance(current, GroupAggregateNode):
         from ..tabular.join import _compile_join_selector, _compose_composite_selector
@@ -1560,7 +1623,9 @@ def _leftmost_source(root: PhysicalRelNode) -> Source[Any]:
     while not isinstance(current, SourcePhysicalNode):
         if isinstance(current, _SINGLE_INPUT_RELATIONS):
             current = current.input
-        elif isinstance(current, JoinPhysicalNode):
+        elif isinstance(
+            current, (JoinPhysicalNode, MergeSortedPhysicalNode, SortedJoinPhysicalNode)
+        ):
             current = current.left
         else:
             raise TypeError(f"unsupported physical relation: {type(current).__name__}")

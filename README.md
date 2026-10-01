@@ -8,8 +8,6 @@
 [Documentation](https://steventimes.github.io/fpstreams/) · [Browser playground](https://steventimes.github.io/fpstreams/playground/) · [Changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) · [Contributing](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
 
 Lazy Python pipelines for iterables and records, with bounded async concurrency.
-Read the [documentation](https://steventimes.github.io/fpstreams/) or try the
-[Python engine in the browser playground](https://steventimes.github.io/fpstreams/playground/).
 
 Python 3.11 or newer is required.
 
@@ -312,10 +310,10 @@ returns a terminal's value, recorded route, and query-owned resource counts in
 one execution. It records the outer plan and some direct paths; it does not
 identify every internal kernel or runtime fallback.
 
-For an unchanged list or tuple, automatic `list`, `sum`, and `count` terminals
-stay in Python instead of scanning and copying the container into Rust. Numeric
-range reductions can still use Rust. `count()` uses a known exact size in O(1)
-when no operation changes cardinality and the source is safely reiterable.
+Identity list and tuple materialization stays in Python. Large, supported integer
+sums and numeric range reductions may use Rust in `auto` mode. `count()` uses a
+known exact size in O(1) when no operation changes cardinality and the source is
+safely reiterable. Use `explain(terminal=...)` to inspect the planned route.
 
 ## Resource and file-safety controls
 

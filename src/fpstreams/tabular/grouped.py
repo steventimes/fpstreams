@@ -11,7 +11,7 @@ from ..collecting.aggregation import (
 )
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector
-from ..planning.logical import GroupAggregateNode, GroupAggregateSpec
+from ..planning.logical import GroupAggregateNode, GroupAggregateSpec, SortedGroupAggregateNode
 from ..streams.flow import Flow
 from .spill import validate_partitions
 from .spill_limits import SpillLimits
@@ -26,7 +26,7 @@ JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
 class GroupedRows(Generic[T]):
     """A deferred grouping that chooses in-memory or partitioned aggregation."""
 
-    __slots__ = ("_keys", "_limits", "_partitions", "_rows", "_tempdir")
+    __slots__ = ("_keys", "_limits", "_partitions", "_rows", "_sorted_input", "_tempdir")
 
     def __init__(
         self,
@@ -43,6 +43,7 @@ class GroupedRows(Generic[T]):
         self._partitions = partitions
         self._tempdir = tempdir
         self._limits = limits
+        self._sorted_input = False
 
     def spill(
         self,
@@ -61,6 +62,8 @@ class GroupedRows(Generic[T]):
         Returns:
             A new GroupedRows configuration; call aggregate() to obtain a lazy pipeline.
         """
+        if self._sorted_input:
+            raise ValueError("sorted grouping does not support spill partitions")
         return GroupedRows(
             self._rows,
             self._keys,
@@ -90,10 +93,11 @@ class GroupedRows(Generic[T]):
         from .rows import Rows
 
         logical = self._rows._flow._logical_plan
+        group_node = SortedGroupAggregateNode if self._sorted_input else GroupAggregateNode
         return Rows(
             Flow._from_logical(
                 logical.with_root(
-                    GroupAggregateNode(
+                    group_node(
                         logical.root,
                         GroupAggregateSpec(
                             self._keys,

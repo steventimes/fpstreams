@@ -107,3 +107,9 @@ are immutable after the terminal finishes.
     options:
       show_root_heading: true
       members: true
+
+Explicit sorted operations in the current source report `python_sorted_group`,
+`python_sorted_merge`, or `python_sorted_join` when the outer query executes that
+strategy. `explain()` describes a plan without executing it. Reports summarize
+an outer query; they do not trace every nested stage. These route names are not
+part of published 2.1.0.

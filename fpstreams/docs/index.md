@@ -28,11 +28,69 @@ through 3.14. Free-threaded 3.14t support is experimental and has no release
 wheels. Install optional integrations as needed:
 
 ~~~bash
-pip install "fpstreams[async]"
+pip install "fpstreams[async]"   # aiofiles for async file adapters
 pip install "fpstreams[arrow]"
 pip install "fpstreams[data]"
 pip install "fpstreams[polars]"
 ~~~
+
+## Work with records
+
+Filter paid orders, then count orders and total revenue for each region.
+Use string selectors to read record fields and `col()` to build expressions.
+Methods such as `select()` and `group_by()` enter a Rows view from `flow()`:
+
+~~~python
+from fpstreams import agg, col, flow
+
+orders = [
+    {"region": "eu", "status": "paid", "amount": 24},
+    {"region": "us", "status": "paid", "amount": 20},
+    {"region": "eu", "status": "cancelled", "amount": 99},
+    {"region": "eu", "status": "paid", "amount": 24},
+]
+
+result = (
+    flow(orders)
+    .filter(col("status") == "paid")
+    .group_by("region")
+    .aggregate(
+        orders=agg.count(),
+        revenue=agg.sum("amount"),
+    )
+    .sort_by("region")
+    .to_list()
+)
+
+print(result)
+# [{'region': 'eu', 'orders': 2, 'revenue': 48},
+#  {'region': 'us', 'orders': 1, 'revenue': 20}]
+~~~
+
+Use `flow(records).rows()` when you need a method whose Flow meaning is already
+established: Flow `drop(count)` skips items, `join(separator)` builds a string,
+`aggregate(...)` executes to a dictionary, and `where(predicate)` aliases
+`filter`. Their Rows counterparts remove columns, perform a relational join,
+build a lazy one-row relation, and accept record equalities.
+Flow also keeps its own output signatures; enter `.rows()` before `to_csv()`,
+`to_pandas()`, or `to_df()` when you need Rows-specific options.
+
+`flow(source)` automatically retains concrete PyArrow, pandas, and Polars inputs
+and recognizes standard `__arrow_c_stream__` and `__dataframe__` providers.
+Explicit Flow factories cover Arrow, dataframe, Polars, typed CSV, and Parquet.
+The `rows` namespace also supplies compatibility CSV, JSONL, SQLite, DB-API, and
+record-oriented output methods. Optional third-party packages are imported only
+when the corresponding adapter is used.
+
+## When to use fpstreams
+
+A comprehension is usually enough for a short transformation. Reach for a
+pipeline when you need grouped aggregation, early termination, resource cleanup,
+or async tasks with a concurrency limit. Small pipelines can be slower because
+planning and dispatch add overhead.
+
+Lazy execution does not make every operation constant-memory. Sorting, grouping,
+and joins retain state; choose explicit limits or spill to disk for larger inputs.
 
 ## Your first flow
 
@@ -47,7 +105,8 @@ result = (
     .to_list()
 )
 
-assert result == [4, 16, 36]
+print(result)
+# [4, 16, 36]
 ~~~
 
 A pipeline has three parts:
@@ -75,61 +134,16 @@ summary = flow([1, 2, 3, 4]).aggregate(
     mean=agg.mean(),
 )
 
-assert summary == {"count": 4, "total": 10, "mean": 2.5}
+print(summary)
+# {'count': 4, 'total': 10, 'mean': 2.5}
 ~~~
 
 Use a `Collector` when the result is a general container or reduction. Use an
 `Aggregator` for composable statistics, especially named and grouped aggregation.
 
-## Work with records
-
-Use string selectors to read record fields and `col()` to build expressions.
-Methods such as `select()` and `group_by()` enter a Rows view from `flow()`:
-
-~~~python
-from fpstreams import agg, col, flow
-
-orders = [
-    {"region": "eu", "status": "paid", "amount": 24},
-    {"region": "us", "status": "paid", "amount": 20},
-    {"region": "eu", "status": "cancelled", "amount": 99},
-    {"region": "eu", "status": "paid", "amount": 24},
-]
-
-result = (
-    flow(orders)
-    .filter(col("status") == "paid")
-    .group_by("region")
-    .aggregate(
-        orders=agg.count(),
-        revenue=agg.sum("amount"),
-    )
-    .sort_by("region")
-    .to_list()
-)
-
-assert result == [
-    {"region": "eu", "orders": 2, "revenue": 48},
-    {"region": "us", "orders": 1, "revenue": 20},
-]
-~~~
-
-Use `flow(records).rows()` when you need a method whose Flow meaning is already
-established: Flow `drop(count)` skips items, `join(separator)` builds a string,
-`aggregate(...)` executes to a dictionary, and `where(predicate)` aliases
-`filter`. Their Rows counterparts remove columns, perform a relational join,
-build a lazy one-row relation, and accept record equalities.
-Flow also keeps its own output signatures; enter `.rows()` before `to_csv()`,
-`to_pandas()`, or `to_df()` when you need Rows-specific options.
-
-`flow(source)` automatically retains concrete PyArrow, pandas, and Polars inputs
-and recognizes standard `__arrow_c_stream__` and `__dataframe__` providers.
-Explicit Flow factories cover Arrow, dataframe, Polars, typed CSV, and Parquet.
-The `rows` namespace also supplies compatibility CSV, JSONL, SQLite, DB-API, and
-record-oriented output methods. Optional third-party packages are imported only
-when the corresponding adapter is used.
-
 ## Bound asynchronous concurrency
+
+This example uses only the core package; the `async` extra is for file adapters.
 
 ~~~python
 import asyncio
@@ -149,7 +163,8 @@ async def main() -> None:
         .timeout(1.0)  # Fail instead of waiting forever.
         .to_list()
     )
-    assert values == [10, 20, 30, 40]
+    print(values)
+    # [10, 20, 30, 40]
 
 
 asyncio.run(main())
@@ -179,9 +194,10 @@ Call `with_engine("python")` or `with_engine("native")` to test a specific
 engine. A forced native plan fails clearly when it is unsupported; `auto` can
 fall back or split the pipeline into stages.
 
-Identity lists and tuples stay in Python for materialization, sum, and count so
-they are not scanned and copied into Rust. An unchanged reiterable source with a
-known exact size can answer `count()` without opening the source.
+Identity list and tuple materialization stays in Python. Large, supported integer
+sums may use native execution in `auto` mode; the route depends on the terminal
+and input. An unchanged reiterable source with a known exact size can answer
+`count()` without opening the source.
 
 ## Keep memory bounded
 

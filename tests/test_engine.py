@@ -16304,3 +16304,65 @@ def test_pair_row_expression_group_sum_keeps_opaque_callbacks_in_python(
         ]
         * 11
     )
+
+
+@pytest.mark.parametrize("kind", ["group", "merge", "join"])
+def test_sorted_execution_report_routes(kind, monkeypatch) -> None:
+    from fpstreams.execution import sorted_streams
+
+    calls = []
+    if kind == "group":
+        query = (
+            flow([{"id": 1}, {"id": 1}, {"id": 2}])
+            .rows()
+            .group_by_sorted("id")
+            .aggregate(n=agg.count())
+        )
+        name = "aggregate_sorted_rows"
+    elif kind == "merge":
+        query = flow([1, 3]).merge_sorted([2, 4])
+        name = "merge_sorted_values"
+    else:
+        query = flow([{"id": 1}]).rows().join_sorted([{"id": 1}], on="id")
+        name = "join_sorted_rows"
+    real = getattr(sorted_streams, name)
+
+    def forwarded(*args, **kwargs):
+        calls.append("entered")
+        yield from real(*args, **kwargs)
+        calls.append("returned")
+
+    monkeypatch.setattr(sorted_streams, name, forwarded)
+    query.explain()
+    assert calls == []
+    execution = query.run_with_report("to_list")
+    assert calls == ["entered", "returned"]
+    assert execution.report.strategy == f"python_sorted_{kind}"
+    assert execution.report.compiler_engine == "python"
+    assert execution.value
+
+
+def test_optional_backend_fallback_contract(monkeypatch) -> None:
+    from fpstreams import _native
+    from fpstreams.execution import relational
+
+    monkeypatch.delattr(_native, "group_fixed_i64_rows_v1", raising=False)
+    monkeypatch.delattr(_native, "group_fixed_i64_dict_rows_v1", raising=False)
+    monkeypatch.delattr(_native, "group_multi_i64_rows_v1", raising=False)
+    monkeypatch.delattr(_native, "group_multi_i64_dict_rows_v1", raising=False)
+    query = fpstreams.rows([(1, 3), (1, 4)]).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
+    assert query.to_list() == [{"key": 1, "total": 7}]
+    failure = MemoryError("user key allocation")
+    calls = []
+
+    def key(row):
+        calls.append(row)
+        raise failure
+
+    monkeypatch.setattr(relational, "_try_native_group_sum", lambda node: None)
+    with pytest.raises(MemoryError) as caught:
+        fpstreams.rows(iter([(1, 3), (1, 4)])).group_by(key=key).aggregate(
+            total=fpstreams.agg.sum(1)
+        ).to_list()
+    assert caught.value is failure
+    assert calls == [(1, 3)]

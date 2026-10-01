@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from ..collecting.aggregate_program import AggregationProgram
+from ..collecting.aggregation import AggregationItems
 from ..planning.logical import JoinSpec
 from ..planning.source import Source
 from ..planning.sync import Engine, ParallelSettings
@@ -42,6 +43,24 @@ class PipelinePhysicalNode(PhysicalRelNode):
     stages: tuple[PhysicalNode, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SortedGroupAggregatePhysicalNode(PhysicalRelNode):
+    """Python streaming group state and compiled key callbacks."""
+
+    input: PhysicalRelNode
+    keys: tuple[tuple[str, Callable[[Any], Any]], ...]
+    aggregations: AggregationItems
+
+
+@dataclass(frozen=True, slots=True)
+class MergeSortedPhysicalNode(PhysicalRelNode):
+    """Two Python branches and their shared live key selector."""
+
+    left: PhysicalRelNode
+    right: PhysicalRelNode
+    key: Callable[[Any], Any]
+
+
 class JoinStrategy(StrEnum):
     """Legal record-join execution strategies."""
 
@@ -58,6 +77,18 @@ class CompiledJoinSpec:
     left_key: Callable[[Any], Any]
     right_key: Callable[[Any], Any]
     shared_names: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class SortedJoinPhysicalNode(PhysicalRelNode):
+    """Streaming join branches and compiled selectors."""
+
+    left: PhysicalRelNode
+    right: PhysicalRelNode
+    spec: CompiledJoinSpec
+    max_right_group_rows: int
+    max_matches_per_left: int
+    max_output_rows: int
 
 
 @dataclass(frozen=True, slots=True)

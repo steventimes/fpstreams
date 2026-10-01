@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import fnmatch
 import gc
+import heapq
 import json
 import math
 import operator
@@ -16,7 +17,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from itertools import islice, takewhile
+from itertools import islice, takewhile, zip_longest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
@@ -84,6 +85,7 @@ class CompetitiveCase:
     references: tuple[Implementation, ...]
     outputs_equal: Equality
     ceilings: tuple[Implementation, ...] = ()
+    validate: Callable[[], None] | None = None
 
 
 class _NominalRecord(Mapping[str, Any]):
@@ -517,6 +519,20 @@ _CASE_SPECS = (
         "end-to-end",
         quick=True,
     ),
+)
+
+
+_CASE_SPECS += tuple(
+    CaseSpec(
+        f"sorted.{operation}.{shape}.{source}.{consumption}",
+        f"explicit sorted {operation}; {shape}; {source}; {consumption}",
+        quick=False,
+        engine="python",
+    )
+    for operation in ("group", "merge", "join")
+    for shape in ("duplicates", "skew")
+    for source in ("list", "generator")
+    for consumption in ("full", "first", "early")
 )
 
 
@@ -2496,7 +2512,119 @@ def _io_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> Comp
     )
 
 
+def _sorted_reference_rows(
+    operation: str,
+    left: Iterable[dict[str, int]],
+    right: Iterable[dict[str, int]],
+) -> Iterable[dict[str, int]]:
+    if operation == "group":
+        totals: dict[int, int] = {}
+        for row in left:
+            totals[row["id"]] = totals.get(row["id"], 0) + row["value"]
+        return ({"id": key, "total": total} for key, total in totals.items())
+    if operation == "merge":
+        return heapq.merge(left, right, key=lambda row: row["id"])
+    index: dict[int, list[dict[str, int]]] = {}
+    for row in right:
+        index.setdefault(row["id"], []).append(row)
+    return ({**row, "right": match["right"]} for row in left for match in index.get(row["id"], ()))
+
+
+def _validate_sorted_contents(
+    candidate: Iterator[Any],
+    ordinary: Iterator[Any],
+    reference: Iterator[Any],
+) -> None:
+    """Check complete ordered records outside timing without retaining the output."""
+    from fpstreams.runtime.iterators import closing_iterators
+
+    sentinel = object()
+    with closing_iterators((candidate, ordinary, reference)):
+        for actual, previous, expected in zip_longest(
+            candidate, ordinary, reference, fillvalue=sentinel
+        ):
+            if actual != expected or previous != expected:
+                raise AssertionError("sorted benchmark complete content or order mismatch")
+
+
+def _sorted_case(spec: CaseSpec, size: int) -> CompetitiveCase:
+    """Keep prepared rows outside timing, recreating only iterator sources per call."""
+    _, operation, shape, source_kind, consumption = spec.case_id.split(".")
+    keys = (
+        [i // 8 for i in range(size)]
+        if shape == "duplicates"
+        else [max(0, i - 3 * size // 4) for i in range(size)]
+    )
+    left = [{"id": key, "value": i} for i, key in enumerate(keys)]
+    right = [{"id": key, "right": i} for i, key in enumerate(keys)]
+    if operation == "join" and shape == "skew":
+        left = [{"id": i, "value": i} for i in range(size)]
+
+    def source(rows: list[dict[str, int]]) -> Iterable[dict[str, int]]:
+        return (row for row in rows) if source_kind == "generator" else rows
+
+    def consume(query: Any) -> object:
+        if consumption == "full":
+            return query.count()
+        return query.take(1 if consumption == "first" else 16).to_list()
+
+    def pipeline(*, ordered: bool) -> Any:
+        values = fpstreams.flow(source(left)).with_engine("python")
+        if operation == "group":
+            grouping = (
+                values.rows().group_by_sorted("id") if ordered else values.rows().group_by("id")
+            )
+            return grouping.aggregate(total=fpstreams.agg.sum("value"))
+        if operation == "merge":
+            return (
+                values.merge_sorted(source(right), key="id")
+                if ordered
+                else values.concat(source(right)).sort_by(lambda row: row["id"])
+            )
+        if ordered:
+            return values.rows().join_sorted(
+                source(right),
+                on="id",
+                max_right_group_rows=max(size, 100_000),
+                max_matches_per_left=max(size, 100_000),
+                max_output_rows=max(8 * size, 1_000_000),
+            )
+        return values.rows().join(source(right), on="id")
+
+    def candidate() -> object:
+        return consume(pipeline(ordered=True))
+
+    def ordinary() -> object:
+        return consume(pipeline(ordered=False))
+
+    def validate() -> None:
+        _validate_sorted_contents(
+            iter(pipeline(ordered=True)),
+            iter(pipeline(ordered=False)),
+            iter(_sorted_reference_rows(operation, source(left), source(right))),
+        )
+
+    def reference() -> object:
+        rows = _sorted_reference_rows(operation, source(left), source(right))
+        if consumption == "full":
+            return sum(1 for _row in rows)
+        return list(islice(rows, 1 if consumption == "first" else 16))
+
+    return CompetitiveCase(
+        spec,
+        _implementation("fpstreams", candidate, variant="sorted"),
+        (
+            _implementation("fpstreams", ordinary, variant="ordinary"),
+            _implementation("python", reference),
+        ),
+        operator.eq,
+        validate=validate,
+    )
+
+
 def _build_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> CompetitiveCase:
+    if spec.case_id.startswith("sorted."):
+        return _sorted_case(spec, size)
     if spec.case_id.startswith("flow."):
         return _flow_case(spec, size, np, pd)
     if spec.case_id.startswith("terminal."):
@@ -2591,6 +2719,8 @@ def _measure_case(case: CompetitiveCase, repeats: int) -> tuple[dict[str, Any], 
 
 def _assert_equivalent_outputs(case: CompetitiveCase) -> None:
     """Run the correctness warm-up without retaining its potentially large results."""
+    if case.validate is not None:
+        case.validate()
     candidate_value = case.candidate.normalize(case.candidate.task())
     for reference in (*case.references, *case.ceilings):
         reference_value = reference.normalize(reference.task())

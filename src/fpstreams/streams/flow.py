@@ -30,11 +30,13 @@ from ..planning.explain import PlanExplanation, explain_query
 from ..planning.gather import Gatherer
 from ..planning.logical import (
     LogicalPlan,
+    MergeSortedNode,
     Pipeline,
     Query,
     SourceNode,
     TerminalSpec,
     linear_pipeline,
+    merge_engine_requests,
 )
 from ..planning.native import TerminalName
 from ..planning.semantics import (
@@ -864,6 +866,32 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             A flow with `separator` between source items and never at either boundary.
         """
         return self._append(IntersperseOp(separator))
+
+    def merge_sorted(self, other: Iterable[T] | Flow[T], *, key: Selector | None = None) -> Flow[T]:
+        """Stably merge two ascending inputs, returning the original objects.
+
+        Keys must have one fixed exact builtin int, str, bytes, or flat tuple shape.
+        Checks cover consumed rows. Equal keys from the left are emitted first.
+        Each input has at most one lookahead row; inputs are never sorted here.
+
+        Args:
+            other: Another sorted iterable or Flow.
+            key: Shared selector, or None to compare the items themselves.
+
+        Returns:
+            A lazy two-input Flow. Closing it closes both owned input iterators.
+        """
+        if key is not None and not (callable(key) or isinstance(key, (str, int))):
+            raise TypeError("merge_sorted key must be a field, index or callable")
+        selector = (lambda value: value) if key is None else compile_selector(key)
+        right_flow = other if isinstance(other, Flow) else Flow(other)
+        left, right = self._logical_plan, right_flow._logical_plan
+        logical = left.with_engine(
+            merge_engine_requests(left.engine, right.engine, operation="merge_sorted")
+        )
+        return self._from_logical(
+            logical.with_root(MergeSortedNode(left.root, right.root, selector))
+        )
 
     def concat(self, *others: Iterable[T]) -> Flow[T]:
         """Emit this flow followed by each supplied iterable.

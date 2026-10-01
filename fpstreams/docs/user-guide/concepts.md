@@ -211,3 +211,57 @@ different physical paths. They also keep engine choice from changing user code.
   dataframe or storage system.
 - Read [performance and execution](performance.md) before tuning a workload.
 - Use the [browser playground](../playground.md) to try core APIs immediately.
+
+## Inputs that are already sorted (current source)
+
+These APIs are available in the checkout, but are not part of published 2.1.0.
+They consume ascending inputs without building a hash index over the whole source.
+Keys must be exact built-in integers, strings, bytes, or nonempty flat tuples of
+these types. Each key position must keep the same type across both inputs.
+
+Group paid orders that already arrive in region order:
+
+```python
+from fpstreams import agg, flow
+
+orders = [{"region": "eu", "amount": 12}, {"region": "eu", "amount": 36},
+          {"region": "us", "amount": 20}]
+print(flow(orders).rows().group_by_sorted("region").aggregate(
+    orders=agg.count(), revenue=agg.sum("amount")
+).to_list())
+# [{'region': 'eu', 'orders': 2, 'revenue': 48},
+#  {'region': 'us', 'orders': 1, 'revenue': 20}]
+```
+
+Merge two chronological logs. Equal timestamps keep the left input first:
+
+```python
+from fpstreams import flow
+
+left = [{"time": 1, "event": "start"}, {"time": 3, "event": "end"}]
+right = [{"time": 2, "event": "update"}]
+print(flow(left).merge_sorted(right, key="time").to_list())
+# [{'time': 1, 'event': 'start'}, {'time': 2, 'event': 'update'},
+#  {'time': 3, 'event': 'end'}]
+```
+
+Join sorted order details to a sorted customer table:
+
+```python
+from fpstreams import flow
+
+orders = [{"customer": 1, "amount": 12}, {"customer": 1, "amount": 36}]
+customers = [{"customer": 1, "name": "Ana"}]
+print(flow(orders).rows().join_sorted(
+    customers, on="customer", validate="m:1"
+).to_list())
+# [{'customer': 1, 'amount': 12, 'name': 'Ana'},
+#  {'customer': 1, 'amount': 36, 'name': 'Ana'}]
+```
+
+Ordering and cardinality checks apply only to consumed rows. `take()` does not
+scan the remainder for errors. Grouping keeps current collector state, which can
+still grow if a collector stores every value. A sorted join buffers the current
+right key group before its first match; a large duplicate group delays that result.
+Join limits count rows, not bytes, so one large record can still use substantial
+memory. These operations currently run in Python.

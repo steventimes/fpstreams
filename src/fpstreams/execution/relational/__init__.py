@@ -7,7 +7,8 @@ import signal as _signal
 import sys as _sys
 from abc import get_cache_token
 from collections import namedtuple as _namedtuple
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from importlib import import_module
 from types import BuiltinFunctionType, CodeType, FunctionType, MappingProxyType
@@ -41,6 +42,7 @@ from ...physical.relational import (
     GlobalAggregatePhysicalNode,
     GroupAggregatePhysicalNode,
     JoinPhysicalNode,
+    MergeSortedPhysicalNode,
     NativeFixedI64GroupSpec,
     NativeGlobalI64AggregateSpec,
     NativeGroupSumSpec,
@@ -50,6 +52,8 @@ from ...physical.relational import (
     PhysicalRelNode,
     PipelinePhysicalNode,
     SimpleGroupSumSpec,
+    SortedGroupAggregatePhysicalNode,
+    SortedJoinPhysicalNode,
     SourcePhysicalNode,
 )
 from ...planning.arrow_source import ArrowBatchSource
@@ -68,6 +72,7 @@ from ...planning.source import (
     Source,
 )
 from ...runtime.failpoints import has_active_failpoints as _has_active_failpoints
+from ...runtime.iterators import closing_iterators
 from ...runtime.query import QueryRuntime
 from ...tabular import records as _records
 from ...tabular.join import _compose_composite_selector, _direct_mapping_mro
@@ -844,6 +849,165 @@ def try_direct_global_list(
     return None, replace(fallback_plan, root=replace(root, numpy_global=None))
 
 
+def _execute_global_aggregate(
+    root: GlobalAggregatePhysicalNode, runtime: QueryRuntime, outer_plan: PhysicalPlan | None
+) -> Iterator[Any]:
+    """Execute the existing global aggregate routes with their generator lifetimes."""
+    if not _global_aggregations_are_live(root):
+        values = execute_relational(root.input, runtime)
+        yield run_collector_program(values, root.aggregations.collectors)
+        return
+    exact_count = _try_exact_global_count(root)
+    if exact_count is not None:
+        yield exact_count
+    else:
+        arrow_count = _try_arrow_global_count(root)
+        if arrow_count is not None:
+            yield arrow_count
+        else:
+            columnar_reduction = _try_arrow_global_reduction(root, outer_plan)
+            if columnar_reduction is not None:
+                yield columnar_reduction
+            else:
+                numpy_reduction = _numpy_global_aggregate(
+                    root,
+                    chunk_rows=_NUMPY_GLOBAL_CHUNK_ROWS,
+                    aggregations_validated=True,
+                )
+                if numpy_reduction is not None:
+                    from ...runtime.report import _record_direct_strategy
+
+                    _record_direct_strategy(
+                        outer_plan,
+                        "numpy_direct",
+                        "bounded NumPy columns supplied global aggregation without row boxing",
+                    )
+                    yield numpy_reduction
+                else:
+                    native_reduction = _try_native_global_i64_aggregate(root)
+                    native_reason = (
+                        "one retained exact-record scan reduced multiple i64 lanes in Rust"
+                    )
+                    if native_reduction is None:
+                        native_reduction = _try_native_record_global_sum(root)
+                        native_reason = "one retained exact-record i64 field was reduced in Rust"
+                    if native_reduction is not None:
+                        from ...runtime.report import _record_direct_strategy
+
+                        _record_direct_strategy(
+                            outer_plan,
+                            "rust_direct",
+                            native_reason,
+                        )
+                        yield native_reduction
+                    else:
+                        values = execute_relational(root.input, runtime)
+                        yield run_collector_program(values, root.aggregations.collectors)
+    return
+
+
+def _one_shot_source_ids(root: PhysicalRelNode) -> set[int]:
+    """Inspect source ownership in a plan without opening any branch."""
+    result: set[int] = set()
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, SourcePhysicalNode):
+            if not node.source.capabilities.reiterable:
+                result.add(id(node.source))
+        elif isinstance(
+            node,
+            (
+                PipelinePhysicalNode,
+                GroupAggregatePhysicalNode,
+                SortedGroupAggregatePhysicalNode,
+                GlobalAggregatePhysicalNode,
+            ),
+        ):
+            pending.append(node.input)
+        elif isinstance(node, (JoinPhysicalNode, MergeSortedPhysicalNode, SortedJoinPhysicalNode)):
+            pending.extend((node.left, node.right))
+        else:
+            raise TypeError(f"unsupported physical relation: {type(node).__name__}")
+    return result
+
+
+class _SortedOwnedIterator(Iterator[Any]):
+    """Keep prepared leaf ownership idempotent across nested execution scopes."""
+
+    def __init__(self, iterator: Iterator[Any]) -> None:
+        self.iterator = iterator
+        self.closed = False
+
+    def __iter__(self) -> _SortedOwnedIterator:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self.iterator)
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            close_iterators((self.iterator,))
+
+
+def _prepare_sorted_branch(
+    root: PhysicalRelNode,
+    owners: dict[int, _SortedOwnedIterator],
+) -> PhysicalRelNode:
+    """Acquire leaf iterators without pulling, only within a new sorted pair."""
+    if isinstance(root, SourcePhysicalNode):
+        iterator = root.source.open()
+        if id(iterator) in owners:
+            raise ValueError("sorted inputs opened the same iterator")
+        owned = (
+            iterator
+            if isinstance(iterator, _SortedOwnedIterator)
+            else _SortedOwnedIterator(iterator)
+        )
+        owners[id(iterator)] = owned
+        return replace(root, source=Source.defer(lambda: owned))
+    if isinstance(root, (JoinPhysicalNode, MergeSortedPhysicalNode, SortedJoinPhysicalNode)):
+        return replace(
+            root,
+            left=_prepare_sorted_branch(root.left, owners),
+            right=_prepare_sorted_branch(root.right, owners),
+        )
+    if isinstance(
+        root,
+        (
+            PipelinePhysicalNode,
+            GroupAggregatePhysicalNode,
+            SortedGroupAggregatePhysicalNode,
+            GlobalAggregatePhysicalNode,
+        ),
+    ):
+        return replace(root, input=_prepare_sorted_branch(root.input, owners))
+    raise TypeError(f"unsupported sorted branch: {type(root).__name__}")
+
+
+@contextmanager
+def _sorted_pair_sources(
+    left: PhysicalRelNode,
+    right: PhysicalRelNode,
+    runtime: QueryRuntime,
+) -> Generator[tuple[Source[Any], Source[Any], bool], None, None]:
+    """Open both sorted branch source trees before either can pull a row."""
+    shared = bool(_one_shot_source_ids(left) & _one_shot_source_ids(right))
+    if shared:
+        yield _pipeline_source(left, runtime), _pipeline_source(right, runtime), True
+        return
+    owners: dict[int, _SortedOwnedIterator] = {}
+    with closing_iterators(owners.values()):
+        prepared_left = _prepare_sorted_branch(left, owners)
+        prepared_right = _prepare_sorted_branch(right, owners)
+        yield (
+            _pipeline_source(prepared_left, runtime),
+            _pipeline_source(prepared_right, runtime),
+            False,
+        )
+
+
 def execute_relational(
     root: PhysicalRelNode,
     runtime: QueryRuntime,
@@ -869,65 +1033,72 @@ def execute_relational(
             runtime=runtime,
         )
         return
+    if isinstance(root, MergeSortedPhysicalNode):
+        from ...runtime.report import _record_direct_strategy
+        from ..sorted_streams import merge_sorted_values
+
+        _record_direct_strategy(
+            outer_plan, "python_sorted_merge", "explicit sorted merge execution"
+        )
+
+        with _sorted_pair_sources(root.left, root.right, runtime) as (
+            left_source,
+            right_source,
+            shared,
+        ):
+            yield from merge_sorted_values(
+                left_source,
+                right_source,
+                root.key,
+                shared_one_shot=shared,
+            )
+        return
+    if isinstance(root, SortedJoinPhysicalNode):
+        from ...runtime.report import _record_direct_strategy
+        from ..sorted_streams import join_sorted_rows
+
+        _record_direct_strategy(outer_plan, "python_sorted_join", "explicit sorted join execution")
+
+        with _sorted_pair_sources(root.left, root.right, runtime) as (
+            left_source,
+            right_source,
+            shared,
+        ):
+            yield from join_sorted_rows(
+                left_source,
+                right_source,
+                left_key=root.spec.left_key,
+                right_key=root.spec.right_key,
+                shared_names=set(root.spec.shared_names),
+                how=root.spec.logical.how,
+                suffix=root.spec.logical.suffix,
+                validate=root.spec.logical.validate,
+                max_right_group_rows=root.max_right_group_rows,
+                max_matches_per_left=root.max_matches_per_left,
+                max_output_rows=root.max_output_rows,
+                shared_one_shot=shared,
+            )
+        return
     if isinstance(root, JoinPhysicalNode):
         yield from _execute_join(root, runtime, execute_relational, outer_plan)
+        return
+    if isinstance(root, SortedGroupAggregatePhysicalNode):
+        from ...runtime.report import _record_direct_strategy
+        from ..sorted_streams import aggregate_sorted_rows
+
+        _record_direct_strategy(
+            outer_plan, "python_sorted_group", "explicit sorted group execution"
+        )
+
+        yield from aggregate_sorted_rows(
+            _pipeline_source(root.input, runtime), root.keys, root.aggregations
+        )
         return
     if isinstance(root, GroupAggregatePhysicalNode):
         yield from _execute_group_aggregate(root, runtime, outer_plan)
         return
     if isinstance(root, GlobalAggregatePhysicalNode):
-        if not _global_aggregations_are_live(root):
-            values = execute_relational(root.input, runtime)
-            yield run_collector_program(values, root.aggregations.collectors)
-            return
-        exact_count = _try_exact_global_count(root)
-        if exact_count is not None:
-            yield exact_count
-        else:
-            arrow_count = _try_arrow_global_count(root)
-            if arrow_count is not None:
-                yield arrow_count
-            else:
-                columnar_reduction = _try_arrow_global_reduction(root, outer_plan)
-                if columnar_reduction is not None:
-                    yield columnar_reduction
-                else:
-                    numpy_reduction = _numpy_global_aggregate(
-                        root,
-                        chunk_rows=_NUMPY_GLOBAL_CHUNK_ROWS,
-                        aggregations_validated=True,
-                    )
-                    if numpy_reduction is not None:
-                        from ...runtime.report import _record_direct_strategy
-
-                        _record_direct_strategy(
-                            outer_plan,
-                            "numpy_direct",
-                            "bounded NumPy columns supplied global aggregation without row boxing",
-                        )
-                        yield numpy_reduction
-                    else:
-                        native_reduction = _try_native_global_i64_aggregate(root)
-                        native_reason = (
-                            "one retained exact-record scan reduced multiple i64 lanes in Rust"
-                        )
-                        if native_reduction is None:
-                            native_reduction = _try_native_record_global_sum(root)
-                            native_reason = (
-                                "one retained exact-record i64 field was reduced in Rust"
-                            )
-                        if native_reduction is not None:
-                            from ...runtime.report import _record_direct_strategy
-
-                            _record_direct_strategy(
-                                outer_plan,
-                                "rust_direct",
-                                native_reason,
-                            )
-                            yield native_reduction
-                        else:
-                            values = execute_relational(root.input, runtime)
-                            yield run_collector_program(values, root.aggregations.collectors)
+        yield from _execute_global_aggregate(root, runtime, outer_plan)
         return
     raise TypeError(f"unsupported physical relation: {type(root).__name__}")
 

@@ -138,3 +138,39 @@ After entering Rows, `to_csv()` is the record writer instead and exposes
       members_order: source
       show_root_heading: true
       show_source: false
+
+## Merging sorted inputs (current source)
+
+`merge_sorted(other, key=None)` checks ascending keys while consuming two inputs.
+Keys must be exact int, str, bytes, or nonempty flat tuples with one fixed type
+per position across both inputs. Equal keys from the left come first; output
+objects are the original inputs. Each side has one lookahead row.
+
+```python
+from fpstreams import flow
+
+assert flow([1, 3]).merge_sorted([1, 2]).to_list() == [1, 1, 2, 3]
+```
+
+The API is absent from the published 2.1.0 wheel. It uses Python in `auto` mode;
+forcing native is unsupported. Iterator aliasing is rejected before the first
+pull, and both owned inputs are closed on errors or early termination. Nested
+merges keep one pair of cursors per merge; they are not a heap-based k-way merge.
+
+Sorted paired operations acquire their branch source iterators left to right,
+without pulling rows, before either input runs. This includes source leaves in
+composed branches, so a shared underlying iterator can be rejected before it is
+read. Each acquired iterator closes once, even if a branch never yields a row.
+An outer `take(0)` does not start this acquisition phase.
+
+## File exports (current source)
+
+`to_jsonl()` writes one JSON value per line, including scalars and records. Use
+`default` for custom serialization and `ensure_ascii` to control Unicode escaping.
+The source is consumed once and the output is written incrementally.
+
+`to_csv()`, `to_json()`, and `to_jsonl()` accept `atomic=True` to preserve the old
+target until writing and source cleanup succeed. `if_exists="error"` requires
+atomic output and prevents overwriting a concurrently created target. See
+[atomic file output](io.md#atomic-flow-file-output-current-source) for examples
+and filesystem limits. These additions are absent from published 2.1.0.

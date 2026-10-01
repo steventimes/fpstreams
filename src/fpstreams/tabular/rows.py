@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins as _builtins
+import operator
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from time import perf_counter_ns
@@ -23,6 +24,7 @@ from ..planning.logical import (
     GlobalAggregateNode,
     JoinNode,
     JoinSpec,
+    SortedJoinNode,
     SourceNode,
     merge_engine_requests,
 )
@@ -2664,6 +2666,114 @@ class Rows(RowsIOMixin[T], Generic[T]):
             operation="group_by",
         )
         return GroupedRows(self, keys)
+
+    def group_by_sorted(self, *selectors: Selector, **named: Selector) -> GroupedRows[T]:
+        """Group adjacent records whose selected keys are already ascending.
+
+        Keys must be exact int, str, bytes, or nonempty flat tuples of these types.
+        Their shape must stay fixed. Type and order checks cover consumed rows,
+        including one row of lookahead. No sorting is performed.
+
+        Args:
+            *selectors: Keys named with the same rules as group_by().
+            **named: Explicit output key names and selectors.
+
+        Returns:
+            A deferred grouping using current aggregate state plus one lookahead row.
+                Aggregators that collect values can retain additional state. Spill is unsupported.
+        """
+        grouped = self.group_by(*selectors, **named)
+        if any(
+            not (callable(selector) or isinstance(selector, (str, int)))
+            for _name, selector in grouped._keys
+        ):
+            raise TypeError("group_by_sorted selectors must be fields, indexes or callables")
+        grouped._keys = tuple(
+            (name, compile_selector(selector)) for name, selector in grouped._keys
+        )
+        grouped._sorted_input = True
+        return grouped
+
+    def join_sorted(
+        self,
+        other: Iterable[Any] | Flow[Any] | Rows[Any],
+        *,
+        on: JoinSelector | None = None,
+        left_on: JoinSelector | None = None,
+        right_on: JoinSelector | None = None,
+        how: str = "inner",
+        suffix: str = "_right",
+        validate: JoinValidation = "m:m",
+        max_right_group_rows: int = 100_000,
+        max_matches_per_left: int = 100_000,
+        max_output_rows: int = 1_000_000,
+    ) -> Rows[dict[str, Any]]:
+        """Join ascending inputs while buffering one right key group.
+
+        Keys must be exact int, str, bytes, or flat tuples of these types.
+        Inner/left output columns come from the first right record; later new
+        columns fail. Ordering and cardinality checks cover consumed rows only.
+        Finite row budgets raise BufferLimitError before the excess output.
+        This current-source API is not included in published 2.1.0.
+        """
+        if how not in {"inner", "left", "semi", "anti"}:
+            raise ValueError("sorted join how must be inner, left, semi, or anti")
+        if validate not in _JOIN_VALIDATIONS:
+            raise ValueError(f"validate must be one of {sorted(_JOIN_VALIDATIONS)!r}")
+        budgets = tuple(
+            operator.index(value)
+            for value in (
+                max_right_group_rows,
+                max_matches_per_left,
+                max_output_rows,
+            )
+        )
+        if any(value <= 0 for value in budgets):
+            raise ValueError("sorted join row limits must be positive")
+        normalized_left, normalized_right = _normalize_join_selectors(
+            on=on,
+            left_on=left_on,
+            right_on=right_on,
+        )
+        _compile_join_selector(normalized_left)
+        _compile_join_selector(normalized_right)
+        right_flow = (
+            other._flow
+            if isinstance(other, Rows)
+            else other
+            if isinstance(other, Flow)
+            else flow(other)
+        )
+        left_logical = self._flow._logical_plan
+        right_logical = right_flow._logical_plan
+        joined = left_logical.with_engine(
+            merge_engine_requests(
+                left_logical.engine,
+                right_logical.engine,
+                operation="join_sorted",
+            )
+        )
+        return Rows(
+            Flow._from_logical(
+                joined.with_root(
+                    SortedJoinNode(
+                        left_logical.root,
+                        right_logical.root,
+                        JoinSpec(
+                            normalized_left,
+                            normalized_right,
+                            how,
+                            suffix,
+                            validate,
+                            None,
+                            None,
+                            None,
+                        ),
+                        *budgets,
+                    )
+                )
+            )
+        )
 
     def join(
         self,

@@ -735,6 +735,11 @@ def test_release_smoke_checks_native_and_python_backends() -> None:
         "native": [1, 3, 5, 7],
         "python": [1, 3, 5, 7],
         "version": "2.1.0",
+        "orders": [
+            {"region": "eu", "orders": 2, "revenue": 48},
+            {"region": "us", "orders": 1, "revenue": 20},
+        ],
+        "async": [20, 30, 40],
     }
 
 

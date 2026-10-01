@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib.util
 import json
 from collections.abc import Callable
@@ -25,6 +26,21 @@ def _expect_missing_extra(module: str, operation: Callable[[], Any], expected_me
     raise RuntimeError(f"minimal smoke unexpectedly used absent optional dependency {module!r}")
 
 
+async def _async_example() -> list[int]:
+    """Exercise the core asynchronous API without optional file adapters."""
+
+    async def fetch(value: int) -> int:
+        await asyncio.sleep(0)
+        return value * 10
+
+    return await (
+        fpstreams.aflow([1, 2, 3, 4])
+        .map_async(fetch, concurrency=2, ordered=True)
+        .filter(lambda value: value >= 20)
+        .to_list()
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--minimal", action="store_true")
@@ -37,10 +53,34 @@ def main() -> None:
         raise RuntimeError(
             f"release smoke produced native={native!r}, python={python!r}, expected={expected!r}"
         )
+    orders = (
+        fpstreams.flow(
+            [
+                {"region": "eu", "status": "paid", "amount": 24},
+                {"region": "us", "status": "paid", "amount": 20},
+                {"region": "eu", "status": "cancelled", "amount": 99},
+                {"region": "eu", "status": "paid", "amount": 24},
+            ]
+        )
+        .filter(fpstreams.col("status") == "paid")
+        .group_by("region")
+        .aggregate(orders=fpstreams.agg.count(), revenue=fpstreams.agg.sum("amount"))
+        .sort_by("region")
+        .to_list()
+    )
+    expected_orders = [
+        {"region": "eu", "orders": 2, "revenue": 48},
+        {"region": "us", "orders": 1, "revenue": 20},
+    ]
+    asynchronous = asyncio.run(_async_example())
+    if orders != expected_orders or asynchronous != [20, 30, 40]:
+        raise RuntimeError(f"release examples produced orders={orders!r}, async={asynchronous!r}")
     result: dict[str, Any] = {
         "native": native,
         "python": python,
         "version": fpstreams.__version__,
+        "orders": orders,
+        "async": asynchronous,
     }
     if arguments.minimal:
         result["missing_extras"] = {

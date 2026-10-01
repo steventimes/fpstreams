@@ -11,7 +11,7 @@ from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 from ..collecting.collector import _collect_columns
 from ..errors import SelectionError
 from ..expressions.selectors import Selector, compile_selector
-from ..io_safety import spreadsheet_safe_cell
+from ..io_safety import output_path, spreadsheet_safe_cell
 from ..runtime.iterators import closing_iterators
 from ..streams.flow import Flow, flow
 from .arrow import (
@@ -533,6 +533,8 @@ class RowsIOMixin(Generic[T]):
         include_header: bool = True,
         extrasaction: Literal["raise", "ignore"] = "raise",
         spreadsheet_safe: bool = False,
+        atomic: bool = False,
+        if_exists: Literal["replace", "error"] = "replace",
     ) -> None:
         """Consume rows into a CSV file incrementally and return None.
 
@@ -542,7 +544,11 @@ class RowsIOMixin(Generic[T]):
             encoding: Text encoding used to write the destination.
             include_header: Write fieldnames before data rows when true.
             extrasaction: Raise or ignore fields absent from fieldnames.
-            spreadsheet_safe: Prefix cells that spreadsheet software may execute.
+            spreadsheet_safe: Prefix formula-like cells, including headers, without changing
+                record field lookup.
+            atomic: Publish after the writer and source close successfully.
+                Writing or source-cleanup failures preserve the old target.
+            if_exists: With atomic=True, replace the target or fail if it already exists.
         """
         if extrasaction not in {"raise", "ignore"}:
             raise ValueError("extrasaction must be 'raise' or 'ignore'")
@@ -552,41 +558,53 @@ class RowsIOMixin(Generic[T]):
         if names is not None:
             _require_unique_names(names, operation="to_csv")
 
-        iterator = iter(self)
-        with (
-            closing_iterators((iterator,)),
-            open(path, "w", encoding=encoding, newline="") as handle,
-        ):
-            try:
-                first_row = next(iterator)
-            except StopIteration:
-                if names is not None and include_header:
-                    csv.DictWriter(handle, fieldnames=names).writeheader()
-                return
-            first = _as_record(first_row)
-            del first_row
-            output_names = names or tuple(first)
-            if not output_names:
-                raise ValueError("cannot infer CSV columns from an empty record")
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=output_names,
-                extrasaction=extrasaction,
-            )
-            if include_header:
-                writer.writeheader()
-            writer.writerow(
-                {name: spreadsheet_safe_cell(value) for name, value in first.items()}
-                if spreadsheet_safe
-                else first
-            )
-            for row in iterator:
-                record = _as_record(row)
-                writer.writerow(
-                    {name: spreadsheet_safe_cell(value) for name, value in record.items()}
-                    if spreadsheet_safe
-                    else record
+        with output_path(path, atomic=atomic, if_exists=if_exists) as destination:
+            iterator = iter(self)
+            with (
+                closing_iterators((iterator,)),
+                open(destination, "w", encoding=encoding, newline="") as handle,
+            ):
+                try:
+                    first_row = next(iterator)
+                except StopIteration:
+                    if names is not None and include_header:
+                        header_writer = csv.DictWriter(handle, fieldnames=names)
+                        if spreadsheet_safe:
+                            header_writer.writerow(
+                                {name: spreadsheet_safe_cell(name) for name in names}
+                            )
+                        else:
+                            header_writer.writeheader()
+                    return
+                first = _as_record(first_row)
+                del first_row
+                output_names = names or tuple(first)
+                if not output_names:
+                    raise ValueError("cannot infer CSV columns from an empty record")
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=output_names,
+                    extrasaction=extrasaction,
                 )
+                if include_header:
+                    if spreadsheet_safe:
+                        writer.writerow(
+                            {name: spreadsheet_safe_cell(name) for name in output_names}
+                        )
+                    else:
+                        writer.writeheader()
+                writer.writerow(
+                    {name: spreadsheet_safe_cell(value) for name, value in first.items()}
+                    if spreadsheet_safe
+                    else first
+                )
+                for row in iterator:
+                    record = _as_record(row)
+                    writer.writerow(
+                        {name: spreadsheet_safe_cell(value) for name, value in record.items()}
+                        if spreadsheet_safe
+                        else record
+                    )
 
     def to_jsonl(
         self,
@@ -594,6 +612,9 @@ class RowsIOMixin(Generic[T]):
         *,
         encoding: str = "utf-8",
         ensure_ascii: bool = False,
+        default: Callable[[Any], Any] | None = None,
+        atomic: bool = False,
+        if_exists: Literal["replace", "error"] = "replace",
     ) -> None:
         """Consume rows into an overwritten file as one JSON object per line.
 
@@ -601,12 +622,20 @@ class RowsIOMixin(Generic[T]):
             path: Destination JSON Lines file.
             encoding: Text encoding used to write the destination.
             ensure_ascii: Escape non-ASCII code points when true.
+            default: Optional serializer called for objects the JSON encoder cannot handle.
+            atomic: Publish after the writer and source close successfully.
+                Writing or source-cleanup failures preserve the old target.
+            if_exists: With atomic=True, replace the target or fail if it already exists.
         """
-        iterator = iter(self)
-        with closing_iterators((iterator,)), open(path, "w", encoding=encoding) as handle:
-            for row in iterator:
-                json.dump(_as_record(row), handle, ensure_ascii=ensure_ascii)
-                handle.write("\n")
+        with output_path(path, atomic=atomic, if_exists=if_exists) as destination:
+            iterator = iter(self)
+            with (
+                closing_iterators((iterator,)),
+                open(destination, "w", encoding=encoding) as handle,
+            ):
+                for row in iterator:
+                    json.dump(_as_record(row), handle, ensure_ascii=ensure_ascii, default=default)
+                    handle.write("\n")
 
     def to_parquet(
         self,

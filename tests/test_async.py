@@ -2291,3 +2291,54 @@ def test_session_window_validates_and_uses_bounded_timer_planning() -> None:
         fpstreams.aflow([1]).session_window(0, max_count=1)
     with pytest.raises(ValueError, match="idle_for must be positive"):
         fpstreams.aflow([1]).session_window(float("nan"), max_count=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ordered", [True, False])
+async def test_async_backpressure_cancel_contract(ordered) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    active = set()
+    created = set()
+    source_closed = []
+
+    async def source():
+        try:
+            for value in range(20):
+                yield value
+        finally:
+            source_closed.append(True)
+
+    async def mapper(value):
+        task = asyncio.current_task()
+        created.add(task)
+        active.add(value)
+        assert len(active) <= 2
+        if len(active) == 2:
+            started.set()
+        try:
+            await release.wait()
+            return value
+        finally:
+            active.remove(value)
+
+    task = asyncio.create_task(
+        fpstreams.aflow(source())
+        .map_async(mapper, concurrency=2, buffer=2, ordered=ordered)
+        .take(1)
+        .to_list()
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert len(active) == 2
+        release.set()
+        result = await asyncio.wait_for(task, timeout=2)
+        assert len(result) == 1
+        if ordered:
+            assert result == [0]
+        assert not active
+        assert all(worker.done() for worker in created)
+        assert source_closed == [True]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

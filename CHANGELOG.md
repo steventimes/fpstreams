@@ -7,11 +7,38 @@ including changed defaults.
 
 ### Added
 
+- Add bounded `Rows.join_sorted()` for explicitly ordered records, with consumed-prefix
+  validation and first-right-record schema rules.
+- Report explicit sorted group, merge, and join execution through existing report fields.
+- Add optional atomic path output to Flow CSV/JSON/JSONL and Rows CSV/JSONL sinks,
+  including no-overwrite publication. Existing direct output remains the default.
+- `Flow.to_jsonl()` streams arbitrary JSON values as one value per line.
+  `Rows.to_jsonl()` now accepts `default` for custom serialization.
+
+- `Flow.merge_sorted()` stably merges two ascending inputs without sorting or
+  materializing them. Ties prefer the left input and outputs retain their identity.
+
+- `Rows.group_by_sorted()` aggregates adjacent ascending keys in Python with
+  current group state and one lookahead row. Consumed keys are checked for exact
+  builtin types and order; this explicit mode does not sort or support spill.
+
 - `Pairs.run_with_report()` executes a pair terminal once and returns its value
   with an execution report. It supports `to_dict`, `group_values`,
   `collect_values`, and `aggregate_values`.
 
 ### Fixed
+
+- `spreadsheet_safe=True` also neutralizes formula-like CSV headers, including
+  inferred record field names and explicitly named empty output. Record lookup
+  still uses the original names; the raw-output default is unchanged.
+- Relative Parquet output paths stay anchored to the initial working directory
+  if a source or conversion callback changes directories during the write.
+
+- Scalar keys in explicit sorted operations avoid temporary shape tuples while
+  retaining per-row type and ordering checks.
+
+- Atomic CSV and JSON output keeps its original destination when a source or
+  serializer changes the working directory during execution.
 
 - CSV and SQLite record sinks propagate `StopIteration` from first-record
   conversion instead of treating it as empty input. SQLite replacement leaves
@@ -184,6 +211,12 @@ including changed defaults.
   and a count completed by Python after a native prefix as `python_frequency`.
 
 ### Internal
+
+- Browser wheels record checkout identity and working-tree state. Release labels
+  require a clean checkout matching the version tag; dirty or unknown builds
+  remain development builds. The playground displays this provenance.
+- Release smoke checks exercise paid-order aggregation and bounded async mapping
+  in addition to Python/native integer sums.
 
 - Single-collector groups write step results directly to their stored entries
   and avoid reading stored state for completed groups. Group benchmarks now

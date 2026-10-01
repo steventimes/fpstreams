@@ -4130,30 +4130,25 @@ def _build_browser_wheel(output_dir: Path) -> Path:
     return wheel
 
 
-def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path) -> None:
-    """A tag build must be distinguishable from the same-version source build."""
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "GITHUB_REF_NAME": "v2.1.0",
-            "GITHUB_REF_TYPE": "tag",
-            "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
-        }
+def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path, monkeypatch) -> None:
+    """A clean matching tag must be distinguishable from same-version development sources."""
+    spec = importlib.util.spec_from_file_location("browser_builder_release", BROWSER_WHEEL_BUILDER)
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    head = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setenv("GITHUB_REF_NAME", "v2.1.0")
+    monkeypatch.setenv("GITHUB_REF_TYPE", "tag")
+    monkeypatch.setenv("GITHUB_SHA", head)
+    monkeypatch.setattr(
+        builder, "_git_value", lambda *arguments: head if arguments[0] == "rev-parse" else ""
     )
-    result = subprocess.run(
-        [sys.executable, str(BROWSER_WHEEL_BUILDER), "--output-dir", str(tmp_path)],
-        cwd=ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-
+    builder.build_browser_wheel(tmp_path)
     manifest = json.loads((tmp_path / "browser-wheel.json").read_text(encoding="utf-8"))
     assert manifest["build"] == "release"
-    assert manifest["commit"] == environment["GITHUB_SHA"]
-    assert manifest["ref"] == environment["GITHUB_REF_NAME"]
+    assert manifest["dirty"] is False
+    assert manifest["commit"] == head
+    assert manifest["ref"] == "v2.1.0"
 
 
 def test_browser_wheel_has_standard_pure_python_contents(tmp_path: Path) -> None:
@@ -4438,3 +4433,178 @@ def test_engine_measure_bounds_calibration_for_a_stalled_clock(monkeypatch) -> N
         module.measure(lambda: None, 1, evidence=evidence)
     assert [b["loops"] for b in evidence["calibration"]] == [1, 2, 4]
     assert evidence["samples"] == []
+
+
+def test_release_minimal_install_contract(tmp_path: Path) -> None:
+    """The smoke CLI covers the first examples and reports unsuccessful invocations."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "smoke_release.py")],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["orders"] == [
+        {"region": "eu", "orders": 2, "revenue": 48},
+        {"region": "us", "orders": 1, "revenue": 20},
+    ]
+    assert report["async"] == [20, 30, 40]
+    failed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "smoke_release.py"), "--invalid-option"],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert failed.returncode != 0
+    assert "unrecognized arguments" in failed.stderr
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(failed.stdout)
+
+
+def test_browser_manifest_build_identity(tmp_path: Path, monkeypatch) -> None:
+    """Dirty or unidentifiable sources cannot masquerade as a matching release tag."""
+    spec = importlib.util.spec_from_file_location("browser_builder_identity", BROWSER_WHEEL_BUILDER)
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    for name in ("GITHUB_SHA", "GITHUB_REF", "GITHUB_REF_NAME", "GITHUB_REF_TYPE"):
+        monkeypatch.delenv(name, raising=False)
+    head = "0123456789abcdef0123456789abcdef01234567"
+    dirty = ""
+    tag_head = head
+
+    def git_value(*arguments):
+        if arguments[0] == "rev-parse":
+            return tag_head if "--verify" in arguments else head
+        if arguments[0] == "status":
+            return dirty
+        return None
+
+    monkeypatch.setattr(builder, "_git_value", git_value)
+    builder.build_browser_wheel(tmp_path)
+    manifest = json.loads((tmp_path / "browser-wheel.json").read_text())
+    assert manifest["dirty"] is False
+    assert manifest["commit"] == head
+    assert manifest["build"] == "development"
+    monkeypatch.setenv("GITHUB_SHA", head)
+    monkeypatch.setenv("GITHUB_REF_NAME", "v2.1.0")
+    monkeypatch.setenv("GITHUB_REF_TYPE", "tag")
+    assert builder._build_provenance("2.1.0")["build"] == "release"
+    tag_head = "f" * 40
+    assert builder._build_provenance("2.1.0")["build"] == "development"
+    tag_head = head
+    dirty = " M src/fpstreams/streams/flow.py"
+    assert builder._build_provenance("2.1.0")["dirty"] is True
+    assert builder._build_provenance("2.1.0")["build"] == "development"
+    dirty = ""
+    monkeypatch.setenv("GITHUB_SHA", "f" * 40)
+    assert builder._build_provenance("2.1.0")["commit"] == head
+    assert builder._build_provenance("2.1.0")["build"] == "development"
+    monkeypatch.setattr(builder, "_git_value", lambda *arguments: None)
+    unknown = builder._build_provenance("2.1.0")
+    assert unknown["dirty"] is None
+    assert unknown["commit"] == "unknown"
+    assert unknown["build"] == "development"
+
+
+def test_sorted_documented_examples() -> None:
+    from fpstreams import agg, flow
+
+    orders = [
+        {"region": "eu", "amount": 12},
+        {"region": "eu", "amount": 36},
+        {"region": "us", "amount": 20},
+    ]
+    assert flow(orders).rows().group_by_sorted("region").aggregate(
+        orders=agg.count(), revenue=agg.sum("amount")
+    ).to_list() == [
+        {"region": "eu", "orders": 2, "revenue": 48},
+        {"region": "us", "orders": 1, "revenue": 20},
+    ]
+    left = [{"time": 1, "event": "start"}, {"time": 3, "event": "end"}]
+    right = [{"time": 2, "event": "update"}]
+    assert flow(left).merge_sorted(right, key="time").to_list() == [left[0], right[0], left[1]]
+    orders = [{"customer": 1, "amount": 12}, {"customer": 1, "amount": 36}]
+    assert flow(orders).rows().join_sorted(
+        [{"customer": 1, "name": "Ana"}], on="customer", validate="m:1"
+    ).to_list() == [
+        {"customer": 1, "amount": 12, "name": "Ana"},
+        {"customer": 1, "amount": 36, "name": "Ana"},
+    ]
+
+
+def test_atomic_sink_documented_example(tmp_path) -> None:
+    from fpstreams import flow
+
+    for method, filename in (("to_json", "orders.json"), ("to_csv", "orders.csv")):
+        path = tmp_path / filename
+        getattr(flow([{"id": 1}]), method)(path, atomic=True, if_exists="error")
+        original = path.read_bytes()
+        with pytest.raises(FileExistsError):
+            getattr(flow([{"id": 2}]), method)(path, atomic=True, if_exists="error")
+        assert path.read_bytes() == original
+
+
+def test_sorted_benchmark_fixture_contract(tmp_path) -> None:
+    from benchmarks.competitive import (
+        _CASE_SPECS,
+        _assert_equivalent_outputs,
+        _build_case,
+        list_competitive_cases,
+    )
+
+    selected = list_competitive_cases(include=("sorted.*",))
+    assert len(selected) == 36
+    assert any("skew.generator.first" in case for case in selected)
+    for spec in _CASE_SPECS:
+        if spec.case_id in selected:
+            case = _build_case(spec, 25, None, None, tmp_path)
+            _assert_equivalent_outputs(case)
+            first = case.candidate.task()
+            assert case.candidate.task() == first
+
+
+def test_historical_baseline_rejection_contract() -> None:
+    from copy import deepcopy
+
+    from benchmarks import regression
+
+    report = _report(1.0)
+    baseline = regression._baseline([report, report, report], "local_one_shot_unreviewed")
+    for field in ("benchmark_matrix_sha256", "python_version", "platform"):
+        changed = deepcopy(report)
+        changed["metadata"][field] = "different"
+        assert regression._comparison_errors(baseline, changed, {})
+        del changed["metadata"][field]
+        with pytest.raises(ValueError):
+            regression._comparable([report, changed])
+    old = deepcopy(report)
+    old["schema_version"] = 5
+    assert regression._comparison_errors(baseline, old, {})
+
+
+def test_sorted_full_benchmark_detects_wrong_values_beyond_prefix(tmp_path, monkeypatch) -> None:
+    from benchmarks.competitive import _CASE_SPECS, _assert_equivalent_outputs, _build_case
+    from fpstreams.execution import sorted_streams
+
+    spec = next(spec for spec in _CASE_SPECS if spec.case_id == "sorted.group.duplicates.list.full")
+    case = _build_case(spec, 256, None, None, tmp_path)
+    original = sorted_streams.aggregate_sorted_rows
+
+    def corrupt(*args, **kwargs):
+        for record in original(*args, **kwargs):
+            if record["id"] == 31:
+                record["total"] += 1
+            yield record
+
+    monkeypatch.setattr(sorted_streams, "aggregate_sorted_rows", corrupt)
+    assert case.candidate.task() == case.references[0].task() == 32
+    with pytest.raises(AssertionError, match="content"):
+        _assert_equivalent_outputs(case)

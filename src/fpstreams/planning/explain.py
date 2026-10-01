@@ -334,11 +334,13 @@ def explain_physical(physical: Any) -> PlanExplanation:
 def _explain_relation(root: Any) -> dict[str, Any]:
     """Serialize physical relation choices without inspecting sources or callbacks."""
     from ..physical.relational import (
-        ArrowGlobalAggregateSpec,
         GlobalAggregatePhysicalNode,
         GroupAggregatePhysicalNode,
         JoinPhysicalNode,
+        MergeSortedPhysicalNode,
         PipelinePhysicalNode,
+        SortedGroupAggregatePhysicalNode,
+        SortedJoinPhysicalNode,
         SourcePhysicalNode,
     )
 
@@ -350,12 +352,39 @@ def _explain_relation(root: Any) -> dict[str, Any]:
             "operations": [stage.engine for stage in root.stages],
             "children": [_explain_relation(root.input)],
         }
+    if isinstance(root, MergeSortedPhysicalNode):
+        return {
+            "node": "merge_sorted",
+            "strategy": "python_sorted_merge",
+            "lookahead_rows_per_input": 1,
+            "stable_ties": "left first",
+            "children": [_explain_relation(root.left), _explain_relation(root.right)],
+        }
+    if isinstance(root, SortedJoinPhysicalNode):
+        return {
+            "node": "sorted_join",
+            "strategy": "python_sorted_join",
+            "how": root.spec.logical.how,
+            "validate": root.spec.logical.validate,
+            "max_right_group_rows": root.max_right_group_rows,
+            "max_matches_per_left": root.max_matches_per_left,
+            "max_output_rows": root.max_output_rows,
+            "children": [_explain_relation(root.left), _explain_relation(root.right)],
+        }
     if isinstance(root, JoinPhysicalNode):
         return {
             "node": "join",
             "strategy": root.strategy.value,
             "reason": root.reason,
             "children": [_explain_relation(root.left), _explain_relation(root.right)],
+        }
+    if isinstance(root, SortedGroupAggregatePhysicalNode):
+        return {
+            "node": "sorted_group_aggregate",
+            "strategy": "python_sorted_group",
+            "lookahead_rows": 1,
+            "state": "current aggregators; user aggregators may grow",
+            "children": [_explain_relation(root.input)],
         }
     if isinstance(root, GroupAggregatePhysicalNode):
         result: dict[str, Any] = {
@@ -371,24 +400,31 @@ def _explain_relation(root: Any) -> dict[str, Any]:
             result.update(candidate="native_pair_expr_hash", guarded=True)
         return result
     if isinstance(root, GlobalAggregatePhysicalNode):
-        result = {
-            "node": "global_aggregate",
-            "children": [_explain_relation(root.input)],
-        }
-        if root.exact_count_name is not None:
-            result.update(candidate="exact_size", guarded=True)
-        elif isinstance(root.arrow_i64_sum, ArrowGlobalAggregateSpec):
-            result.update(candidate="arrow_multi_reduce", guarded=True)
-        elif root.arrow_i64_sum is not None:
-            result.update(candidate="arrow_reduce", guarded=True)
-        elif root.numpy_global is not None:
-            result.update(candidate="numpy_reduce", guarded=True)
-        elif root.native_multi_i64 is not None:
-            result.update(candidate="native_multi_reduce", guarded=True)
-        elif root.native_record_i64_sum is not None:
-            result.update(candidate="native_reduce", guarded=True)
-        return result
+        return _explain_global_aggregate(root)
     raise TypeError(f"unsupported physical relation: {type(root).__name__}")
+
+
+def _explain_global_aggregate(root: Any) -> dict[str, Any]:
+    """Describe the guarded candidates for one global aggregate."""
+    from ..physical.relational import ArrowGlobalAggregateSpec
+
+    result: dict[str, Any] = {
+        "node": "global_aggregate",
+        "children": [_explain_relation(root.input)],
+    }
+    if root.exact_count_name is not None:
+        result.update(candidate="exact_size", guarded=True)
+    elif isinstance(root.arrow_i64_sum, ArrowGlobalAggregateSpec):
+        result.update(candidate="arrow_multi_reduce", guarded=True)
+    elif root.arrow_i64_sum is not None:
+        result.update(candidate="arrow_reduce", guarded=True)
+    elif root.numpy_global is not None:
+        result.update(candidate="numpy_reduce", guarded=True)
+    elif root.native_multi_i64 is not None:
+        result.update(candidate="native_multi_reduce", guarded=True)
+    elif root.native_record_i64_sum is not None:
+        result.update(candidate="native_reduce", guarded=True)
+    return result
 
 
 def explain_query(query: Query) -> PlanExplanation:

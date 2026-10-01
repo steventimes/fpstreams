@@ -4,7 +4,12 @@ Edit an example and run it in your browser. The page downloads Python and the
 fpstreams pure-Python wheel, then runs your code in a separate worker. It does
 not send your code to an fpstreams server. The first load can take longer while
 the runtime downloads. The status line identifies whether the wheel came from a
-release tag or from the development commit used to build the docs.
+clean release-tag checkout or a development checkout. A development build can
+contain changes absent from the PyPI wheel.
+
+Run code you trust. Browser Python can make network requests through browser APIs;
+the worker keeps execution off the page's main thread, but does not make pasted
+code safe or suitable for secrets.
 
 <div class="fp-playground" data-fp-playground>
   <div class="fp-playground__masthead">
@@ -74,8 +79,8 @@ You can try the core APIs here:
 - `Flow`, `Rows`, `Pairs`, collectors, expressions, and `AsyncFlow` run locally;
 - the `auto` engine selects the canonical Python path because the CPython/Rust
   extension is not a WebAssembly wheel;
-- the status line shows the wheel version, build commit when applicable, and
-  Python engine so this page is not mistaken for the PyPI wheel;
+- the status line shows the wheel version, build commit, working-tree state, and
+  Python engine;
 - stopping code terminates the worker, including an accidental infinite loop;
 - local operating-system paths, process pools, and native-only execution are not
   available inside the browser sandbox;

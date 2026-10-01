@@ -80,7 +80,7 @@ jobs:
         run: |
           uv sync --frozen --group build --group test
           uv run maturin develop --release
-          uv run pytest -q -W error tests/test_release.py tests/test_tabular.py -k 'spill or sqlite or high_water'
+          uv run pytest -q -W error tests/test_release.py tests/test_tabular.py tests/test_flow.py tests/test_runtime.py -k 'spill or sqlite or high_water or atomic'
 
   quality:
     if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))

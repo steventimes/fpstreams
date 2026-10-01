@@ -953,7 +953,7 @@ def write_parquet_rows(
     path_value = os.fspath(path)
     if "://" in path_value:
         raise ValueError("to_parquet() atomic writes currently require a local path")
-    target = Path(path_value)
+    target = Path(path_value).absolute()
     if os.path.lexists(target) and if_exists == "error":
         raise FileExistsError(f"Parquet target already exists: {target}")
 

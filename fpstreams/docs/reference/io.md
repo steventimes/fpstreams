@@ -268,6 +268,7 @@ untrusted values into SQL text.
 | `Rows.to_columns` | dictionary of column lists | Full result | None |
 | `Rows.to_numpy` | two-dimensional NumPy array, optionally selected | Full result | `data` |
 | `Flow.to_json` | JSON array file | Streams values to the destination | None |
+| `Flow.to_jsonl` (unreleased) | One JSON value per line | Streams values to the destination | None |
 | `Flow.to_csv` | scalar/sequence/mapping CSV file | Streams rows to file | None |
 | `Rows.to_csv` | record CSV file | Streams rows; schema/header policy is explicit | None |
 | `Rows.to_jsonl` | JSON object lines | Streams rows | None |
@@ -285,16 +286,19 @@ extra-field policies; `Flow.to_csv(...)` accepts arbitrary value shapes.
 Record conversion failures propagate, including `StopIteration` from a record’s
 `_asdict()` method. They do not mean that the source is empty. SQLite validates
 the first record before replacing an existing table, so a conversion failure
-leaves that table intact. CSV output is streamed to the destination and is not
-transactional.
+leaves that table intact. CSV and JSONL write directly by default; use the
+unreleased `atomic=True` option below when a failed export must preserve the old file.
 
 ## Spreadsheet safety
 
 CSV intended for Excel, Sheets, or similar applications can treat leading
 characters such as `=`, `+`, `-`, and `@` as formulas. Set
-`spreadsheet_safe=True` for untrusted text. fpstreams prefixes suspect cells with
-a single quote. Leave it disabled for machine interchange where byte-level value
-preservation is required.
+`spreadsheet_safe=True` for untrusted text. fpstreams prefixes suspect strings with
+a single quote, including strings with leading whitespace. The current source
+also protects header cells, whether supplied explicitly or inferred from record
+keys. Header protection is not in the published 2.1.0 wheel. It changes the written
+labels, while record lookup still uses the original keys. Numeric values are
+unchanged. Leave this option disabled when a consumer needs the original strings.
 
 ## Files, errors, and partial effects
 
@@ -320,3 +324,62 @@ The [browser playground](../playground.md) installs a pure-Python wheel into a
 Pyodide worker. It is meant for in-memory core examples. Browser security does
 not expose arbitrary local paths, normal process pools, or the CPython/Rust
 extension. Use the installed package for production I/O and native execution.
+
+## JSON Lines output (current source)
+
+Use `Flow.to_jsonl()` for arbitrary JSON values and `Rows.to_jsonl()` for records.
+Both write one value per line, consume the source once, and write an empty file
+for an empty input. Neither collects the whole result in memory. Flow's method
+is new; Rows now also accepts `default` to serialize dates and other custom values:
+
+```python
+from datetime import date
+from fpstreams import rows
+
+rows([{"id": 1, "day": date(2026, 9, 30)}]).to_jsonl(
+    "events.jsonl",
+    default=date.isoformat,
+    atomic=True,
+    if_exists="error",
+)
+# events.jsonl contains: {"id": 1, "day": "2026-09-30"}
+```
+
+`ensure_ascii=False` preserves Unicode text; `encoding` defaults to UTF-8.
+`rows.from_jsonl()` reads object records, so it cannot read scalar lines written
+by Flow. These additions are absent from the published 2.1.0 wheel.
+
+## Atomic file output (current source) {#atomic-flow-file-output-current-source}
+
+`Flow.to_csv()`, `Flow.to_json()`, `Flow.to_jsonl()`, `Rows.to_csv()`, and
+`Rows.to_jsonl()` accept `atomic=True`. They write a temporary
+file in the destination directory and publish it only after the writer and source
+close successfully. A serialization or cleanup error preserves the old target.
+Relative destinations are anchored to the working directory before the source
+opens, so a callback changing directories cannot redirect publication.
+Their default remains `atomic=False`, with the existing direct-write behavior.
+
+For example, export a report without replacing the last successful result if
+conversion fails halfway through:
+
+```python
+from fpstreams import rows
+
+rows([{"region": "eu", "revenue": 48}]).to_csv(
+    "report.csv", atomic=True, spreadsheet_safe=True,
+)
+```
+
+With atomic output, `if_exists="replace"` replaces the destination directory entry.
+`if_exists="error"` uses an atomic no-overwrite operation and raises
+`FileExistsError` if another writer creates the target first. Filesystems that do
+not support this operation fail explicitly. Existing symlinks, including dangling
+ones, are rejected. `if_exists="error"` requires `atomic=True`.
+
+This is an atomic visibility guarantee for a file path, not a promise of durability
+after power loss or a transaction across a network filesystem. File handles are
+not accepted. The temporary file's permissions become the output permissions;
+replacement does not preserve the old file's mode or ownership. Destination
+directories must be trusted: anchoring a path does not protect against another
+process renaming its parent directories. These options are in the checkout and
+are absent from published 2.1.0.

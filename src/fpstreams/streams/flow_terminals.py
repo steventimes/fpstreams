@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from numbers import Real
 from time import perf_counter_ns
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, Literal, TypeVar, cast
 
 from ..collecting.aggregate_program import (
     AggregationProgram,
@@ -55,7 +55,7 @@ from ..execution.physical import execute_physical, operations_from_physical_node
 from ..execution.sync import open_operations
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.selectors import Selector, compile_selector
-from ..io_safety import spreadsheet_safe_cell
+from ..io_safety import output_path, spreadsheet_safe_cell
 from ..physical.plan import (
     BackendPayload,
     PhysicalPlan,
@@ -1720,6 +1720,8 @@ class FlowTerminalsMixin(Generic[T]):
         header: Iterable[str] | None = None,
         encoding: str = "utf-8",
         spreadsheet_safe: bool = False,
+        atomic: bool = False,
+        if_exists: Literal["replace", "error"] = "replace",
     ) -> None:
         """Execute the pipeline and stream its items to a CSV file.
 
@@ -1727,17 +1729,25 @@ class FlowTerminalsMixin(Generic[T]):
             path: Destination file, opened in text write mode.
             header: Optional header row. For mapping items, these names also select and order cells.
             encoding: Encoding used when opening the destination.
-            spreadsheet_safe: Prefix formula-like string cells so spreadsheet software treats them
-                as text.
+            spreadsheet_safe: Prefix formula-like string cells, including headers, so spreadsheet
+                software treats them as text. Mapping keys used for lookup remain unchanged.
+            atomic: Publish after the writer and source close successfully.
+                Writing or source-cleanup failures preserve the old target.
+            if_exists: With atomic=True, replace the target or fail if it already exists.
         """
         columns = tuple(header) if header is not None else None
         with (
+            output_path(path, atomic=atomic, if_exists=if_exists) as destination,
             self._open() as iterator,
-            open(path, "w", encoding=encoding, newline="") as handle,
+            open(destination, "w", encoding=encoding, newline="") as handle,
         ):
             writer = csv.writer(handle, lineterminator="\n")
             if columns is not None:
-                writer.writerow(columns)
+                writer.writerow(
+                    [spreadsheet_safe_cell(name) for name in columns]
+                    if spreadsheet_safe
+                    else columns
+                )
             for item in iterator:
                 values: Iterable[Any]
                 if isinstance(item, Mapping):
@@ -1763,6 +1773,8 @@ class FlowTerminalsMixin(Generic[T]):
         encoding: str = "utf-8",
         ensure_ascii: bool = False,
         default: Callable[[Any], Any] | None = None,
+        atomic: bool = False,
+        if_exists: Literal["replace", "error"] = "replace",
     ) -> None:
         """Execute the pipeline and stream its items to one JSON array.
 
@@ -1771,13 +1783,20 @@ class FlowTerminalsMixin(Generic[T]):
             encoding: Encoding used when opening the destination.
             ensure_ascii: Whether JSON output escapes non-ASCII characters.
             default: Optional serializer called for objects the JSON encoder cannot handle.
+            atomic: Publish after the writer and source close successfully.
+                Writing or source-cleanup failures preserve the old target.
+            if_exists: With atomic=True, replace the target or fail if it already exists.
         """
         encoder = (
             json.JSONEncoder(ensure_ascii=ensure_ascii)
             if default is None
             else json.JSONEncoder(ensure_ascii=ensure_ascii, default=default)
         )
-        with self._open() as iterator, open(path, "w", encoding=encoding) as handle:
+        with (
+            output_path(path, atomic=atomic, if_exists=if_exists) as destination,
+            self._open() as iterator,
+            open(destination, "w", encoding=encoding) as handle,
+        ):
             handle.write("[")
             first = True
             for item in iterator:
@@ -1787,6 +1806,41 @@ class FlowTerminalsMixin(Generic[T]):
                 for chunk in encoder.iterencode(item):
                     handle.write(chunk)
             handle.write("]")
+
+    def to_jsonl(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        encoding: str = "utf-8",
+        ensure_ascii: bool = False,
+        default: Callable[[Any], Any] | None = None,
+        atomic: bool = False,
+        if_exists: Literal["replace", "error"] = "replace",
+    ) -> None:
+        """Stream each item as one JSON value followed by a newline.
+
+        Values may be scalars, sequences, or records. An empty flow writes an empty file.
+        This terminal consumes the source once without collecting the output in memory.
+
+        Args:
+            path: Destination JSON Lines file.
+            encoding: Encoding used when opening the destination.
+            ensure_ascii: Whether JSON output escapes non-ASCII characters.
+            default: Optional serializer called for objects the JSON encoder cannot handle.
+            atomic: Publish after the writer and source close successfully.
+                Writing or source-cleanup failures preserve the old target.
+            if_exists: With atomic=True, replace the target or fail if it already exists.
+        """
+        encoder = json.JSONEncoder(ensure_ascii=ensure_ascii, default=default)
+        with (
+            output_path(path, atomic=atomic, if_exists=if_exists) as destination,
+            self._open() as iterator,
+            open(destination, "w", encoding=encoding) as handle,
+        ):
+            for item in iterator:
+                for chunk in encoder.iterencode(item):
+                    handle.write(chunk)
+                handle.write("\n")
 
     def describe(self) -> dict[str, int | float]:
         """Return count and one-pass summary statistics for numeric items.

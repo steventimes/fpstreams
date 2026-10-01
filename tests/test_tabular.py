@@ -5180,6 +5180,159 @@ def test_rows_stream_csv_and_json_lines_round_trips(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
+def test_rows_atomic_export_preserves_old_file_on_failure(tmp_path, sink) -> None:
+    target = tmp_path / "output"
+    reference = tmp_path / "reference"
+    data = [{"id": 1, "name": "雪"}, {"id": 2, "name": "next"}]
+    getattr(fpstreams.rows(data), sink)(reference)
+    getattr(fpstreams.rows(iter(data)), sink)(target, atomic=True)
+    assert target.read_bytes() == reference.read_bytes()
+    failure = RuntimeError("source failed")
+    closed = []
+
+    def source():
+        try:
+            yield data[0]
+            raise failure
+        finally:
+            closed.append(True)
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(fpstreams.rows(source()), sink)(target, atomic=True)
+    assert caught.value is failure
+    assert closed == [True]
+    assert target.read_bytes() == reference.read_bytes()
+    assert sorted(tmp_path.iterdir()) == sorted([target, reference])
+
+
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
+def test_rows_atomic_export_checks_destination_before_opening_source(tmp_path, sink) -> None:
+    target = tmp_path / "output"
+    target.write_text("old")
+    opened = []
+
+    def source():
+        opened.append(True)
+        return iter([{"id": 1}])
+
+    query = flow.defer(source).rows()
+    with pytest.raises(FileExistsError):
+        getattr(query, sink)(target, atomic=True, if_exists="error")
+    with pytest.raises(ValueError, match="atomic"):
+        getattr(query, sink)(target, if_exists="error")
+    assert opened == []
+    assert target.read_text() == "old"
+
+
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
+def test_rows_atomic_export_waits_for_cleanup(tmp_path, sink) -> None:
+    target = tmp_path / "output"
+    target.write_text("old")
+    failure = OSError("close failed")
+
+    def source():
+        try:
+            yield {"id": 1}
+        finally:
+            assert target.read_text() == "old"
+            raise failure
+
+    with pytest.raises(OSError) as caught:
+        getattr(fpstreams.rows(source()), sink)(target, atomic=True)
+    assert caught.value is failure
+    assert target.read_text() == "old"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
+def test_rows_atomic_export_does_not_overwrite_a_concurrent_creator(tmp_path, sink) -> None:
+    target = tmp_path / "output"
+
+    def source():
+        target.write_text("other writer")
+        yield {"id": 1}
+
+    with pytest.raises(FileExistsError):
+        getattr(fpstreams.rows(source()), sink)(target, atomic=True, if_exists="error")
+    assert target.read_text() == "other writer"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl", "to_parquet"])
+@pytest.mark.parametrize("if_exists", ["error", "replace"])
+def test_rows_export_anchors_destination_before_source_opens(
+    tmp_path, monkeypatch, sink, if_exists
+) -> None:
+    initial, unrelated = tmp_path / "initial", tmp_path / "unrelated"
+    initial.mkdir()
+    unrelated.mkdir()
+    (unrelated / "output").write_text("unrelated")
+    monkeypatch.chdir(initial)
+
+    def source():
+        monkeypatch.chdir(unrelated)
+        return iter([{"id": 7}])
+
+    options = {} if sink == "to_parquet" else {"atomic": True}
+    getattr(flow.defer(source).rows(), sink)("output", if_exists=if_exists, **options)
+    assert (unrelated / "output").read_text() == "unrelated"
+    target = initial / "output"
+    if sink == "to_parquet":
+        assert pq.read_table(target).to_pylist() == [{"id": 7}]
+    elif sink == "to_jsonl":
+        assert fpstreams.rows.from_jsonl(target).to_list() == [{"id": 7}]
+    else:
+        assert fpstreams.rows.from_csv(target).to_list() == [{"id": "7"}]
+    assert list(initial.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("safe", [False, True])
+def test_rows_csv_safety_includes_inferred_and_empty_headers(
+    tmp_path, explicit, empty, safe
+) -> None:
+    import csv
+
+    names = ["=1+1", " @command", "normal"]
+    records = [] if empty else [dict(zip(names, [3, "+text", -2], strict=True))]
+    options = {"fieldnames": names} if explicit else {}
+    target = tmp_path / "headers.csv"
+    fpstreams.rows(records).to_csv(target, spreadsheet_safe=safe, **options)
+    expected = []
+    if explicit or not empty:
+        expected.append(["'=1+1", "' @command", "normal"] if safe else names)
+    if not empty:
+        expected.append(["3", "'+text" if safe else "+text", "-2"])
+    with target.open(newline="") as handle:
+        assert list(csv.reader(handle)) == expected
+
+
+def test_rows_jsonl_custom_serializer_and_atomic_failure(tmp_path) -> None:
+    from datetime import date
+
+    target = tmp_path / "events.jsonl"
+    stamp = date(2026, 9, 30)
+    seen = []
+
+    def serialize(value):
+        seen.append(value)
+        return value.isoformat()
+
+    fpstreams.rows([{"date": stamp, "name": "雪"}]).to_jsonl(
+        target, default=serialize, ensure_ascii=True, atomic=True
+    )
+    assert seen == [stamp]
+    assert "\\u96ea" in target.read_text()
+    assert fpstreams.rows.from_jsonl(target).to_list() == [{"date": "2026-09-30", "name": "雪"}]
+    previous = target.read_bytes()
+    with pytest.raises(TypeError):
+        fpstreams.rows([{"value": object()}]).to_jsonl(target, atomic=True)
+    assert target.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("sink", ["to_csv", "to_jsonl"])
 def test_rows_text_sinks_keep_record_error_primary_when_generator_close_fails(
     tmp_path: Path,
     sink: str,
@@ -22665,3 +22818,283 @@ def test_record_sink_first_conversion_stopiteration_is_not_empty_input(
     assert caught.value is failure
     assert events == ["convert", "close"]
     assert fpstreams.rows.from_sqlite(database, "SELECT * FROM events").to_list() == [{"id": 42}]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_group_by_sorted_public_contract(engine) -> None:
+    from fpstreams import NativeUnsupportedError, agg, flow
+    from fpstreams.planning.logical import SortedGroupAggregateNode, walk_logical
+
+    opened = []
+    pulled = []
+
+    def records():
+        opened.append(True)
+        for row in [("a", 2), ("a", 3), ("b", 7), ("c", 9)]:
+            pulled.append(row)
+            yield {"region": row[0], "amount": row[1]}
+
+    grouped = flow.defer(records).with_engine(engine).rows().group_by_sorted("region")
+    result = grouped.aggregate(count=agg.count(), total=agg.sum("amount"))
+    assert opened == pulled == []
+    explanation = result.explain().to_dict()
+    assert explanation["relations"]["node"] == "sorted_group_aggregate"
+    assert explanation["relations"]["lookahead_rows"] == 1
+    assert opened == []
+    assert isinstance(result._flow._logical_plan.root, SortedGroupAggregateNode)
+    assert len(walk_logical(result._flow._logical_plan.root)) == 2
+    assert result.take(1).to_list() == [{"region": "a", "count": 2, "total": 5}]
+    assert pulled == [("a", 2), ("a", 3), ("b", 7)]
+    with pytest.raises(ValueError, match="sorted"):
+        grouped.spill()
+    assert opened == [True]
+    assert flow([]).rows().group_by_sorted("region").aggregate(count=agg.count()).to_list() == []
+    assert flow([(1, "a", 2), (1, "a", 3), (1, "b", 7)]).rows().group_by_sorted(
+        0, label=1
+    ).aggregate(total=agg.sum(2)).to_list() == [
+        {"key_0": 1, "label": "a", "total": 5},
+        {"key_0": 1, "label": "b", "total": 7},
+    ]
+    with pytest.raises(ValueError):
+        flow([]).rows().group_by_sorted()
+    with pytest.raises(TypeError):
+        flow([]).rows().group_by_sorted(object())
+    with pytest.raises(ValueError, match=r"input.*index 2"):
+        flow([{"k": 1}, {"k": 3}, {"k": 2}]).rows().group_by_sorted("k").aggregate(
+            count=agg.count()
+        ).to_list()
+    native_opened = []
+    native = (
+        flow.defer(lambda: native_opened.append(True) or iter([{"k": 1}]))
+        .with_engine("native")
+        .rows()
+        .group_by_sorted("k")
+        .aggregate(count=agg.count())
+    )
+    with pytest.raises(NativeUnsupportedError):
+        native.to_list()
+    assert native_opened == []
+
+
+@pytest.mark.parametrize("how", ["inner", "left", "semi", "anti"])
+def test_sorted_join_many_to_one_contract(how) -> None:
+    from fpstreams import flow
+    from fpstreams.execution.sorted_streams import join_sorted_rows
+    from fpstreams.tabular.join import _compile_join_selector, _shared_join_names
+
+    left = [
+        {"id": 0, "value": "l0"},
+        {"id": 1, "value": "l1"},
+        {"id": 1, "value": "l2"},
+        {"id": 3, "value": "l3"},
+    ]
+    right = [{"id": 1, "value": "r1", "tag": "a"}, {"id": 3, "value": "r3"}]
+    key = _compile_join_selector("id")
+    options = {
+        "left_key": key,
+        "right_key": key,
+        "shared_names": _shared_join_names("id", "id"),
+        "how": how,
+        "suffix": "_rhs",
+        "validate": "m:1",
+    }
+    expected = (
+        flow(left).rows().join(right, on="id", how=how, suffix="_rhs", validate="m:1").to_list()
+    )
+    actual = list(join_sorted_rows(left, right, **options))
+    assert actual == expected
+    assert all(row is not original for row in actual for original in left)
+    assert len({id(row) for row in actual}) == len(actual)
+    assert (
+        list(join_sorted_rows(left, [], **options))
+        == flow(left).rows().join([], on="id", how=how, suffix="_rhs", validate="m:1").to_list()
+    )
+    assert list(join_sorted_rows([], right, **options)) == []
+    duplicate = join_sorted_rows([{"id": 1}], [{"id": 1}, {"id": 1}], **options)
+    with pytest.raises(ValueError, match="right"):
+        next(duplicate)
+    if how in {"inner", "left"}:
+        with pytest.raises(ValueError, match="column"):
+            list(join_sorted_rows(left, [{"id": 1}, {"id": 3, "new": 1}], **options))
+    else:
+        scalar_right = [1, 3]
+        options["right_key"] = lambda value: value
+        options["shared_names"] = set()
+        from fpstreams import SelectionError
+
+        with pytest.raises(SelectionError):
+            list(join_sorted_rows(left, scalar_right, **options))
+        with pytest.raises(SelectionError):
+            flow(left).rows().join(
+                scalar_right,
+                left_on="id",
+                right_on=lambda value: value,
+                how=how,
+                validate="m:1",
+            ).to_list()
+
+
+def test_sorted_join_snapshots_before_key_callbacks() -> None:
+    from fpstreams.execution.sorted_streams import join_sorted_rows
+
+    left = [{"id": 1, "value": "left original"}]
+    right = [{"id": 1, "value": "right original"}]
+    calls = []
+
+    def key(row):
+        calls.append(row["value"])
+        row["value"] = "changed"
+        return row["id"]
+
+    result = list(
+        join_sorted_rows(
+            left,
+            right,
+            left_key=key,
+            right_key=key,
+            shared_names={"id"},
+            how="inner",
+            suffix="_right",
+            validate="m:1",
+        )
+    )
+    assert result == [{"id": 1, "value": "left original", "value_right": "right original"}]
+    assert sorted(calls) == ["left original", "right original"]
+
+
+def test_sorted_join_paired_open_failure_and_alias() -> None:
+    from fpstreams.execution.sorted_streams import join_sorted_rows
+    from fpstreams.planning.source import Source
+
+    events = []
+
+    class Records:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            events.append("pull")
+            return {"id": 1}
+
+        def close(self):
+            events.append("close")
+
+    iterator = Records()
+
+    def left():
+        events.append("left")
+        return iterator
+
+    def right():
+        events.append("right")
+        return iterator
+
+    options = dict(
+        left_key=lambda row: row["id"], right_key=lambda row: row["id"], shared_names={"id"}
+    )
+    with pytest.raises(ValueError, match="same iterator"):
+        next(join_sorted_rows(Source.defer(left), Source.defer(right), **options))
+    assert events == ["left", "right", "close"]
+    events.clear()
+    error = RuntimeError("right open")
+
+    def broken():
+        events.append("right")
+        raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        next(join_sorted_rows(Source.defer(left), Source.defer(broken), **options))
+    assert caught.value is error
+    assert events == ["left", "right", "close"]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_join_sorted_public_contract(engine) -> None:
+    left = [{"id": 1, "l": 1}, {"id": 1, "l": 2}, {"id": 3, "l": 3}]
+    right = [{"id": 1, "r": 4}, {"id": 2, "r": 5}]
+    for how in ("inner", "left", "semi", "anti"):
+        result = (
+            flow(left)
+            .with_engine(engine)
+            .rows()
+            .join_sorted(right, on="id", how=how, validate="m:1")
+        )
+        assert (
+            result.to_list()
+            == flow(left).rows().join(right, on="id", how=how, validate="m:1").to_list()
+        )
+        assert "sorted_join" in str(result.explain())
+    assert flow(left).rows().join_sorted(right, on="id", validate="m:1").take(0).to_list() == []
+    with pytest.raises(ValueError, match=r"sorted|order"):
+        flow([{"id": 2}, {"id": 1}]).rows().join_sorted(right, on="id", validate="m:1").to_list()
+    for invalid in (
+        {"how": "full"},
+        {"validate": "unknown"},
+        {"max_output_rows": 0},
+        {"max_matches_per_left": 1.5},
+        {"max_right_group_rows": None},
+    ):
+        with pytest.raises((ValueError, TypeError)):
+            flow(left).rows().join_sorted(right, on="id", **invalid)
+    from fpstreams import NativeUnsupportedError
+
+    with pytest.raises(NativeUnsupportedError):
+        flow(left).with_engine("native").rows().join_sorted(
+            right, on="id", validate="m:1"
+        ).to_list()
+
+
+@pytest.mark.parametrize("how", ["inner", "left", "semi", "anti"])
+def test_sorted_join_many_to_many_limits(how) -> None:
+    from fpstreams import BufferLimitError
+
+    left = [{"id": 0, "l": 0}, {"id": 1, "l": 1}, {"id": 1, "l": 2}]
+    right = [{"id": 1, "r": i} for i in range(3)]
+    query = flow(left).rows().join_sorted(right, on="id", how=how)
+    actual = query.to_list()
+    assert actual == flow(left).rows().join(right, on="id", how=how).to_list()
+    assert len({id(row) for row in actual}) == len(actual)
+    for validation in ("m:1", "1:1", "1:m"):
+        with pytest.raises(ValueError, match=r"left|right"):
+            flow(left).rows().join_sorted(right, on="id", how=how, validate=validation).to_list()
+    with pytest.raises(BufferLimitError, match="right"):
+        flow(left).rows().join_sorted(right, on="id", how=how, max_right_group_rows=2).to_list()
+    if how in {"inner", "left"}:
+        with pytest.raises(BufferLimitError, match="matches"):
+            flow(left).rows().join_sorted(right, on="id", how=how, max_matches_per_left=2).to_list()
+    output_limit = 1
+    limited = iter(
+        flow(left).rows().join_sorted(right, on="id", how=how, max_output_rows=output_limit)
+    )
+    first = next(limited)
+    assert first == actual[0]
+    if len(actual) > output_limit:
+        with pytest.raises(BufferLimitError, match="output"):
+            next(limited)
+    else:
+        assert list(limited) == []
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_optimization_preserves_live_callbacks(engine) -> None:
+    events = []
+
+    def selector(row):
+        events.append(row["value"])
+        return row["value"] + 1
+
+    def replacement(row):
+        events.append(row["value"])
+        return row["value"] * 10
+
+    def source():
+        try:
+            yield {"value": 2}
+            selector.__code__ = replacement.__code__
+            yield {"value": 3}
+        finally:
+            events.append("closed")
+
+    result = flow(source()).with_engine(engine).rows().with_columns(result=selector).to_list()
+    assert result == [{"value": 2, "result": 3}, {"value": 3, "result": 30}]
+    assert events == [2, 3, "closed"]

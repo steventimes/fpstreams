@@ -5597,6 +5597,38 @@
           ],
           "return": "float | None"
         },
+        "merge_sorted": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Iterable[T] | Flow[T]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "other"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "Flow[T]"
+        },
         "min": {
           "parameters": [
             {
@@ -6752,6 +6784,24 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "spreadsheet_safe"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "atomic"
+            },
+            {
+              "annotation": "Literal['replace', 'error']",
+              "default": {
+                "required": false,
+                "value": "replace"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "if_exists"
             }
           ],
           "return": "None"
@@ -6825,6 +6875,92 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "default"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "atomic"
+            },
+            {
+              "annotation": "Literal['replace', 'error']",
+              "default": {
+                "required": false,
+                "value": "replace"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "if_exists"
+            }
+          ],
+          "return": "None"
+        },
+        "to_jsonl": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "str | os.PathLike[str]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "path"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": false,
+                "value": "utf-8"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "encoding"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "ensure_ascii"
+            },
+            {
+              "annotation": "Callable[[Any], Any] | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "default"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "atomic"
+            },
+            {
+              "annotation": "Literal['replace', 'error']",
+              "default": {
+                "required": false,
+                "value": "replace"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "if_exists"
             }
           ],
           "return": "None"
@@ -10360,6 +10496,38 @@
           ],
           "return": "GroupedRows[T]"
         },
+        "group_by_sorted": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Selector",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_POSITIONAL",
+              "name": "selectors"
+            },
+            {
+              "annotation": "Selector",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "VAR_KEYWORD",
+              "name": "named"
+            }
+          ],
+          "return": "GroupedRows[T]"
+        },
         "head": {
           "parameters": [
             {
@@ -10483,6 +10651,110 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "limits"
+            }
+          ],
+          "return": "Rows[dict[str, Any]]"
+        },
+        "join_sorted": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Iterable[Any] | Flow[Any] | Rows[Any]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "other"
+            },
+            {
+              "annotation": "JoinSelector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "on"
+            },
+            {
+              "annotation": "JoinSelector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "left_on"
+            },
+            {
+              "annotation": "JoinSelector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "right_on"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": false,
+                "value": "inner"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "how"
+            },
+            {
+              "annotation": "str",
+              "default": {
+                "required": false,
+                "value": "_right"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "suffix"
+            },
+            {
+              "annotation": "JoinValidation",
+              "default": {
+                "required": false,
+                "value": "m:m"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "validate"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 100000
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "max_right_group_rows"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 100000
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "max_matches_per_left"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 1000000
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "max_output_rows"
             }
           ],
           "return": "Rows[dict[str, Any]]"
@@ -11077,6 +11349,24 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "spreadsheet_safe"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "atomic"
+            },
+            {
+              "annotation": "Literal['replace', 'error']",
+              "default": {
+                "required": false,
+                "value": "replace"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "if_exists"
             }
           ],
           "return": "None"
@@ -11214,6 +11504,33 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "ensure_ascii"
+            },
+            {
+              "annotation": "Callable[[Any], Any] | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "default"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": false
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "atomic"
+            },
+            {
+              "annotation": "Literal['replace', 'error']",
+              "default": {
+                "required": false,
+                "value": "replace"
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "if_exists"
             }
           ],
           "return": "None"

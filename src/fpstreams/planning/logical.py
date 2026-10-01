@@ -11,6 +11,7 @@ from .sync import Engine, Operation, ParallelSettings
 
 if TYPE_CHECKING:
     from ..collecting.aggregation import AggregationItems
+    from ..expressions.selectors import Selector
     from ..tabular.spill_limits import SpillLimits
 
 JoinSelector: TypeAlias = Any
@@ -66,6 +67,27 @@ class JoinSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class MergeSortedNode(LogicalNode):
+    """Stable merge of two unopened sorted inputs."""
+
+    left: LogicalNode
+    right: LogicalNode
+    key: Selector
+
+
+@dataclass(frozen=True, slots=True)
+class SortedJoinNode(LogicalNode):
+    """Explicit sorted record join and finite row budgets."""
+
+    left: LogicalNode
+    right: LogicalNode
+    spec: JoinSpec
+    max_right_group_rows: int
+    max_matches_per_left: int
+    max_output_rows: int
+
+
+@dataclass(frozen=True, slots=True)
 class JoinNode(LogicalNode):
     """A binary record join whose two inputs remain unopened."""
 
@@ -88,6 +110,14 @@ class GroupAggregateSpec:
 @dataclass(frozen=True, slots=True)
 class GroupAggregateNode(LogicalNode):
     """A grouped aggregate that consumes its input only at execution time."""
+
+    input: LogicalNode
+    spec: GroupAggregateSpec
+
+
+@dataclass(frozen=True, slots=True)
+class SortedGroupAggregateNode(LogicalNode):
+    """Incremental aggregation over explicitly ordered keys."""
 
     input: LogicalNode
     spec: GroupAggregateSpec
@@ -194,9 +224,11 @@ def walk_logical(root: LogicalNode) -> tuple[LogicalNode, ...]:
     while pending:
         node = pending.pop()
         result.append(node)
-        if isinstance(node, (UnaryNode, GroupAggregateNode, GlobalAggregateNode)):
+        if isinstance(
+            node, (UnaryNode, GroupAggregateNode, SortedGroupAggregateNode, GlobalAggregateNode)
+        ):
             pending.append(node.input)
-        elif isinstance(node, JoinNode):
+        elif isinstance(node, (JoinNode, MergeSortedNode, SortedJoinNode)):
             pending.append(node.right)
             pending.append(node.left)
     return tuple(result)

@@ -9448,3 +9448,296 @@ def test_batch_bounds_preserve_index_exception(asynchronous, operation):
     with pytest.raises(TypeError) as caught:
         getattr(query, operation)(Bound())
     assert caught.value is failure
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_merge_sorted_stable_contract(engine) -> None:
+    from fpstreams import NativeUnsupportedError, flow
+    from fpstreams.planning.logical import MergeSortedNode, walk_logical
+
+    left = [{"k": 1, "v": "a"}, {"k": 1, "v": "b"}, {"k": 3, "v": "c"}]
+    right = [{"k": 1, "v": "d"}, {"k": 2, "v": "e"}]
+    merged = flow(left).with_engine(engine).merge_sorted(flow(right), key="k")
+    assert isinstance(merged._logical_plan.root, MergeSortedNode)
+    assert len(walk_logical(merged._logical_plan.root)) == 3
+    assert merged.explain().to_dict()["relations"]["node"] == "merge_sorted"
+    result = merged.to_list()
+    assert [row["v"] for row in result] == ["a", "b", "d", "e", "c"]
+    assert all(
+        actual is expected
+        for actual, expected in zip(
+            result, [left[0], left[1], right[0], right[1], left[2]], strict=True
+        )
+    )
+    assert flow([]).merge_sorted([]).to_list() == []
+    assert flow([]).merge_sorted([1, 2]).to_list() == [1, 2]
+    assert flow([1, 2]).merge_sorted([]).to_list() == [1, 2]
+    assert flow([1, 2]).merge_sorted([1, 2]).sum() == 6
+    same_list = flow([1, 2])
+    assert same_list.merge_sorted(same_list).to_list() == [1, 1, 2, 2]
+    with pytest.raises(ValueError, match=r"right.*index 2"):
+        flow([1]).merge_sorted([1, 3, 2]).to_list()
+    with pytest.raises(TypeError):
+        flow([1]).merge_sorted(["a"]).to_list()
+    with pytest.raises(ValueError, match="conflicting"):
+        flow([1]).with_engine("python").merge_sorted(flow([2]).with_engine("native"))
+    with pytest.raises(NativeUnsupportedError):
+        flow([1]).merge_sorted([2]).with_engine("native").to_list()
+
+    pulled = []
+    closed = []
+
+    class Shared:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            pulled.append(True)
+            return 1
+
+        def close(self):
+            closed.append(True)
+
+    shared = Shared()
+    with pytest.raises(ValueError, match="same iterator"):
+        flow(shared).merge_sorted(flow(shared)).to_list()
+    assert pulled == []
+    assert closed == [True]
+    pulled.clear()
+    closed.clear()
+    same_flow = flow(Shared())
+    with pytest.raises(ValueError, match="same one-shot"):
+        same_flow.merge_sorted(same_flow).to_list()
+    assert pulled == []
+    assert closed == [True]
+
+
+def test_merge_sorted_composition_contract() -> None:
+    from fpstreams import flow
+
+    a = [(1, "a1"), (1, "a2"), (4, "a4")]
+    b = [(1, "b1"), (3, "b3")]
+    c = [(1, "c1"), (2, "c2")]
+    result = flow(a).merge_sorted(b, key=0).merge_sorted(c, key=0).to_list()
+    assert result == [a[0], a[1], b[0], c[0], c[1], b[1], a[2]]
+    assert flow([1, 3]).map(lambda v: v * 2).merge_sorted([1, 5]).map(
+        lambda v: v + 1
+    ).to_list() == [2, 3, 6, 7]
+    assert flow([{"k": 1}, {"k": 3}]).select("k").to_flow().merge_sorted(
+        [{"k": 2}], key="k"
+    ).to_list() == [{"k": 1}, {"k": 2}, {"k": 3}]
+    events = []
+
+    def source(side, start):
+        events.append(("open", side))
+        try:
+            index = start
+            while True:
+                events.append(("pull", side, index))
+                yield index
+                index += 2
+        finally:
+            events.append(("close", side))
+
+    merged = flow.defer(lambda: source("left", 0)).merge_sorted(
+        flow.defer(lambda: source("right", 1))
+    )
+    assert events == []
+    assert merged.take(0).to_list() == []
+    assert events == []
+    assert merged.take(1).to_list() == [0]
+    assert events == [
+        ("open", "left"),
+        ("pull", "left", 0),
+        ("open", "right"),
+        ("pull", "right", 1),
+        ("close", "left"),
+        ("close", "right"),
+    ]
+
+    calls = []
+    error = RuntimeError("right open failed")
+
+    def fail():
+        calls.append("right")
+        raise error
+
+    class Left:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            calls.append("pull")
+            return 1
+
+        def close(self):
+            calls.append("close")
+
+    def left():
+        calls.append("left")
+        return Left()
+
+    with pytest.raises(RuntimeError) as caught:
+        flow.defer(left).merge_sorted(flow.defer(fail)).to_list()
+    assert caught.value is error
+    assert calls == ["left", "right", "close"]
+
+    pulled = []
+
+    def shared_values():
+        for value in [1, 2]:
+            pulled.append(value)
+            yield value
+
+    shared = flow(shared_values())
+    with pytest.raises(ValueError, match="same one-shot"):
+        shared.map(lambda v: v).merge_sorted(shared.map(lambda v: v)).to_list()
+    assert pulled == []
+    assert shared.to_list() == [1, 2]
+
+
+@pytest.mark.parametrize("kind", ["csv", "json", "jsonl"])
+def test_atomic_output_contract(tmp_path, kind) -> None:
+    import io
+
+    target = tmp_path / f"output.{kind}"
+    reference = tmp_path / f"reference.{kind}"
+    method = f"to_{kind}"
+    data = [{"id": 1, "name": "中文"}, {"id": 2, "name": "a"}]
+    assert getattr(flow(data), method)(reference) is None
+    target.write_text("old")
+    assert getattr(flow(data), method)(target, atomic=True) is None
+    assert target.read_bytes() == reference.read_bytes()
+    failure = RuntimeError("source failed")
+
+    def bad():
+        yield data[0]
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(flow(bad()), method)(target, atomic=True)
+    assert caught.value is failure
+    assert target.read_bytes() == reference.read_bytes()
+    with pytest.raises(FileExistsError):
+        getattr(flow(data), method)(target, atomic=True, if_exists="error")
+    with pytest.raises(ValueError):
+        getattr(flow(data), method)(target, if_exists="error")
+    with pytest.raises(TypeError):
+        getattr(flow(data), method)(io.StringIO(), atomic=True)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [target.name, reference.name]
+
+
+def test_json_atomic_serialization_failure(tmp_path) -> None:
+    target = tmp_path / "output.json"
+    target.write_text("old")
+    with pytest.raises(TypeError):
+        flow([1, object()]).to_json(target, atomic=True)
+    assert target.read_text() == "old"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("kind", ["csv", "json", "jsonl"])
+def test_atomic_sink_source_cleanup_before_publication(tmp_path, kind) -> None:
+    target = tmp_path / "output"
+    target.write_text("old")
+    error = RuntimeError("source close failed")
+
+    def source():
+        try:
+            yield {"id": 1}
+        finally:
+            assert target.read_text() == "old"
+            raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(flow(source()), f"to_{kind}")(target, atomic=True)
+    assert caught.value is error
+    assert target.read_text() == "old"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("format_name", ["csv", "json"])
+@pytest.mark.parametrize("if_exists", ["replace", "error"])
+def test_atomic_output_keeps_relative_destination_when_source_changes_cwd(
+    tmp_path, monkeypatch, format_name, if_exists
+) -> None:
+    initial = tmp_path / "initial"
+    unrelated = tmp_path / "unrelated"
+    initial.mkdir()
+    unrelated.mkdir()
+    name = f"result.{format_name}"
+    (unrelated / name).write_text("unrelated content")
+    monkeypatch.chdir(initial)
+
+    def records():
+        monkeypatch.chdir(unrelated)
+        yield {"value": 7}
+
+    getattr(flow(records()), f"to_{format_name}")(name, atomic=True, if_exists=if_exists)
+    assert (initial / name).read_text() == ("7\n" if format_name == "csv" else '[{"value": 7}]')
+    assert (unrelated / name).read_text() == "unrelated content"
+    assert list(initial.iterdir()) == [initial / name]
+    assert list(unrelated.iterdir()) == [unrelated / name]
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+def test_flow_jsonl_streams_values_and_serializes_custom_objects(tmp_path, atomic) -> None:
+    from datetime import date
+
+    target = tmp_path / "events.jsonl"
+    seen = []
+    stamp = date(2026, 9, 30)
+
+    def serialize(value):
+        seen.append(value)
+        return value.isoformat()
+
+    values = [1, None, "雪\nline", {"date": stamp}, [True, 2]]
+    assert flow(iter(values)).to_jsonl(target, default=serialize, atomic=atomic) is None
+    lines = target.read_text().splitlines()
+    assert len(lines) == len(values)
+    assert [json.loads(line) for line in lines] == [
+        1,
+        None,
+        "雪\nline",
+        {"date": "2026-09-30"},
+        [True, 2],
+    ]
+    assert seen == [stamp]
+    flow([]).to_jsonl(target, atomic=atomic)
+    assert target.read_bytes() == b""
+
+
+def test_flow_jsonl_serialization_error_preserves_target_and_closes_source(tmp_path) -> None:
+    target = tmp_path / "events.jsonl"
+    target.write_text("old")
+    closed = []
+
+    def source():
+        try:
+            yield 1
+            yield object()
+        finally:
+            closed.append(True)
+
+    with pytest.raises(TypeError):
+        flow(source()).to_jsonl(target, atomic=True)
+    assert target.read_text() == "old"
+    assert closed == [True]
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("safe", [False, True])
+def test_flow_csv_safety_includes_headers_without_changing_lookup(tmp_path, safe) -> None:
+    import csv
+
+    target = tmp_path / "headers.csv"
+    names = ["=1+1", " \t@command", "normal"]
+    flow([dict(zip(names, [3, "-text", -2], strict=True))]).to_csv(
+        target, header=names, spreadsheet_safe=safe
+    )
+    with target.open(newline="") as handle:
+        assert list(csv.reader(handle)) == [
+            ["'=1+1", "' \t@command", "normal"] if safe else names,
+            ["3", "'-text" if safe else "-text", "-2"],
+        ]

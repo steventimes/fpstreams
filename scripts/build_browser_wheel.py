@@ -47,15 +47,19 @@ def _git_value(*arguments: str) -> str | None:
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return None
     value = result.stdout.strip()
-    return value or None
+    return value
 
 
-def _build_provenance(version: str) -> dict[str, str]:
-    commit = os.environ.get("GITHUB_SHA", "").strip() or _git_value("rev-parse", "HEAD")
+def _build_provenance(version: str) -> dict[str, str | bool | None]:
+    commit = _git_value("rev-parse", "HEAD")
+    requested_commit = os.environ.get("GITHUB_SHA", "").strip()
+    status = _git_value("status", "--porcelain", "--untracked-files=normal")
+    dirty = None if status is None else bool(status)
     if commit and not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit):
         commit = None
 
@@ -73,11 +77,22 @@ def _build_provenance(version: str) -> dict[str, str]:
             ref_name, ref_type = exact_tag, "tag"
 
     normalized_ref = ref_name.removeprefix("v")
-    is_release = ref_type == "tag" and normalized_ref == version
+    tag_commit = (
+        _git_value("rev-parse", "--verify", f"refs/tags/{ref_name}^{{commit}}")
+        if ref_type == "tag" and normalized_ref == version
+        else None
+    )
+    is_release = (
+        bool(commit)
+        and tag_commit == commit
+        and dirty is False
+        and (not requested_commit or requested_commit == commit)
+    )
     return {
         "build": "release" if is_release else "development",
         "commit": commit or "unknown",
         "engine": "python",
+        "dirty": dirty,
         "ref": ref_name or "unknown",
     }
 

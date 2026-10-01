@@ -2172,3 +2172,522 @@ def test_physical_external_sort_uses_injected_runtime_budget_and_metrics() -> No
     assert 0 < runtime.metrics.high_water_open_files <= 4
     assert runtime.metrics.open_files == 0
     assert runtime.metrics.spill_bytes > 0
+
+
+def test_sorted_cursor_contract() -> None:
+    from fpstreams.execution.sorted_streams import _EOF, _KeyShape, _SortedCursor
+    from fpstreams.planning.source import Source
+
+    events = []
+
+    class Values:
+        def __init__(self, values):
+            self.values = iter(values)
+            self.closed = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            events.append("pull")
+            return next(self.values)
+
+        def close(self):
+            self.closed += 1
+
+    values = Values([1, 1, 3])
+
+    def open_values():
+        events.append("open")
+        return values
+
+    def key(value):
+        events.append(("key", value))
+        return value
+
+    cursor = _SortedCursor(Source.defer(open_values), key, side="left")
+    assert events == []
+    assert cursor.peek() == (1, 1)
+    assert cursor.peek() == (1, 1)
+    assert events == ["open", "pull", ("key", 1)]
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (3, 3)
+    assert cursor.peek() is _EOF
+    assert cursor.pop() is _EOF
+    cursor.close()
+    cursor.close()
+    assert values.closed == 1
+
+    unordered = Values([1, 3, 2])
+    cursor = _SortedCursor(Source.from_iterable(unordered), lambda v: v, side="right")
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (3, 3)
+    with pytest.raises(ValueError, match=r"right.*index 2"):
+        cursor.peek()
+    assert unordered.closed == 1
+    cursor.close()
+    assert unordered.closed == 1
+
+    class IntSubclass(int):
+        pass
+
+    for invalid in (True, 1.0, None, IntSubclass(1), (), ((1,),), (1, False)):
+        source = Values([invalid])
+        cursor = _SortedCursor(Source.from_iterable(source), lambda v: v, side="left")
+        with pytest.raises(TypeError):
+            cursor.peek()
+        assert source.closed == 1
+    for valid in (2**100, "a", b"a", (1, "a", b"a")):
+        cursor = _SortedCursor(Source.from_iterable([valid]), lambda v: v, side="left")
+        assert cursor.pop()[0] is valid
+        cursor.close()
+
+    for changed in ([1, "a"], [(1,), 2], [(1, "a"), (2, 3)], [(1,), (2, 3)]):
+        cursor = _SortedCursor(Source.from_iterable(changed), lambda v: v, side="left")
+        cursor.pop()
+        with pytest.raises(TypeError):
+            cursor.pop()
+
+    shape = _KeyShape()
+    left = _SortedCursor(Source.from_iterable([1]), lambda v: v, side="left", shape=shape)
+    right = _SortedCursor(Source.from_iterable(["a"]), lambda v: v, side="right", shape=shape)
+    left.pop()
+    with pytest.raises(TypeError):
+        right.peek()
+    left.close()
+
+    error = LookupError("selector failed")
+    source = Values([1])
+
+    def fail(_value):
+        raise error
+
+    cursor = _SortedCursor(Source.from_iterable(source), fail, side="left")
+    with pytest.raises(LookupError) as caught:
+        cursor.peek()
+    assert caught.value is error
+    assert source.closed == 1
+
+    opened = []
+    cursor = _SortedCursor(Source.defer(lambda: opened.append(True) or iter(())), key, side="left")
+    cursor.close()
+    assert cursor.peek() is _EOF
+    assert opened == []
+
+
+def test_sorted_cursor_preserves_failures_and_record_identity() -> None:
+    from fpstreams.execution.sorted_streams import _EOF, _SortedCursor
+    from fpstreams.planning.source import Source
+
+    row = {"key": 1}
+    cursor = _SortedCursor(Source.from_iterable([row]), lambda v: v["key"], side="left")
+    first = cursor.peek()
+    assert cursor.peek() is first
+    assert cursor.pop() is first
+    assert first[1] is row
+    assert cursor.peek() is _EOF
+    cursor.close()
+
+    def check_failure(failure_site):
+        primary = RuntimeError(failure_site)
+        cleanup = RuntimeError("close failed")
+        closed = []
+
+        class Failing:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if failure_site == "pull":
+                    raise primary
+                return 1
+
+            def close(self):
+                closed.append(True)
+                raise cleanup
+
+        def opener():
+            if failure_site == "open":
+                raise primary
+            return Failing()
+
+        def key(_value):
+            raise primary
+
+        cursor = _SortedCursor(Source.defer(opener), key, side="left")
+        with pytest.raises(RuntimeError) as caught:
+            cursor.peek()
+        assert caught.value is primary
+        assert closed == ([] if failure_site == "open" else [True])
+        if closed:
+            assert any("close failed" in note for note in primary.__notes__)
+        cursor.close()
+
+    for failure_site in ("open", "pull", "key"):
+        check_failure(failure_site)
+
+    cleanup = RuntimeError("normal close failed")
+
+    class Empty:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            raise cleanup
+
+    cursor = _SortedCursor(Source.from_iterable(Empty()), lambda v: v, side="left")
+    assert cursor.peek() is _EOF
+    with pytest.raises(RuntimeError) as caught:
+        cursor.close()
+    assert caught.value is cleanup
+    cursor.close()
+
+
+def test_sorted_group_cleanup_and_retention() -> None:
+    import fpstreams
+
+    class Row(dict):
+        live = 0
+        peak = 0
+
+        def __init__(self, **fields):
+            super().__init__(fields)
+            Row.live += 1
+            Row.peak = max(Row.peak, Row.live)
+
+        def __del__(self):
+            Row.live -= 1
+
+    closed = []
+    pulled = []
+    group_width = 20
+
+    def source():
+        try:
+            for index in range(10_000):
+                pulled.append(index)
+                yield Row(k=index // group_width, value=1)
+        finally:
+            closed.append(True)
+
+    grouped = (
+        fpstreams.flow.defer(source)
+        .rows()
+        .group_by_sorted("k")
+        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+    assert pulled == []
+    result = grouped.to_list()
+    assert len(result) == 500
+    assert result[0] == {"k": 0, "count": 20, "total": 20}
+    assert result[-1] == {"k": 499, "count": 20, "total": 20}
+    assert Row.peak <= 2
+    assert Row.live == 0
+    assert closed == [True]
+
+    pulled.clear()
+    closed.clear()
+    assert grouped.take(0).to_list() == []
+    assert pulled == closed == []
+    assert grouped.take(1).to_list() == [{"k": 0, "count": 20, "total": 20}]
+    assert pulled == list(range(21))
+    assert closed == [True]
+    assert Row.live == 0
+
+    once = (
+        fpstreams.flow(source()).rows().group_by_sorted("k").aggregate(count=fpstreams.agg.count())
+    )
+    iterator = iter(once)
+    assert next(iterator) == {"k": 0, "count": 20}
+    iterator.close()
+    assert Row.live == 0
+    with pytest.raises(fpstreams.FlowConsumedError):
+        once.to_list()
+
+    group_width = 10_000
+    assert grouped.to_list() == [{"k": 0, "count": 10_000, "total": 10_000}]
+    assert Row.peak <= 2
+    assert Row.live == 0
+
+
+@pytest.mark.parametrize("failure_site", ["key", "initialize", "step", "finish", "source"])
+def test_sorted_group_preserves_primary_and_cleanup_failures(failure_site) -> None:
+    from fpstreams import Aggregator, flow
+
+    primary = RuntimeError(failure_site)
+    cleanup = RuntimeError("source close failed")
+    closed = []
+
+    def fail(*_args):
+        raise primary
+
+    class Records:
+        def __init__(self):
+            self.iterator = iter([{"k": 1}, {"k": 1}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if failure_site == "source":
+                raise primary
+            return next(self.iterator)
+
+        def close(self):
+            closed.append(True)
+            raise cleanup
+
+    aggregation = Aggregator(
+        fail if failure_site == "initialize" else lambda: 0,
+        fail if failure_site == "step" else lambda state, _row: state + 1,
+        fail if failure_site == "finish" else lambda state: state,
+    )
+    result = (
+        flow(Records())
+        .rows()
+        .group_by_sorted(fail if failure_site == "key" else "k")
+        .aggregate(total=aggregation)
+    )
+    with pytest.raises(RuntimeError) as caught:
+        result.to_list()
+    assert caught.value is primary
+    assert closed == [True]
+    assert any("source close failed" in note for note in primary.__notes__)
+
+
+@pytest.mark.parametrize("short_circuit", [False, True])
+def test_sorted_group_success_reports_close_failure(short_circuit) -> None:
+    from fpstreams import agg, flow
+
+    error = RuntimeError("successful group could not close source")
+    closed = []
+
+    class Records:
+        def __init__(self):
+            self.values = iter([{"k": 1}, {"k": 2}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.values)
+
+        def close(self):
+            closed.append(True)
+            raise error
+
+    result = flow(Records()).rows().group_by_sorted("k").aggregate(count=agg.count())
+    if short_circuit:
+        result = result.take(1)
+    with pytest.raises(RuntimeError) as caught:
+        result.to_list()
+    assert caught.value is error
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_sorted_join_failure_matrix(engine) -> None:
+    from fpstreams import BufferLimitError, flow
+
+    events = []
+
+    def left():
+        try:
+            while True:
+                events.append("left")
+                yield {"id": 1, "l": 1}
+        finally:
+            events.append("left close")
+
+    def right():
+        try:
+            for i in range(2):
+                events.append("right")
+                yield {"id": 1, "r": i}
+        finally:
+            events.append("right close")
+
+    result = flow(left()).with_engine(engine).rows().join_sorted(right(), on="id").take(3).to_list()
+    assert [row["r"] for row in result] == [0, 1, 0]
+    assert events.count("left") == 2
+    assert events.count("left close") == events.count("right close") == 1
+    events.clear()
+
+    def infinite_right():
+        try:
+            while True:
+                events.append("right")
+                yield {"id": 1}
+        finally:
+            events.append("right close")
+
+    with pytest.raises(BufferLimitError, match="right"):
+        flow(left()).with_engine(engine).rows().join_sorted(
+            infinite_right(), on="id", max_right_group_rows=3
+        ).to_list()
+    assert events.count("right") == 4
+    assert events.count("left close") == events.count("right close") == 1
+    events.clear()
+    failure = RuntimeError("key failed")
+
+    def bad_key(row):
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        flow(left()).with_engine(engine).rows().join_sorted(right(), on=bad_key).to_list()
+    assert caught.value is failure
+    assert events.count("left close") == 1
+    # Closing an unopened generator does not enter its finally block.
+    assert "right" not in events
+
+    def cleanup_failure():
+        try:
+            yield {"id": 1}
+        finally:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeError) as caught:
+        flow(cleanup_failure()).with_engine(engine).rows().join_sorted(
+            [{"id": 1}], on=bad_key
+        ).to_list()
+    assert caught.value is failure
+    assert any("close failed" in note for note in caught.value.__notes__)
+    right_rows = [{"id": 1}, {"id": 2}, {"id": 0}]
+    assert flow([{"id": 1}]).rows().join_sorted(right_rows, on="id").to_list() == [{"id": 1}]
+    rows = iter(
+        flow([{"id": 1}, {"id": 2}, {"id": 0}]).rows().join_sorted([{"id": 1}, {"id": 2}], on="id")
+    )
+    assert next(rows) == {"id": 1}
+    assert next(rows) == {"id": 2}
+    with pytest.raises(ValueError, match="left"):
+        next(rows)
+
+
+def test_atomic_path_publication_contract(tmp_path, monkeypatch) -> None:
+    import os
+
+    from fpstreams.io_safety import atomic_output_path
+
+    target = tmp_path / "output.txt"
+    target.write_text("old")
+    error = RuntimeError("writer failed")
+    with (
+        pytest.raises(RuntimeError) as caught,
+        atomic_output_path(target, if_exists="replace") as temporary,
+    ):
+        temporary.write_text("partial")
+        raise error
+    assert caught.value is error
+    assert target.read_text() == "old"
+    assert sorted(tmp_path.iterdir()) == [target]
+    with atomic_output_path(target, if_exists="replace") as temporary:
+        assert temporary.parent == target.parent
+        temporary.write_text("new")
+    assert target.read_text() == "new"
+    with pytest.raises(FileExistsError), atomic_output_path(target, if_exists="error"):
+        pytest.fail("existing target must fail before writer")
+    target.unlink()
+    real_link = os.link
+
+    def raced(source, destination):
+        target.write_text("other process")
+        real_link(source, destination)
+
+    monkeypatch.setattr(os, "link", raced)
+    with pytest.raises(FileExistsError), atomic_output_path(target, if_exists="error") as temporary:
+        temporary.write_text("ours")
+    assert target.read_text() == "other process"
+    assert sorted(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_path_rejects_dangling_symlink(tmp_path) -> None:
+    from fpstreams.io_safety import atomic_output_path
+
+    target = tmp_path / "output.txt"
+    try:
+        target.symlink_to(tmp_path / "missing")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this filesystem or account")
+    with (
+        pytest.raises(ValueError, match="symlink"),
+        atomic_output_path(target, if_exists="replace"),
+    ):
+        pytest.fail("dangling symlink must fail")
+
+
+@pytest.mark.parametrize("operation", ["merge", "join"])
+def test_sorted_composed_branches_reject_same_raw_iterator(operation) -> None:
+    from fpstreams import flow
+
+    class Shared:
+        def __init__(self):
+            self.pulls = 0
+            self.closes = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self.pulls += 1
+            if self.pulls > 4:
+                raise StopIteration
+            return {"id": self.pulls}
+
+        def close(self):
+            self.closes += 1
+
+    shared = Shared()
+    left = flow(shared).map(lambda row: row)
+    right = flow(shared).map(lambda row: row)
+    query = (
+        left.merge_sorted(right, key="id")
+        if operation == "merge"
+        else left.rows().join_sorted(right, on="id")
+    )
+    with pytest.raises(ValueError, match="same iterator"):
+        next(iter(query))
+    assert shared.pulls == 0
+    assert shared.closes == 1
+
+
+@pytest.mark.parametrize("operation", ["merge", "group", "join"])
+@pytest.mark.parametrize("compound", [False, True])
+def test_sorted_keys_reject_custom_types_before_comparison(operation, compound) -> None:
+    from fpstreams import agg
+
+    events = []
+
+    class EqualToBuiltin(type):
+        def __eq__(cls, other):
+            events.append("metaclass equality")
+            return True
+
+    class CustomInt(int, metaclass=EqualToBuiltin):
+        def __eq__(self, other):
+            events.append("value equality")
+            return True
+
+        def __lt__(self, other):
+            events.append("value comparison")
+            return False
+
+    def key(value):
+        return (value, "fixed") if compound else value
+
+    rows = [{"id": key(1)}, {"id": key(CustomInt(2))}, {"id": key(3)}]
+    other = [{"id": key(3)}]
+    left = flow(rows)
+    query = (
+        left.merge_sorted(other, key="id")
+        if operation == "merge"
+        else left.rows().group_by_sorted("id").aggregate(count=agg.count())
+        if operation == "group"
+        else left.rows().join_sorted(other, on="id")
+    )
+    with pytest.raises(TypeError, match="exact int"):
+        query.to_list()
+    assert events == []

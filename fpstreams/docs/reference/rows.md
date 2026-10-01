@@ -94,6 +94,12 @@ spreadsheet. A string whose first non-whitespace character is `=`, `+`, `-`, or
 `@` receives a leading single quote. Non-string values are unchanged. CSV and
 JSON/JSONL writers return `None`.
 
+In the current source, this protection also covers header cells without changing
+the keys used to read records. `to_csv()` and `to_jsonl()` also accept `atomic=True`
+and `if_exists="error"`; a failed export preserves the old file. `to_jsonl(default=...)`
+can serialize dates or other custom values. These additions are unreleased; see
+[file output](io.md#atomic-flow-file-output-current-source) for examples and limits.
+
 Rows `to_csv()` is the record writer and exposes `fieldnames`, `include_header`,
 and `extrasaction`. Flow `to_csv()` instead writes arbitrary items and accepts an
 optional `header`.
@@ -187,3 +193,50 @@ expected. These fixes are not included in `2.1.0`.
       members_order: source
       show_root_heading: true
       show_source: false
+
+## Grouping sorted records (current source)
+
+`group_by_sorted()` uses the same key names and `.aggregate()` API as `group_by()`.
+The input must already be ascending by exact builtin int, str, bytes, or nonempty
+flat tuple keys with a fixed type at each position. It checks consumed rows and
+one row of lookahead; an unordered or unsupported key raises during consumption.
+
+```python
+from fpstreams import agg, flow
+
+result = (
+    flow([{"region": "eu", "amount": 2}, {"region": "eu", "amount": 3}])
+    .rows().group_by_sorted("region").aggregate(total=agg.sum("amount"))
+    .to_list()
+)
+assert result == [{"region": "eu", "total": 5}]
+```
+
+This source-only API is absent from the published 2.1.0 wheel. It buffers no
+complete group. Aggregators that collect values still grow their own state;
+`.spill()` raises `ValueError` in this mode. Ordinary `group_by()` is unchanged.
+
+## Joining sorted records (current source)
+
+`join_sorted(other, on=..., how="inner", validate="m:m")` accepts ascending
+inputs and supports inner, left, semi, and anti joins. It preserves left order
+and the order of matching right records. Both sides must contain records,
+including semi and anti joins. The supported key types are the same as
+`group_by_sorted()`.
+
+The keyword-only budgets are `max_right_group_rows=100_000`,
+`max_matches_per_left=100_000`, and `max_output_rows=1_000_000`. Each must be a
+positive integer. Exceeding a budget raises `BufferLimitError`; already yielded
+rows remain yielded. Semi joins enumerate at most one match per left row;
+anti output does not count as a match. The right-group limit applies to every mode.
+
+Inner and left joins take the right column list from the first right record.
+Later records may omit columns but cannot introduce new ones. This restriction
+allows output to start without scanning the entire right source. Suffixes and
+shared key columns follow ordinary `join()` rules. Validation supports m:m,
+m:1, 1:m, and 1:1, and checks the consumed prefix. Neither method infers sorting
+or changes ordinary `join()` execution. This API is absent from published 2.1.0.
+
+Like `merge_sorted()`, a sorted join acquires source iterators in its composed
+branches before pulling rows. It rejects iterator aliases and closes acquired
+iterators once; source-opening callbacks therefore run before key callbacks.

@@ -401,3 +401,51 @@ Cross-commit checks in CI still need a reviewed baseline that matches the
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The [roadmap](../roadmap.md) tracks the remaining baseline work.
+
+## Choosing explicit sorted operations (current source)
+
+Use `group_by_sorted()`, `merge_sorted()`, and `join_sorted()` when inputs are
+already in ascending key order and you need incremental output or bounded state.
+They do not sort the input for you. They currently execute in Python and are
+absent from published 2.1.0.
+
+The sorted group holds current collector state and one lookahead row; collectors
+that retain values can still grow. A merge holds one lookahead per input. A join
+holds the current right key group and lookahead, with finite row budgets. Rows
+can contain large objects, so row limits are not byte limits. Large duplicate
+right groups delay the first joined row. Checks apply to the consumed prefix;
+short-circuiting does not validate an unread tail.
+
+The September 29 measurements on CPython 3.12.13 compared these APIs with ordinary grouping,
+concatenation plus stable sorting, and hash joins in the same checkout, using the
+Python engine. Inputs were prepared records in lists or fresh generator views,
+with duplicate and skewed keys, at 1,000, 10,000, and 100,000 rows. Three sequential
+workers recorded seven samples per task. Data construction, route observation,
+complete-content assertions, and allocation tracing were outside timing. Each
+sample ran the actual Flow/Rows operation, including construction and planning.
+
+Across these cases, complete consumption took about 4.93 times as long for sorted
+grouping, 12.38 times for sorted merging, and 3.71 times for sorted joins. First-row
+and early-stop cases were faster overall, but skewed joins could still regress.
+The worst individual case was a complete sorted merge at about 14.94 times its
+ordinary counterpart. All three workers agreed on the overall direction within
+each operation/consumption group. These results do not establish a universal
+speed advantage. Prefer ordinary operations when full-consumption throughput is
+the priority, and measure your actual data before choosing a sorted path.
+
+Measured Python allocation peaks were lower in aggregate. Those peaks exclude
+prepared input objects and untracked native allocations, and are not RSS. The
+raw local reports and worker summaries are under
+`artifacts/next-releases/20260929T210456Z/D03/`; generated reports are ignored and
+are not published as a CI baseline.
+
+The competitive runner includes 36 `sorted.*` cases for full consumption, first
+output, and stopping after 16 outputs. It validates complete ordered values
+before timing, including full-consumption tasks whose timed terminal is `count()`.
+For larger benchmark sizes, join row budgets explicitly scale to cover the
+fixture; library defaults remain unchanged. To reproduce this local comparison:
+
+```bash
+uv run python benchmark.py --competitive --include 'sorted.*' \
+  --size 10000 --repeats 7 --json artifacts/sorted-10000.json
+```

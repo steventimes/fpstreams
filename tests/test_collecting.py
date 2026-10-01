@@ -3142,3 +3142,77 @@ async def test_distinct_string_collisions_preserve_protocol_trace(
         return outcome, events
 
     assert await run(True) == await run(False)
+
+
+def test_sorted_aggregate_streaming_contract() -> None:
+    from fpstreams.collecting.aggregation import Aggregator, prepare_aggregations
+    from fpstreams.execution.sorted_streams import aggregate_sorted_rows
+    from fpstreams.planning.source import Source
+
+    pulled = []
+    closed = []
+
+    def values():
+        try:
+            for row in [("a", 2), ("a", 3), ("b", 7), ("c", 9)]:
+                pulled.append(row)
+                yield row
+        finally:
+            closed.append(True)
+
+    keys = (("key", lambda row: row[0]),)
+    aggregations = prepare_aggregations(
+        {"count": fpstreams.agg.count(), "total": fpstreams.agg.sum(1)}
+    )
+    result = aggregate_sorted_rows(Source.defer(values), keys, aggregations)
+    assert pulled == []
+    assert next(result) == {"key": "a", "count": 2, "total": 5}
+    assert pulled == [("a", 2), ("a", 3), ("b", 7)]
+    result.close()
+    assert closed == [True]
+    assert list(aggregate_sorted_rows([], keys, aggregations)) == []
+    assert list(aggregate_sorted_rows([("a", 2), ("a", 3), ("b", 7)], keys, aggregations)) == [
+        {"key": "a", "count": 2, "total": 5},
+        {"key": "b", "count": 1, "total": 7},
+    ]
+
+    events = []
+    custom = Aggregator(
+        lambda: events.append("initialize") or 0,
+        lambda state, row: events.append(("step", row[1])) or state + row[1],
+        lambda state: events.append(("finish", state)) or state,
+        done=lambda state: state >= 2,
+    )
+    result = list(aggregate_sorted_rows([("a", 2), ("a", 3), ("b", 7)], keys, (("first", custom),)))
+    assert result == [{"key": "a", "first": 2}, {"key": "b", "first": 7}]
+    assert events == [
+        "initialize",
+        ("step", 2),
+        ("finish", 2),
+        "initialize",
+        ("step", 7),
+        ("finish", 7),
+    ]
+
+    mutable = Aggregator(lambda: 0, lambda state, row: state + row[1])
+
+    def changed_values():
+        yield ("a", 2)
+        object.__setattr__(mutable, "step", lambda state, row: state + row[1] * 10)
+        yield ("a", 3)
+        yield ("b", 7)
+
+    assert list(aggregate_sorted_rows(changed_values(), keys, (("total", mutable),))) == [
+        {"key": "a", "total": 32},
+        {"key": "b", "total": 70},
+    ]
+
+    error = RuntimeError("finish failed")
+
+    def fail(_state):
+        raise error
+
+    broken = Aggregator(lambda: 0, lambda state, _row: state + 1, fail)
+    with pytest.raises(RuntimeError) as caught:
+        list(aggregate_sorted_rows([("a", 2)], keys, (("broken", broken),)))
+    assert caught.value is error
