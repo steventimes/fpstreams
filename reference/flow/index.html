@@ -3712,6 +3712,8 @@ the file and returns <code>None</code>.</p>
 <p>After entering Rows, <code>to_csv()</code> is the record writer instead and exposes
 <code>fieldnames</code>, <code>include_header</code>, and <code>extrasaction</code> options.</p>
 <h2 id="creating-a-flow">Creating a flow</h2>
+<p><code>flow(range(...))</code> and <code>aflow(range(...))</code> accept ranges longer than <code>sys.maxsize</code>.
+Bounded reads remain lazy, and an identity <code>count()</code> returns the exact cardinality.</p>
 <table>
 <thead>
 <tr>

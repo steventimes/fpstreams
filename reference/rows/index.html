@@ -4112,7 +4112,9 @@ iterator, cursor, and connection.</p>
 
         <p>Insert rows into a SQLite table in bounded batches and one transaction.</p>
 <p>Replace-mode DDL and inserts roll back together; all owned resources
-close on every exit path.</p>
+close on every exit path. Table and column identifiers use SQLite's ASCII
+case rules; source record field lookup keeps the configured names. Duplicate
+aliases for one column raise DuplicateKeyError before inserts.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>

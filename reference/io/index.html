@@ -1703,6 +1703,11 @@ names from the cursor description, and closes resources it owns.</p>
 <p><code>rows.from_sqlite</code> is the convenience adapter for a database path or URI. Query
 parameters must use the database driver's binding mechanism; never interpolate
 untrusted values into SQL text.</p>
+<p><code>Rows.to_sqlite</code> matches existing table, view, and column names without ASCII
+case distinctions, as SQLite does. Source record fields still use their original
+names. Duplicate column aliases raise <code>DuplicateKeyError</code> before inserts. With
+<code>if_exists="fail"</code>, an existing table is rejected before any row is read; views
+are rejected in every mode.</p>
 <h2 id="output-matrix">Output matrix</h2>
 <table>
 <thead>
