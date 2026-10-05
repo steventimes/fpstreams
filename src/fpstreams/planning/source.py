@@ -29,6 +29,16 @@ _BUILTIN_TYPE = type
 _BUILTIN_VALUE_ERROR = ValueError
 
 
+def _range_size(value: range) -> int:
+    """Compute an exact range's cardinality beyond the platform's len() limit."""
+    step = value.step
+    distance = value.stop - value.start
+    if step < 0:
+        distance = -distance
+        step = -step
+    return max(0, (distance + step - 1) // step)
+
+
 def _function_code(function: FunctionType) -> CodeType | None:
     """Read a function's code identity without emitting the audited ``__code__`` event."""
     for referent in _get_referents(function):
@@ -171,7 +181,12 @@ class Source(Generic[T]):
             _BUILTIN_TYPE(value_type) is _BUILTIN_TYPE and value_type in _SAFE_SIZED_TYPES
         )
         native_sequence = safely_sized and value_type in _NATIVE_SOURCE_TYPES
-        exact_size = len(cast(Any, value)) if safely_sized else None
+        try:
+            exact_size = len(cast(Any, value)) if safely_sized else None
+        except OverflowError:
+            if value_type is not range:
+                raise
+            exact_size = _range_size(cast(range, value))
         ordered = not isinstance(value, (set, frozenset))
         if not isinstance(value, Iterator):
             source = cls(
@@ -249,7 +264,12 @@ class Source(Generic[T]):
         if not self._factory_is_pristine():
             return None
         if self._live_size_data is not _NO_LIVE_SIZE:
-            return len(self._live_size_data)
+            try:
+                return len(self._live_size_data)
+            except OverflowError:
+                if _BUILTIN_TYPE(self._live_size_data) is not range:
+                    raise
+                return _range_size(self._live_size_data)
         return self.capabilities.exact_size
 
     def current_facts(self) -> StreamFacts:
@@ -263,10 +283,16 @@ class Source(Generic[T]):
             )
         if self._live_size_data is _NO_LIVE_SIZE:
             return self.facts
+        try:
+            size = len(self._live_size_data)
+        except OverflowError:
+            if _BUILTIN_TYPE(self._live_size_data) is not range:
+                raise
+            size = _range_size(self._live_size_data)
         return replace(
             self.facts,
             termination=TerminationEvidence.PROVEN_FINITE,
-            cardinality=Cardinality.exact(len(self._live_size_data)),
+            cardinality=Cardinality.exact(size),
         )
 
     def retained_sequence(self) -> list[Any] | tuple[Any, ...] | range | None:

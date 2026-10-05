@@ -19930,6 +19930,102 @@ def test_sqlite_schema_projection_conflicts_and_fail_mode_are_explicit(tmp_path:
     ]
 
 
+@pytest.mark.parametrize("mode", ["append", "replace"])
+def test_sqlite_sink_matches_existing_table_names_without_ascii_case(
+    tmp_path: Path, mode: str
+) -> None:
+    database = tmp_path / "case.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute('CREATE TABLE "Events" (id INTEGER)')
+        connection.execute('INSERT INTO "Events" VALUES (10)')
+
+    assert fpstreams.rows([{"id": 2}]).to_sqlite(database, "events", if_exists=mode) == 1
+    expected = [{"id": 10}, {"id": 2}] if mode == "append" else [{"id": 2}]
+    assert fpstreams.rows.from_sqlite(database, 'SELECT * FROM "Events"').to_list() == expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode"),
+    [("table", "fail"), ("view", "append"), ("view", "fail"), ("view", "replace")],
+)
+def test_sqlite_sink_rejects_existing_case_variant_before_reading(
+    tmp_path: Path, kind: str, mode: str
+) -> None:
+    database = tmp_path / "case-error.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        statement = (
+            'CREATE TABLE "Events" (id INTEGER)'
+            if kind == "table"
+            else 'CREATE VIEW "Events" AS SELECT 10 AS id'
+        )
+        connection.execute(statement)
+
+    pulled: list[bool] = []
+
+    def source() -> Iterator[dict[str, int]]:
+        pulled.append(True)
+        yield {"id": 2}
+
+    message = "already exists" if kind == "table" else "view, not a table"
+    with pytest.raises(ValueError, match=message):
+        fpstreams.rows(source()).to_sqlite(database, "events", if_exists=mode)
+    assert pulled == []
+
+
+def test_sqlite_sink_matches_existing_column_names_without_ascii_case(tmp_path: Path) -> None:
+    database = tmp_path / "column-case.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute('CREATE TABLE events ("ID" INTEGER, "Value" TEXT)')
+
+    assert fpstreams.rows([{"id": 2, "value": "written"}]).to_sqlite(database, "events") == 1
+    assert fpstreams.rows.from_sqlite(database, "SELECT * FROM events").to_list() == [
+        {"ID": 2, "Value": "written"}
+    ]
+
+
+@pytest.mark.parametrize("configuration", ["inferred", "columns", "schema"])
+def test_sqlite_sink_rejects_ascii_aliases_for_the_same_column(
+    tmp_path: Path, configuration: str
+) -> None:
+    database = tmp_path / "duplicate-columns.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE events (id INTEGER)")
+        connection.execute("INSERT INTO events VALUES (10)")
+
+    options: dict[str, Any] = {}
+    if configuration == "columns":
+        options["columns"] = ("id", "ID")
+    elif configuration == "schema":
+        options["schema"] = {"id": "INTEGER", "ID": "INTEGER"}
+        options["if_exists"] = "replace"
+    pulled: list[bool] = []
+
+    def source() -> Iterator[dict[str, int]]:
+        pulled.append(True)
+        yield {"id": 2, "ID": 3}
+
+    with pytest.raises(fpstreams.DuplicateKeyError):
+        fpstreams.rows(source()).to_sqlite(database, "events", **options)
+    assert pulled == ([True] if configuration == "inferred" else [])
+    assert fpstreams.rows.from_sqlite(database, "SELECT * FROM events").to_list() == [{"id": 10}]
+
+
+def test_sqlite_sink_keeps_non_ascii_identifier_case_distinct(tmp_path: Path) -> None:
+    database = tmp_path / "unicode-case.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute('CREATE TABLE "Ävents" ("Ä" INTEGER)')
+
+    assert fpstreams.rows([{"ä": 2}]).to_sqlite(database, "ävents", if_exists="fail") == 1
+    with pytest.raises(ValueError, match="has no columns"):
+        fpstreams.rows([{"ä": 3}]).to_sqlite(database, "Ävents")
+    assert fpstreams.rows.from_sqlite(database, 'SELECT * FROM "ävents"').to_list() == [{"ä": 2}]
+    assert fpstreams.rows.from_sqlite(database, 'SELECT * FROM "Ävents"').to_list() == []
+    assert fpstreams.rows([{"Ä": 4, "ä": 5}]).to_sqlite(database, "mixed") == 1
+    assert fpstreams.rows.from_sqlite(database, "SELECT * FROM mixed").to_list() == [
+        {"Ä": 4, "ä": 5}
+    ]
+
+
 def test_sqlite_sink_rolls_back_batches_and_schema_changes_on_error(tmp_path: Path) -> None:
     database = tmp_path / "atomic.db"
     with closing(sqlite3.connect(database)) as connection, connection:

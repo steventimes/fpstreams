@@ -259,6 +259,12 @@ orders = rows.from_db(
 parameters must use the database driver's binding mechanism; never interpolate
 untrusted values into SQL text.
 
+`Rows.to_sqlite` matches existing table, view, and column names without ASCII
+case distinctions, as SQLite does. Source record fields still use their original
+names. Duplicate column aliases raise `DuplicateKeyError` before inserts. With
+`if_exists="fail"`, an existing table is rejected before any row is read; views
+are rejected in every mode.
+
 ## Output matrix
 
 | Method | Result or effect | Materialization | Extra |

@@ -726,7 +726,9 @@ class RowsIOMixin(Generic[T]):
         """Insert rows into a SQLite table in bounded batches and one transaction.
 
         Replace-mode DDL and inserts roll back together; all owned resources
-        close on every exit path.
+        close on every exit path. Table and column identifiers use SQLite's ASCII
+        case rules; source record field lookup keeps the configured names. Duplicate
+        aliases for one column raise DuplicateKeyError before inserts.
 
         Args:
             database: SQLite path or URI passed to sqlite3.connect().

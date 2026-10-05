@@ -25,6 +25,7 @@ from ..planning.logical import Pipeline
 from ..planning.native import _AUTO_I64_EXTERNAL_IDENTITY_REASON
 from ..planning.source import (
     Source,
+    _range_size,
 )
 from ..planning.sync import (
     ChunkOp,
@@ -1103,7 +1104,12 @@ def try_direct_retained_sequence_window(
     source = _retained_sequence(pipeline.source)
     if source is None:
         return False, None
-    stop = _BUILTIN_LEN(source)
+    try:
+        stop = _BUILTIN_LEN(source)
+    except OverflowError:
+        if _BUILTIN_TYPE(source) is not range:
+            raise
+        stop = _range_size(cast(range, source))
     for operation in window_operations:
         if type(operation) is DropOp:
             start += operation.count

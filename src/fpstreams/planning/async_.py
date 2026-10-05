@@ -10,6 +10,7 @@ from typing import Any, Generic, TypeVar, cast
 from ..errors import FlowConsumedError
 from ..runtime.iterators import closing_iterators
 from .semantics import StreamFacts, facts_from_capabilities
+from .source import _range_size
 
 T = TypeVar("T")
 _NO_RETAINED_SEQUENCE = object()
@@ -71,7 +72,12 @@ class _AsyncSource(Generic[T]):
         safely_sized = (
             native_sequence or source_type is str or source_type is bytes or source_type is dict
         )
-        exact_size = len(source) if safely_sized else None  # type: ignore[arg-type]
+        try:
+            exact_size = len(source) if safely_sized else None  # type: ignore[arg-type]
+        except OverflowError:
+            if source_type is not range:
+                raise
+            exact_size = _range_size(cast(range, source))
         ordered = not isinstance(source, (set, frozenset))
         facts = facts_from_capabilities(
             reiterable=not one_shot,
@@ -131,7 +137,12 @@ class _AsyncSource(Generic[T]):
     def current_exact_size(self) -> int | None:
         """Read the live length of a retained exact sequence without opening it."""
         retained = self.retained_sequence()
-        return None if retained is None else len(retained)
+        try:
+            return None if retained is None else len(retained)
+        except OverflowError:
+            if type(retained) is not range:
+                raise
+            return _range_size(retained)
 
 
 @dataclass(frozen=True, slots=True)

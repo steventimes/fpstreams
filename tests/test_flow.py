@@ -26,6 +26,40 @@ def test_flow_collects_any_iterable() -> None:
     assert flow(range(4)).to_list() == [0, 1, 2, 3]
 
 
+@pytest.mark.parametrize("engine", ["auto", "python"])
+@pytest.mark.parametrize(
+    ("source", "size", "prefix", "tail"),
+    [
+        (range(1 << 65), 1 << 65, [0, 1, 2], (1 << 65) - 1),
+        (range(4, (1 << 65) + 1, 4), 1 << 63, [4, 8, 12], 1 << 65),
+        (
+            range(1 << 65, 1, -4),
+            1 << 63,
+            [1 << 65, (1 << 65) - 4, (1 << 65) - 8],
+            4,
+        ),
+        (
+            range(-(1 << 63), (1 << 63) - 1),
+            (1 << 64) - 1,
+            [-(1 << 63), -(1 << 63) + 1, -(1 << 63) + 2],
+            (1 << 63) - 2,
+        ),
+    ],
+)
+def test_flow_supports_ranges_larger_than_ssize_t(
+    source: range, size: int, prefix: list[int], tail: int, engine: str
+) -> None:
+    values = flow(source).with_engine(engine)
+
+    assert values.count() == size
+    assert values.last() == tail
+    assert values.nth(-1) == tail
+    assert values.take(3).to_list() == prefix
+    assert values.take(3).to_tuple() == tuple(prefix)
+    assert values.map(lambda value: value + 1).take(3).to_list() == [value + 1 for value in prefix]
+    assert values.chunk(3).take(1).to_list() == [tuple(prefix)]
+
+
 def test_one_shot_source_fails_instead_of_silently_returning_empty() -> None:
     values = flow(iter([1, 2]))
 

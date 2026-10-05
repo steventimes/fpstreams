@@ -2091,6 +2091,31 @@ async def test_async_retained_identity_terminals_preserve_values_and_report_stra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "size", "prefix"),
+    [
+        (range(1 << 65), 1 << 65, [0, 1, 2]),
+        (
+            range(1 << 65, 1, -4),
+            1 << 63,
+            [1 << 65, (1 << 65) - 4, (1 << 65) - 8],
+        ),
+    ],
+)
+async def test_async_flow_supports_ranges_larger_than_ssize_t(
+    source: range, size: int, prefix: list[int]
+) -> None:
+    values = fpstreams.aflow(source)
+
+    assert await values.count() == size
+    assert await values.take(3).to_list() == prefix
+    assert await values.take(3).to_tuple() == tuple(prefix)
+    assert await values.map(lambda value: value + 1).take(3).to_list() == [
+        value + 1 for value in prefix
+    ]
+
+
+@pytest.mark.asyncio
 async def test_async_retained_list_terminals_read_live_length_and_values() -> None:
     source = [1, 2]
     values = fpstreams.aflow(source)

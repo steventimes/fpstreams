@@ -28,6 +28,12 @@ including changed defaults.
 
 ### Fixed
 
+- SQLite sinks match existing table, view, and column names using SQLite's ASCII
+  case rules. Duplicate column aliases raise `DuplicateKeyError` before inserts.
+  Fail mode and view rejection check the destination before reading rows.
+- Sync and async flows accept built-in ranges longer than `sys.maxsize`. Bounded
+  reads and exact counts no longer fail during source size detection.
+
 - `spreadsheet_safe=True` also neutralizes formula-like CSV headers, including
   inferred record field names and explicitly named empty output. Record lookup
   still uses the original names; the raw-output default is unchanged.

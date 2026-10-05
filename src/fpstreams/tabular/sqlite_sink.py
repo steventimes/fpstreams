@@ -16,6 +16,7 @@ RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
 _SQLITE_TYPES = frozenset({"ANY", "BLOB", "INTEGER", "NUMERIC", "REAL", "TEXT"})
 _IF_EXISTS_MODES = frozenset({"append", "fail", "replace"})
 _CONFLICT_MODES = frozenset({"error", "ignore", "replace"})
+_IDENTIFIER_CASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 def _identifier(name: str, *, operation: str) -> str:
@@ -27,11 +28,20 @@ def _identifier(name: str, *, operation: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _validate_sqlite_names(names: Iterable[str], *, operation: str) -> tuple[str, ...]:
+    """Validate record names and reject aliases of the same SQLite column."""
+    validated = _validate_names(names, operation=operation)
+    _validate_names(
+        (str.translate(name, _IDENTIFIER_CASE) for name in validated), operation=operation
+    )
+    return validated
+
+
 def _schema_types(schema: Mapping[str, str] | None) -> dict[str, str] | None:
     """Normalize the intentionally small set of accepted SQLite type names."""
     if schema is None:
         return None
-    names = _validate_names(schema, operation="SQLite schema")
+    names = _validate_sqlite_names(schema, operation="SQLite schema")
     declarations: dict[str, str] = {}
     for name in names:
         declaration = schema[name]
@@ -54,7 +64,7 @@ def _resolve_schema(
     if columns is not None:
         if isinstance(columns, str):
             raise TypeError("columns must be an iterable of names, not a string")
-        requested = _validate_names(columns, operation="SQLite sink")
+        requested = _validate_sqlite_names(columns, operation="SQLite sink")
 
     declarations = _schema_types(schema)
     if declarations is None:
@@ -83,7 +93,7 @@ def _table_kind(cursor: sqlite3.Cursor, table: str) -> str | None:
     """Return whether a named SQLite object is a table, view, or absent."""
     cursor.execute(
         "SELECT type FROM sqlite_master "
-        "WHERE name = ? AND type IN ('table', 'view') ORDER BY type LIMIT 1",
+        "WHERE name = ? COLLATE NOCASE AND type IN ('table', 'view') ORDER BY type LIMIT 1",
         (table,),
     )
     row = cursor.fetchone()
@@ -134,7 +144,7 @@ def _output_names(
     if requested is not None:
         return requested
     if first_record is not None:
-        return _validate_names(first_record, operation="SQLite sink")
+        return _validate_sqlite_names(first_record, operation="SQLite sink")
     if creating:
         raise ValueError("cannot create a SQLite table from empty rows without columns or schema")
     return None
@@ -148,8 +158,10 @@ def _validate_append_columns(
     names: tuple[str, ...],
 ) -> None:
     """Ensure every requested append field exists in the destination table."""
-    existing = _existing_columns(cursor, quoted_table)
-    missing = [name for name in names if name not in existing]
+    existing = {
+        str.translate(name, _IDENTIFIER_CASE) for name in _existing_columns(cursor, quoted_table)
+    }
+    missing = [name for name in names if str.translate(name, _IDENTIFIER_CASE) not in existing]
     if missing:
         raise ValueError(f"SQLite table {table!r} has no columns {missing!r}")
 

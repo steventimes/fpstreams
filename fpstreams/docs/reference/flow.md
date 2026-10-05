@@ -114,6 +114,9 @@ After entering Rows, `to_csv()` is the record writer instead and exposes
 
 ## Creating a flow
 
+`flow(range(...))` and `aflow(range(...))` accept ranges longer than `sys.maxsize`.
+Bounded reads remain lazy, and an identity `count()` returns the exact cardinality.
+
 | Call | Behavior |
 | --- | --- |
 | `flow(source)` | Wrap an ordinary iterable, reuse a Flow/Rows plan, or route a supported tabular source |
