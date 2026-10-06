@@ -12,8 +12,7 @@ Use `run_with_report()` to execute `to_dict`, `group_values`, `collect_values`,
 or `aggregate_values` and inspect the route. The terminal runs once; extra
 arguments are forwarded to it. The result contains the terminal's value and an
 immutable [execution report](../user-guide/execution-reports.md).
-This reporting method is available in the current source tree and has not yet
-been released on PyPI.
+This reporting method was added in 2.2.0.
 
 ```python
 from fpstreams import flow

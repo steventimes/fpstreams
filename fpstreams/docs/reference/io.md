@@ -274,7 +274,7 @@ are rejected in every mode.
 | `Rows.to_columns` | dictionary of column lists | Full result | None |
 | `Rows.to_numpy` | two-dimensional NumPy array, optionally selected | Full result | `data` |
 | `Flow.to_json` | JSON array file | Streams values to the destination | None |
-| `Flow.to_jsonl` (unreleased) | One JSON value per line | Streams values to the destination | None |
+| `Flow.to_jsonl` | One JSON value per line | Streams values to the destination | None |
 | `Flow.to_csv` | scalar/sequence/mapping CSV file | Streams rows to file | None |
 | `Rows.to_csv` | record CSV file | Streams rows; schema/header policy is explicit | None |
 | `Rows.to_jsonl` | JSON object lines | Streams rows | None |
@@ -293,16 +293,16 @@ Record conversion failures propagate, including `StopIteration` from a record’
 `_asdict()` method. They do not mean that the source is empty. SQLite validates
 the first record before replacing an existing table, so a conversion failure
 leaves that table intact. CSV and JSONL write directly by default; use the
-unreleased `atomic=True` option below when a failed export must preserve the old file.
+`atomic=True` option below when a failed export must preserve the old file.
 
 ## Spreadsheet safety
 
 CSV intended for Excel, Sheets, or similar applications can treat leading
 characters such as `=`, `+`, `-`, and `@` as formulas. Set
 `spreadsheet_safe=True` for untrusted text. fpstreams prefixes suspect strings with
-a single quote, including strings with leading whitespace. The current source
+a single quote, including strings with leading whitespace. Since 2.2.0, it
 also protects header cells, whether supplied explicitly or inferred from record
-keys. Header protection is not in the published 2.1.0 wheel. It changes the written
+keys. Header protection changes the written
 labels, while record lookup still uses the original keys. Numeric values are
 unchanged. Leave this option disabled when a consumer needs the original strings.
 
@@ -331,7 +331,7 @@ Pyodide worker. It is meant for in-memory core examples. Browser security does
 not expose arbitrary local paths, normal process pools, or the CPython/Rust
 extension. Use the installed package for production I/O and native execution.
 
-## JSON Lines output (current source)
+## JSON Lines output {#json-lines-output-current-source}
 
 Use `Flow.to_jsonl()` for arbitrary JSON values and `Rows.to_jsonl()` for records.
 Both write one value per line, consume the source once, and write an empty file
@@ -353,9 +353,9 @@ rows([{"id": 1, "day": date(2026, 9, 30)}]).to_jsonl(
 
 `ensure_ascii=False` preserves Unicode text; `encoding` defaults to UTF-8.
 `rows.from_jsonl()` reads object records, so it cannot read scalar lines written
-by Flow. These additions are absent from the published 2.1.0 wheel.
+by Flow. These output options were added in 2.2.0.
 
-## Atomic file output (current source) {#atomic-flow-file-output-current-source}
+## Atomic file output {#atomic-flow-file-output-current-source}
 
 `Flow.to_csv()`, `Flow.to_json()`, `Flow.to_jsonl()`, `Rows.to_csv()`, and
 `Rows.to_jsonl()` accept `atomic=True`. They write a temporary
@@ -387,5 +387,4 @@ after power loss or a transaction across a network filesystem. File handles are
 not accepted. The temporary file's permissions become the output permissions;
 replacement does not preserve the old file's mode or ownership. Destination
 directories must be trusted: anchoring a path does not protect against another
-process renaming its parent directories. These options are in the checkout and
-are absent from published 2.1.0.
+process renaming its parent directories. These options were added in 2.2.0.

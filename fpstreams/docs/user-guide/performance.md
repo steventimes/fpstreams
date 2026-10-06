@@ -69,12 +69,12 @@ flow(records).group_by(lambda row: normalize(row["region"]))
 Use an expression when it expresses the operation clearly. Keep a callable for
 logic that would become harder to read as an expression.
 
-In the unreleased working tree, `auto` can run a two-key count/sum group in Rust
+Since 2.2.0, `auto` can run a two-key count/sum group in Rust
 when its input is a retained list or tuple of exact tuple rows. Both keys and
 the selected values must be plain signed 64-bit integers. The result keeps the
 first key objects and encounter order, and the sum may exceed 64 bits. Iterator
 sources, custom types, changed collector functions, and unsupported layouts use
-the Python collector program. This path is not in the published 2.1.0 wheel.
+the Python collector program.
 
 ## Keep pipelines fused
 
@@ -113,7 +113,7 @@ Calling separate scalar terminals on a one-shot source is invalid, and on a
 reiterable source scans it repeatedly. Use a combined aggregation when the
 statistics belong to one pass.
 
-`frequencies()` retains one count per distinct key. The unreleased implementation
+`frequencies()` retains one count per distinct key. Since 2.2.0, the implementation
 can count exact builtin values in retained lists and tuples in Rust, including
 strings, bytes, floats, large integers, booleans, and `None`.
 
@@ -133,7 +133,7 @@ When the Rust extension is unavailable, `auto` counts in Python. The current
 source tree also fixes this fallback for lists and tuples in the browser wheel.
 
 For a NumPy source, a key callback may change values that have not been read yet.
-The unreleased `auto` implementation preserves those edits by reading between
+The `auto` implementation preserves those edits by reading between
 key calls on sequential linear pipelines. This route can cost more than copying
 the array up front. Its execution report records `python_frequency`.
 
@@ -402,12 +402,11 @@ runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The [roadmap](../roadmap.md) tracks the remaining baseline work.
 
-## Choosing explicit sorted operations (current source)
+## Choosing explicit sorted operations {#choosing-explicit-sorted-operations-current-source}
 
 Use `group_by_sorted()`, `merge_sorted()`, and `join_sorted()` when inputs are
 already in ascending key order and you need incremental output or bounded state.
-They do not sort the input for you. They currently execute in Python and are
-absent from published 2.1.0.
+They do not sort the input for you. Added in 2.2.0, they execute in Python.
 
 The sorted group holds current collector state and one lookahead row; collectors
 that retain values can still grow. A merge holds one lookahead per input. A join

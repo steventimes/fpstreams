@@ -117,6 +117,17 @@ jobs:
           cargo fmt --manifest-path rust/Cargo.toml -- --check
           cargo test --manifest-path rust/Cargo.toml
           cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - name: Minimum supported Rust
+        run: |
+          release_rust_minimum="$(python - <<'PY'
+          import tomllib
+          with open("rust/Cargo.toml", "rb") as source:
+              version = tomllib.load(source)["package"]["rust-version"]
+          print(version + ".0" if version.count(".") == 1 else version)
+          PY
+          )"
+          rustup toolchain install "$release_rust_minimum" --profile minimal --no-self-update
+          cargo +"$release_rust_minimum" check --manifest-path rust/Cargo.toml --locked --all-targets
       - name: Documentation and browser wheel
         run: |
           uv run python scripts/build_browser_wheel.py

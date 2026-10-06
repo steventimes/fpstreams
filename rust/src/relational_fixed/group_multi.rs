@@ -221,8 +221,10 @@ impl MultiI64GroupState {
         values: &[i64],
         value_objects: &[*mut ffi::PyObject],
     ) -> PyResult<Option<()>> {
-        if USE_OBJECT_CACHE && let Some(position) = self.cached_position(key_object) {
-            return Ok(self.update_group(py, position, lane_slots, values, value_objects));
+        if USE_OBJECT_CACHE {
+            if let Some(position) = self.cached_position(key_object) {
+                return Ok(self.update_group(py, position, lane_slots, values, value_objects));
+            }
         }
         if let Some(position) =
             self.positions

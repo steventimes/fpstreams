@@ -10,10 +10,12 @@ fn add_fixed_exact_i64_key<const USE_OBJECT_CACHE: bool>(
     state: &mut ObjectKeyGroupState,
     counts: &mut Vec<usize>,
 ) -> PyResult<Option<()>> {
-    if USE_OBJECT_CACHE && let Some(position) = state.cached_position(key_object) {
-        return Ok(ObjectKeyGroupState::add_fixed_count_at_position(
-            counts, position,
-        ));
+    if USE_OBJECT_CACHE {
+        if let Some(position) = state.cached_position(key_object) {
+            return Ok(ObjectKeyGroupState::add_fixed_count_at_position(
+                counts, position,
+            ));
+        }
     }
     let Some(key) = exact_i64(py, key_object)? else {
         return Ok(None);
@@ -30,11 +32,13 @@ fn add_fixed_exact_i64_key_value<const USE_OBJECT_CACHE: bool>(
     state: &mut ObjectKeyGroupState,
     counts: &mut Vec<usize>,
 ) -> PyResult<Option<()>> {
-    if USE_OBJECT_CACHE && let Some(position) = state.cached_position(key_object) {
-        let Some(value) = exact_i64(py, value_object)? else {
-            return Ok(None);
-        };
-        return Ok(state.add_fixed_count_sum_at_position(counts, position, value));
+    if USE_OBJECT_CACHE {
+        if let Some(position) = state.cached_position(key_object) {
+            let Some(value) = exact_i64(py, value_object)? else {
+                return Ok(None);
+            };
+            return Ok(state.add_fixed_count_sum_at_position(counts, position, value));
+        }
     }
     let Some(key) = exact_i64(py, key_object)? else {
         return Ok(None);

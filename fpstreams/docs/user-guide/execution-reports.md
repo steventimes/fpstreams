@@ -21,9 +21,9 @@ same exception is propagated and no `ExecutionResult` is returned.
 
 `Flow.run_with_report()` accepts its reportable eager terminals and forwards
 additional positional and keyword arguments to the named method. `Rows` supports
-`to_list`, `count`, `first`, and `last`. The current source tree adds Pairs
+`to_list`, `count`, `first`, and `last`. Version 2.2.0 adds Pairs
 reporting for `to_dict`, `group_values`, `collect_values`, and `aggregate_values`.
-This Pairs method is not included in the published 2.1.0 release:
+For example:
 
 ```python
 from fpstreams import flow
@@ -73,10 +73,10 @@ The outer relational plan can still have `compiler_engine="python"`; use
 
 `Pairs.aggregate_values()` also records a successful Rust shortcut. Child plans
 do not replace the outer route, and the report does not trace every kernel or
-fallback inside a compound query. The direct join route labels above are also
-unreleased; published 2.1.0 records the outer plan for those shortcuts.
+fallback inside a compound query. The direct join route labels above were added
+in 2.2.0; version 2.1.0 records the outer plan for those shortcuts.
 
-For `frequencies()` on retained lists and tuples, the current source tree records
+For `frequencies()` on retained lists and tuples, version 2.2.0 records
 `rust_direct` when native counting completes. If Python completes the count after
 a native prefix, it records `python_frequency`. The latter can include both
 native and Python work; it does not measure the time spent in each.
@@ -85,7 +85,7 @@ native plan uses iterator counting. Here `rust_direct` describes the counting
 terminal; it does not prove that every upstream step avoided Python fallback.
 Sequential linear `auto` plans with `frequencies(key=...)` also record
 `python_frequency`: the Python pipeline preserves key callbacks before later
-input reads. These labels are also unreleased.
+input reads. These labels were added in 2.2.0.
 
 Use the report with `explain()` and a profiler when investigating a particular
 backend. A `planned:*` value alone cannot establish which backend handled all
@@ -108,8 +108,8 @@ are immutable after the terminal finishes.
       show_root_heading: true
       members: true
 
-Explicit sorted operations in the current source report `python_sorted_group`,
+Explicit sorted operations report `python_sorted_group`,
 `python_sorted_merge`, or `python_sorted_join` when the outer query executes that
 strategy. `explain()` describes a plan without executing it. Reports summarize
-an outer query; they do not trace every nested stage. These route names are not
-part of published 2.1.0.
+an outer query; they do not trace every nested stage. These route names were added
+in 2.2.0.

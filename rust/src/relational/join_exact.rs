@@ -36,37 +36,37 @@ impl DictJoinPositions {
 
     /// Insert a unique key, returning false when the right relation contains a duplicate.
     pub(super) fn insert_unique(&mut self, key: i64, position: usize) -> PyResult<bool> {
-        if let Ok(index) = usize::try_from(key)
-            && let Self::Dense {
+        if let Ok(index) = usize::try_from(key) {
+            if let Self::Dense {
                 slots,
                 keys,
                 dense_limit,
                 ..
             } = self
-        {
-            let required = index.saturating_add(1);
-            let growth_limit = slots
-                .len()
-                .saturating_mul(MAX_RECORD_DENSE_GROWTH_FACTOR)
-                .max(MAX_INITIAL_RECORD_DENSE_SLOTS);
-            if required <= *dense_limit && required <= growth_limit {
-                keys.try_reserve(1).map_err(join_allocation_error)?;
-                if required > slots.len() {
-                    slots
-                        .try_reserve(required - slots.len())
-                        .map_err(join_allocation_error)?;
-                    let new_len = slots.capacity().min(*dense_limit).max(required);
-                    slots.resize(new_len, usize::MAX);
+            {
+                let required = index.saturating_add(1);
+                let growth_limit = slots
+                    .len()
+                    .saturating_mul(MAX_RECORD_DENSE_GROWTH_FACTOR)
+                    .max(MAX_INITIAL_RECORD_DENSE_SLOTS);
+                if required <= *dense_limit && required <= growth_limit {
+                    keys.try_reserve(1).map_err(join_allocation_error)?;
+                    if required > slots.len() {
+                        slots
+                            .try_reserve(required - slots.len())
+                            .map_err(join_allocation_error)?;
+                        let new_len = slots.capacity().min(*dense_limit).max(required);
+                        slots.resize(new_len, usize::MAX);
+                    }
+                    if slots[index] != usize::MAX {
+                        return Ok(false);
+                    }
+                    slots[index] = position;
+                    keys.push(key);
+                    return Ok(true);
                 }
-                if slots[index] != usize::MAX {
-                    return Ok(false);
-                }
-                slots[index] = position;
-                keys.push(key);
-                return Ok(true);
             }
         }
-
         if matches!(self, Self::Dense { .. }) {
             let previous = std::mem::replace(self, Self::Hash(HashMap::new()));
             let Self::Dense {
@@ -231,10 +231,10 @@ fn validate_exact_dict_schema(
         }
     }
 
-    if let Some(expected) = schema.as_ref()
-        && expected.fields.len() != field_count
-    {
-        return Ok(None);
+    if let Some(expected) = schema.as_ref() {
+        if expected.fields.len() != field_count {
+            return Ok(None);
+        }
     }
     if let Some(fields) = new_fields {
         *schema = Some(ExactDictSchema { fields });
@@ -341,10 +341,10 @@ fn collect_exact_join_values<T>(
         if field_count > RECORD_JOIN_V1_MAX_FIELDS {
             return Ok(None);
         }
-        if let Some(expected) = schema.as_ref()
-            && expected.fields.len() != field_count
-        {
-            return Ok(None);
+        if let Some(expected) = schema.as_ref() {
+            if expected.fields.len() != field_count {
+                return Ok(None);
+            }
         }
         values
             .try_reserve(field_count)

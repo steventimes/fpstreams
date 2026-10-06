@@ -11,10 +11,10 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `rows(source)` | Record operations, relational joins, and record-specific I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-The examples use the `2.1` API. Sections marked unreleased describe changes
-available in the source tree that are not yet included in the PyPI release.
+The examples use the `2.2` API, including explicit sorted operations, atomic
+file exports, and Pairs execution reports.
 
-The [2.1 changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
+The [2.2 changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
 summarizes the new public APIs and execution changes.
 
 ## Installation

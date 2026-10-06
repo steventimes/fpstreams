@@ -227,29 +227,31 @@ fn group_exact_pair_expr_sequence(
         // Exact integers cannot dispatch Python hashing code, but retaining that order also keeps
         // native allocation failures aligned with the Python execution boundary.
         let (position, inserted) = state.position(key)?;
-        if inserted && let Some(identity) = modulo_identity {
-            let (dividend_object, dividend_value) = if identity.index == 0 {
-                (first, first_value)
-            } else {
-                (second, second_value)
-            };
-            if key == dividend_value {
-                let divisor = modulo_divisor
-                    .as_ref()
-                    .expect("a modulo identity input always prepares its divisor");
-                // SAFETY: both operands are live exact Python integers. PyNumber_Remainder
-                // returns one owned reference or null with an exception set.
-                let key_object =
-                    unsafe { ffi::PyNumber_Remainder(dividend_object, divisor.as_ptr()) };
-                if key_object.is_null() {
-                    return Err(PyErr::fetch(py));
+        if inserted {
+            if let Some(identity) = modulo_identity {
+                let (dividend_object, dividend_value) = if identity.index == 0 {
+                    (first, first_value)
+                } else {
+                    (second, second_value)
+                };
+                if key == dividend_value {
+                    let divisor = modulo_divisor
+                        .as_ref()
+                        .expect("a modulo identity input always prepares its divisor");
+                    // SAFETY: both operands are live exact Python integers. PyNumber_Remainder
+                    // returns one owned reference or null with an exception set.
+                    let key_object =
+                        unsafe { ffi::PyNumber_Remainder(dividend_object, divisor.as_ptr()) };
+                    if key_object.is_null() {
+                        return Err(PyErr::fetch(py));
+                    }
+                    // SAFETY: the non-null result is one owned reference from PyNumber_Remainder.
+                    let key_object = unsafe { Bound::from_owned_ptr(py, key_object) };
+                    if exact_i64(py, key_object.as_ptr())? != Some(key) {
+                        return Ok(None);
+                    }
+                    state.retain_key_object(position, key_object.unbind());
                 }
-                // SAFETY: the non-null result is one owned reference from PyNumber_Remainder.
-                let key_object = unsafe { Bound::from_owned_ptr(py, key_object) };
-                if exact_i64(py, key_object.as_ptr())? != Some(key) {
-                    return Ok(None);
-                }
-                state.retain_key_object(position, key_object.unbind());
             }
         }
         let Some(value) = value_expression.evaluate(first_value, second_value, &mut value_stack)

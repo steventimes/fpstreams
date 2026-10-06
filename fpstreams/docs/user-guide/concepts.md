@@ -212,9 +212,9 @@ different physical paths. They also keep engine choice from changing user code.
 - Read [performance and execution](performance.md) before tuning a workload.
 - Use the [browser playground](../playground.md) to try core APIs immediately.
 
-## Inputs that are already sorted (current source)
+## Inputs that are already sorted {#inputs-that-are-already-sorted-current-source}
 
-These APIs are available in the checkout, but are not part of published 2.1.0.
+These APIs were added in 2.2.0.
 They consume ascending inputs without building a hash index over the whole source.
 Keys must be exact built-in integers, strings, bytes, or nonempty flat tuples of
 these types. Each key position must keep the same type across both inputs.

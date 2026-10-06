@@ -1,11 +1,10 @@
 # v2 status and roadmap
 
-The `2.1.0` release contains the features listed below. Source changes were reviewed
-against the local checkout on 2026-09-30 and are not included in that release.
-No release date has been assigned to the remaining candidates.
+Version `2.2.0` adds explicit sorted operations, atomic file exports, correctness
+repairs, guarded native paths, and more traceable reports. No release date has
+been assigned to the remaining candidates.
 
-The current source adds correctness repairs, guarded native paths, and more
-traceable reports. Some repairs increased Python execution costs; the local
+Some repairs increased Python execution costs; the local
 measurements below include those regressions.
 
 ## Included in 2.0
@@ -77,12 +76,19 @@ Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
 packages remain optional dependencies.
 
-## Source changes since 2.1.0
+## Included in 2.2
 
-These changes are in the current checkout and are listed in
-[Unreleased](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md).
-They require a newer build than the published 2.1.0 wheel.
+These changes require version 2.2.0 or newer. See the
+[changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
+for the full list.
 
+- **Sorted operations:** `Rows.group_by_sorted()`, `Flow.merge_sorted()`, and
+  bounded `Rows.join_sorted()` run in Python and validate consumed keys. They
+  preserve encounter order and enforce the sorted join's row budgets.
+- **File exports:** Flow CSV/JSON/JSONL and Rows CSV/JSONL sinks offer optional
+  atomic path output and no-overwrite publication after cleanup. Flow adds JSONL
+  output for arbitrary values; Rows JSONL accepts a custom serializer. CSV header
+  protection and stable relative output paths retain their documented defaults.
 - **Errors and cleanup:** uniqueness and grouping propagate user hash/equality
   errors. Arrow reports owned-resource close failures. Parquet's
   `if_exists="error"` publishes without overwriting a concurrent creator.
@@ -105,6 +111,9 @@ They require a newer build than the published 2.1.0 wheel.
   missing or mismatched evidence. CLI listing does not execute benchmark tasks.
 - **Batch bounds:** sync and async batching normalize integer bounds before
   consumption. CSV and SQLite retain conversion failures on the first record.
+- **SQLite and ranges:** SQLite destination names follow ASCII case rules and
+  duplicate column aliases fail before inserts. Sync and async flows support
+  exact counts and bounded reads of ranges longer than `sys.maxsize`.
 
 The browser playground runs a pure-Python wheel built from this checkout.
 Its status shows the package version, commit, working-tree state, and engine.
@@ -144,18 +153,6 @@ without fpstreams. Subsequent allocation comparisons used patched 3.12.13 on
 both sides. See [CPython #128679](https://github.com/python/cpython/issues/128679).
 
 ## Next development steps
-
-The current source includes explicit `Rows.group_by_sorted()`, `Flow.merge_sorted()`,
-and bounded `Rows.join_sorted()` operations. They run in Python and check ordering
-while consuming the input. Sorted joins use the first right record's column list
-and enforce row budgets. These APIs are absent from published 2.1.0.
-
-Flow CSV/JSON/JSONL and Rows CSV/JSONL sinks offer optional atomic path output.
-Publication waits for writer and source cleanup, with a no-overwrite mode.
-Flow gains JSONL output for arbitrary values; Rows JSONL gains a custom serializer.
-Spreadsheet-safe CSV now protects headers as well as values, and relative Parquet
-destinations stay fixed if a callback changes directories. These changes are
-unreleased.
 
 Further performance work starts with profiles of the current source. Computed
 columns, projection, and collector loops still carry costs from correctness

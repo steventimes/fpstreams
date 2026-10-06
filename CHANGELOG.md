@@ -5,6 +5,8 @@ including changed defaults.
 
 ## Unreleased
 
+## 2.2.0 - 2026-10-06
+
 ### Added
 
 - Add bounded `Rows.join_sorted()` for explicitly ordered records, with consumed-prefix
@@ -28,6 +30,8 @@ including changed defaults.
 
 ### Fixed
 
+- Rust source builds support the declared 1.85 minimum. Native kernels no longer
+  require Rust 1.88 through let-chain syntax; CI checks the minimum compiler.
 - SQLite sinks match existing table, view, and column names using SQLite's ASCII
   case rules. Duplicate column aliases raise `DuplicateKeyError` before inserts.
   Fail mode and view rejection check the destination before reading rows.
@@ -160,7 +164,7 @@ including changed defaults.
 - Benchmark comparisons reject missing provenance and mismatched workloads.
   Both suites record dependencies, Git state, code and workload fingerprints,
   and an untimed observation of the task. Median baselines retain each run's
-  provenance. Older reports need to be regenerated for report schema 5.
+  provenance. Older reports need to be regenerated for report schema 6.
 - Reports include CPU affinity, NumPy CPU dispatch, and an allowlist of runtime
   settings. Comparisons reject mismatched configurations; both runners also
   reject configuration changes during measurement.
@@ -176,7 +180,7 @@ including changed defaults.
   NumPy tasks in local measurements.
 - Competitive benchmarks now record peak Python allocation in a separate,
   untimed call for every implementation, using the engine suite's shared helper.
-  Schema 5 rejects missing or invalid resource measurements, and baseline
+  Schema 6 rejects missing or invalid resource measurements, and baseline
   creation rejects inconsistent resource sets instead of substituting zero.
   Earlier competitive reports contain no allocation evidence.
 - Regression checks accept zero allocated bytes when both runs report zero.

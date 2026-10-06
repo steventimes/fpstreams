@@ -4137,7 +4137,7 @@ def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path, mo
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     head = "0123456789abcdef0123456789abcdef01234567"
-    monkeypatch.setenv("GITHUB_REF_NAME", "v2.1.0")
+    monkeypatch.setenv("GITHUB_REF_NAME", "v2.2.0")
     monkeypatch.setenv("GITHUB_REF_TYPE", "tag")
     monkeypatch.setenv("GITHUB_SHA", head)
     monkeypatch.setattr(
@@ -4148,7 +4148,7 @@ def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path, mo
     assert manifest["build"] == "release"
     assert manifest["dirty"] is False
     assert manifest["commit"] == head
-    assert manifest["ref"] == "v2.1.0"
+    assert manifest["ref"] == "v2.2.0"
 
 
 def test_browser_wheel_has_standard_pure_python_contents(tmp_path: Path) -> None:

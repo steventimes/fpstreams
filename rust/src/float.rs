@@ -108,18 +108,19 @@ pub(crate) fn prepare_float_expression(code: Vec<FloatInstruction>) -> PreparedF
     if let Some(comparison) = parse_float_comparison(&code) {
         return PreparedFloatExpression::Comparison(comparison);
     }
-    if let [left @ .., (boolean_opcode @ (14 | 15), _)] = code.as_slice()
-        && left.len() == 6
-        && let (Some(left), Some(right)) = (
-            parse_float_comparison(&left[..3]),
-            parse_float_comparison(&left[3..]),
-        )
-    {
-        return PreparedFloatExpression::ComparisonPair {
-            left,
-            right,
-            boolean_opcode: *boolean_opcode,
-        };
+    if let [left @ .., (boolean_opcode @ (14 | 15), _)] = code.as_slice() {
+        if left.len() == 6 {
+            if let (Some(left), Some(right)) = (
+                parse_float_comparison(&left[..3]),
+                parse_float_comparison(&left[3..]),
+            ) {
+                return PreparedFloatExpression::ComparisonPair {
+                    left,
+                    right,
+                    boolean_opcode: *boolean_opcode,
+                };
+            }
+        }
     }
     PreparedFloatExpression::Bytecode(code)
 }

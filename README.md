@@ -19,6 +19,9 @@ Install the latest stable release:
 python -m pip install fpstreams
 ~~~
 
+Prebuilt wheels include the native extension. Building from source requires
+Rust 1.85 or newer.
+
 The `async` extra installs `aiofiles` for async file adapters. Core async
 pipelines do not require an extra. Install other adapters only when needed:
 
@@ -293,9 +296,8 @@ native_result = pipeline.with_engine("native").to_list()
 ~~~
 
 Use `run_with_report()` to execute a terminal and inspect its recorded route.
-The current source also supports Pairs terminals such as
-`flow([("a", 1)]).pairs().run_with_report("group_values")`. These Pairs reports
-are not part of the published 2.1.0 release. See the
+Version 2.2.0 adds Pairs terminals such as
+`flow([("a", 1)]).pairs().run_with_report("group_values")`. See the
 [execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
 for supported terminals and the limits of route reporting.
 

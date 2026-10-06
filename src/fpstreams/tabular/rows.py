@@ -2714,7 +2714,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         Inner/left output columns come from the first right record; later new
         columns fail. Ordering and cardinality checks cover consumed rows only.
         Finite row budgets raise BufferLimitError before the excess output.
-        This current-source API is not included in published 2.1.0.
+        Added in version 2.2.0.
         """
         if how not in {"inner", "left", "semi", "anti"}:
             raise ValueError("sorted join how must be inner, left, semi, or anti")

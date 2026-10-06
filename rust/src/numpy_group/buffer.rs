@@ -333,10 +333,10 @@ fn build_partial(
     values: Option<NumericBuffer>,
     mask: u8,
 ) -> PyResult<Option<TypedGroupData>> {
-    if let Some(values) = &values
-        && (values.kind_name() != keys.kind_name() || values.len() != keys.len())
-    {
-        return Ok(None);
+    if let Some(values) = &values {
+        if values.kind_name() != keys.kind_name() || values.len() != keys.len() {
+            return Ok(None);
+        }
     }
     if mask & (AGGREGATE_TOTAL | AGGREGATE_MINIMUM | AGGREGATE_MAXIMUM) != 0 && values.is_none() {
         return Ok(None);
@@ -415,10 +415,10 @@ fn build_strided_partial(
     values: Option<StridedNumericBuffer>,
     mask: u8,
 ) -> PyResult<Option<TypedGroupData>> {
-    if let Some(values) = &values
-        && (values.kind_name() != keys.kind_name() || values.len() != keys.len())
-    {
-        return Ok(None);
+    if let Some(values) = &values {
+        if values.kind_name() != keys.kind_name() || values.len() != keys.len() {
+            return Ok(None);
+        }
     }
     if mask & (AGGREGATE_TOTAL | AGGREGATE_MINIMUM | AGGREGATE_MAXIMUM) != 0 && values.is_none() {
         return Ok(None);

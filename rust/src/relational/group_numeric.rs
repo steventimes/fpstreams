@@ -96,10 +96,10 @@ pub(crate) fn group_sum_pairs(
     rows: Vec<(i64, i64)>,
     key_bounds: Option<(i64, i64)>,
 ) -> Option<Vec<(i64, i128)>> {
-    if let Some((minimum, maximum)) = key_bounds
-        && let Some(slot_count) = dense_slot_count(rows.len(), minimum, maximum)
-    {
-        return group_sum_dense(rows, minimum, slot_count);
+    if let Some((minimum, maximum)) = key_bounds {
+        if let Some(slot_count) = dense_slot_count(rows.len(), minimum, maximum) {
+            return group_sum_dense(rows, minimum, slot_count);
+        }
     }
     let mut positions: HashMap<i64, usize> = HashMap::new();
     let mut groups: Vec<(i64, i128)> = Vec::new();
@@ -546,24 +546,24 @@ impl I64GroupPositions {
     where
         I: ExactSizeIterator<Item = i64>,
     {
-        if let Ok(index) = usize::try_from(key)
-            && let Self::Dense(slots) = self
-        {
-            let required = index.saturating_add(1);
-            let growth_limit = slots
-                .len()
-                .saturating_mul(MAX_RECORD_DENSE_GROWTH_FACTOR)
-                .max(MAX_INITIAL_RECORD_DENSE_SLOTS);
-            if required <= dense_limit && required <= growth_limit {
-                if required > slots.len() {
-                    slots
-                        .try_reserve(required - slots.len())
-                        .map_err(group_allocation_error)?;
-                    let new_len = slots.capacity().min(dense_limit).max(required);
-                    slots.resize(new_len, usize::MAX);
+        if let Ok(index) = usize::try_from(key) {
+            if let Self::Dense(slots) = self {
+                let required = index.saturating_add(1);
+                let growth_limit = slots
+                    .len()
+                    .saturating_mul(MAX_RECORD_DENSE_GROWTH_FACTOR)
+                    .max(MAX_INITIAL_RECORD_DENSE_SLOTS);
+                if required <= dense_limit && required <= growth_limit {
+                    if required > slots.len() {
+                        slots
+                            .try_reserve(required - slots.len())
+                            .map_err(group_allocation_error)?;
+                        let new_len = slots.capacity().min(dense_limit).max(required);
+                        slots.resize(new_len, usize::MAX);
+                    }
+                    let position = slots[index];
+                    return Ok((position != usize::MAX).then_some(position));
                 }
-                let position = slots[index];
-                return Ok((position != usize::MAX).then_some(position));
             }
         }
 

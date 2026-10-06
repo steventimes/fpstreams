@@ -35,7 +35,7 @@ when the expression is built. Booleans, numeric subclasses, and objects with
 custom conversion methods are rejected. Use a callable when you need those
 objects' Python behavior.
 
-The working tree fixes a signed-zero error: `FExpr.constant(-0.0)` keeps its
+Version 2.2.0 fixes a signed-zero error: `FExpr.constant(-0.0)` keeps its
 negative sign, including after a positive-zero expression has populated the cache.
 
 It also fixes cache collisions between numerically equal constants of different
@@ -43,7 +43,7 @@ types. For example, `FExpr("const", value=9007199254740993)` keeps that integer
 result even if a float expression ran first. Directly constructed expressions
 with nonstandard operand types use Python in `auto` mode; forcing `native`
 raises `NativeUnsupportedError`. The accepted inputs to `item`, `fitem`, and
-their constant factories are unchanged. These fixes are not in 2.1.0.
+their constant factories are unchanged.
 
 ::: fpstreams.Expr
     options:
