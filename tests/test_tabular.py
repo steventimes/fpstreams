@@ -7277,34 +7277,80 @@ def test_unnest_native_prefix_returns_atomic_unprocessed_boundary(
 
 @pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="SIGALRM is unavailable")
 @pytest.mark.parametrize("wide_part", ["outer", "nested"])
-def test_unnest_native_wide_row_checks_signals_before_append(wide_part: str) -> None:
+@pytest.mark.parametrize("first_signal", ["normal", "before-pull", "after-append"])
+def test_unnest_native_wide_row_checks_signals_before_append(
+    wide_part: str, first_signal: str
+) -> None:
     """A pending signal interrupts either dictionary scan while its private row is atomic."""
+    import dis
+    from types import FrameType
+
     from fpstreams import _native
 
     wide = {f"field_{index}": index for index in range(250_000)}
     row = {"profile": wide} if wide_part == "nested" else {"profile": {}, **wide}
     tail = object()
+    previous_handler = signal.getsignal(signal.SIGALRM)
     source = iter([row, tail])
     output: list[object] = []
-    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def invoke() -> tuple[object | None, bool] | None:
+        return _native.unnest_exact_dict_prefix_v1(output, source, "profile", "")
+
+    # CPython 3.11 can execute a warmed built-in call at PRECALL.
+    call_offsets = {
+        instruction.offset
+        for instruction in dis.get_instructions(invoke)
+        if instruction.opname in {"PRECALL", "CALL"}
+    }
 
     class WideRowSignal(Exception):
         pass
 
-    def interrupt(_signum: int, _frame: object) -> None:
+    def interrupt(_signum: int, frame: FrameType | None) -> None:
+        if (
+            frame is None
+            or frame.f_code is not invoke.__code__
+            or frame.f_lasti not in call_offsets
+            or source.__length_hint__() != 1
+            or output
+        ):
+            return
         raise WideRowSignal
 
     signal.signal(signal.SIGALRM, interrupt)
-    signal.setitimer(signal.ITIMER_REAL, 0.001 if wide_part == "outer" else 0.005)
     try:
-        with pytest.raises(WideRowSignal):
-            _native.unnest_exact_dict_prefix_v1(output, source, "profile", "")
+        for attempt in range(10):
+            source = iter([row, tail])
+            output = []
+            missed_control = attempt == 0 and first_signal != "normal"
+            if missed_control and first_signal == "before-pull":
+                signal.raise_signal(signal.SIGALRM)
+            delay = (
+                0.0 if missed_control else (0.001 if wide_part == "outer" else 0.005) / (2**attempt)
+            )
+            signal.setitimer(signal.ITIMER_REAL, delay)
+            try:
+                outcome = invoke()
+                if missed_control and first_signal == "after-append":
+                    signal.raise_signal(signal.SIGALRM)
+            except WideRowSignal:
+                assert output == []
+                assert next(source) is tail
+                break
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+            # Retry only a missed row window, never an incorrect result or source position.
+            assert output == [wide]
+            assert outcome is not None
+            assert outcome[0] is tail
+            assert outcome[1] is False
+            assert source.__length_hint__() == 0
+        else:
+            pytest.fail("signal missed the private unnest row in all 10 attempts")
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous_handler)
-
-    assert output == []
-    assert next(source) is tail
 
 
 @pytest.mark.parametrize("container", [list, tuple])
