@@ -938,7 +938,7 @@
   <a href="#json-lines-output-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        JSON Lines output (current source)
+        JSON Lines output
       
     </span>
   </a>
@@ -949,7 +949,7 @@
   <a href="#atomic-flow-file-output-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Atomic file output (current source)
+        Atomic file output
       
     </span>
   </a>
@@ -1352,7 +1352,7 @@
   <a href="#json-lines-output-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        JSON Lines output (current source)
+        JSON Lines output
       
     </span>
   </a>
@@ -1363,7 +1363,7 @@
   <a href="#atomic-flow-file-output-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Atomic file output (current source)
+        Atomic file output
       
     </span>
   </a>
@@ -1750,7 +1750,7 @@ are rejected in every mode.</p>
 <td>None</td>
 </tr>
 <tr>
-<td><code>Flow.to_jsonl</code> (unreleased)</td>
+<td><code>Flow.to_jsonl</code></td>
 <td>One JSON value per line</td>
 <td>Streams values to the destination</td>
 <td>None</td>
@@ -1818,14 +1818,14 @@ extra-field policies; <code>Flow.to_csv(...)</code> accepts arbitrary value shap
 <code>_asdict()</code> method. They do not mean that the source is empty. SQLite validates
 the first record before replacing an existing table, so a conversion failure
 leaves that table intact. CSV and JSONL write directly by default; use the
-unreleased <code>atomic=True</code> option below when a failed export must preserve the old file.</p>
+<code>atomic=True</code> option below when a failed export must preserve the old file.</p>
 <h2 id="spreadsheet-safety">Spreadsheet safety</h2>
 <p>CSV intended for Excel, Sheets, or similar applications can treat leading
 characters such as <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</code> as formulas. Set
 <code>spreadsheet_safe=True</code> for untrusted text. fpstreams prefixes suspect strings with
-a single quote, including strings with leading whitespace. The current source
+a single quote, including strings with leading whitespace. Since 2.2.0, it
 also protects header cells, whether supplied explicitly or inferred from record
-keys. Header protection is not in the published 2.1.0 wheel. It changes the written
+keys. Header protection changes the written
 labels, while record lookup still uses the original keys. Numeric values are
 unchanged. Leave this option disabled when a consumer needs the original strings.</p>
 <h2 id="files-errors-and-partial-effects">Files, errors, and partial effects</h2>
@@ -1849,7 +1849,7 @@ write may leave partial output.</p>
 Pyodide worker. It is meant for in-memory core examples. Browser security does
 not expose arbitrary local paths, normal process pools, or the CPython/Rust
 extension. Use the installed package for production I/O and native execution.</p>
-<h2 id="json-lines-output-current-source">JSON Lines output (current source)</h2>
+<h2 id="json-lines-output-current-source">JSON Lines output</h2>
 <p>Use <code>Flow.to_jsonl()</code> for arbitrary JSON values and <code>Rows.to_jsonl()</code> for records.
 Both write one value per line, consume the source once, and write an empty file
 for an empty input. Neither collects the whole result in memory. Flow's method
@@ -1867,8 +1867,8 @@ is new; Rows now also accepts <code>default</code> to serialize dates and other 
 </code></pre></div>
 <p><code>ensure_ascii=False</code> preserves Unicode text; <code>encoding</code> defaults to UTF-8.
 <code>rows.from_jsonl()</code> reads object records, so it cannot read scalar lines written
-by Flow. These additions are absent from the published 2.1.0 wheel.</p>
-<h2 id="atomic-flow-file-output-current-source">Atomic file output (current source)</h2>
+by Flow. These output options were added in 2.2.0.</p>
+<h2 id="atomic-flow-file-output-current-source">Atomic file output</h2>
 <p><code>Flow.to_csv()</code>, <code>Flow.to_json()</code>, <code>Flow.to_jsonl()</code>, <code>Rows.to_csv()</code>, and
 <code>Rows.to_jsonl()</code> accept <code>atomic=True</code>. They write a temporary
 file in the destination directory and publish it only after the writer and source
@@ -1894,8 +1894,7 @@ after power loss or a transaction across a network filesystem. File handles are
 not accepted. The temporary file's permissions become the output permissions;
 replacement does not preserve the old file's mode or ownership. Destination
 directories must be trusted: anchoring a path does not protect against another
-process renaming its parent directories. These options are in the checkout and
-are absent from published 2.1.0.</p>
+process renaming its parent directories. These options were added in 2.2.0.</p>
 
 
 

@@ -1533,8 +1533,7 @@ pair-specific direct path and do not expose a separate <code>explain()</code> AP
 or <code>aggregate_values</code> and inspect the route. The terminal runs once; extra
 arguments are forwarded to it. The result contains the terminal's value and an
 immutable <a href="../../user-guide/execution-reports/">execution report</a>.
-This reporting method is available in the current source tree and has not yet
-been released on PyPI.</p>
+This reporting method was added in 2.2.0.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([(</span><span class="s2">&quot;red&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;red&quot;</span><span class="p">,</span> <span class="mi">3</span><span class="p">)])</span><span class="o">.</span><span class="n">pairs</span><span class="p">()</span><span class="o">.</span><span class="n">run_with_report</span><span class="p">(</span><span class="s2">&quot;group_values&quot;</span><span class="p">)</span>

@@ -617,10 +617,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#source-changes-since-210" class="md-nav__link">
+  <a href="#included-in-22" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Source changes since 2.1.0
+        Included in 2.2
       
     </span>
   </a>
@@ -1204,10 +1204,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#source-changes-since-210" class="md-nav__link">
+  <a href="#included-in-22" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Source changes since 2.1.0
+        Included in 2.2
       
     </span>
   </a>
@@ -1279,11 +1279,10 @@
 
 
 <h1 id="v2-status-and-roadmap">v2 status and roadmap</h1>
-<p>The <code>2.1.0</code> release contains the features listed below. Source changes were reviewed
-against the local checkout on 2026-09-30 and are not included in that release.
-No release date has been assigned to the remaining candidates.</p>
-<p>The current source adds correctness repairs, guarded native paths, and more
-traceable reports. Some repairs increased Python execution costs; the local
+<p>Version <code>2.2.0</code> adds explicit sorted operations, atomic file exports, correctness
+repairs, guarded native paths, and more traceable reports. No release date has
+been assigned to the remaining candidates.</p>
+<p>Some repairs increased Python execution costs; the local
 measurements below include those regressions.</p>
 <h2 id="included-in-20">Included in 2.0</h2>
 <ul>
@@ -1345,11 +1344,18 @@ remain obvious in API documentation and plan explanations.</p>
 <p>Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
 packages remain optional dependencies.</p>
-<h2 id="source-changes-since-210">Source changes since 2.1.0</h2>
-<p>These changes are in the current checkout and are listed in
-<a href="https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md">Unreleased</a>.
-They require a newer build than the published 2.1.0 wheel.</p>
+<h2 id="included-in-22">Included in 2.2</h2>
+<p>These changes require version 2.2.0 or newer. See the
+<a href="https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md">changelog</a>
+for the full list.</p>
 <ul>
+<li><strong>Sorted operations:</strong> <code>Rows.group_by_sorted()</code>, <code>Flow.merge_sorted()</code>, and
+  bounded <code>Rows.join_sorted()</code> run in Python and validate consumed keys. They
+  preserve encounter order and enforce the sorted join's row budgets.</li>
+<li><strong>File exports:</strong> Flow CSV/JSON/JSONL and Rows CSV/JSONL sinks offer optional
+  atomic path output and no-overwrite publication after cleanup. Flow adds JSONL
+  output for arbitrary values; Rows JSONL accepts a custom serializer. CSV header
+  protection and stable relative output paths retain their documented defaults.</li>
 <li><strong>Errors and cleanup:</strong> uniqueness and grouping propagate user hash/equality
   errors. Arrow reports owned-resource close failures. Parquet's
   <code>if_exists="error"</code> publishes without overwriting a concurrent creator.</li>
@@ -1372,6 +1378,9 @@ They require a newer build than the published 2.1.0 wheel.</p>
   missing or mismatched evidence. CLI listing does not execute benchmark tasks.</li>
 <li><strong>Batch bounds:</strong> sync and async batching normalize integer bounds before
   consumption. CSV and SQLite retain conversion failures on the first record.</li>
+<li><strong>SQLite and ranges:</strong> SQLite destination names follow ASCII case rules and
+  duplicate column aliases fail before inserts. Sync and async flows support
+  exact counts and bounded reads of ranges longer than <code>sys.maxsize</code>.</li>
 </ul>
 <p>The browser playground runs a pure-Python wheel built from this checkout.
 Its status shows the package version, commit, working-tree state, and engine.
@@ -1471,16 +1480,6 @@ they are not process RSS. CPython 3.12.3 also exposed a tracing race reproduced
 without fpstreams. Subsequent allocation comparisons used patched 3.12.13 on
 both sides. See <a href="https://github.com/python/cpython/issues/128679">CPython #128679</a>.</p>
 <h2 id="next-development-steps">Next development steps</h2>
-<p>The current source includes explicit <code>Rows.group_by_sorted()</code>, <code>Flow.merge_sorted()</code>,
-and bounded <code>Rows.join_sorted()</code> operations. They run in Python and check ordering
-while consuming the input. Sorted joins use the first right record's column list
-and enforce row budgets. These APIs are absent from published 2.1.0.</p>
-<p>Flow CSV/JSON/JSONL and Rows CSV/JSONL sinks offer optional atomic path output.
-Publication waits for writer and source cleanup, with a no-overwrite mode.
-Flow gains JSONL output for arbitrary values; Rows JSONL gains a custom serializer.
-Spreadsheet-safe CSV now protects headers as well as values, and relative Parquet
-destinations stay fixed if a callback changes directories. These changes are
-unreleased.</p>
 <p>Further performance work starts with profiles of the current source. Computed
 columns, projection, and collector loops still carry costs from correctness
 repairs. Keep live callbacks, row snapshots, object lifetimes, and the failed

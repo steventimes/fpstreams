@@ -520,7 +520,7 @@
   <a href="#choosing-explicit-sorted-operations-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choosing explicit sorted operations (current source)
+        Choosing explicit sorted operations
       
     </span>
   </a>
@@ -1197,7 +1197,7 @@
   <a href="#choosing-explicit-sorted-operations-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choosing explicit sorted operations (current source)
+        Choosing explicit sorted operations
       
     </span>
   </a>
@@ -1324,12 +1324,12 @@ remain Python programs.</p>
 </code></pre></div>
 <p>Use an expression when it expresses the operation clearly. Keep a callable for
 logic that would become harder to read as an expression.</p>
-<p>In the unreleased working tree, <code>auto</code> can run a two-key count/sum group in Rust
+<p>Since 2.2.0, <code>auto</code> can run a two-key count/sum group in Rust
 when its input is a retained list or tuple of exact tuple rows. Both keys and
 the selected values must be plain signed 64-bit integers. The result keeps the
 first key objects and encounter order, and the sum may exceed 64 bits. Iterator
 sources, custom types, changed collector functions, and unsupported layouts use
-the Python collector program. This path is not in the published 2.1.0 wheel.</p>
+the Python collector program.</p>
 <h2 id="keep-pipelines-fused">Keep pipelines fused</h2>
 <p>Each terminal opens and executes a plan. Keep adjacent transformations in one
 pipeline when they form one result:</p>
@@ -1357,7 +1357,7 @@ or interaction with an API that requires a container.</p>
 <p>Calling separate scalar terminals on a one-shot source is invalid, and on a
 reiterable source scans it repeatedly. Use a combined aggregation when the
 statistics belong to one pass.</p>
-<p><code>frequencies()</code> retains one count per distinct key. The unreleased implementation
+<p><code>frequencies()</code> retains one count per distinct key. Since 2.2.0, the implementation
 can count exact builtin values in retained lists and tuples in Rust, including
 strings, bytes, floats, large integers, booleans, and <code>None</code>.</p>
 <p>It keeps the first key object and encounter order. Custom keys are counted in
@@ -1373,7 +1373,7 @@ previous path.</p>
 <p>When the Rust extension is unavailable, <code>auto</code> counts in Python. The current
 source tree also fixes this fallback for lists and tuples in the browser wheel.</p>
 <p>For a NumPy source, a key callback may change values that have not been read yet.
-The unreleased <code>auto</code> implementation preserves those edits by reading between
+The <code>auto</code> implementation preserves those edits by reading between
 key calls on sequential linear pipelines. This route can cost more than copying
 the array up front. Its execution report records <code>python_frequency</code>.</p>
 <h2 id="records-and-tabular-data">Records and tabular data</h2>
@@ -1597,11 +1597,10 @@ lack the required fields need to be regenerated.</p>
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The <a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
-<h2 id="choosing-explicit-sorted-operations-current-source">Choosing explicit sorted operations (current source)</h2>
+<h2 id="choosing-explicit-sorted-operations-current-source">Choosing explicit sorted operations</h2>
 <p>Use <code>group_by_sorted()</code>, <code>merge_sorted()</code>, and <code>join_sorted()</code> when inputs are
 already in ascending key order and you need incremental output or bounded state.
-They do not sort the input for you. They currently execute in Python and are
-absent from published 2.1.0.</p>
+They do not sort the input for you. Added in 2.2.0, they execute in Python.</p>
 <p>The sorted group holds current collector state and one lookahead row; collectors
 that retain values can still grow. A merge holds one lookahead per input. A join
 holds the current right key group and lookahead, with finite row budgets. Rows

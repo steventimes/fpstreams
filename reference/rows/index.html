@@ -1460,7 +1460,7 @@
   <a href="#grouping-sorted-records-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Grouping sorted records (current source)
+        Grouping sorted records
       
     </span>
   </a>
@@ -1471,7 +1471,7 @@
   <a href="#joining-sorted-records-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Joining sorted records (current source)
+        Joining sorted records
       
     </span>
   </a>
@@ -2508,7 +2508,7 @@
   <a href="#grouping-sorted-records-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Grouping sorted records (current source)
+        Grouping sorted records
       
     </span>
   </a>
@@ -2519,7 +2519,7 @@
   <a href="#joining-sorted-records-current-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Joining sorted records (current source)
+        Joining sorted records
       
     </span>
   </a>
@@ -2697,10 +2697,10 @@ only when unlimited records from a trusted local file are intentional.</p>
 spreadsheet. A string whose first non-whitespace character is <code>=</code>, <code>+</code>, <code>-</code>, or
 <code>@</code> receives a leading single quote. Non-string values are unchanged. CSV and
 JSON/JSONL writers return <code>None</code>.</p>
-<p>In the current source, this protection also covers header cells without changing
+<p>Since 2.2.0, this protection also covers header cells without changing
 the keys used to read records. <code>to_csv()</code> and <code>to_jsonl()</code> also accept <code>atomic=True</code>
 and <code>if_exists="error"</code>; a failed export preserves the old file. <code>to_jsonl(default=...)</code>
-can serialize dates or other custom values. These additions are unreleased; see
+can serialize dates or other custom values. These additions were introduced in 2.2.0; see
 <a href="../io/#atomic-flow-file-output-current-source">file output</a> for examples and limits.</p>
 <p>Rows <code>to_csv()</code> is the record writer and exposes <code>fieldnames</code>, <code>include_header</code>,
 and <code>extrasaction</code>. Flow <code>to_csv()</code> instead writes arbitrary items and accepts an
@@ -8222,7 +8222,7 @@ Aggregators that collect values can retain additional state. Spill is unsupporte
 Inner/left output columns come from the first right record; later new
 columns fail. Ordering and cardinality checks cover consumed rows only.
 Finite row budgets raise BufferLimitError before the excess output.
-This current-source API is not included in published 2.1.0.</p>
+Added in version 2.2.0.</p>
 
 
     </div>
@@ -8531,14 +8531,14 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
 </div><h2 id="groupedrows">GroupedRows</h2>
 <p><code>group_by()</code> returns a grouped plan. Call <code>aggregate()</code> directly, or call
 <code>spill()</code> first to use partitioned temporary storage.</p>
-<p>In the unreleased version, Python grouping uses the current selector if a source
+<p>Since 2.2.0, Python grouping uses the current selector if a source
 or callback changes its code or closure. The previous field shortcut could keep
 using an old field and merge distinct groups.</p>
 <p>Grouping with one collector also uses the current <code>step</code> after truth-testing a
 custom <code>done</code> result. Temporary states and unused keys are released at the same
 points as in the general collector path, including when the output iterator is
 closed early. Release callbacks can therefore affect the next row or finisher as
-expected. These fixes are not included in <code>2.1.0</code>.</p>
+expected.</p>
 
 
 <div class="doc doc-object doc-class">
@@ -8785,7 +8785,7 @@ expected. These fixes are not included in <code>2.1.0</code>.</p>
 
     </div>
 
-</div><h2 id="grouping-sorted-records-current-source">Grouping sorted records (current source)</h2>
+</div><h2 id="grouping-sorted-records-current-source">Grouping sorted records</h2>
 <p><code>group_by_sorted()</code> uses the same key names and <code>.aggregate()</code> API as <code>group_by()</code>.
 The input must already be ascending by exact builtin int, str, bytes, or nonempty
 flat tuple keys with a fixed type at each position. It checks consumed rows and
@@ -8799,10 +8799,10 @@ one row of lookahead; an unordered or unsupported key raises during consumption.
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">)</span>
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">}]</span>
 </code></pre></div>
-<p>This source-only API is absent from the published 2.1.0 wheel. It buffers no
+<p>Added in 2.2.0. It buffers no
 complete group. Aggregators that collect values still grow their own state;
 <code>.spill()</code> raises <code>ValueError</code> in this mode. Ordinary <code>group_by()</code> is unchanged.</p>
-<h2 id="joining-sorted-records-current-source">Joining sorted records (current source)</h2>
+<h2 id="joining-sorted-records-current-source">Joining sorted records</h2>
 <p><code>join_sorted(other, on=..., how="inner", validate="m:m")</code> accepts ascending
 inputs and supports inner, left, semi, and anti joins. It preserves left order
 and the order of matching right records. Both sides must contain records,
@@ -8818,7 +8818,7 @@ Later records may omit columns but cannot introduce new ones. This restriction
 allows output to start without scanning the entire right source. Suffixes and
 shared key columns follow ordinary <code>join()</code> rules. Validation supports m:m,
 m:1, 1:m, and 1:1, and checks the consumed prefix. Neither method infers sorting
-or changes ordinary <code>join()</code> execution. This API is absent from published 2.1.0.</p>
+or changes ordinary <code>join()</code> execution. This API was added in 2.2.0.</p>
 <p>Like <code>merge_sorted()</code>, a sorted join acquires source iterators in its composed
 branches before pulling rows. It rejects iterator aliases and closes acquired
 iterators once; source-opening callbacks therefore run before key callbacks.</p>
