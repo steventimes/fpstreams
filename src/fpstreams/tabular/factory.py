@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, BinaryIO, TextIO, TypeAlias, TypeVar, overload
-
-if TYPE_CHECKING:
-    import polars as pl
+from typing import Any, BinaryIO, TextIO, TypeAlias, TypeVar, overload
 
 from ..expressions.selectors import Selector
-from ..streams.flow import Flow, _ArrowCStreamProvider, _DataFrameProvider
+from ..streams.flow import Flow, _ArrowCStreamProvider, _DataFrameProvider, _SeriesSource
 from .rows import Rows
 from .sql import (
     ConnectionFactory,
@@ -26,20 +23,15 @@ class _RowsFactory:
 
     __slots__ = ()
 
-    if TYPE_CHECKING:
-
-        @overload
-        def __call__(
-            self,
-            source: pl.Series,
-        ) -> Rows[Any]: ...
-
     @overload
     def __call__(self, source: Flow[T]) -> Rows[T]: ...
 
     @overload
     # Rows also exports Arrow, but the compatibility factory must preserve its record type.
     def __call__(self, source: Rows[T]) -> Rows[T]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def __call__(self, source: _SeriesSource[T]) -> Rows[T]: ...
 
     @overload
     def __call__(

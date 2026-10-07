@@ -734,7 +734,7 @@ def test_release_smoke_checks_native_and_python_backends() -> None:
     assert json.loads(result.stdout) == {
         "native": [1, 3, 5, 7],
         "python": [1, 3, 5, 7],
-        "version": "2.2.0",
+        "version": fpstreams.__version__,
         "orders": [
             {"region": "eu", "orders": 2, "revenue": 48},
             {"region": "us", "orders": 1, "revenue": 20},
@@ -745,9 +745,10 @@ def test_release_smoke_checks_native_and_python_backends() -> None:
 
 def test_release_version_markers_are_consistent() -> None:
     script = ROOT / "scripts" / "check_release_version.py"
+    version = fpstreams.__version__
 
     valid = subprocess.run(
-        [sys.executable, str(script), "--expected", "v2.2.0"],
+        [sys.executable, str(script), "--expected", f"v{version}"],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -762,7 +763,7 @@ def test_release_version_markers_are_consistent() -> None:
     )
 
     assert valid.returncode == 0, valid.stderr
-    assert valid.stdout.strip() == "2.2.0"
+    assert valid.stdout.strip() == version
     assert invalid.returncode != 0
     assert "expected 9.9.9" in invalid.stderr
 

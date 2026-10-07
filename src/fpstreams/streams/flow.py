@@ -10,7 +10,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
 from typing import (
-    TYPE_CHECKING,
     Any,
     Generic,
     Literal,
@@ -21,9 +20,6 @@ from typing import (
 )
 
 import fpstreams
-
-if TYPE_CHECKING:
-    import polars as pl
 
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.explain import PlanExplanation, explain_query
@@ -93,6 +89,17 @@ C = TypeVar("C")
 U = TypeVar("U")
 _MISSING = object()
 _TABULAR_MODULE_ROOTS = frozenset(("pandas", "polars", "pyarrow"))
+
+
+class _SeriesSource(Protocol[T]):
+    """Describe a one-dimensional series without importing an optional adapter."""
+
+    @property
+    def shape(self) -> tuple[int]: ...
+
+    def __iter__(self) -> Iterator[T]: ...
+
+    def to_list(self) -> list[T]: ...
 
 
 class _ArrowCStreamProvider(Protocol):
@@ -1365,14 +1372,6 @@ class _FlowFactory:
                 return self.from_dataframe(source)
         return None
 
-    if TYPE_CHECKING:
-
-        @overload
-        def __call__(
-            self,
-            source: pl.Series,
-        ) -> Flow[Any]: ...
-
     @overload
     def __call__(self, source: Flow[T]) -> Flow[T]: ...
 
@@ -1380,6 +1379,9 @@ class _FlowFactory:
     # Rows also exports Arrow, but runtime dispatch deliberately preserves its existing Flow[T]
     # before considering structural tabular protocols.
     def __call__(self, source: fpstreams.Rows[T]) -> Flow[T]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def __call__(self, source: _SeriesSource[T]) -> Flow[T]: ...
 
     @overload
     def __call__(

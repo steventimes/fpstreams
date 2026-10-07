@@ -5,6 +5,22 @@ including changed defaults.
 
 ## Unreleased
 
+## 2.2.1 - 2026-10-07
+
+### Fixed
+
+- Editors resolve the public `rows` factory directly, preserving method completion,
+  parameter hints, and docstrings instead of treating it as the record module.
+- Core `flow()` and `rows()` factories retain iterable element types without optional
+  data adapters installed. A shared series protocol preserves one-dimensional series
+  typing without importing Polars into the core type declarations.
+
+### Changed
+
+- Automatic planning skips NumPy buffer probes for exact list, tuple, and range
+  sources. Python identity terminal plans on exact containers also avoid a temporary
+  decision object, reducing the fixed cost of small workloads.
+
 ## 2.2.0 - 2026-10-06
 
 ### Added

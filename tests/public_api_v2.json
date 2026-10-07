@@ -12202,7 +12202,7 @@
       "properties": [],
       "signature": null,
       "target": "builtins.str",
-      "value": "2.2.0"
+      "value": "2.2.1"
     },
     "aflow": {
       "callables": {
@@ -13811,5 +13811,5 @@
     "rows",
     "when"
   ],
-  "version": "2.2.0"
+  "version": "2.2.1"
 }

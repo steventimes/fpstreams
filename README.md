@@ -32,6 +32,16 @@ python -m pip install "fpstreams[data]"    # NumPy, pandas, and PyArrow
 python -m pip install "fpstreams[polars]"  # Polars and PyArrow
 ~~~
 
+## Editor support
+
+fpstreams includes inline type annotations, docstrings, and the `py.typed` marker.
+Select the Python interpreter where fpstreams is installed in your editor to get
+method completions, parameter hints, and hover documentation.
+
+Version 2.2.1 fixes `rows` factory completion and keeps core
+iterable element types when optional data adapters are absent. For example,
+`flow([1, 2, 3])` is inferred as `Flow[int]`.
+
 ## Quick start
 
 This example filters paid orders, groups them by region, and reports both the

@@ -35,6 +35,45 @@ GROUPS = ROOT / "benchmarks" / "groups.toml"
 BROWSER_WHEEL_BUILDER = ROOT / "scripts" / "build_browser_wheel.py"
 
 
+def test_core_factory_types_without_optional_adapters(tmp_path: Path, monkeypatch) -> None:
+    """A missing optional adapter must not erase a core iterable's element type."""
+    if importlib.util.find_spec("mypy") is None:
+        pytest.skip("core typing regression requires mypy from the type quality group")
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "from typing import assert_type\n"
+        "from fpstreams import Flow, Rows, flow, rows\n"
+        "assert_type(flow([1, 2]), Flow[int])\n"
+        'assert_type(rows([{"value": 1}]), Rows[dict[str, int]])\n'
+        "assert_type(flow(flow([1, 2])), Flow[int])\n"
+        'assert_type(rows(rows([{"value": 1}])), Rows[dict[str, int]])\n',
+        encoding="utf-8",
+    )
+    configuration = tmp_path / "mypy.ini"
+    configuration.write_text("[mypy]\n", encoding="utf-8")
+    monkeypatch.setenv("MYPYPATH", str(ROOT / "src"))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mypy",
+            "--config-file",
+            str(configuration),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--no-site-packages",
+            "--ignore-missing-imports",
+            "--follow-imports=silent",
+            "--no-incremental",
+            str(consumer),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_rust_sources_declare_free_threading_without_unsafe_shared_state() -> None:
     """Audit every Rust module, including nested relational implementations."""
     sources = tuple((ROOT / "rust" / "src").rglob("*.rs"))
@@ -4137,7 +4176,9 @@ def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path, mo
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     head = "0123456789abcdef0123456789abcdef01234567"
-    monkeypatch.setenv("GITHUB_REF_NAME", "v2.2.0")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    tag = f"v{project['version']}"
+    monkeypatch.setenv("GITHUB_REF_NAME", tag)
     monkeypatch.setenv("GITHUB_REF_TYPE", "tag")
     monkeypatch.setenv("GITHUB_SHA", head)
     monkeypatch.setattr(
@@ -4148,7 +4189,11 @@ def test_browser_wheel_manifest_labels_a_matching_release_tag(tmp_path: Path, mo
     assert manifest["build"] == "release"
     assert manifest["dirty"] is False
     assert manifest["commit"] == head
-    assert manifest["ref"] == "v2.2.0"
+    assert manifest["ref"] == tag
+    monkeypatch.setenv("GITHUB_REF_NAME", "v0.0.0")
+    builder.build_browser_wheel(tmp_path)
+    mismatched = json.loads((tmp_path / "browser-wheel.json").read_text(encoding="utf-8"))
+    assert mismatched["build"] == "development"
 
 
 def test_browser_wheel_has_standard_pure_python_contents(tmp_path: Path) -> None:

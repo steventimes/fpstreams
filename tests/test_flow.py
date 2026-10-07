@@ -6264,6 +6264,59 @@ def test_forced_native_minmax_handles_range_empty_and_strict_conversion() -> Non
         )
 
 
+@pytest.mark.parametrize("dtype,kind", [("int64", "i64"), ("float64", "f64")])
+def test_native_buffer_detection_preserves_custom_descriptor_types(dtype: str, kind: str) -> None:
+    """Class equality cannot hide a numeric column or skip its live shape validation."""
+    from fpstreams.planning.native import _numpy_buffer_kind
+    from fpstreams.tabular.numpy import NumpyColumnSource
+
+    np = pytest.importorskip("numpy")
+
+    class ColumnMeta(type):
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("buffer detection must not compare custom classes")
+
+    class Column(NumpyColumnSource, metaclass=ColumnMeta):
+        pass
+
+    values = np.arange(8, dtype=dtype)
+    descriptor = Column(values)
+    assert _numpy_buffer_kind(descriptor) == kind
+
+    values.resize((2, 4), refcheck=False)
+    with pytest.raises(ValueError, match="retained array changed to 2 dimensions"):
+        _numpy_buffer_kind(descriptor)
+
+
+@pytest.mark.parametrize("terminal", ["first", "any", "all"])
+def test_identity_container_planning_keeps_numpy_short_circuit_precedence(terminal: str) -> None:
+    """A descriptor reporting a list class still needs the buffer streaming decision."""
+    from fpstreams.planning import native
+    from fpstreams.planning.logical import Pipeline
+    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.tabular.numpy import NumpyColumnSource
+
+    np = pytest.importorskip("numpy")
+
+    class Column(NumpyColumnSource):
+        @property
+        def __class__(self) -> type:
+            return list
+
+    def unopened():
+        raise AssertionError("engine selection must not open the source")
+
+    source = Source(unopened, SourceCapabilities(True, 8), Column(np.arange(8, dtype="int64")))
+    decision = native.select_terminal_engine(Pipeline(source, ()), terminal)
+
+    assert decision.engine == "python"
+    assert decision.reason == (
+        "NumPy buffer first stays in Python to preserve short-circuiting"
+        if terminal == "first"
+        else "NumPy buffer any/all stays in Python to preserve short-circuiting"
+    )
+
+
 @pytest.mark.parametrize("source", [list(range(32)), tuple(range(32))])
 @pytest.mark.parametrize("terminal", ["list", "count", "sum"])
 def test_identity_container_auto_terminals_avoid_native_copy(

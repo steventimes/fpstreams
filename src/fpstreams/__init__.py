@@ -39,9 +39,10 @@ from .streams import (
     flow,
     pairs,
 )
-from .tabular import Rows, SpillLimits, rows
+from .tabular import Rows, SpillLimits
+from .tabular.factory import rows as rows
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 Stream = Flow
 ParallelStream = Flow
 

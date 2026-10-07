@@ -7,6 +7,10 @@ been assigned to the remaining candidates.
 Some repairs increased Python execution costs; the local
 measurements below include those regressions.
 
+Version `2.2.1` fixes editor resolution of the `rows`
+factory and core factory type inference in environments without optional data
+adapters. Runtime entry points and pipeline behavior retain the v2 contract.
+
 ## Included in 2.0
 
 - Domain-oriented package layout with small compatibility facades.
@@ -154,6 +158,25 @@ both sides. See [CPython #128679](https://github.com/python/cpython/issues/12867
 
 ## Next development steps
 
+The current preparation round uses the released 2.2.0 source as its local
+benchmark reference. It covers 1,000, 10,000, and 100,000 inputs, plus callback
+mutation, bounded streaming, and async backpressure experiments. Raw reports and
+current-source profiles are kept in `artifacts/next-version-review-20261007/`.
+These measurements do not create a CI historical baseline.
+
+The released-source reference exposed failures in the existing same-run limits
+for 1,000-item automatic list and tuple sums. The two larger input sizes passed,
+and the 100,000-item holdout passed comparison with three reference runs.
+
+A follow-up using saved and optimized 2.2.1 source reduced the median time for
+those small sums by 8.8% for lists and 7.7% for tuples. Each side used three runs
+with seven samples per scenario. The optimized auto/Python ratios were
+1.05–1.07, within the original 1.1 limit. All nine timing and allocation
+comparisons at 1,000, 10,000, and 100,000 inputs passed. Tracked peak allocation
+was unchanged for these sums. Raw reports, including failed intermediate
+candidates, are in `artifacts/auto-sum-optimization-20261007/`; this remains local
+evidence rather than a CI historical baseline.
+
 Further performance work starts with profiles of the current source. Computed
 columns, projection, and collector loops still carry costs from correctness
 repairs. Keep live callbacks, row snapshots, object lifetimes, and the failed
@@ -169,6 +192,12 @@ local reports cannot establish that result.
 Additional diagnostics, bounded statistics, and extension hooks remain candidates
 without a release date. Free-threaded CPython 3.14t stays experimental and
 non-blocking; standard CPython 3.11–3.14 is the supported release matrix.
+
+Process-map experiments should separate submission granularity, worker startup,
+callback computation, and early-exit cleanup. Repeated file scans also need a
+compute-only comparison against explicitly prepared inputs. Any batching or
+executor-reuse candidate must preserve source bounds, callback errors, ordering,
+and resource ownership.
 
 ## Scope boundaries
 

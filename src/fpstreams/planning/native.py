@@ -44,6 +44,9 @@ _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 _AUTO_THRESHOLD = 8
 _AUTO_IDENTITY_I64_SUM_THRESHOLD = 65_536
+_AUTO_IDENTITY_CONTAINER_REASON = (
+    "identity list/tuple stays in Python below its direct native crossover"
+)
 _COPY_SHORT_CIRCUIT_LIMIT = 1_024
 _COPY_SHORT_CIRCUIT_RATIO = 64
 _ALLOCATING_I64_MAP_ROOTS = frozenset({"add", "sub", "mul", "floordiv", "neg"})
@@ -108,61 +111,65 @@ def validate_terminal(terminal: str) -> TerminalName:
 
 
 def _terminal_metadata(
-    decision: EngineDecision,
+    decision: EngineDecision | None,
     plan: Pipeline,
     terminal: TerminalName,
     *,
     source_is_container: bool | None = None,
+    python_reason: str = "",
 ) -> EngineDecision:
-    """Attach worst-case data movement and complexity metadata to a terminal decision."""
+    """Attach terminal metadata, constructing a Python-only decision in one allocation."""
     source = plan.source.native_data
-    crosses_native_boundary = decision.engine in {"native", "hybrid"}
+    engine = "python" if decision is None else decision.engine
+    program = None if decision is None else decision.program
+    crosses_native_boundary = engine in {"native", "hybrid"}
     if source_is_container is None:
         source_is_container = (
             isinstance(source, (list, tuple)) or _numpy_buffer_kind(source) is not None
         )
     metadata_count = terminal == "count" and exact_count(plan) is not None
     direct_i64_container_sum = (
-        decision.engine == "native"
-        and decision.program is not None
-        and decision.program.kind == "i64"
-        and not decision.program.stages
+        engine == "native"
+        and program is not None
+        and program.kind == "i64"
+        and not program.stages
         and type(source) in (list, tuple)
         and terminal == "sum"
     )
     direct_exact_container_mean = (
-        decision.engine == "native"
-        and decision.program is not None
-        and not decision.program.stages
+        engine == "native"
+        and program is not None
+        and not program.stages
         and type(source) in (list, tuple)
         and terminal == "mean"
         and _exact_number_mean_available()
     )
     range_metadata = (
-        decision.engine == "native"
+        engine == "native"
         and type(source) is range
         and not plan.operations
         and terminal in {"sum", "min", "max", "last"}
     )
     probe_path = (
-        decision.engine == "native"
-        and decision.program is not None
+        engine == "native"
+        and program is not None
         and type(source) in (list, tuple)
         and terminal in {"first", "any", "all"}
-        and _container_probe_available(decision.program.kind)
+        and _container_probe_available(program.kind)
     )
+    decision_reason = python_reason if decision is None else decision.reason
     reason = (
-        f"{decision.reason}; bounded probe; only undecided fallback bulk-copies"
+        f"{decision_reason}; bounded probe; only undecided fallback bulk-copies"
         if probe_path
-        else f"{decision.reason}; retained range terminal uses constant-time metadata"
+        else f"{decision_reason}; retained range terminal uses constant-time metadata"
         if range_metadata
-        else decision.reason
+        else decision_reason
     )
     return EngineDecision(
-        decision.engine,
+        engine,
         reason,
-        decision.program,
-        decision.native_operation_count,
+        program,
+        0 if decision is None else decision.native_operation_count,
         # An undecided bounded probe restarts the legacy bulk adapter, and numeric
         # buffer kernels may snapshot exporters before detached computation.
         scans_source=crosses_native_boundary and source_is_container and not metadata_count,
@@ -173,7 +180,7 @@ def _terminal_metadata(
             and not direct_i64_container_sum
             and not direct_exact_container_mean
         ),
-        materializes=terminal == "list" or decision.engine == "hybrid",
+        materializes=terminal == "list" or engine == "hybrid",
         complexity=(
             "O(1)"
             if metadata_count or range_metadata
@@ -234,6 +241,9 @@ def _numpy_f64_buffer(source: object) -> Any | None:
 
 def _numpy_buffer_kind(source: object) -> NativeKind | None:
     """Return the exact native representation exposed by an explicit NumPy column."""
+    source_type = type(source)
+    if source_type is list or source_type is tuple or source_type is range:
+        return None
     if _numpy_i64_buffer(source) is not None:
         return "i64"
     if _numpy_f64_buffer(source) is not None:
@@ -783,6 +793,45 @@ def _buffer_short_circuit_decision(
     return None
 
 
+def _identity_source_terminal_context(
+    plan: Pipeline,
+    terminal: TerminalName,
+    source: object,
+) -> tuple[EngineDecision | None, NativeKind | None, bool]:
+    """Choose exact-container routes before considering numeric buffer metadata."""
+    source_type = type(source)
+    if (
+        plan.engine == "auto"
+        and (source_type is list or source_type is tuple)
+        and terminal not in {"mean", "statistics"}
+        and not _auto_direct_i64_sum_candidate(source, terminal)
+    ):
+        return (
+            _terminal_metadata(
+                None,
+                plan,
+                terminal,
+                source_is_container=True,
+                python_reason=_AUTO_IDENTITY_CONTAINER_REASON,
+            ),
+            None,
+            True,
+        )
+    buffer_kind = _numpy_buffer_kind(source)
+    source_is_container = isinstance(source, (list, tuple)) or buffer_kind is not None
+    return (
+        _forced_native_exact_count_decision(
+            plan,
+            terminal,
+            source,
+            buffer_kind,
+            source_is_container=source_is_container,
+        ),
+        buffer_kind,
+        source_is_container,
+    )
+
+
 def _select_operation_terminal_engine(
     plan: Pipeline,
     terminal: TerminalName,
@@ -850,17 +899,11 @@ def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDeci
     source = plan.source.native_data
     if retained_one_shot := _retained_one_shot_decision(plan):
         return _terminal_metadata(retained_one_shot, plan, terminal)
-    buffer_kind = _numpy_buffer_kind(source)
-    source_is_container = isinstance(source, (list, tuple)) or buffer_kind is not None
-    metadata_count = _forced_native_exact_count_decision(
-        plan,
-        terminal,
-        source,
-        buffer_kind,
-        source_is_container=source_is_container,
+    source_decision, buffer_kind, source_is_container = _identity_source_terminal_context(
+        plan, terminal, source
     )
-    if metadata_count is not None:
-        return metadata_count
+    if source_decision is not None:
+        return source_decision
     if buffered := _buffer_short_circuit_decision(plan, terminal, buffer_kind):
         return _terminal_metadata(
             buffered,
@@ -875,10 +918,7 @@ def select_terminal_engine(plan: Pipeline, terminal: TerminalName) -> EngineDeci
         and not _auto_direct_i64_sum_candidate(source, terminal)
     ):
         return _terminal_metadata(
-            EngineDecision(
-                "python",
-                "identity list/tuple stays in Python below its direct native crossover",
-            ),
+            EngineDecision("python", _AUTO_IDENTITY_CONTAINER_REASON),
             plan,
             terminal,
             source_is_container=source_is_container,

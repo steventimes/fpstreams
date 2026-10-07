@@ -46,6 +46,11 @@ The same values can carry different execution guarantees.
 | NumPy array | Reiterable | Live dimensions, dtype, and strides | Use compatible numeric kernels; read scalar values lazily on Python paths |
 | dataframe protocol provider | Adapter-defined | Column metadata | Conversion is deferred where the protocol permits it |
 
+Version 2.2.1 reduces planning overhead for untransformed exact
+lists and tuples. Small sums keep their Python route, and compatible integer
+containers use the same native crossover as before. Terminal timings still
+include planning, so a direct Python operation can be faster for small inputs.
+
 Do not convert an iterator to a list merely to make it “optimizable” unless the
 workload already requires full materialization. The copy can dominate the
 operation and changes memory behavior.
