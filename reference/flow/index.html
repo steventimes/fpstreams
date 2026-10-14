@@ -265,6 +265,8 @@
       
         
       
+        
+      
     
     
     
@@ -353,6 +355,34 @@
     
   
     Performance and execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/analytics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming analytics recipes
   
 
     
@@ -1427,6 +1457,17 @@
     <span class="md-ellipsis">
       
         chunk
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Flow.map_batches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        map_batches
       
     </span>
   </a>
@@ -3053,6 +3094,17 @@
     <span class="md-ellipsis">
       
         chunk
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Flow.map_batches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        map_batches
       
     </span>
   </a>
@@ -7710,7 +7762,8 @@ apply to this map.</p>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">backend</span><span class="p">:</span> <span class="n">ParallelBackend</span> <span class="o">=</span> <span class="s2">&quot;thread&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">ordered</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">buffer</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">R</span><span class="p">]</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">executor</span><span class="p">:</span> <span class="n">Executor</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">R</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7756,7 +7809,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Worker count, or <code>None</code> to use the executor's default.</p>
+                <p>Worker count for a new pool. Must be <code>None</code> with an external executor.</p>
               </div>
             </td>
             <td>
@@ -7772,7 +7825,8 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Run callbacks in a <code>thread</code> or spawn-based <code>process</code> pool.</p>
+                <p><code>thread</code> or spawn-based <code>process</code> when creating a pool. An external
+executor determines its own backend.</p>
               </div>
             </td>
             <td>
@@ -7804,7 +7858,26 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Maximum submitted futures retained before the pipeline waits for a result.</p>
+                <p>Maximum submitted futures retained before the pipeline waits for a result.
+Defaults to twice <code>workers</code>, or twice the CPU count when <code>workers</code> is <code>None</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>executor</code>
+            </td>
+            <td>
+                  <code><span title="concurrent.futures.Executor">Executor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional caller-owned executor to reuse. The query cancels queued work
+and waits for its own running callbacks before closing. It does not shut down
+this executor or wait for unrelated tasks.</p>
               </div>
             </td>
             <td>
@@ -7853,7 +7926,18 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If workers or buffer is less than one, or backend is unsupported.</p>
+                <p>If workers or buffer is less than one, backend is unsupported, or
+workers and executor are both provided.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If executor is not a <code>concurrent.futures.Executor</code>.</p>
               </div>
             </td>
           </tr>
@@ -7879,7 +7963,8 @@ creating unbounded work.</p>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">backend</span><span class="p">:</span> <span class="n">ParallelBackend</span> <span class="o">=</span> <span class="s2">&quot;process&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ordered</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">buffer</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">executor</span><span class="p">:</span> <span class="n">Executor</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7907,7 +7992,7 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Worker count, or <code>None</code> to use the executor's default.</p>
+                <p>Worker count for a new pool. Must be <code>None</code> with an external executor.</p>
               </div>
             </td>
             <td>
@@ -7923,7 +8008,8 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Run callbacks in a <code>thread</code> or spawn-based <code>process</code> pool.</p>
+                <p><code>thread</code> or spawn-based <code>process</code> when creating a pool. An external
+executor determines its own backend.</p>
               </div>
             </td>
             <td>
@@ -7955,7 +8041,25 @@ creating unbounded work.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Maximum in-flight results retained by each subsequent map.</p>
+                <p>Maximum in-flight results retained by each subsequent map.
+Defaults to twice <code>workers</code>, or twice the CPU count when <code>workers</code> is <code>None</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>executor</code>
+            </td>
+            <td>
+                  <code><span title="concurrent.futures.Executor">Executor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional caller-owned executor borrowed by following maps. Each map
+cleans up only its own tasks and leaves the executor open.</p>
               </div>
             </td>
             <td>
@@ -9300,6 +9404,137 @@ items bounded.</p>
             <td>
               <div class="doc-md-description">
                 <p>A flow of non-overlapping tuples, including a final shorter tuple when needed.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If size does not support the integer index protocol.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If size is less than one.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Flow.map_batches" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">map_batches</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">map_batches</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="o">...</span><span class="p">]],</span> <span class="n">R</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">size</span><span class="p">:</span> <span class="nb">int</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">R</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Apply function to consecutive tuples and emit one result per batch.</p>
+<p>Batches are created lazily and include a shorter final batch. Empty input does not
+call <code>function</code>. Each returned value stays intact; use <code>flat_map(iter)</code> explicitly when
+the callback returns iterables whose contents should be emitted.</p>
+<p>Parallel defaults configured with <code>parallel()</code> apply to the batch callback. Its
+buffer counts batches, so at most <code>size * buffer</code> input items are submitted at once.
+Process callbacks and their inputs and results must be picklable.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>function</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="tuple">tuple</span>[<span title="fpstreams.streams.flow.T">T</span>, ...]], <span title="fpstreams.streams.flow.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Receives a tuple of up to <code>size</code> consecutive items and returns one result.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>size</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum number of input items passed to each callback.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A lazy flow of batch results, using the current map parallel settings.</p>
               </div>
             </td>
           </tr>

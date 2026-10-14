@@ -265,6 +265,8 @@
       
         
       
+        
+      
     
     
     
@@ -353,6 +355,34 @@
     
   
     Performance and execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/analytics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming analytics recipes
   
 
     
@@ -523,6 +553,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#230-candidate-checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3.0 candidate checkpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#included-in-20" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -632,6 +673,61 @@
     <span class="md-ellipsis">
       
         Local measurements and retained regressions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#221-preparation-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2.1 preparation and verification
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#computed-column-setup-after-221" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Computed-column setup after 2.2.1
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection-setup-after-computed-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Projection setup after computed columns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#analytics-feedback-and-the-next-feature-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analytics feedback and the next feature scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consumer-feedback-and-engine-references-reviewed-on-october-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consumer feedback and engine references reviewed on October 12
       
     </span>
   </a>
@@ -1110,6 +1206,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#230-candidate-checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3.0 candidate checkpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#included-in-20" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1226,6 +1333,61 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#221-preparation-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2.1 preparation and verification
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#computed-column-setup-after-221" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Computed-column setup after 2.2.1
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection-setup-after-computed-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Projection setup after computed columns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#analytics-feedback-and-the-next-feature-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analytics feedback and the next feature scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consumer-feedback-and-engine-references-reviewed-on-october-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consumer feedback and engine references reviewed on October 12
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-development-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1279,14 +1441,87 @@
 
 
 <h1 id="v2-status-and-roadmap">v2 status and roadmap</h1>
-<p>Version <code>2.2.0</code> adds explicit sorted operations, atomic file exports, correctness
-repairs, guarded native paths, and more traceable reports. No release date has
-been assigned to the remaining candidates.</p>
-<p>Some repairs increased Python execution costs; the local
-measurements below include those regressions.</p>
-<p>Version <code>2.2.1</code> fixes editor resolution of the <code>rows</code>
-factory and core factory type inference in environments without optional data
-adapters. Runtime entry points and pipeline behavior retain the v2 contract.</p>
+<p><a href="https://github.com/steventimes/fpstreams/releases/tag/v2.2.1">Version 2.2.1</a> was
+released on October 7, 2026. It fixes editor resolution of the <code>rows</code> factory and
+core factory type inference without optional data adapters, and reduces planning
+overhead for identity terminals. It builds on 2.2.0's sorted operations, atomic
+file exports, correctness repairs, and execution reports.</p>
+<p>The 2.3.0 candidate starts from <code>v2.2.1</code>. Measured optimizations now
+reduce setup cost for supported single-stage Python computed-column and
+projection queries. Sorted single-key grouping also avoids per-row wrapper
+allocation, and parallel maps can use a caller-owned executor. Single-collector
+grouping and further submission experiments remain candidates below. Publication
+date is still unset. Some earlier
+correctness repairs increased execution costs, and their recorded regressions
+remain in the measurement history.</p>
+<h2 id="230-candidate-checkpoint">2.3.0 candidate checkpoint</h2>
+<p>The local 2.3.0 candidate adds caller-owned mapping executors and explicit
+<code>map_batches()</code> on synchronous and asynchronous flows. Each batch produces one
+result; async callbacks keep the resolved return type, including mixed immediate
+and awaitable returns. Batch sizes, buffering, ordering, pool ownership, and
+cooperative cancellation remain explicit.</p>
+<p>The final Python source passed 4,307 tests with 10 skips and 88.05%
+branch coverage. Planning, native execution, spilling, and async execution passed
+their existing focus thresholds. All 211 Rust tests, lint, formatting, typing,
+version checks, and the offline dependency-lock check passed. Native and browser
+wheels and the source archive built successfully. Clean-install API checks passed
+on standard CPython 3.11 through 3.14. Installed-wheel checks also executed selected
+consumer code from the football, coursework, and data-quality projects using
+synthetic inputs; they establish compatibility, not application acceleration.</p>
+<p>Fresh measurements used CPython 3.12.13, CPU 2, one thread per numeric library,
+hash seed 0, release native builds, and the existing allocation tracing. The full
+integer/float engine matrix passed at 1,000, 10,000, and 100,000 items with 210
+records per size. Three fresh processes per side and size, seven samples per
+process, and alternating invocation order supplied each comparison. All nine
+time/allocation checks passed against the prior development reference, and all
+nine passed in a separate comparison with released 2.2.1 Python source.</p>
+<p>The separate release comparison measured these reductions in median elapsed time:</p>
+<table>
+<thead>
+<tr>
+<th>Query shape</th>
+<th>1,000 rows</th>
+<th>10,000 rows</th>
+<th>100,000 rows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dict field <code>with_columns()</code></td>
+<td>32.9%</td>
+<td>5.1%</td>
+<td>Within noise</td>
+</tr>
+<tr>
+<td>Mapping field <code>with_columns()</code></td>
+<td>14.4%</td>
+<td>Within noise</td>
+<td>Within noise</td>
+</tr>
+<tr>
+<td>Sorted grouping, integer/string/bytes key</td>
+<td>19.5%–20.7%</td>
+<td>19.9%–20.8%</td>
+<td>18.2%–18.5%</td>
+</tr>
+<tr>
+<td>Sorted grouping, one tuple-valued key</td>
+<td>11.9%</td>
+<td>13.4%</td>
+<td>12.7%</td>
+</tr>
+</tbody>
+</table>
+<p>These results describe local workloads and exclude import and input preparation.
+Mapping projection showed no measured benefit, and larger computed-column inputs
+did not establish a throughput gain. Tracked allocation peaks exclude prepared
+inputs and native heaps; they are not RSS measurements.</p>
+<p>Evidence is retained in the local <code>artifacts/rc230-20261012/</code> directory. The final
+source/native fingerprints are <code>2665994d</code>/<code>916e3454</code>, and the shared matrix is
+<code>e464e9d0</code>. The development reference is <code>7e9609bd</code>/<code>cc8bd052</code>; the separate release
+reference is Python <code>a6f8cdc8</code> with locally built release native <code>cc8bd052</code>. Those
+reports retain their original identities and are not merged into one baseline.
+Candidate validation does not publish the package or establish remote CI results.</p>
 <h2 id="included-in-20">Included in 2.0</h2>
 <ul>
 <li>Domain-oriented package layout with small compatibility facades.</li>
@@ -1476,17 +1711,23 @@ with the package or used as a CI historical baseline.</p>
 <td>Allocation history affected faults and system CPU time; environment fields do not reconstruct that history</td>
 <td><code>artifacts/allocator-evidence-review/</code>, <code>artifacts/allocator-stability-review/</code></td>
 </tr>
+<tr>
+<td>Identity terminal planning in 2.2.1</td>
+<td>At 1,000 items, automatic list sums took 8.8% less time and tuple sums 7.7% less; tracked allocation peaks were unchanged</td>
+<td><code>artifacts/auto-sum-optimization-20261007/</code></td>
+</tr>
 </tbody>
 </table>
 <p>Allocation measurements exclude prepared inputs and untracked native allocations;
 they are not process RSS. CPython 3.12.3 also exposed a tracing race reproduced
 without fpstreams. Subsequent allocation comparisons used patched 3.12.13 on
 both sides. See <a href="https://github.com/python/cpython/issues/128679">CPython #128679</a>.</p>
-<h2 id="next-development-steps">Next development steps</h2>
-<p>The current preparation round uses the released 2.2.0 source as its local
-benchmark reference. It covers 1,000, 10,000, and 100,000 inputs, plus callback
+<h2 id="221-preparation-and-verification">2.2.1 preparation and verification</h2>
+<p>The completed 2.2.1 preparation round used released 2.2.0 source as its local
+benchmark reference. It covered 1,000, 10,000, and 100,000 inputs, plus callback
 mutation, bounded streaming, and async backpressure experiments. Raw reports and
-current-source profiles are kept in <code>artifacts/next-version-review-20261007/</code>.
+the diagnostic profiles of that 2.2.0 source are kept in
+<code>artifacts/next-version-review-20261007/</code>.
 These measurements do not create a CI historical baseline.</p>
 <p>The released-source reference exposed failures in the existing same-run limits
 for 1,000-item automatic list and tuple sums. The two larger input sizes passed,
@@ -1499,12 +1740,284 @@ comparisons at 1,000, 10,000, and 100,000 inputs passed. Tracked peak allocation
 was unchanged for these sums. Raw reports, including failed intermediate
 candidates, are in <code>artifacts/auto-sum-optimization-20261007/</code>; this remains local
 evidence rather than a CI historical baseline.</p>
-<p>Further performance work starts with profiles of the current source. Computed
-columns, projection, and collector loops still carry costs from correctness
-repairs. Keep live callbacks, row snapshots, object lifetimes, and the failed
-comparisons in the acceptance criteria. The discarded map-based projection and
-executor-forwarding shortcuts must not be restored merely because outputs compare
-equal on static data.</p>
+<p>The released commit passed 4,217 Python tests with 10 skips, the branch-coverage
+gates, and 211 Rust tests. Release builds produced eight native wheels and one
+sdist; their hashes match the GitHub attachments, SHA-256 manifest, and PyPI
+files. CPython 3.11–3.14 installations from PyPI passed native, Python, async,
+and missing-extra smoke checks. This packaging evidence is separate from the
+local performance measurements. Local publication records are in
+<code>artifacts/release-2.2.1-20261007/</code>.</p>
+<h2 id="computed-column-setup-after-221">Computed-column setup after 2.2.1</h2>
+<p>Fresh comparisons used released 2.2.1 source as the reference. Both sides ran on
+CPython 3.12.13 with the same release native extension, CPU 2 affinity, single
+thread settings, hash seed, and default allocator settings. Each side had three
+independent process runs at each size, with seven samples per implementation.</p>
+<p>The matrix now has 16 computed-column cases, including dict and MappingProxyType
+inputs, five- and 32-column records, explicit Python controls, and a NumPy control.
+Five projection cases ran alongside them. All nine timing and tracked-allocation
+comparisons passed the existing regression limits. Verified aggregates from that
+selection are retained; its original temporary report files are unavailable.
+A fresh retained selection of the three dict selector cases also passed all nine
+comparisons. The table below uses those retained reports.</p>
+<p>For supported single-stage queries, execution now binds each query's callback
+and fallback to a shared loop template. This removes repeated AST construction
+and compilation. The original enrichment function still copies each row before
+reading its live selector list against the original input. Multi-stage loops use
+the existing compiler.</p>
+<table>
+<thead>
+<tr>
+<th>Prepared dict rows</th>
+<th>Field selector time saved</th>
+<th>Row expression time saved</th>
+<th>Callable time saved</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1,000</td>
+<td>33.6%</td>
+<td>21.9%</td>
+<td>33.3%</td>
+</tr>
+<tr>
+<td>10,000</td>
+<td>6.9%</td>
+<td>3.3%</td>
+<td>5.8%</td>
+</tr>
+<tr>
+<td>100,000</td>
+<td>Within 2%</td>
+<td>Within 2%</td>
+<td>Within 2%</td>
+</tr>
+</tbody>
+</table>
+<p>These results concern fixed setup cost in the measured workloads. At 100,000
+rows, differences stayed within 2% across the computed-column cases. The
+<code>dict.copy()</code> replacement probe was also within that range and was discarded.
+Tracked allocation excludes prepared inputs and native heaps; it does not
+establish a process RSS reduction. Retained subset reports and the verified
+expanded-matrix and rejected-probe summaries are kept in
+<code>artifacts/with-columns-optimization-20261008/</code>, outside the package and
+reviewed CI baselines.</p>
+<h2 id="projection-setup-after-computed-columns">Projection setup after computed columns</h2>
+<p>This round used the already verified computed-column source as its reference.
+Both sides used the same release native extension and an expanded matrix of
+11 projection cases plus three computed-column controls. At 1,000, 10,000, and
+100,000 rows, each side ran three independent processes with seven samples per
+implementation. All 18 reports are retained, and all nine timing/allocation
+comparisons passed the existing gates.</p>
+<p>A supported single-stage Python projection now reuses the existing row-map loop
+template. The projection function still snapshots its positional and named
+selectors for each row. Input-row retention, selector lifetime, callback errors,
+and source cleanup keep their original boundaries. Small direct-field inputs
+keep the existing route below 2,048 rows; the crossover was not changed.</p>
+<table>
+<thead>
+<tr>
+<th>Prepared rows</th>
+<th>Python field projection time saved</th>
+<th>Expression projection time saved</th>
+<th>Callable projection time saved</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1,000</td>
+<td>Within 2%</td>
+<td>22.2%</td>
+<td>33.0%</td>
+</tr>
+<tr>
+<td>10,000</td>
+<td>6.0%</td>
+<td>2.1%</td>
+<td>5.4%</td>
+</tr>
+<tr>
+<td>100,000</td>
+<td>Within 2%</td>
+<td>Within 2%</td>
+<td>Within 2%</td>
+</tr>
+</tbody>
+</table>
+<p>The forced-Python wide-input case saved 5.6% at 10,000 rows. NumPy/native and
+Arrow controls are separate from these Python results. This change reduces
+setup work; it does not establish higher throughput on large inputs or lower
+process RSS. Raw profiles, reports, and comparison baselines are in
+<code>artifacts/select-optimization-20261008/</code>. These are local measurements, not
+reviewed CI historical baselines.</p>
+<h2 id="analytics-feedback-and-the-next-feature-scope">Analytics feedback and the next feature scope</h2>
+<p>The soccer analytics usage report supplied prepared-list team aggregation,
+generator-fed cohort counts, and weighted player metrics as concrete workloads.
+The benchmark now includes those input shapes, and Mapping projection controls
+use the same prepared Mapping rows on both sides. Small first-query costs and
+warmed throughput are recorded separately; normalization, deduplication, sorting,
+and database reads retain their own costs.</p>
+<p>The current sorted single-key candidate reduced complete-consumption time by
+18%–20% for integer keys, 18%–20% for string/bytes keys, and 11%–13% for tuple-valued
+keys across 1,000, 10,000, and 100,000 prepared rows. All nine time/allocation
+comparisons passed. Merge and join controls stayed within about 1%. This result
+concerns explicitly sorted grouping, not the report's ordinary hash groups.
+See <a href="../user-guide/performance/#choosing-explicit-sorted-operations-current-source">sorted measurements</a>.</p>
+<p>Caller-owned executors provide explicit pool reuse while preserving query-owned
+cancellation and cleanup. A small synthetic spawn diagnostic separated startup,
+first output, submission, computation, and shutdown; it supports checking startup
+cost separately, without establishing a general batching or application speedup.
+The existing <code>chunk().map_parallel().flat_map()</code> composition remains available.
+The new <a href="../user-guide/analytics/">analytics recipes</a> use existing v2 interfaces.</p>
+<p>The final source passed 4,288 Python tests with 10 skips and all branch-coverage,
+lint, formatting, and strict-type gates. Each of the three engine matrices
+contained 210 passing records. Installed wheel checks passed on standard
+CPython 3.11–3.14, and the browser wheel and strict documentation build passed.
+A local consumer check called the application's actual team, player-weighted,
+and cohort functions with synthetic inputs through saved release, preceding
+development, and current wheels. All three agreed with the application's Python
+reference; application source and the supplied report were unchanged. This is
+functional compatibility evidence, not a full application run or speed claim.
+Records are retained in <code>artifacts/next-api-feedback-20261011/</code>.</p>
+<h2 id="consumer-feedback-and-engine-references-reviewed-on-october-12">Consumer feedback and engine references reviewed on October 12</h2>
+<p>Two additional consumer reports narrow the next experiments. The COSI116
+consumer used installed 2.2.1 for a read-only SQLite query, six numeric sums
+plus a count, and a validated one-to-one adjacent-season join. Its saved
+32,574-row/60-group and 10,670-pair results agree with independent references;
+the report contains no formal performance comparison. A quality-worker report
+uses pinned 2.1.0 with a file iterator and one stateful <code>reduce</code> callback. Its
+Decimal checks, deadlines and original-row evidence require sequential callback
+semantics. These are consumer reports, not acceptance of this development tree.</p>
+<p>The proprietary references are
+<a href="https://docs.databricks.com/aws/en/spark/faq">Photon</a> and the separately licensed
+q core behind <a href="https://github.com/KxSystems/pykx/blob/main/LICENSE.txt">PyKX</a>.
+<a href="https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt">Pathway</a> has public
+BSL source, while <a href="https://github.com/bodo-ai/Bodo/blob/main/LICENSE">Bodo</a> has an
+Apache-2.0 core; neither belongs in an opaque-binary comparison by default.
+REA inspected the official PyKX 4.1.0 wheel's archive and public wrapper API.
+The recorded package digest matches PyPI. Native engine algorithms and vendor
+runtime performance were not established by that inspection.</p>
+<p><a href="https://www.databricks.com/de/wp-content/uploads/2022/07/Photon-A-Fast-Query-Engine-for-Lakehouse-Systems.pdf">Photon's published architecture</a>
+motivates measuring conversion boundaries before adding kernels. Compare an
+existing Arrow/NumPy pipeline with its first Python-row boundary, recording
+planning, reading, conversion and aggregation separately. Preserve a supported
+columnar segment where safe; one-shot sources must keep their streaming fallback.
+<a href="https://code.kx.com/pykx/4.1/user-guide/fundamentals/nulls_and_infinities.html">PyKX's null-conversion documentation</a>
+also shows why skipping validation can change the values a user receives.
+Compare nullable and null-free numeric inputs with the original semantics.</p>
+<p>The next profiles should cover multiple collectors and generic stateful reduce
+before revisiting the existing single-collector path. Use prepared dict/Mapping
+records, fresh generators, and filtered SQLite inputs as separate workloads.
+Retain strict join cardinality, empty-input behavior, callback errors, source
+cleanup, and the original-row evidence order. A cheap integer-reduce probe alone
+cannot establish a bottleneck in a Decimal-based worker.</p>
+<p>Current <code>run_with_report("reduce", function, initial)</code> already observes a reduce
+terminal. Investigate optional, bounded stage/transition diagnostics only when
+the outer report leaves a concrete profiling question unanswered. Consumption
+counts and cancellation accounting would need their own definitions; they are
+not existing report fields. Keep ordinary execution free of mandatory per-row
+instrumentation and source replay. These are proposed experiments, not measured
+fpstreams improvements or new release APIs.</p>
+<h2 id="next-development-steps">Next development steps</h2>
+<p>Start each further candidate from the verified development source after the
+measured changes above. Use released <code>v2.2.1</code> for a separate comparison of the
+combined changes. Build a release extension for each side and collect fresh
+reports with the same harness, interpreter, dependencies, runtime settings,
+input shapes, and invocation order. Reproduce any cost suggested by older
+profiles on the chosen reference before changing code.
+Verify <code>FPSTREAMS_BENCHMARK_SOURCE</code> and the imported source fingerprint when
+selecting the reference checkout.</p>
+<table>
+<thead>
+<tr>
+<th>Order</th>
+<th>Candidate</th>
+<th>Initial comparison</th>
+<th>Required behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Python <code>with_columns()</code> setup, measured</td>
+<td>Fields, row expressions, and callables; dict and Mapping rows; narrow and wide records</td>
+<td>Read the live selector list and evaluate against the original row; preserve row copies, callback order, and errors</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Python <code>select()</code> setup, measured</td>
+<td>Fields, aliases, and expressions at different widths</td>
+<td>Keep a selector snapshot for each row, output field order, object lifetimes, and source cleanup</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Sorted single-key grouping, measured</td>
+<td>Integer, string, bytes, and tuple-valued keys; repeated and skewed groups; early and full consumption</td>
+<td>Keep key validation, live callbacks, lookahead bounds, and close order</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Caller-owned executor, implemented</td>
+<td>Repeated thread and spawn-process queries, early exit, callback failures, and interrupted waits</td>
+<td>Cancel and await only query-owned work; preserve pool ownership and source cleanup</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Multi-collector grouping and data conversion</td>
+<td>Team/season totals and weighted metrics; prepared dict/Mapping, generators, SQLite and retained Arrow inputs</td>
+<td>Keep dynamic getters, collector step/finish functions, valid denominators, key identity and release order</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Generic stateful reduce</td>
+<td>File iterators with Decimal checks, deadlines and bounded evidence; cheap callback controls</td>
+<td>Keep one pass, left-to-right callbacks, empty-input behavior, exception identity and source cleanup</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Existing single-collector path</td>
+<td>Low and high key cardinality; dict, Mapping and callable selectors</td>
+<td>Profile the existing implementation before changing its hash/equality calls or state lifetimes</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Optional execution diagnostics</td>
+<td>Actual nested backend transitions and reduce observations</td>
+<td>Preserve the current outer report; bound retained metadata and avoid replay or default per-row instrumentation</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Further process submission and source reuse</td>
+<td>One item versus explicit batches under the same spawn policy; prepared inputs versus repeated file scans</td>
+<td>Keep bounded submission, ordering, callback errors, source ownership, and early-exit cleanup</td>
+</tr>
+</tbody>
+</table>
+<p>Start row comparisons at 1,000, 10,000, and 100,000 items with the existing
+<code>rows.with_columns*</code>, <code>rows.select*</code>, <code>rows.group_sum.python.*</code>, and <code>sorted.*</code>
+competitive cases. Include callable/Python controls and inspect the observed
+route before attributing a gain to the Python loop. For small planning changes, also check
+short inputs and either side of the existing native crossover.</p>
+<p>Each candidate needs a fresh profile, a correctness-checked reference, one
+implementation change, and repeated timing/allocation comparisons. Add negative
+regressions to the closest existing test module and then run the complete
+Python checks for an execution change. Extend the matrix before measurement
+when a required shape is missing, and regenerate both sides after any matrix
+change. Keep a candidate only when it beats run-to-run noise and passes the
+existing gates. Preserve failures and revert neutral candidates.</p>
+<p>Single-collector grouping already has a dedicated execution path. Profile that
+path before changing it; do not add another implementation. The soccer report's
+team and weighted summaries use multiple collectors, so their measured cost
+cannot establish a single-collector bottleneck.</p>
+<p>The earlier COSI107 assignment comparison using pre-change and optimized 2.2.1
+wheels took about 168.48 and 168.00 seconds in one run each, with equal outputs.
+That establishes application compatibility, not an application speedup.
+Process experiments must separate submission cost, startup, callback computation,
+first-result latency, and final cleanup. Begin with the existing explicit
+<code>chunk(...).map_parallel(...).flat_map(...)</code> composition. Batch size changes the
+unit of buffering and can change callback/error timing; compare those semantics
+when evaluating a new batching option or executor reuse. Deferred sources keep
+their reopening behavior, and the process backend keeps <code>spawn</code>.</p>
 <p>There is no reviewed <code>benchmarks/baselines/engine-v2.json</code> in this checkout.
 The scheduled workflow's median of three same-checkout runs checks consistency
 within a revision. A historical baseline needs review in its target CI runner;
@@ -1512,11 +2025,20 @@ local reports cannot establish that result.</p>
 <p>Additional diagnostics, bounded statistics, and extension hooks remain candidates
 without a release date. Free-threaded CPython 3.14t stays experimental and
 non-blocking; standard CPython 3.11–3.14 is the supported release matrix.</p>
-<p>Process-map experiments should separate submission granularity, worker startup,
-callback computation, and early-exit cleanup. Repeated file scans also need a
-compute-only comparison against explicitly prepared inputs. Any batching or
-executor-reuse candidate must preserve source bounds, callback errors, ordering,
-and resource ownership.</p>
+<p>Compatible fixes and internal performance changes are maintenance candidates.
+The caller-owned executor and explicit <code>map_batches()</code> additions belong in the
+2.3.0 development scope. Batch mapping uses the existing chunk and map paths,
+produces one result per batch, and supports sync pool defaults or async map
+controls. Replay interfaces remain proposals; <code>reduce_by()</code> already covers
+per-key state reduction. Dependency updates also get their own
+lock, adapter, and platform validation; they are reviewed separately from
+performance changes. Local package version markers are now 2.3.0 for candidate
+validation; the published stable release remains 2.2.1. Candidate checks and
+release publication are separate steps.</p>
+<p>The map-based projection, executor-forwarding removal, <code>Counter(map(...))</code>,
+frozen-field inlining, and shared Mapping-check shortcuts remain rejected.
+Their failed callback, lifetime, or timing cases are regression requirements
+for future work.</p>
 <h2 id="scope-boundaries">Scope boundaries</h2>
 <p>fpstreams is a local pipeline layer. It passes columnar and dataframe work to
 NumPy, pandas, Polars, or Arrow when appropriate and does not provide distributed
