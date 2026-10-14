@@ -6,7 +6,7 @@ import asyncio
 import operator
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast, overload
 
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.async_ import (
@@ -340,6 +340,28 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             )
         )
 
+    @overload
+    def map_async(
+        self,
+        function: Callable[[T], Awaitable[R]],
+        *,
+        concurrency: int = 8,
+        ordered: bool = True,
+        timeout: float | None = None,
+        buffer: int | None = None,
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def map_async(
+        self,
+        function: Callable[[T], R | Awaitable[R]],
+        *,
+        concurrency: int = 8,
+        ordered: bool = True,
+        timeout: float | None = None,
+        buffer: int | None = None,
+    ) -> AsyncFlow[R]: ...
+
     def map_async(
         self,
         function: Callable[[T], R | Awaitable[R]],
@@ -353,12 +375,14 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         Concurrency is bounded. Ordered mode delays later completed results until earlier inputs
         finish, while the buffer permits completed work to refill active mapper slots.
+        Callbacks run on the event loop. Timeout and cancellation are cooperative and cannot
+        interrupt a callback that blocks the loop.
 
         Args:
             function: Sync or async mapper called once for each source item.
             concurrency: Maximum mapper calls in flight.
             ordered: Emit in source order when true, otherwise in task-completion order.
-            timeout: Optional per-item deadline covering mapper invocation and awaiting its result.
+            timeout: Optional cooperative per-item timeout while awaiting the mapper result.
             buffer: Maximum submitted results not yet emitted, or twice ``concurrency`` by default.
 
         Returns:
@@ -378,6 +402,12 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             raise ValueError("buffer must be at least 1")
         operation = _MapAsync(function, concurrency, ordered, timeout, buffer)
         return cast(AsyncFlow[R], self._append(operation))
+
+    @overload
+    def map(self, function: Callable[[T], Awaitable[R]]) -> AsyncFlow[R]: ...
+
+    @overload
+    def map(self, function: Callable[[T], R | Awaitable[R]]) -> AsyncFlow[R]: ...
 
     def map(self, function: Callable[[T], R | Awaitable[R]]) -> AsyncFlow[R]:
         """Apply a synchronous or asynchronous function to each item in order.
@@ -911,6 +941,68 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         return cast(AsyncFlow[tuple[T, ...]], self._append(_Chunk(size)))
 
     batch = chunk
+
+    @overload
+    def map_batches(
+        self,
+        function: Callable[[tuple[T, ...]], Awaitable[R]],
+        *,
+        size: int,
+        concurrency: int = 1,
+        ordered: bool = True,
+        timeout: float | None = None,
+        buffer: int | None = None,
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def map_batches(
+        self,
+        function: Callable[[tuple[T, ...]], R | Awaitable[R]],
+        *,
+        size: int,
+        concurrency: int = 1,
+        ordered: bool = True,
+        timeout: float | None = None,
+        buffer: int | None = None,
+    ) -> AsyncFlow[R]: ...
+
+    def map_batches(
+        self,
+        function: Callable[[tuple[T, ...]], R | Awaitable[R]],
+        *,
+        size: int,
+        concurrency: int = 1,
+        ordered: bool = True,
+        timeout: float | None = None,
+        buffer: int | None = None,
+    ) -> AsyncFlow[R]:
+        """Apply a sync or async function to consecutive tuples, one result per batch.
+
+        Batches are lazy and include a shorter final batch. Empty input does not call the
+        function. Results stay intact; use `flat_map(iter)` to expand returned iterables.
+        Awaitable results are resolved before emission. Early exit cancels pending callbacks
+        and closes the source through the existing async map scheduler.
+        Callbacks run on the event loop: timeout and cancellation are cooperative and cannot
+        interrupt a callback that blocks the loop.
+
+        Args:
+            function: Receives up to `size` consecutive items and returns a result or awaitable.
+            size: Maximum input items per batch.
+            concurrency: Maximum batch callbacks in flight; one by default.
+            ordered: Emit in batch order when true, otherwise in completion order.
+            timeout: Optional cooperative per-batch timeout while awaiting the callback.
+            buffer: Maximum submitted batches not yet emitted; twice concurrency by default.
+
+        Returns:
+            A lazy async flow containing one resolved result per batch.
+
+        Raises:
+            TypeError: If size does not support the integer index protocol.
+            ValueError: If size, concurrency, buffer, or timeout is not positive.
+        """
+        return self.chunk(size).map_async(
+            function, concurrency=concurrency, ordered=ordered, timeout=timeout, buffer=buffer
+        )
 
     def window(self, size: int, *, step: int = 1) -> AsyncFlow[tuple[T, ...]]:
         """Emit sliding tuples of size with the requested step.

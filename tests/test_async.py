@@ -73,6 +73,150 @@ class _PrefetchBlockingSource:
         self.close_calls += 1
 
 
+async def test_async_map_batches_is_lazy_awaits_callbacks_and_keeps_tail_results() -> None:
+    seen = []
+    calls = []
+    closed = []
+
+    async def source():
+        try:
+            for value in range(5):
+                seen.append(value)
+                yield value
+        finally:
+            closed.append(True)
+
+    async def work(batch):
+        await asyncio.sleep(0)
+        calls.append(batch)
+        return list(batch)
+
+    query = fpstreams.aflow(source()).map_batches(work, size=2)
+    assert seen == calls == closed == []
+    assert await query.to_list() == [[0, 1], [2, 3], [4]]
+    assert calls == [(0, 1), (2, 3), (4,)]
+    assert seen == [0, 1, 2, 3, 4]
+    assert closed == [True]
+    assert await fpstreams.aflow(range(3)).map_batches(sum, size=2).to_list() == [1, 2]
+
+
+async def test_async_map_batches_does_not_call_empty_input_or_flatten_results() -> None:
+    def reject_empty(batch):
+        raise AssertionError("empty input called the batch callback")
+
+    assert await fpstreams.aflow([]).map_batches(reject_empty, size=2).to_list() == []
+    assert await fpstreams.aflow([1]).map_batches(lambda batch: None, size=2).to_list() == [None]
+    assert await fpstreams.aflow(range(3)).map_batches(list, size=2).flat_map(iter).to_list() == [
+        0,
+        1,
+        2,
+    ]
+
+
+async def test_async_map_batches_early_exit_bounds_pulls_and_cancels_other_batches() -> None:
+    started = asyncio.Event()
+    cancelled = []
+    seen = []
+    closed = []
+
+    async def source():
+        try:
+            for value in range(100):
+                seen.append(value)
+                yield value
+        finally:
+            closed.append(True)
+
+    async def work(batch):
+        if batch[0] == 0:
+            await started.wait()
+            return sum(batch)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(batch)
+            raise
+
+    query = fpstreams.aflow(source()).map_batches(work, size=2, concurrency=2, buffer=2)
+    assert await asyncio.wait_for(query.take(1).to_list(), 5) == [1]
+    assert seen == [0, 1, 2, 3]
+    assert cancelled == [(2, 3)]
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+async def test_async_map_batches_callback_failure_preserves_error_and_closes_source(ordered):
+    closed = []
+    failure = ValueError("async batch failed")
+
+    async def values():
+        try:
+            for value in range(7):
+                yield value
+        finally:
+            closed.append(True)
+
+    async def work(batch):
+        if batch[0] == 2:
+            raise failure
+        return sum(batch)
+
+    with pytest.raises(ValueError, match="async batch failed") as caught:
+        await (
+            fpstreams.aflow(values())
+            .map_batches(work, size=2, concurrency=2, buffer=2, ordered=ordered)
+            .to_list()
+        )
+    assert caught.value is failure
+    assert closed == [True]
+
+
+async def test_async_map_batches_timeout_cancels_callback_and_closes_source() -> None:
+    closed = []
+    finished = []
+
+    async def source():
+        try:
+            for value in range(3):
+                yield value
+        finally:
+            closed.append(True)
+
+    async def work(batch):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.append(batch)
+
+    with pytest.raises(TimeoutError):
+        await fpstreams.aflow(source()).map_batches(work, size=2, timeout=0.01).to_list()
+    assert finished == [(0, 1)]
+    assert closed == [True]
+
+
+def test_async_map_batches_validates_bounds_without_opening_the_source() -> None:
+    seen = []
+
+    async def source():
+        seen.append(True)
+        yield 1
+
+    query = fpstreams.aflow(source())
+    for kwargs in (
+        {"size": 0},
+        {"size": -1},
+        {"size": 2, "concurrency": 0},
+        {"size": 2, "buffer": 0},
+        {"size": 2, "timeout": 0},
+    ):
+        with pytest.raises(ValueError):
+            query.map_batches(sum, **kwargs)
+    with pytest.raises(TypeError):
+        query.map_batches(sum, size=1.5)
+    assert seen == []
+
+
 # --- Tests consolidated from test_async_api.py ---
 
 

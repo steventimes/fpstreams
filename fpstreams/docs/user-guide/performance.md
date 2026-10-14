@@ -81,6 +81,24 @@ first key objects and encounter order, and the sum may exceed 64 bits. Iterator
 sources, custom types, changed collector functions, and unsupported layouts use
 the Python collector program.
 
+## Computed-column setup in development
+
+Supported single-stage Python `with_columns()` queries now reuse a loop template
+with separate callback bindings for each execution. The selectors stay in a live
+list and receive the original row after its shallow copy is made. This development
+change reduces fixed setup cost, which matters most for smaller inputs. See the
+[local measurements](../roadmap.md#computed-column-setup-after-221) for the tested
+sizes and limits.
+
+## Projection setup in development
+
+Supported single-stage Python `select()` queries use the same loop template as
+computed columns, with separate callback bindings for each execution. Each row
+still takes its selector snapshot before running the first selector. The
+existing small direct-field route and native/Arrow routes keep their boundaries.
+See the [local projection measurements](../roadmap.md#projection-setup-after-computed-columns)
+for the measured input sizes and controls.
+
 ## Keep pipelines fused
 
 Each terminal opens and executes a plan. Keep adjacent transformations in one
@@ -250,6 +268,12 @@ selects two columns, and returns Python records. The pandas reference reads the
 same file independently. These cases measure file reading and projection;
 fixture creation and query construction are excluded.
 
+Computed-column cases separate field, row-expression, and callable selectors.
+They cover five- and 32-column records, dict and MappingProxyType inputs, and
+explicit Python controls. Every task returns a complete list of copied records;
+NumPy remains a separate control. Query and input construction are outside
+competitive timing, while terminal planning and execution are included.
+
 The join cases also start with prepared records and return complete lists.
 Twelve Python controls vary record type (dict or Mapping) and key selection
 (field or callable). They cover inner and left joins with unique right keys,
@@ -274,6 +298,13 @@ it.
 5. Keep the change only when the improvement is stable and the complexity is
    justified; revert neutral or noisy changes.
 
+Further local candidates start from the verified development source; a separate
+comparison with released `v2.2.1` checks the combined changes. Earlier profiles
+suggest collector loops and process submission, but those costs need to be
+reproduced on the chosen reference source. The
+[roadmap](../roadmap.md#next-development-steps) records the candidate order and
+the callback, lifetime, and cleanup requirements for each stage.
+
 The repository runner compares engine paths and offers a separate Python,
 NumPy, and pandas comparison suite. List the available scenarios before choosing
 what to measure:
@@ -281,6 +312,7 @@ what to measure:
 ```bash
 python benchmark.py --list-scenarios --quick --include 'fpstreams_operation/sync/*'
 python benchmark.py --competitive --list-scenarios --include 'rows.join.*'
+python benchmark.py --competitive --list-scenarios --include 'rows.with_columns*'
 ```
 
 Both suites support `--quick` and `--include` when listing. For the engine suite,
@@ -354,6 +386,14 @@ stress checks passed on CPython 3.12.13 with the same dependencies that reproduc
 the crash on 3.12.3. Record the full version and rerun both sides of a comparison
 after changing interpreters.
 
+Keep first-call startup separate from the warmed runner. Before measuring a
+candidate, stop other heavy checks and record both reference and candidate runs
+with the same filters, shapes, and process layout. Retain at least three
+independent reference runs and repeat the candidate with the existing seven-sample
+comparison setup. After a shared-loop change, include the full engine matrix and
+the unaffected reference tasks. A local comparison does not create a reviewed
+CI historical baseline.
+
 Reports with missing or invalid resource values are rejected. Schema 4 competitive
 reports did not measure allocation, so their timing results cannot establish a
 memory gain or a passed allocation threshold.
@@ -407,11 +447,163 @@ runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The [roadmap](../roadmap.md) tracks the remaining baseline work.
 
+## Caller-owned executors in development
+
+The development checkout accepts `executor=` in `map_parallel()` and
+`parallel()`. This option is not included in the published 2.2.1 package.
+An external pool can serve repeated queries without restarting its workers:
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+
+from fpstreams import flow
+
+
+def square(value):
+    return value * value
+
+
+if __name__ == "__main__":
+    with ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn")) as pool:
+        query = flow(range(100)).map_parallel(square, executor=pool, buffer=4)
+        first = query.to_list()
+        second = query.to_list()
+        assert first == second
+```
+
+The caller creates and closes the external pool. Each query cancels its own
+queued futures and waits for its own running mappers on early exit or failure.
+It leaves unrelated pool work untouched. Supplying `workers` with `executor`
+raises `ValueError`; the supplied pool determines its backend. Set `buffer`
+explicitly for the workload. Its default remains twice the CPU count when
+`workers` is omitted, without inspecting private executor attributes.
+
+`parallel(executor=pool, buffer=4)` applies the same settings to following
+maps. `sequential()` clears those defaults for subsequent maps. Existing calls
+without an external executor keep their worker/backend defaults and create
+owned pools. Reuse can reduce worker startup cost; it does not make CPU-bound
+callbacks faster by itself.
+
+## Process mapping and explicit batches
+
+Without `executor=`, `map_parallel()` creates a worker pool for each execution,
+and its process backend uses `spawn`. A supplied pool keeps the caller's start
+method. Mapping submits one source item per future. `buffer` bounds submitted
+futures, while `ordered=True` emits results in source order. Closing early
+cancels queued work and waits for running callbacks to finish, so measure both
+first-result latency and the time until the terminal returns.
+
+Process callbacks must be importable and picklable. Keep them at module scope,
+and launch a script's pipeline under an `if __name__ == "__main__"` guard.
+The following example uses the development `map_batches()` API intended for
+2.3.0. Installed 2.2.1 can use `chunk(4).map_parallel(...)` instead.
+Each batch callback receives a tuple and emits one result. Expand iterable
+results explicitly with `flat_map(iter)`:
+
+```python
+from fpstreams import flow
+
+
+def square_batch(batch):
+    return tuple(value * value for value in batch)
+
+
+if __name__ == "__main__":
+    result = (
+        flow(range(17))
+        .parallel(backend="process", workers=2, buffer=4)
+        .map_batches(square_batch, size=4)
+        .flat_map(iter)
+        .to_list()
+    )
+    assert result == [value * value for value in range(17)]
+```
+
+With batch mapping, `buffer` counts batches, each holding up to `size` original
+items. A batch callback can process items beyond the first result a downstream
+consumer needs. It can also fail before returning earlier results from that
+batch. Use batches only when that execution unit fits the application;
+it does not preserve all the timing boundaries of item-wise mapping.
+
+Compare item-wise and batched work under the same worker count, spawn policy,
+and input. Match the maximum submitted original-item budget and record the
+future count separately: batches of four with `buffer=4` hold up to 16 original
+items, so the item-wise control needs `buffer=16`. Include cheap, medium-cost,
+and expensive callbacks, full consumption, early exit, and callback failure.
+Record pool startup, warmed throughput, first-result latency, and final cleanup
+separately when evaluating executor reuse or batch mapping. The new method
+composes the existing chunk and map operations; it introduces no automatic
+batch-size selection or separate scheduling engine.
+
+Async batch mapping also accepts synchronous and asynchronous callbacks. It
+defaults to one call in flight. Explicit concurrency changes the unit of work
+to a batch. `timeout` is cooperative: callbacks run on the event loop, so a
+callback that blocks that loop cannot be interrupted by timeout or cancellation.
+Use asynchronous I/O in async callbacks:
+
+```python
+import asyncio
+from fpstreams import aflow
+
+
+async def total_batch(batch):
+    await asyncio.sleep(0)
+    return sum(batch)
+
+
+async def summarize():
+    result = await (
+        aflow(range(7))
+        .map_batches(total_batch, size=3, concurrency=2, buffer=2)
+        .to_list()
+    )
+    assert result == [3, 12, 6]
+
+
+if __name__ == "__main__":
+    asyncio.run(summarize())
+```
+
+Both forms include a shorter final batch and leave callback results intact.
+Empty sources do not call the mapper. Early exit can skip some submitted
+batches; callbacks already running in a sync pool finish before query cleanup,
+while async callbacks are cancelled and awaited.
+
+For `flow.defer(factory)`, each terminal calls the factory again. When repeated
+file reads dominate, compare a file-backed pipeline with an explicitly prepared
+input as separate workloads. Keep the input's freshness and memory requirements
+visible; automatic replay or materialization would change the source contract.
+
 ## Choosing explicit sorted operations {#choosing-explicit-sorted-operations-current-source}
 
 Use `group_by_sorted()`, `merge_sorted()`, and `join_sorted()` when inputs are
 already in ascending key order and you need incremental output or bounded state.
 They do not sort the input for you. Added in 2.2.0, they execute in Python.
+
+The development checkout avoids the selector generator and wrapper tuple for
+one-key grouping. The selected key still retains its identity, callbacks remain
+live, and type/order validation and lookahead are unchanged. A tuple-valued
+single key uses this route; grouping by multiple selectors keeps the existing
+path. Callback `StopIteration` retains its `RuntimeError` wrapper and cause.
+
+Local October 11 comparisons used CPython 3.12.13, the same release native
+extension, CPU 2, and single-thread settings. Each side ran three independent
+processes at each size, with seven samples per implementation. Nine comparisons
+passed the existing time and Python-allocation limits.
+
+| Prepared rows | Integer key time saved | String key time saved | Bytes key time saved | Tuple-valued key time saved |
+| --- | --- | --- | --- | --- |
+| 1,000 | 20.0% | 19.5% | 19.4% | 10.8% |
+| 10,000 | 19.2% | 18.5% | 20.2% | 13.1% |
+| 100,000 | 18.0% | 18.3% | 18.6% | 12.4% |
+
+These are complete-consumption sorted-group measurements against the preceding
+development implementation. Merge and join controls stayed within about 1%.
+They do not establish an advantage over ordinary hash grouping or an application
+speedup. Prepared inputs and native allocations are excluded from Python
+allocation tracing; the measurements are not RSS or a reviewed CI baseline.
+Raw reports and comparisons are in `artifacts/next-api-feedback-20261011/`.
 
 The sorted group holds current collector state and one lookahead row; collectors
 that retain values can still grow. A merge holds one lookahead per input. A join
@@ -443,7 +635,7 @@ raw local reports and worker summaries are under
 `artifacts/next-releases/20260929T210456Z/D03/`; generated reports are ignored and
 are not published as a CI baseline.
 
-The competitive runner includes 36 `sorted.*` cases for full consumption, first
+The competitive runner includes 54 `sorted.*` cases for full consumption, first
 output, and stopping after 16 outputs. It validates complete ordered values
 before timing, including full-consumption tasks whose timed terminal is `count()`.
 For larger benchmark sizes, join row budgets explicitly scale to cover the

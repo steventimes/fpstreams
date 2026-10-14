@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Literal
@@ -22,6 +23,7 @@ class ParallelSettings:
     backend: ParallelBackend
     ordered: bool
     buffer: int
+    executor: Executor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,7 @@ class ParallelMapOp:
     ordered: bool
     buffer: int
     name: str = "map_parallel"
+    executor: Executor | None = None
 
 
 @dataclass(frozen=True, slots=True)

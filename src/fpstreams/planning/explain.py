@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,17 @@ from .semantics import AsyncTerminalName
 from .sync import FilterOp, MapOp, Operation, ParallelMapOp, TapOp
 
 _FUSABLE = (MapOp, FilterOp, TapOp)
+
+
+def _parallel_backend(operation: ParallelMapOp) -> str:
+    """Describe the executor actually used, including caller-owned pools."""
+    if operation.executor is None:
+        return operation.backend
+    if isinstance(operation.executor, ThreadPoolExecutor):
+        return "thread"
+    if isinstance(operation.executor, ProcessPoolExecutor):
+        return "process"
+    return "executor"
 
 
 def _python_stages(operations: tuple[Operation, ...]) -> list[dict[str, Any]]:
@@ -49,7 +61,9 @@ def _python_stages(operations: tuple[Operation, ...]) -> list[dict[str, Any]]:
             stages.append(
                 {
                     "engine": (
-                        operation.backend if isinstance(operation, ParallelMapOp) else "python"
+                        _parallel_backend(operation)
+                        if isinstance(operation, ParallelMapOp)
+                        else "python"
                     ),
                     "operations": [operation.name],
                     "fused": False,

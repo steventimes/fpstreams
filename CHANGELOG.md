@@ -3,7 +3,36 @@
 This file records user-visible and compatibility-relevant changes in fpstreams 2,
 including changed defaults.
 
-## Unreleased
+## 2.3.0 (candidate)
+
+### Fixed
+
+- Async callback return types resolve correctly for `AsyncFlow.map()`,
+  `map_async()`, and `map_batches()`. Mixed immediate and awaitable returns
+  retain the resolved element type.
+
+### Changed
+
+- Supported single-stage Python `with_columns()` and `select()` queries reuse a
+  loop template with separate callback bindings for each execution, reducing
+  fixed setup cost while retaining computed-column live selectors and projection
+  snapshots for each row.
+- Explicit sorted grouping with one key avoids a temporary selector generator
+  and wrapper tuple per row while preserving live callbacks, key validation,
+  lookahead, and callback error behavior.
+
+### Added
+
+- `Flow.map_batches(function, size=...)` and `AsyncFlow.map_batches(...)` call a
+  mapper once per tuple batch, including a shorter final batch. Each call emits
+  one result. Sync batches inherit `parallel()` settings; async batches support
+  concurrency, ordering, per-batch timeouts, and bounded buffering.
+- `Flow.map_parallel()` and `Flow.parallel()` accept a caller-owned `executor`.
+  Queries cancel their queued work and wait for their own running mappers while
+  leaving the shared pool open. Existing worker/backend defaults remain in place
+  when no executor is supplied.
+- Streaming analytics examples show generator input, valid weighted denominators,
+  parameterized SQLite selection, and atomic writes across multiple batches.
 
 ## 2.2.1 - 2026-10-07
 

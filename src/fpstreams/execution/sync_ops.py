@@ -8,9 +8,10 @@ up those local resources themselves.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import (
     FIRST_COMPLETED,
+    Executor,
     Future,
     ProcessPoolExecutor,
     ThreadPoolExecutor,
@@ -86,29 +87,30 @@ def _map_parallel(iterator: Iterator[Any], operation: ParallelMapOp) -> Iterator
     At most buffer futures remain queued. Ordered mode awaits futures in submission
     order; unordered mode yields completed sets as they become available. Callback
     failures propagate through Future.result, and early exit cancels queued work
-    before waiting for executor shutdown.
+    before waiting for this map's running callbacks. Only an owned pool is shut down.
     """
-    executor = (
-        ThreadPoolExecutor(max_workers=operation.workers)
-        if operation.backend == "thread"
-        else ProcessPoolExecutor(
-            max_workers=operation.workers,
-            mp_context=get_context("spawn"),
+    executor = operation.executor
+    owned = executor is None
+    if executor is None:
+        executor = (
+            ThreadPoolExecutor(max_workers=operation.workers)
+            if operation.backend == "thread"
+            else ProcessPoolExecutor(
+                max_workers=operation.workers,
+                mp_context=get_context("spawn"),
+            )
         )
-    )
     if operation.ordered:
         pending: deque[Future[Any]] = deque()
         try:
             for item in iterator:
                 pending.append(executor.submit(operation.function, item))
                 if len(pending) >= operation.buffer:
-                    yield pending.popleft().result()
+                    yield _pop_parallel_result(pending)
             while pending:
-                yield pending.popleft().result()
+                yield _pop_parallel_result(pending)
         finally:
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=True, cancel_futures=True)
+            _close_parallel_work(executor, pending, owned=owned)
         return
 
     pending_set: set[Future[Any]] = set()
@@ -124,9 +126,30 @@ def _map_parallel(iterator: Iterator[Any], operation: ParallelMapOp) -> Iterator
             for future in done:
                 yield future.result()
     finally:
-        for future in pending_set:
-            future.cancel()
+        _close_parallel_work(executor, pending_set, owned=owned)
+
+
+def _pop_parallel_result(pending: deque[Future[Any]]) -> Any:
+    """Keep the awaited future registered until its result settles."""
+    result = pending[0].result()
+    pending.popleft()
+    return result
+
+
+def _close_parallel_work(
+    executor: Executor, futures: Iterable[Future[Any]], *, owned: bool
+) -> None:
+    """Cancel this map's queued work and wait without taking ownership of a borrowed pool."""
+    pending = tuple(futures)
+    for future in pending:
+        future.cancel()
+    if owned:
         executor.shutdown(wait=True, cancel_futures=True)
+        return
+    running = tuple(future for future in pending if not future.cancelled())
+    if running:
+        # Waiting does not surface unconsumed callback errors or swallow caller interrupts.
+        wait(running)
 
 
 def _tap(iterator: Iterator[Any], operation: TapOp) -> Iterator[Any]:

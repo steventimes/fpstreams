@@ -6,6 +6,7 @@ import operator
 import os
 import sys
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from concurrent.futures import Executor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
@@ -86,6 +87,32 @@ from .flow_terminals import FlowTerminalsMixin
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
+
+
+def _parallel_settings(
+    workers: int | None,
+    backend: ParallelBackend,
+    ordered: bool,
+    buffer: int | None,
+    executor: Executor | None,
+) -> ParallelSettings:
+    """Resolve the shared bounded-map settings without opening a worker pool."""
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be at least 1")
+    if backend not in ("thread", "process"):
+        raise ValueError("backend must be 'thread' or 'process'")
+    if executor is not None:
+        if not isinstance(executor, Executor):
+            raise TypeError("executor must be a concurrent.futures.Executor")
+        if workers is not None:
+            raise ValueError("workers cannot be supplied with executor")
+    if buffer is None:
+        buffer = 2 * (workers or (os.cpu_count() or 1))
+    if buffer < 1:
+        raise ValueError("buffer must be at least 1")
+    return ParallelSettings(workers, backend, ordered, buffer, executor)
+
+
 U = TypeVar("U")
 _MISSING = object()
 _TABULAR_MODULE_ROOTS = frozenset(("pandas", "polars", "pyarrow"))
@@ -345,6 +372,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
                 backend=settings.backend,
                 ordered=settings.ordered,
                 buffer=settings.buffer,
+                executor=settings.executor,
             )
         return self._append(MapOp(function))
 
@@ -356,6 +384,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         backend: ParallelBackend = "thread",
         ordered: bool = True,
         buffer: int | None = None,
+        executor: Executor | None = None,
     ) -> Flow[R]:
         """Map items in a bounded thread or process pool.
 
@@ -364,27 +393,35 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
 
         Args:
             function: Receives one source item in a worker and returns its mapped value.
-            workers: Worker count, or `None` to use the executor's default.
-            backend: Run callbacks in a `thread` or spawn-based `process` pool.
+            workers: Worker count for a new pool. Must be `None` with an external executor.
+            backend: `thread` or spawn-based `process` when creating a pool. An external
+                executor determines its own backend.
             ordered: Emit in source order when true, otherwise in completion order.
             buffer: Maximum submitted futures retained before the pipeline waits for a result.
+                Defaults to twice `workers`, or twice the CPU count when `workers` is `None`.
+            executor: Optional caller-owned executor to reuse. The query cancels queued work
+                and waits for its own running callbacks before closing. It does not shut down
+                this executor or wait for unrelated tasks.
 
         Returns:
             A flow that submits bounded mapping work when consumed.
 
         Raises:
-            ValueError: If workers or buffer is less than one, or backend is unsupported.
+            ValueError: If workers or buffer is less than one, backend is unsupported, or
+                workers and executor are both provided.
+            TypeError: If executor is not a `concurrent.futures.Executor`.
         """
-        # The buffer caps submitted work so a slow consumer cannot create unbounded futures.
-        if workers is not None and workers < 1:
-            raise ValueError("workers must be at least 1")
-        if backend not in ("thread", "process"):
-            raise ValueError("backend must be 'thread' or 'process'")
-        if buffer is None:
-            buffer = 2 * (workers or (os.cpu_count() or 1))
-        if buffer < 1:
-            raise ValueError("buffer must be at least 1")
-        return self._append(ParallelMapOp(function, workers, backend, ordered, buffer))
+        settings = _parallel_settings(workers, backend, ordered, buffer, executor)
+        return self._append(
+            ParallelMapOp(
+                function,
+                settings.workers,
+                settings.backend,
+                settings.ordered,
+                settings.buffer,
+                executor=settings.executor,
+            )
+        )
 
     parallel_map = map_parallel
 
@@ -395,30 +432,25 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         backend: ParallelBackend = "process",
         ordered: bool = True,
         buffer: int | None = None,
+        executor: Executor | None = None,
     ) -> Flow[T]:
         """Apply parallel settings to map operations added after this call.
 
         Args:
-            workers: Worker count, or `None` to use the executor's default.
-            backend: Run callbacks in a `thread` or spawn-based `process` pool.
+            workers: Worker count for a new pool. Must be `None` with an external executor.
+            backend: `thread` or spawn-based `process` when creating a pool. An external
+                executor determines its own backend.
             ordered: Preserve source order for subsequent maps when true.
             buffer: Maximum in-flight results retained by each subsequent map.
+                Defaults to twice `workers`, or twice the CPU count when `workers` is `None`.
+            executor: Optional caller-owned executor borrowed by following maps. Each map
+                cleans up only its own tasks and leaves the executor open.
 
         Returns:
             A flow sharing this pipeline with parallel defaults for maps appended afterward.
         """
-        # Parallel settings are immutable plan metadata; existing operations are unchanged.
-        if workers is not None and workers < 1:
-            raise ValueError("workers must be at least 1")
-        if backend not in ("thread", "process"):
-            raise ValueError("backend must be 'thread' or 'process'")
-        if buffer is None:
-            buffer = 2 * (workers or (os.cpu_count() or 1))
-        if buffer < 1:
-            raise ValueError("buffer must be at least 1")
-        return self._from_logical(
-            self._logical_plan.with_parallel(ParallelSettings(workers, backend, ordered, buffer))
-        )
+        settings = _parallel_settings(workers, backend, ordered, buffer, executor)
+        return self._from_logical(self._logical_plan.with_parallel(settings))
 
     def sequential(self) -> Flow[T]:
         """Return a flow whose following maps run sequentially.
@@ -698,6 +730,30 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         return self._append(ChunkOp(size))
 
     batch = chunk
+
+    def map_batches(self, function: Callable[[tuple[T, ...]], R], *, size: int) -> Flow[R]:
+        """Apply function to consecutive tuples and emit one result per batch.
+
+        Batches are created lazily and include a shorter final batch. Empty input does not
+        call `function`. Each returned value stays intact; use `flat_map(iter)` explicitly when
+        the callback returns iterables whose contents should be emitted.
+
+        Parallel defaults configured with `parallel()` apply to the batch callback. Its
+        buffer counts batches, so at most `size * buffer` input items are submitted at once.
+        Process callbacks and their inputs and results must be picklable.
+
+        Args:
+            function: Receives a tuple of up to `size` consecutive items and returns one result.
+            size: Maximum number of input items passed to each callback.
+
+        Returns:
+            A lazy flow of batch results, using the current map parallel settings.
+
+        Raises:
+            TypeError: If size does not support the integer index protocol.
+            ValueError: If size is less than one.
+        """
+        return self.chunk(size).map(function)
 
     def batch_by_size(
         self,

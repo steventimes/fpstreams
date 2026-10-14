@@ -52,6 +52,7 @@ nav:
   - User guide:
       - Core concepts: user-guide/concepts.md
       - Performance and execution: user-guide/performance.md
+      - Streaming analytics recipes: user-guide/analytics.md
       - Execution reports: user-guide/execution-reports.md
       - FAQ: faq.md
   - Try in browser: playground.md

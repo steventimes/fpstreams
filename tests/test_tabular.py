@@ -23240,3 +23240,199 @@ def test_optimization_preserves_live_callbacks(engine) -> None:
     result = flow(source()).with_engine(engine).rows().with_columns(result=selector).to_list()
     assert result == [{"value": 2, "result": 3}, {"value": 3, "result": 30}]
     assert events == [2, 3, "closed"]
+
+
+@pytest.mark.parametrize("stage", ["select", "with_columns"])
+@pytest.mark.parametrize("mapping", [False, True])
+def test_single_row_map_loop_keeps_callback_ownership_separate_between_queries(mapping, stage):
+    """Reusing a loop template must not share selectors or keep discarded queries alive."""
+    import gc
+    import weakref
+    from types import MappingProxyType
+
+    from fpstreams.execution._rows_fusion import compile_rows_fusion
+    from fpstreams.execution.physical import operations_from_physical_nodes
+    from fpstreams.planning.compiler import compile_query
+
+    class Callback:
+        def __init__(self, marker):
+            self.marker = marker
+
+        def __call__(self, row):
+            return self.marker
+
+    def compile_loop(marker):
+        callback = Callback(marker)
+        reference = weakref.ref(callback)
+        query = getattr(fpstreams.rows([{"value": 1}]), stage)(marker=callback)._flow
+        physical = compile_query(query._query("list"))
+        loop = compile_rows_fusion(operations_from_physical_nodes(physical.nodes))
+        assert loop is not None
+        return loop, reference
+
+    left_marker, right_marker = object(), object()
+    left, left_callback = compile_loop(left_marker)
+    right, right_callback = compile_loop(right_marker)
+    row = {"value": 1}
+    source = MappingProxyType(row) if mapping else row
+    left_values = left(iter([source, source]))
+    right_values = right(iter([source, source]))
+    assert next(left_values)["marker"] is left_marker
+    assert next(right_values)["marker"] is right_marker
+    assert next(left_values)["marker"] is left_marker
+    assert next(right_values)["marker"] is right_marker
+    left_values.close()
+    right_values.close()
+    del left, left_values
+    gc.collect()
+    assert left_callback() is None
+    assert right_callback() is not None
+    del right, right_values
+    gc.collect()
+    assert right_callback() is None
+    assert row == {"value": 1}
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+@pytest.mark.parametrize("mapping", [False, True])
+@pytest.mark.parametrize("generator", [False, True])
+def test_feedback_weighted_groups_keep_valid_denominators_and_unknown_values(
+    engine, mapping, generator
+):
+    from types import MappingProxyType
+
+    original = [
+        {"player": 1, "minutes": 45, "observed": 60, "speed": 3.0, "runs": 0},
+        {"player": 1, "minutes": 30, "observed": 120, "speed": 6.0, "runs": None},
+        {"player": 2, "minutes": 90, "observed": 0, "speed": None, "runs": None},
+        {"player": 3, "minutes": 10, "observed": 0.5, "speed": 1e12, "runs": 1},
+    ]
+    before = [row.copy() for row in original]
+    records = [MappingProxyType(row) for row in original] if mapping else original
+    source = (row for row in records) if generator else records
+    summaries = (
+        fpstreams.flow(source)
+        .with_engine(engine)
+        .with_columns(
+            speed_num=lambda row: (
+                row["speed"] * row["observed"] if row["speed"] is not None else 0.0
+            ),
+            speed_den=lambda row: row["observed"] if row["speed"] is not None else 0.0,
+            run_num=lambda row: row["runs"] if row["runs"] is not None else 0,
+            run_den=lambda row: row["minutes"] if row["runs"] is not None else 0,
+        )
+        .group_by("player")
+        .aggregate(
+            matches=fpstreams.agg.count(),
+            minutes=fpstreams.agg.sum("minutes"),
+            speed_num=fpstreams.agg.sum("speed_num"),
+            speed_den=fpstreams.agg.sum("speed_den"),
+            run_num=fpstreams.agg.sum("run_num"),
+            run_den=fpstreams.agg.sum("run_den"),
+        )
+        .with_columns(
+            speed=lambda row: row["speed_num"] / row["speed_den"] if row["speed_den"] else None,
+            runs_per90=lambda row: row["run_num"] / row["run_den"] * 90 if row["run_den"] else None,
+        )
+        .sort_by("player")
+        .to_list()
+    )
+    assert [row["matches"] for row in summaries] == [2, 1, 1]
+    assert [row["minutes"] for row in summaries] == [75, 90, 10]
+    assert summaries[0]["speed"] == pytest.approx(5.0, rel=1e-10, abs=1e-8)
+    assert summaries[0]["run_den"] == 45
+    assert summaries[0]["runs_per90"] == 0
+    assert summaries[1]["speed"] is None
+    assert summaries[1]["runs_per90"] is None
+    assert summaries[2]["speed"] == pytest.approx(1e12, rel=1e-10, abs=1e-8)
+    assert summaries[2]["runs_per90"] == 9
+    assert original == before
+
+
+def test_feedback_sqlite_filtering_and_single_transaction_batches(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "analysis.sqlite"
+    records = [
+        {"source": "tracking", "version": 1, "team": 7, "points": 3},
+        {"source": "tracking", "version": 2, "team": 7, "points": 1},
+        {"source": "tracking", "version": 2, "team": 8, "points": 3},
+        {"source": "other", "version": 2, "team": 7, "points": 99},
+    ]
+    assert fpstreams.rows(records).to_sqlite(database, "matches", batch_size=1) == 4
+    selected = fpstreams.Rows.from_sqlite(
+        database,
+        "SELECT team, points FROM matches WHERE source = ? AND version = ? ORDER BY team",
+        ("tracking", 2),
+        batch_size=1,
+    )
+    expected = [{"team": 7, "total": 1}, {"team": 8, "total": 3}]
+    assert (
+        selected.group_by("team").aggregate(total=fpstreams.agg.sum("points")).to_list() == expected
+    )
+    assert (
+        selected.group_by("team").aggregate(total=fpstreams.agg.sum("points")).to_list() == expected
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE results (id INTEGER PRIMARY KEY, points INTEGER)")
+        connection.execute("INSERT INTO results VALUES (0, 10)")
+    with pytest.raises(sqlite3.IntegrityError):
+        fpstreams.rows([{"id": 1, "points": 3}, {"id": 0, "points": 99}]).to_sqlite(
+            database, "results", batch_size=1
+        )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT * FROM results").fetchall() == [(0, 10)]
+
+
+def test_sorted_group_selector_stopiteration_is_wrapped_before_source_cleanup() -> None:
+    import sys
+
+    failure = StopIteration("sorted selector stopped")
+    closed_with = []
+
+    class Source:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return {"key": 1}
+
+        def close(self):
+            closed_with.append(sys.exception())
+
+    def key(row):
+        raise failure
+
+    with pytest.raises(RuntimeError, match="generator raised StopIteration") as caught:
+        fpstreams.rows(Source()).group_by_sorted(key=key).aggregate(
+            rows=fpstreams.agg.count()
+        ).to_list()
+    assert caught.value.__cause__ is failure
+    assert caught.value.__context__ is failure
+    assert closed_with == [caught.value]
+
+
+@pytest.mark.parametrize("builtin", ["tuple", "len"])
+def test_sorted_group_key_wrapper_observes_constructor_replacements(builtin, monkeypatch) -> None:
+    from fpstreams.execution import sorted_streams
+
+    events = []
+    original = tuple if builtin == "tuple" else len
+
+    def replacement(value):
+        events.append(builtin)
+        return original(value)
+
+    def key(row):
+        if row["key"] == 1:
+            monkeypatch.setattr(sorted_streams, builtin, replacement, raising=False)
+        return row["key"]
+
+    result = (
+        fpstreams.rows([{"key": 1}, {"key": 2}, {"key": 3}])
+        .group_by_sorted(key=key)
+        .aggregate(rows=fpstreams.agg.count())
+        .to_list()
+    )
+    assert result == [{"key": 1, "rows": 1}, {"key": 2, "rows": 1}, {"key": 3, "rows": 1}]
+    assert events.count(builtin) == (2 if builtin == "tuple" else 6)

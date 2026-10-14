@@ -4468,6 +4468,120 @@ def _engine_square(value: int) -> int:
     return value * value
 
 
+def test_map_batches_is_lazy_preserves_items_and_includes_the_short_tail() -> None:
+    first, second, third = object(), object(), object()
+    seen = []
+    calls = []
+
+    def source():
+        for value in (first, second, third):
+            seen.append(value)
+            yield value
+
+    def summarize(batch):
+        assert type(batch) is tuple
+        calls.append(batch)
+        return {"items": batch}
+
+    query = flow(source()).map_batches(summarize, size=2)
+    assert seen == calls == []
+    assert query.to_list() == [{"items": (first, second)}, {"items": (third,)}]
+    assert seen == [first, second, third]
+    assert calls == [(first, second), (third,)]
+
+
+def test_map_batches_keeps_each_result_whole_and_does_not_call_empty_input() -> None:
+    assert flow(range(5)).map_batches(list, size=2).to_list() == [[0, 1], [2, 3], [4]]
+    assert flow(range(5)).map_batches(list, size=2).flat_map(iter).to_list() == [0, 1, 2, 3, 4]
+    assert flow(range(3)).map_batches(lambda batch: None, size=2).to_list() == [None, None]
+
+    def reject_empty(batch):
+        raise AssertionError("empty input called the batch callback")
+
+    assert flow([]).map_batches(reject_empty, size=2).to_list() == []
+
+
+def test_map_batches_validates_size_without_opening_the_source() -> None:
+    seen = []
+
+    def source():
+        seen.append(True)
+        yield 1
+
+    query = flow(source())
+    for size in (0, -1):
+        with pytest.raises(ValueError):
+            query.map_batches(sum, size=size)
+    for size in (1.5, "2", None):
+        with pytest.raises(TypeError):
+            query.map_batches(sum, size=size)
+    assert seen == []
+
+    class Size:
+        def __index__(self):
+            return 2
+
+    assert query.map_batches(sum, size=Size()).to_list() == [1]
+
+
+def test_map_batches_callback_failure_preserves_error_and_closes_source() -> None:
+    closed = []
+    failure = ValueError("batch failed")
+
+    def source():
+        try:
+            yield from range(7)
+        finally:
+            closed.append(True)
+
+    def work(batch):
+        if batch[0] == 2:
+            raise failure
+        return sum(batch)
+
+    with pytest.raises(ValueError, match="batch failed") as caught:
+        flow(source()).map_batches(work, size=2).to_list()
+    assert caught.value is failure
+    assert closed == [True]
+
+
+def test_map_batches_parallel_buffer_counts_batches_and_borrows_the_pool() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    seen = []
+    closed = []
+
+    def source():
+        try:
+            for value in range(100):
+                seen.append(value)
+                yield value
+        finally:
+            closed.append(True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        query = flow(source()).parallel(executor=pool, buffer=2).map_batches(sum, size=3)
+        assert seen == []
+        assert query.take(1).to_list() == [3]
+        assert seen == [0, 1, 2, 3, 4, 5]
+        assert closed == [True]
+        assert pool.submit(sum, (4, 5)).result(timeout=5) == 9
+        assert flow(range(5)).parallel(executor=pool, buffer=1).sequential().map_batches(
+            sum, size=2
+        ).to_list() == [1, 5, 4]
+
+
+def test_map_batches_spawn_pool_preserves_batch_order_and_can_be_reused() -> None:
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    with ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn")) as pool:
+        query = flow(range(7)).parallel(executor=pool, buffer=2).map_batches(sum, size=3)
+        assert query.to_list() == [3, 12, 6]
+        assert query.to_list() == [3, 12, 6]
+        assert pool.submit(sum, (10, 11)).result(timeout=5) == 21
+
+
 def test_parallel_map_is_a_bounded_ordered_flow_operation() -> None:
     active = 0
     peak = 0
@@ -4511,6 +4625,298 @@ def test_parallel_default_process_backend_executes_picklable_work() -> None:
         16,
         25,
     ]
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_parallel_maps_borrow_an_executor_without_shutting_it_down(ordered) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    class TrackedPool(ThreadPoolExecutor):
+        shutdowns = 0
+
+        def shutdown(self, *args, **kwargs):
+            self.shutdowns += 1
+            return super().shutdown(*args, **kwargs)
+
+    with TrackedPool(max_workers=2) as pool:
+        query = flow(range(8)).map_parallel(
+            _engine_square, executor=pool, buffer=3, ordered=ordered
+        )
+        assert query.explain().to_dict()["stages"][0]["engine"] == "thread"
+        expected = [value * value for value in range(8)]
+        result = query.to_list()
+        assert (result if ordered else sorted(result)) == expected
+        repeated = query.to_list()
+        assert (repeated if ordered else sorted(repeated)) == expected
+        following = flow(range(8)).parallel(executor=pool, buffer=3, ordered=ordered)
+        result = following.map(_engine_square).to_list()
+        assert (result if ordered else sorted(result)) == expected
+        assert following.sequential().map(_engine_square).to_list() == expected
+        assert pool.shutdowns == 0
+        assert pool.submit(_engine_square, 9).result() == 81
+
+
+def test_borrowed_executor_cleanup_waits_for_own_work_only() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    blocked = Event()
+    started = Event()
+
+    def unrelated_work():
+        started.set()
+        return blocked.wait(5)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        unrelated = pool.submit(unrelated_work)
+        assert started.wait(5)
+        try:
+            assert flow(range(10)).map_parallel(_engine_square, executor=pool, buffer=2).take(
+                1
+            ).to_list() == [0]
+            assert not unrelated.done()
+            assert pool.submit(_engine_square, 3).result(timeout=5) == 9
+        finally:
+            blocked.set()
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_borrowed_executor_mapping_failure_closes_source_and_preserves_pool(ordered) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    closed = []
+    failure = ValueError("borrowed mapper failed")
+
+    def source():
+        try:
+            yield from range(6)
+        finally:
+            closed.append(True)
+
+    def work(value):
+        if value == 1:
+            raise failure
+        return value
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with pytest.raises(ValueError, match="borrowed mapper failed") as caught:
+            flow(source()).map_parallel(work, executor=pool, buffer=2, ordered=ordered).to_list()
+        assert caught.value is failure
+        assert closed == [True]
+        assert pool.submit(_engine_square, 3).result() == 9
+
+
+@pytest.mark.parametrize("method", ["map_parallel", "parallel"])
+def test_borrowed_executor_settings_are_validated_and_remain_lazy(method, monkeypatch) -> None:
+    from concurrent.futures import Future, ThreadPoolExecutor
+    from importlib import import_module
+
+    flow_module = import_module("fpstreams.streams.flow")
+
+    monkeypatch.setattr(flow_module.os, "cpu_count", lambda: 3)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        arguments = (_engine_square,) if method == "map_parallel" else ()
+        configure = getattr(flow(range(4)), method)
+        with pytest.raises(ValueError, match=r"workers.*executor"):
+            configure(*arguments, executor=pool, workers=2)
+        with pytest.raises(TypeError, match="executor"):
+            configure(*arguments, executor=object())
+        with pytest.raises(ValueError, match="buffer"):
+            configure(*arguments, executor=pool, buffer=0)
+        submitted = []
+
+        def submit(function, *args, **kwargs):
+            submitted.append(args)
+            result = Future()
+            result.set_result(function(*args, **kwargs))
+            return result
+
+        monkeypatch.setattr(pool, "submit", submit)
+        configured = configure(*arguments, executor=pool)
+        query = configured if method == "map_parallel" else configured.map(_engine_square)
+        assert submitted == []
+        assert query._pipeline.operations[-1].buffer == 6
+        assert query.to_list() == [0, 1, 4, 9]
+        assert len(submitted) == 4
+
+
+def test_borrowed_spawn_executor_keeps_process_backend_and_remains_reusable() -> None:
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    with ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn")) as pool:
+        query = flow(range(6)).map_parallel(_engine_square, executor=pool, buffer=2)
+        assert query.explain().to_dict()["stages"][0]["engine"] == "process"
+        assert query.to_list() == [0, 1, 4, 9, 16, 25]
+        assert flow(range(3)).parallel(executor=pool, buffer=2).map(_engine_square).to_list() == [
+            0,
+            1,
+            4,
+        ]
+        assert pool.submit(_engine_square, 8).result() == 64
+
+
+def test_borrowed_executor_early_exit_cancels_queued_work_within_buffer() -> None:
+    from concurrent.futures import Executor, Future
+
+    class PendingPool(Executor):
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, function, *args, **kwargs):
+            result = Future()
+            if not self.futures:
+                result.set_result(function(*args, **kwargs))
+            self.futures.append(result)
+            return result
+
+        def shutdown(self, *args, **kwargs):
+            raise AssertionError("borrowed executor was shut down")
+
+    seen = []
+    closed = []
+
+    def source():
+        try:
+            for value in range(20):
+                seen.append(value)
+                yield value
+        finally:
+            closed.append(True)
+
+    pool = PendingPool()
+    query = flow(source()).map_parallel(_engine_square, executor=pool, buffer=2)
+    assert query.explain().to_dict()["stages"][0]["engine"] == "executor"
+    assert query.take(1).to_list() == [0]
+    assert seen == [0, 1]
+    assert closed == [True]
+    assert len(pool.futures) == 2
+    assert pool.futures[1].cancelled()
+
+
+def test_borrowed_executor_early_exit_waits_for_own_running_callback() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Thread
+
+    started = Event()
+    release = Event()
+    finished = Event()
+    closed = []
+    result = []
+
+    def source():
+        try:
+            yield from (0, 1)
+        finally:
+            closed.append(True)
+
+    def work(value):
+        if value == 0:
+            assert started.wait(5)
+        else:
+            started.set()
+            assert release.wait(5)
+        return value
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+
+        def consume():
+            result.extend(
+                flow(source()).map_parallel(work, executor=pool, buffer=2).take(1).to_list()
+            )
+            finished.set()
+
+        consumer = Thread(target=consume)
+        consumer.start()
+        try:
+            assert started.wait(5)
+            assert not finished.wait(0.05)
+            assert closed == []
+        finally:
+            release.set()
+            consumer.join(timeout=5)
+        assert not consumer.is_alive()
+        assert finished.is_set()
+        assert result == [0]
+        assert closed == [True]
+
+
+@pytest.mark.parametrize("buffer", [1, 2])
+def test_borrowed_executor_interrupted_result_waits_before_closing_source(
+    buffer, monkeypatch
+) -> None:
+    from concurrent.futures import Future, ThreadPoolExecutor
+    from threading import Event, Thread
+
+    from fpstreams.execution import sync_ops
+
+    started = Event()
+    release = Event()
+    cleanup_started = Event()
+    callback_finished = Event()
+    closed = []
+    errors = []
+    interrupt = KeyboardInterrupt("interrupted result wait")
+    original_result = Future.result
+    original_wait = sync_ops.wait
+    interrupted = False
+
+    class Source:
+        emitted = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.emitted:
+                raise StopIteration
+            self.emitted = True
+            return 1
+
+        def close(self):
+            closed.append(callback_finished.is_set())
+
+    def work(value):
+        started.set()
+        assert release.wait(5)
+        callback_finished.set()
+        return value
+
+    def result(future, timeout=None):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            assert started.wait(5)
+            raise interrupt
+        return original_result(future, timeout=timeout)
+
+    def wait(futures, *args, **kwargs):
+        cleanup_started.set()
+        return original_wait(futures, *args, **kwargs)
+
+    monkeypatch.setattr(Future, "result", result)
+    monkeypatch.setattr(sync_ops, "wait", wait)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+
+        def consume():
+            try:
+                flow(Source()).map_parallel(work, executor=pool, buffer=buffer).to_list()
+            except BaseException as error:
+                errors.append(error)
+
+        consumer = Thread(target=consume)
+        consumer.start()
+        try:
+            assert cleanup_started.wait(5)
+            assert closed == []
+            assert consumer.is_alive()
+        finally:
+            release.set()
+            consumer.join(timeout=5)
+        assert not consumer.is_alive()
+        assert errors == [interrupt]
+        assert closed == [True]
+        assert pool.submit(_engine_square, 3).result(timeout=5) == 9
 
 
 def test_native_expression_pipeline_matches_python_and_is_auto_planned() -> None:

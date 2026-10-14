@@ -21,6 +21,11 @@ class _End:
 
 _EOF = _End()
 _UNSET = object()
+_BUILTIN_TUPLE: type[Any] = tuple
+_BUILTIN_LEN = len
+_BUILTIN_TYPE = type
+_BUILTIN_STOP_ITERATION = StopIteration
+_BUILTIN_RUNTIME_ERROR = RuntimeError
 
 
 class _KeyShape:
@@ -146,8 +151,24 @@ def aggregate_sorted_rows(
     """Finish adjacent groups without buffering their rows or future groups."""
     source = values if isinstance(values, Source) else Source.from_iterable(values)
 
+    single = (
+        _BUILTIN_TYPE(keys) is cast(Any, _BUILTIN_TUPLE)
+        and _BUILTIN_LEN(keys) == 1
+        and _BUILTIN_TYPE(keys[0]) is cast(Any, _BUILTIN_TUPLE)
+        and _BUILTIN_LEN(keys[0]) == 2
+    )
+
     def select_key(row: Any) -> Any:
-        selected = tuple(selector(row) for _name, selector in keys)
+        if single and tuple is _BUILTIN_TUPLE:
+            try:
+                selected_key = keys[0][1](row)
+            except _BUILTIN_STOP_ITERATION as error:
+                raise _BUILTIN_RUNTIME_ERROR("generator raised StopIteration") from error
+            if len is _BUILTIN_LEN:
+                return selected_key
+            selected = (selected_key,)
+        else:
+            selected = tuple(selector(row) for _name, selector in keys)
         return selected[0] if len(selected) == 1 else selected
 
     cursor = _SortedCursor(source, select_key, side="input")

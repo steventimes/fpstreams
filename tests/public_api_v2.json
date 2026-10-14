@@ -1510,6 +1510,74 @@
           ],
           "return": "AsyncFlow[R]"
         },
+        "map_batches": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[tuple[T, ...]], R | Awaitable[R]]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "function"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "size"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": false,
+                "value": 1
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "concurrency"
+            },
+            {
+              "annotation": "bool",
+              "default": {
+                "required": false,
+                "value": true
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "ordered"
+            },
+            {
+              "annotation": "float | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "timeout"
+            },
+            {
+              "annotation": "int | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "buffer"
+            }
+          ],
+          "return": "AsyncFlow[R]"
+        },
         "map_first": {
           "parameters": [
             {
@@ -5455,6 +5523,38 @@
           ],
           "return": "Flow[R]"
         },
+        "map_batches": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[tuple[T, ...]], R]",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "function"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "size"
+            }
+          ],
+          "return": "Flow[R]"
+        },
         "map_first": {
           "parameters": [
             {
@@ -5556,6 +5656,15 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "buffer"
+            },
+            {
+              "annotation": "Executor | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "executor"
             }
           ],
           "return": "Flow[R]"
@@ -5855,6 +5964,15 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "buffer"
+            },
+            {
+              "annotation": "Executor | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "executor"
             }
           ],
           "return": "Flow[T]"
@@ -5914,6 +6032,15 @@
               },
               "kind": "KEYWORD_ONLY",
               "name": "buffer"
+            },
+            {
+              "annotation": "Executor | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "executor"
             }
           ],
           "return": "Flow[R]"
@@ -12202,7 +12329,7 @@
       "properties": [],
       "signature": null,
       "target": "builtins.str",
-      "value": "2.2.1"
+      "value": "2.3.0"
     },
     "aflow": {
       "callables": {
@@ -13811,5 +13938,5 @@
     "rows",
     "when"
   ],
-  "version": "2.2.1"
+  "version": "2.3.0"
 }

@@ -59,6 +59,7 @@ def release_versions(root: Path = ROOT) -> dict[str, str]:
         "uv-lock": _named_package_version(uv_lock, "fpstreams"),
         "runtime": _runtime_version(root / "src" / "fpstreams" / "__init__.py"),
         "public-api": str(api["version"]),
+        "public-api-constant": str(api["items"]["__version__"]["value"]),
         "changelog": changelog_match.group(1),
     }
 

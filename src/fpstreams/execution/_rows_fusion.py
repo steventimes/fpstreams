@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterator
 from itertools import chain
+from types import FunctionType
 from typing import Any, cast
 
 from ..errors import SelectionError
@@ -72,6 +73,33 @@ RowsOperation = MapOp | FilterOp
 RowsLoop = Callable[[Iterator[Any]], Iterator[Any]]
 RowsFilterSink = Callable[[list[Any], Iterator[Any]], tuple[Any | None, bool]]
 I64RowFilterPlan = tuple[str, tuple[tuple[int, int], ...], bool]
+
+
+def _row_map_loop_template(
+    _source: Iterator[Any],
+    _fpstreams_slot_0: Callable[[Any], tuple[bool, Any]],
+    _fpstreams_slot_1: Callable[[Any], type[Any]],
+    _fpstreams_slot_2: type[dict[str, Any]],
+    _fpstreams_slot_3: type[StopIteration],
+    _fpstreams_slot_4: Callable[[Any], Any],
+    _fpstreams_slot_5: type[StopIteration],
+) -> Iterator[Any]:
+    """Keep the one-stage generated loop's dispatch, bindings, and row lifetimes."""
+    for _row in _source:
+        if _fpstreams_slot_1(_row) is not _fpstreams_slot_2:
+            try:
+                _fallback = _fpstreams_slot_0(_row)
+            except _fpstreams_slot_3:
+                return
+            if _fallback[0]:
+                yield _fallback[1]
+            continue
+        _current = _row
+        try:
+            _current = _fpstreams_slot_4(_current)
+        except _fpstreams_slot_5:
+            return
+        yield _current
 
 
 def execute_rows_fusion(
@@ -391,6 +419,28 @@ class _RowsLoopBuilder:
 
     def compile(self) -> RowsLoop:
         """Compile a generator whose globals expose no builtins or source-text interpolation."""
+        if (
+            len(self._operations) == 1
+            and isinstance(operation := self._operations[0], MapOp)
+            and self._descriptors[0].kind in {"select", "with_columns"}
+        ):
+            slots = (
+                _fallback_processor(self._operations),
+                type,
+                dict,
+                StopIteration,
+                operation.function,
+                StopIteration,
+            )
+            namespace: dict[str, Any] = {"__builtins__": {}, "_fpstreams_slots": slots}
+            loop = FunctionType(
+                _row_map_loop_template.__code__,
+                namespace,
+                name="_fpstreams_rows_loop",
+                argdefs=slots,
+            )
+            namespace["_fpstreams_rows_loop"] = loop
+            return cast(RowsLoop, loop)
         body = self._loop_body()
         return cast(
             RowsLoop,

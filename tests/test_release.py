@@ -35,18 +35,65 @@ GROUPS = ROOT / "benchmarks" / "groups.toml"
 BROWSER_WHEEL_BUILDER = ROOT / "scripts" / "build_browser_wheel.py"
 
 
+def test_release_version_check_rejects_a_stale_public_version_constant(tmp_path: Path) -> None:
+    """A correct manifest header must not hide its stale exported version value."""
+    script = tmp_path / "scripts" / "check_release_version.py"
+    files = (
+        "scripts/check_release_version.py",
+        "pyproject.toml",
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "uv.lock",
+        "src/fpstreams/__init__.py",
+        "tests/public_api_v2.json",
+        "CHANGELOG.md",
+    )
+    for name in files:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+    api_path = tmp_path / "tests/public_api_v2.json"
+    api = json.loads(api_path.read_text())
+    api["items"]["__version__"]["value"] = api["version"]
+    api_path.write_text(json.dumps(api))
+    valid = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+    assert valid.returncode == 0, valid.stderr
+
+    api["items"]["__version__"]["value"] = "0.0.0"
+    api_path.write_text(json.dumps(api))
+    stale = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+    assert stale.returncode != 0
+    assert "release version mismatch" in stale.stderr
+
+
 def test_core_factory_types_without_optional_adapters(tmp_path: Path, monkeypatch) -> None:
     """A missing optional adapter must not erase a core iterable's element type."""
     if importlib.util.find_spec("mypy") is None:
         pytest.skip("core typing regression requires mypy from the type quality group")
     consumer = tmp_path / "consumer.py"
     consumer.write_text(
+        "from collections.abc import Awaitable\n"
         "from typing import assert_type\n"
-        "from fpstreams import Flow, Rows, flow, rows\n"
+        "from fpstreams import AsyncFlow, Flow, Rows, aflow, flow, rows\n"
         "assert_type(flow([1, 2]), Flow[int])\n"
         'assert_type(rows([{"value": 1}]), Rows[dict[str, int]])\n'
         "assert_type(flow(flow([1, 2])), Flow[int])\n"
-        'assert_type(rows(rows([{"value": 1}])), Rows[dict[str, int]])\n',
+        "assert_type(flow([1, 2]).map_batches(lambda batch: batch[0] + 1, size=2), Flow[int])\n"
+        'assert_type(rows(rows([{"value": 1}])), Rows[dict[str, int]])\n'
+        "async def async_item(value: int) -> int:\n    return value + 1\n"
+        "async def async_batch(batch: tuple[int, ...]) -> int:\n    return sum(batch)\n"
+        "def mixed_item(value: int) -> int | Awaitable[int]:\n"
+        "    return value if value % 2 else async_item(value)\n"
+        "def mixed_batch(batch: tuple[int, ...]) -> int | Awaitable[int]:\n"
+        "    return sum(batch) if batch[0] % 2 else async_batch(batch)\n"
+        "assert_type(aflow([1, 2]).map(async_item), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map_async(async_item), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map_batches(async_batch, size=2), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map(mixed_item), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map_async(mixed_item), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map_batches(mixed_batch, size=2), AsyncFlow[int])\n"
+        "assert_type(aflow([1, 2]).map_batches(lambda batch: str(batch), size=2), "
+        "AsyncFlow[str])\n",
         encoding="utf-8",
     )
     configuration = tmp_path / "mypy.ini"
@@ -2486,6 +2533,60 @@ def test_competitive_include_selects_cases_before_execution() -> None:
     assert {comparison["case"] for comparison in report["comparisons"]} == {"flow.map"}
 
 
+@pytest.mark.parametrize("shape", ["list", "generator", "mapping"])
+def test_competitive_season_summary_preserves_all_seven_collectors(tmp_path, shape) -> None:
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    spec = next(
+        spec
+        for spec in competitive._CASE_SPECS
+        if spec.case_id == f"analytics.season_summary.{shape}"
+    )
+    case = competitive._build_case(spec, 61, np, pd, tmp_path)
+    for implementation in (case.candidate, *case.references):
+        result = implementation.task()
+        assert len(result) == 60
+        assert result[0] == {
+            "cohort": "league-0/season-0",
+            "rows": 2,
+            "pace": 60.0,
+            "shooting": 62.0,
+            "passing": 64.0,
+            "dribbling": 66.0,
+            "defending": 68.0,
+            "physical": 70.0,
+        }
+
+
+@pytest.mark.parametrize("kind", ["integer", "decimal"])
+def test_competitive_stateful_reduce_recreates_rows_and_bounded_evidence(tmp_path, kind) -> None:
+    from decimal import Decimal
+
+    from benchmarks import competitive
+
+    spec = next(
+        spec
+        for spec in competitive._CASE_SPECS
+        if spec.case_id == f"terminal.reduce.{kind}.generator"
+    )
+    case = competitive._reduce_case(spec, 9)
+    expected = (
+        {"rows": 9, "total": 36, "invalid": 0, "evidence": []}
+        if kind == "integer"
+        else {"rows": 9, "total": Decimal("1.25"), "invalid": 2, "evidence": [4, 5]}
+    )
+    for implementation in (case.candidate, *case.references):
+        assert implementation.task() == expected
+        assert implementation.task() == expected
+    if kind == "decimal":
+        result = competitive._reduce_case(spec, 100).candidate.task()
+        assert len(result["evidence"]) == 20
+        assert result["invalid"] == 33
+
+
 def test_every_registered_competitive_case_executes_with_equal_outputs() -> None:
     """The advertised full matrix contains executable workloads rather than placeholder IDs."""
     module = _benchmark_module()
@@ -4606,7 +4707,7 @@ def test_sorted_benchmark_fixture_contract(tmp_path) -> None:
     )
 
     selected = list_competitive_cases(include=("sorted.*",))
-    assert len(selected) == 36
+    assert len(selected) == 54
     assert any("skew.generator.first" in case for case in selected)
     for spec in _CASE_SPECS:
         if spec.case_id in selected:
@@ -4653,3 +4754,176 @@ def test_sorted_full_benchmark_detects_wrong_values_beyond_prefix(tmp_path, monk
     assert case.candidate.task() == case.references[0].task() == 32
     with pytest.raises(AssertionError, match="content"):
         _assert_equivalent_outputs(case)
+
+
+@pytest.mark.parametrize("selector_kind", ["field", "expression", "callable"])
+@pytest.mark.parametrize("shape", ["python", "wide", "mapping", "mapping.wide"])
+def test_competitive_with_columns_variants_use_the_declared_input_and_engine(
+    monkeypatch: pytest.MonkeyPatch, selector_kind: str, shape: str
+) -> None:
+    """Width, Mapping inputs, and the forced engine are measured rather than just labeled."""
+    from types import MappingProxyType
+
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    sources: list[object] = []
+    real_rows = competitive.fpstreams.rows
+
+    def capture_rows(records):
+        sources.append(records)
+        return real_rows(records)
+
+    monkeypatch.setattr(competitive.fpstreams, "rows", capture_rows)
+    case_id = f"rows.with_columns.{selector_kind}.{shape}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._rows_case(spec, 8, np, pd)
+    result = case.candidate.task()
+    width = 32 if shape.endswith("wide") else 5
+    assert len(result) == 8
+    assert all(len(row) == width + 1 for row in result)
+    assert [row["next_value"] for row in result] == [
+        index if selector_kind == "field" else index + 1 for index in range(8)
+    ]
+    assert all(type(row) is dict for row in result)
+    expected_type = MappingProxyType if shape.startswith("mapping") else dict
+    assert all(type(row) is expected_type for row in sources[-1])
+    for reference in case.references:
+        assert case.outputs_equal(result, reference.normalize(reference.task()))
+    assert not case.outputs_equal(result, list(reversed(result)))
+    report = observe_task(case.candidate.task, spec.engine, case_id)
+    assert report["status"] == "observed"
+    assert report["requested_engine"] == spec.engine == ("python" if shape == "python" else "auto")
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "rows.select.wide",
+        "rows.select.python.wide",
+        "rows.select.expression.python",
+        "rows.select.expression.mapping",
+        "rows.select.callable",
+        "rows.select.callable.mapping",
+    ],
+)
+def test_competitive_select_new_variants_measure_declared_inputs_and_engine(
+    case_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Projection variants retain full values, order, actual source shape, and engine."""
+    from types import MappingProxyType
+
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+    from benchmarks.evidence import observe_task
+
+    sources = []
+    real_rows = competitive.fpstreams.rows
+
+    def capture_rows(records):
+        sources.append(records)
+        return real_rows(records)
+
+    monkeypatch.setattr(competitive.fpstreams, "rows", capture_rows)
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._rows_case(spec, 8, np, pd)
+    value_field = "value" if case_id.endswith("wide") else "score"
+    expected = [
+        {"id": index, value_field: index if value_field == "value" else index + 1}
+        for index in range(8)
+    ]
+    result = case.candidate.task()
+    assert result == expected
+    assert not case.outputs_equal(result, list(reversed(expected)))
+    for reference in case.references:
+        assert case.outputs_equal(result, reference.normalize(reference.task()))
+    expected_type = MappingProxyType if case_id.endswith("mapping") else dict
+    assert all(type(row) is expected_type for row in sources[-1])
+    assert all(len(row) == (32 if case_id.endswith("wide") else 5) for row in sources[-1])
+    observation = observe_task(case.candidate.task, spec.engine, case_id)
+    assert observation["status"] == "observed"
+    assert observation["requested_engine"] == spec.engine
+    if spec.engine == "python":
+        assert observation["strategy"] == "planned:python"
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "rows.select.callable.mapping",
+        "rows.with_columns.callable.mapping",
+        "rows.with_columns.callable.mapping.wide",
+    ],
+)
+def test_mapping_callable_benchmarks_share_actual_source_shape_with_python(case_id, monkeypatch):
+    from types import MappingProxyType
+
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    accesses = []
+    real_proxy = competitive.MappingProxyType
+
+    def proxy(record):
+        accesses.append(record)
+        return real_proxy(record)
+
+    monkeypatch.setattr(competitive, "MappingProxyType", proxy)
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._rows_case(spec, 8, np, pd)
+    python = next(peer for peer in case.references if peer.library == "python")
+    closed_records = python.task.__closure__
+    sources = [
+        cell.cell_contents for cell in closed_records or () if isinstance(cell.cell_contents, list)
+    ]
+    assert len(sources) == 1
+    assert len(sources[0]) == len(accesses) == 8
+    assert all(type(row) is MappingProxyType for row in sources[0])
+    assert case.candidate.task() == python.task()
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "analytics.team_summary.list",
+        "analytics.team_summary.generator",
+        "analytics.weighted_summary.generator",
+        "analytics.cohort_count.generator",
+    ],
+)
+def test_feedback_analytics_benchmarks_preserve_complete_outputs_and_fresh_sources(case_id):
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == case_id)
+    case = competitive._analytics_case(spec, 151, pd)
+    first = case.candidate.task()
+    assert first == case.candidate.task()
+    assert not case.outputs_equal(first, list(reversed(first)))
+    for peer in case.references:
+        assert case.outputs_equal(first, peer.task())
+    counter = "rows" if "cohort_count" in case_id else "matches"
+    assert sum(row[counter] for row in first) == 151
+    if "weighted_summary" in case_id:
+        assert first[0]["known_run_minutes"] == 0
+        assert first[0]["known_runs"] == 0
+
+
+@pytest.mark.parametrize("shape", ["strings", "bytes", "composite"])
+@pytest.mark.parametrize("source", ["list", "generator"])
+@pytest.mark.parametrize("consumption", ["full", "first", "early"])
+def test_sorted_key_shape_benchmarks_validate_full_content(shape, source, consumption):
+    from benchmarks import competitive
+
+    name = f"sorted.group.{shape}.{source}.{consumption}"
+    spec = next(spec for spec in competitive._CASE_SPECS if spec.case_id == name)
+    case = competitive._sorted_case(spec, 48)
+    competitive._assert_equivalent_outputs(case)

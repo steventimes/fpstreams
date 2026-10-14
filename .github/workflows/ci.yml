@@ -165,6 +165,14 @@ jobs:
   benchmark-full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'benchmark' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      POLARS_MAX_THREADS: "1"
     concurrency:
       group: benchmark-${{ github.ref }}
       cancel-in-progress: true
@@ -180,17 +188,21 @@ jobs:
         run: |
           uv sync --frozen --group build --group test
           uv run maturin develop --release
+      - name: Select a benchmark CPU from the runner's allowed set
+        run: |
+          benchmark_cpu="$(uv run python -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          printf 'BENCHMARK_CPU=%s\n' "$benchmark_cpu" >> "$GITHUB_ENV"
       - name: Measure three-run same-host reference
         run: |
-          uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-1.json
-          uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-2.json
-          uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-3.json
+          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-1.json
+          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-2.json
+          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 7 --domain both --json run-3.json
           uv run python -m benchmarks.regression --create-baseline \
             --provenance local_one_shot_unreviewed --output scheduled-local-baseline.json \
             run-1.json run-2.json run-3.json
       - name: Enforce same-run timing and resource consistency
         run: |
-          uv run python benchmark.py --size 300000 --repeats 7 --domain both \
+          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 7 --domain both \
             --fail-on-regression --json benchmark-full.json
           # A reviewed file enables cross-commit comparison. Until one exists,
           # this fallback only checks a fourth run against this job's local median.
@@ -201,7 +213,7 @@ jobs:
           fi
       - name: Record NumPy and Pandas comparisons
         run: >-
-          uv run python benchmark.py --competitive --size 300000 --repeats 7
+          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --competitive --size 300000 --repeats 7
           --json benchmark-competitive.json
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

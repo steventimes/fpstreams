@@ -16,6 +16,7 @@ from array import array as python_array
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from functools import partial
 from itertools import islice, takewhile, zip_longest
 from pathlib import Path
@@ -246,6 +247,26 @@ _CASE_SPECS = (
     CaseSpec("rows.select.mapping", "Rows.select(...).to_list() [MappingProxyType]"),
     CaseSpec("rows.select.arrow", "Rows.from_arrow(...).select(...).to_list()"),
     CaseSpec("rows.select.expression", "Rows.select('id', score=col('value') + 1).to_list()"),
+    CaseSpec("rows.select.wide", "Rows.select('id', 'value').to_list() [32 input columns]"),
+    CaseSpec(
+        "rows.select.python.wide",
+        "Rows.select('id', 'value').to_list() [Python, 32 input columns]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.select.expression.python",
+        "Rows.select('id', score=col('value') + 1).to_list() [Python]",
+        engine="python",
+    ),
+    CaseSpec(
+        "rows.select.expression.mapping",
+        "Rows.select('id', score=col('value') + 1).to_list() [MappingProxyType]",
+    ),
+    CaseSpec("rows.select.callable", "Rows.select('id', score=lambda row: ...).to_list()"),
+    CaseSpec(
+        "rows.select.callable.mapping",
+        "Rows.select('id', score=lambda row: ...).to_list() [MappingProxyType]",
+    ),
     CaseSpec("rows.with_columns.field", "Rows.with_columns(next_value='value').to_list()"),
     CaseSpec(
         "rows.with_columns.field.mapping",
@@ -262,6 +283,44 @@ _CASE_SPECS = (
     CaseSpec(
         "rows.with_columns.callable",
         "Rows.with_columns(next_value=lambda row: ...) [callable]",
+    ),
+    CaseSpec(
+        "rows.with_columns.field.python",
+        "Rows.with_columns(...) [field, python]",
+        engine="python",
+    ),
+    CaseSpec("rows.with_columns.field.wide", "Rows.with_columns(...) [field, wide]"),
+    CaseSpec(
+        "rows.with_columns.field.mapping.wide",
+        "Rows.with_columns(...) [field, mapping.wide]",
+    ),
+    CaseSpec(
+        "rows.with_columns.expression.python",
+        "Rows.with_columns(...) [expression, python]",
+        engine="python",
+    ),
+    CaseSpec("rows.with_columns.expression.wide", "Rows.with_columns(...) [expression, wide]"),
+    CaseSpec(
+        "rows.with_columns.expression.mapping.wide",
+        "Rows.with_columns(...) [expression, mapping.wide]",
+    ),
+    CaseSpec(
+        "rows.with_columns.expression.mapping",
+        "Rows.with_columns(...) [expression, mapping]",
+    ),
+    CaseSpec(
+        "rows.with_columns.callable.python",
+        "Rows.with_columns(...) [callable, python]",
+        engine="python",
+    ),
+    CaseSpec("rows.with_columns.callable.wide", "Rows.with_columns(...) [callable, wide]"),
+    CaseSpec(
+        "rows.with_columns.callable.mapping.wide",
+        "Rows.with_columns(...) [callable, mapping.wide]",
+    ),
+    CaseSpec(
+        "rows.with_columns.callable.mapping",
+        "Rows.with_columns(...) [callable, mapping]",
     ),
     CaseSpec("rows.cast", "Rows.cast(...).to_list()"),
     CaseSpec("rows.fill_nulls", "Rows.fill_nulls(...).to_list()"),
@@ -280,6 +339,21 @@ _CASE_SPECS = (
         quick=True,
     ),
     CaseSpec("rows.aggregate", "Rows.aggregate(...).to_list()"),
+    CaseSpec("analytics.team_summary.list", "Match count and four team sums; prepared dict list"),
+    CaseSpec("analytics.team_summary.generator", "Match count and four team sums; fresh generator"),
+    CaseSpec(
+        "analytics.weighted_summary.generator", "Count and six weighted totals; fresh generator"
+    ),
+    CaseSpec("analytics.cohort_count.generator", "League-season counts; fresh generator"),
+    CaseSpec("analytics.season_summary.list", "Count and six season totals; prepared dict list"),
+    CaseSpec("analytics.season_summary.generator", "Count and six season totals; fresh generator"),
+    CaseSpec("analytics.season_summary.mapping", "Count and six season totals; nominal Mapping"),
+    CaseSpec(
+        "terminal.reduce.integer.generator", "Stateful integer reduce; fresh record generator"
+    ),
+    CaseSpec(
+        "terminal.reduce.decimal.generator", "Decimal reduce with bounded invalid-row evidence"
+    ),
     CaseSpec(
         "rows.group_sum.low_cardinality",
         "Rows.group_by(...).aggregate(sum)",
@@ -531,6 +605,15 @@ _CASE_SPECS += tuple(
     )
     for operation in ("group", "merge", "join")
     for shape in ("duplicates", "skew")
+    for source in ("list", "generator")
+    for consumption in ("full", "first", "early")
+) + tuple(
+    CaseSpec(
+        f"sorted.group.{shape}.{source}.{consumption}",
+        f"explicit sorted group; {shape} keys; {source}; {consumption}",
+        engine="python",
+    )
+    for shape in ("strings", "bytes", "composite")
     for source in ("list", "generator")
     for consumption in ("full", "first", "early")
 )
@@ -1608,6 +1691,10 @@ def _rows_case(  # noqa: C901
     spec: CaseSpec, size: int, np: Any, pd: Any
 ) -> CompetitiveCase:
     records = _row_records(size)
+    if spec.case_id.endswith(".wide"):
+        extra_fields = {f"extra_{index}": index for index in range(27)}
+        for record in records:
+            record.update(extra_fields)
     rows = fpstreams.rows(records)
     frame = pd.DataFrame.from_records(records)
     frame["nullable"] = frame["nullable"].astype("Int64")
@@ -1627,9 +1714,17 @@ def _rows_case(  # noqa: C901
                     lambda: frame.loc[frame["value"] % 2 == 0].to_dict("records"),
                 ),
             )
-        case "rows.select" | "rows.select.python" | "rows.select.mapping" | "rows.select.arrow":
+        case (
+            "rows.select"
+            | "rows.select.python"
+            | "rows.select.mapping"
+            | "rows.select.arrow"
+            | "rows.select.wide"
+            | "rows.select.python.wide"
+        ):
             if spec.case_id.endswith("mapping"):
-                rows = fpstreams.rows([MappingProxyType(record) for record in records])
+                records = [MappingProxyType(record) for record in records]
+                rows = fpstreams.rows(records)
             elif spec.case_id.endswith("arrow"):
                 import pyarrow as pa
 
@@ -1641,13 +1736,33 @@ def _rows_case(  # noqa: C901
                 ),
                 _implementation("pandas", lambda: frame.loc[:, ["id", "value"]].to_dict("records")),
             )
-        case "rows.select.expression":
-            candidate = rows.select("id", score=fpstreams.col("value") + 1).to_list
+        case (
+            "rows.select.expression"
+            | "rows.select.expression.python"
+            | "rows.select.expression.mapping"
+            | "rows.select.callable"
+            | "rows.select.callable.mapping"
+        ):
+            if spec.case_id.endswith("mapping"):
+                records = [MappingProxyType(record) for record in records]
+                rows = fpstreams.rows(records)
+            if ".callable" in spec.case_id:
+
+                def score(row: Mapping[str, Any]) -> object:
+                    return row["value"] + 1
+
+                def python_project() -> list[dict[str, Any]]:
+                    return [{"id": row["id"], "score": score(row)} for row in records]
+
+            else:
+                score = fpstreams.col("value") + 1
+
+                def python_project() -> list[dict[str, Any]]:
+                    return [{"id": row["id"], "score": row["value"] + 1} for row in records]
+
+            candidate = rows.with_engine(spec.engine).select("id", score=score).to_list
             references = (
-                _implementation(
-                    "python",
-                    lambda: [{"id": row["id"], "score": row["value"] + 1} for row in records],
-                ),
+                _implementation("python", python_project),
                 _implementation(
                     "pandas",
                     lambda: frame.assign(score=frame["value"] + 1)[["id", "score"]].to_dict(
@@ -1655,22 +1770,35 @@ def _rows_case(  # noqa: C901
                     ),
                 ),
             )
-        case "rows.with_columns.field" | "rows.with_columns.field.mapping":
-            if spec.case_id.endswith("mapping"):
-                rows = fpstreams.rows([MappingProxyType(record) for record in records])
+        case name if name.startswith("rows.with_columns.field"):
+            if ".mapping" in spec.case_id:
+                records = [MappingProxyType(record) for record in records]
+                rows = fpstreams.rows(records)
+            if spec.engine != "auto":
+                rows = rows.with_engine(spec.engine)
             candidate = rows.with_columns(next_value="value").to_list
             references = (
                 _implementation(
-                    "python", lambda: [{**row, "next_value": row["value"]} for row in records]
+                    "python",
+                    lambda: [{**row, "next_value": row["value"]} for row in records],
                 ),
                 _implementation(
-                    "pandas", lambda: frame.assign(next_value=frame["value"]).to_dict("records")
+                    "pandas",
+                    lambda: frame.assign(next_value=frame["value"]).to_dict("records"),
                 ),
             )
         case (
             "rows.with_columns.expression"
             | "rows.with_columns.callable"
             | "rows.with_columns.numpy"
+            | "rows.with_columns.expression.python"
+            | "rows.with_columns.expression.wide"
+            | "rows.with_columns.expression.mapping"
+            | "rows.with_columns.expression.mapping.wide"
+            | "rows.with_columns.callable.python"
+            | "rows.with_columns.callable.wide"
+            | "rows.with_columns.callable.mapping"
+            | "rows.with_columns.callable.mapping.wide"
         ):
             if spec.case_id.endswith("numpy"):
                 records = [{"id": row["id"], "value": row["value"]} for row in records]
@@ -1678,7 +1806,12 @@ def _rows_case(  # noqa: C901
                 rows = fpstreams.Rows.from_numpy(
                     frame.to_numpy(dtype="int64"), columns=["id", "value"]
                 )
-            if not spec.case_id.endswith("callable"):
+            if ".mapping" in spec.case_id:
+                records = [MappingProxyType(record) for record in records]
+                rows = fpstreams.rows(records)
+            if spec.engine != "auto":
+                rows = rows.with_engine(spec.engine)
+            if "callable" not in spec.case_id:
                 next_value = fpstreams.col("value") + 1
 
                 def python_with_column() -> list[dict[str, Any]]:
@@ -2552,9 +2685,16 @@ def _sorted_case(spec: CaseSpec, size: int) -> CompetitiveCase:
     _, operation, shape, source_kind, consumption = spec.case_id.split(".")
     keys = (
         [i // 8 for i in range(size)]
-        if shape == "duplicates"
+        if shape != "skew"
         else [max(0, i - 3 * size // 4) for i in range(size)]
     )
+    encode = {
+        "strings": lambda key: f"{key:09d}",
+        "bytes": lambda key: f"{key:09d}".encode("ascii"),
+        "composite": lambda key: (key, f"part-{key % 3}"),
+    }.get(shape)
+    if encode is not None:
+        keys = [encode(key) for key in keys]
     left = [{"id": key, "value": i} for i, key in enumerate(keys)]
     right = [{"id": key, "right": i} for i, key in enumerate(keys)]
     if operation == "join" and shape == "skew":
@@ -2622,7 +2762,166 @@ def _sorted_case(spec: CaseSpec, size: int) -> CompetitiveCase:
     )
 
 
+def _analytics_case(spec: CaseSpec, size: int, pd: Any) -> CompetitiveCase:
+    """Reproduce feedback workload shapes without copying application assets."""
+    if spec.case_id == "analytics.cohort_count.generator":
+        key = "cohort"
+        count_name = "rows"
+        fields: tuple[str, ...] = ()
+        records = [{key: f"league-{index % 5}/season-{index % 12}"} for index in range(size)]
+    elif spec.case_id.startswith("analytics.team_summary."):
+        key = "team_id"
+        count_name = "matches"
+        fields = ("points", "goals_for", "goals_against", "clean_sheets")
+        records = [
+            {
+                key: index % 20,
+                "venue": "H" if index % 2 == 0 else "A",
+                "points": (0, 1, 3)[index % 3],
+                "goals_for": index % 5,
+                "goals_against": (index + 1) % 5,
+                "clean_sheets": int((index + 1) % 5 == 0),
+            }
+            for index in range(size)
+        ]
+    elif spec.case_id.startswith("analytics.season_summary."):
+        key = "cohort"
+        count_name = "rows"
+        fields = ("pace", "shooting", "passing", "dribbling", "defending", "physical")
+        records = [
+            {
+                key: f"league-{index % 5}/season-{index % 12}",
+                **{name: float((index + offset) % 100) for offset, name in enumerate(fields)},
+            }
+            for index in range(size)
+        ]
+    elif spec.case_id == "analytics.weighted_summary.generator":
+        key = "player_id"
+        count_name = "matches"
+        fields = (
+            "minutes",
+            "observed",
+            "weighted_speed",
+            "weighted_distance",
+            "known_runs",
+            "known_run_minutes",
+        )
+        records = []
+        for index in range(size):
+            minutes = float(index % 90 + 1)
+            observed = float(index % 5 * 30)
+            known = index % 74 != 0 and index % 7 != 0
+            records.append(
+                {
+                    key: index % 74,
+                    "minutes": minutes,
+                    "observed": observed,
+                    "weighted_speed": float(index % 8 + 1) * observed,
+                    "weighted_distance": 12.5 * observed,
+                    "known_runs": index % 4 if known else 0,
+                    "known_run_minutes": minutes if known else 0.0,
+                }
+            )
+    else:
+        raise KeyError(spec.case_id)
+    frame = pd.DataFrame.from_records(records)
+    input_rows = (
+        [_NominalRecord(**record) for record in records]
+        if spec.case_id.endswith("mapping")
+        else records
+    )
+
+    def source() -> Iterable[Mapping[str, Any]]:
+        return (row for row in input_rows) if spec.case_id.endswith("generator") else input_rows
+
+    def candidate() -> list[dict[str, Any]]:
+        return (
+            fpstreams.flow(source())
+            .group_by(key)
+            .aggregate(
+                **{
+                    count_name: fpstreams.agg.count(),
+                    **{name: fpstreams.agg.sum(name) for name in fields},
+                }
+            )
+            .sort_by(key)
+            .to_list()
+        )
+
+    def python_group() -> list[dict[str, Any]]:
+        groups: dict[Any, dict[str, Any]] = {}
+        for row in source():
+            state = groups.get(row[key])
+            if state is None:
+                state = {count_name: 0, **dict.fromkeys(fields, 0)}
+                groups[row[key]] = state
+            state[count_name] += 1
+            for name in fields:
+                state[name] += row[name]
+        return [{key: group, **state} for group, state in sorted(groups.items())]
+
+    def pandas_group() -> list[dict[str, Any]]:
+        aggregations = {count_name: (key, "size"), **{name: (name, "sum") for name in fields}}
+        return frame.groupby(key, sort=True).agg(**aggregations).reset_index().to_dict("records")
+
+    return CompetitiveCase(
+        spec,
+        _implementation("fpstreams", candidate),
+        (_implementation("python", python_group), _implementation("pandas", pandas_group)),
+        operator.eq,
+    )
+
+
+def _reduce_case(spec: CaseSpec, size: int) -> CompetitiveCase:
+    """Use the same stateful callback in the pipeline and plain-loop reference."""
+    decimal = spec.case_id == "terminal.reduce.decimal.generator"
+    values = ("0", "1.25", "-2.5", "bad", "NaN", "3.75") if decimal else tuple(range(100))
+
+    def source() -> Iterator[dict[str, Any]]:
+        for index in range(size):
+            yield {"amount": values[index % len(values)]}
+
+    def initial() -> dict[str, Any]:
+        return {"rows": 0, "total": Decimal(0) if decimal else 0, "invalid": 0, "evidence": []}
+
+    def accumulate(state: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+        state["rows"] += 1
+        value = row["amount"]
+        if decimal:
+            try:
+                value = Decimal(value)
+            except InvalidOperation:
+                value = None
+            if value is None or not value.is_finite():
+                state["invalid"] += 1
+                if len(state["evidence"]) < 20:
+                    state["evidence"].append(state["rows"])
+                return state
+        state["total"] += value
+        return state
+
+    def candidate() -> object:
+        return fpstreams.flow(source()).reduce(accumulate, initial())
+
+    def reference() -> object:
+        state = initial()
+        for row in source():
+            state = accumulate(state, row)
+        return state
+
+    return CompetitiveCase(
+        spec,
+        _implementation("fpstreams", candidate),
+        (_implementation("python", reference),),
+        operator.eq,
+    )
+
+
 def _build_case(spec: CaseSpec, size: int, np: Any, pd: Any, tempdir: Path) -> CompetitiveCase:
+    if spec.case_id.startswith("terminal.reduce."):
+        return _reduce_case(spec, size)
+    if spec.case_id.startswith("analytics."):
+        return _analytics_case(spec, size, pd)
     if spec.case_id.startswith("sorted."):
         return _sorted_case(spec, size)
     if spec.case_id.startswith("flow."):

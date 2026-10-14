@@ -271,7 +271,11 @@ class SpillStore:
         yield from self.read_path(run.path)
 
     def read_path(self, path: Path) -> Iterator[object]:
-        """Read a registered framed path through the query's tracked I/O boundary."""
+        """Read a query-owned framed path through tracked I/O.
+
+        Callers supply paths produced by this store. This reader does not validate
+        registration or make pickle safe for externally supplied files.
+        """
         from ..runtime.failpoints import hit
         from ..runtime.resources import _add_cleanup_failure
 
