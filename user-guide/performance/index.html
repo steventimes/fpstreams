@@ -1751,7 +1751,10 @@ lack the required fields need to be regenerated.</p>
 <p>Cross-commit checks in CI still need a reviewed baseline that matches the
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
-one revision. The <a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
+one revision. These four engine runs collect 21 samples per scenario. Engine
+timing blocks also record process CPU time for diagnosis; regression checks
+continue to use wall time and the existing limits. The
+<a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
 <h2 id="caller-owned-executors">Caller-owned executors</h2>
 <p>Version 2.3.0 accepts <code>executor=</code> in <code>map_parallel()</code> and <code>parallel()</code>.
 An external pool can serve repeated queries without restarting its workers:</p>
