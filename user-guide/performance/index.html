@@ -541,10 +541,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#caller-owned-executors-in-development" class="md-nav__link">
+  <a href="#caller-owned-executors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Caller-owned executors in development
+        Caller-owned executors
       
     </span>
   </a>
@@ -1290,10 +1290,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#caller-owned-executors-in-development" class="md-nav__link">
+  <a href="#caller-owned-executors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Caller-owned executors in development
+        Caller-owned executors
       
     </span>
   </a>
@@ -1752,9 +1752,8 @@ lack the required fields need to be regenerated.</p>
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The <a href="../../roadmap/">roadmap</a> tracks the remaining baseline work.</p>
-<h2 id="caller-owned-executors-in-development">Caller-owned executors in development</h2>
-<p>The development checkout accepts <code>executor=</code> in <code>map_parallel()</code> and
-<code>parallel()</code>. This option is not included in the published 2.2.1 package.
+<h2 id="caller-owned-executors">Caller-owned executors</h2>
+<p>Version 2.3.0 accepts <code>executor=</code> in <code>map_parallel()</code> and <code>parallel()</code>.
 An external pool can serve repeated queries without restarting its workers:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcessPoolExecutor</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">multiprocessing</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_context</span>
@@ -1793,8 +1792,8 @@ cancels queued work and waits for running callbacks to finish, so measure both
 first-result latency and the time until the terminal returns.</p>
 <p>Process callbacks must be importable and picklable. Keep them at module scope,
 and launch a script's pipeline under an <code>if __name__ == "__main__"</code> guard.
-The following example uses the development <code>map_batches()</code> API intended for
-2.3.0. Installed 2.2.1 can use <code>chunk(4).map_parallel(...)</code> instead.
+The following example uses <code>map_batches()</code>, added in 2.3.0.
+Installed 2.2.1 can use <code>chunk(4).map_parallel(...)</code> instead.
 Each batch callback receives a tuple and emits one result. Expand iterable
 results explicitly with <code>flat_map(iter)</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
@@ -1866,7 +1865,7 @@ visible; automatic replay or materialization would change the source contract.</
 <p>Use <code>group_by_sorted()</code>, <code>merge_sorted()</code>, and <code>join_sorted()</code> when inputs are
 already in ascending key order and you need incremental output or bounded state.
 They do not sort the input for you. Added in 2.2.0, they execute in Python.</p>
-<p>The development checkout avoids the selector generator and wrapper tuple for
+<p>Version 2.3.0 avoids the selector generator and wrapper tuple for
 one-key grouping. The selected key still retains its identity, callbacks remain
 live, and type/order validation and lookahead are unchanged. A tuple-valued
 single key uses this route; grouping by multiple selectors keeps the existing
