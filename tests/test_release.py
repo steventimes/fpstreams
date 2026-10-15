@@ -3641,6 +3641,33 @@ def test_exact_dict_sort_benchmark_retains_the_callable_canonical_comparison(
     assert all(type(row) is dict for row in guarded[0])
 
 
+@pytest.mark.parametrize("scenario_index", [0, 1])
+def test_exact_dict_sort_sampling_retains_a_short_slow_burst_without_biasing_the_median(
+    monkeypatch: pytest.MonkeyPatch, scenario_index: int
+) -> None:
+    """A brief slow window remains visible without dominating the sort timing report."""
+    from dataclasses import replace
+
+    module = _benchmark_module()
+    scenario = module._exact_dict_sort_scenarios(10)[scenario_index]
+    clock = 0.0
+    calls = 0
+
+    def task():
+        nonlocal clock, calls
+        calls += 1
+        # Observation and calibration consume two calls before formal sampling.
+        clock += 0.072 if calls <= 9 else 0.060
+
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock)
+    record = module._record(replace(scenario, task=task), 7)
+
+    assert record["median_seconds"] == pytest.approx(0.060)
+    assert record["samples_seconds"][:7] == pytest.approx([0.072] * 7)
+    assert record["sample_count"] == len(record["samples_seconds"])
+    assert len(record["timing_blocks"]["samples"]) == record["sample_count"]
+
+
 def test_arrow_stable_sort_benchmark_retains_the_forced_python_comparison() -> None:
     """The retained-table sort compares one source under forced Python and auto."""
     pytest.importorskip("pyarrow")

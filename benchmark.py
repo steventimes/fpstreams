@@ -1324,6 +1324,8 @@ def _exact_dict_sort_scenarios(size: int) -> list[Scenario]:
     canonical_name = "fpstreams_sort/exact_dict/callable_field/list"
     canonical = fpstreams.rows(records).with_engine("python").sort_by(lambda row: row["value"])
     direct = fpstreams.rows(records).sort_by("value")
+    # Seven 300k-row sorts cover less than a second on CI. Keep a longer fixed
+    # sample window for both routes without dropping samples or changing gates.
     return [
         Scenario(
             canonical_name,
@@ -1332,6 +1334,7 @@ def _exact_dict_sort_scenarios(size: int) -> list[Scenario]:
             "dict_rows",
             "sort",
             None,
+            minimum_repeats=21,
         ),
         Scenario(
             "fpstreams_sort/exact_dict/direct_field/list",
@@ -1340,6 +1343,7 @@ def _exact_dict_sort_scenarios(size: int) -> list[Scenario]:
             "dict_rows",
             "sort",
             canonical_name,
+            minimum_repeats=21,
         ),
     ]
 
