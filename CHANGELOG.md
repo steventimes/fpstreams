@@ -3,7 +3,7 @@
 This file records user-visible and compatibility-relevant changes in fpstreams 2,
 including changed defaults.
 
-## 2.3.0 (candidate)
+## 2.3.0 - 2026-10-15
 
 ### Fixed
 

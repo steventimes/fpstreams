@@ -12,15 +12,11 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
 The current stable release is
-[2.2.1](https://github.com/steventimes/fpstreams/releases/tag/v2.2.1). It fixes
-factory completion and iterable type inference without optional adapters, and
-reduces planning overhead for small identity terminals. The examples use the
-`2.2` API, including explicit sorted operations, atomic file exports, and Pairs
-execution reports.
-
-The development checkout targets 2.3.0. It adds `map_batches()` to sync and async
-flows, caller-owned executors for parallel mapping, and async callback typing
-fixes. Development examples are marked in the
+[2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0). It adds
+`map_batches()` to sync and async flows, caller-owned executors for parallel
+mapping, and async callback typing fixes. The examples use the `2.3` API,
+including explicit sorted operations, atomic file exports, and Pairs execution
+reports. Batch and executor examples are in the
 [performance guide](user-guide/performance.md#process-mapping-and-explicit-batches).
 
 See the [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)

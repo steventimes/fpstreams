@@ -11,16 +11,14 @@ Lazy Python pipelines for iterables and records, with bounded async concurrency.
 
 Python 3.11 or newer is required.
 
-The current stable release is [2.2.1](https://github.com/steventimes/fpstreams/releases/tag/v2.2.1).
-It fixes editor factory resolution and core type inference, and reduces planning
-overhead for small identity terminals. The [roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
-lists the next optimization candidates and their acceptance criteria.
-
-This working tree prepares the 2.3.0 candidate: explicit `map_batches()` for
-sync and async pipelines, reusable mapping executors, and async callback typing
-fixes. See the [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
+The current stable release is [2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0).
+It adds explicit `map_batches()` for sync and async pipelines, reusable mapping
+executors, and async callback typing fixes. See the
+[changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
 [performance guide](https://steventimes.github.io/fpstreams/user-guide/performance/#process-mapping-and-explicit-batches)
-for batch and executor examples.
+for batch and executor examples. The
+[roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
+lists the next optimization candidates and their acceptance criteria.
 
 ## Install
 

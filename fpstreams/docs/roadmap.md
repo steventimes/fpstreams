@@ -1,24 +1,22 @@
 # v2 status and roadmap
 
-[Version 2.2.1](https://github.com/steventimes/fpstreams/releases/tag/v2.2.1) was
-released on October 7, 2026. It fixes editor resolution of the `rows` factory and
-core factory type inference without optional data adapters, and reduces planning
-overhead for identity terminals. It builds on 2.2.0's sorted operations, atomic
-file exports, correctness repairs, and execution reports.
+[Version 2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0)
+adds batch mapping and caller-owned mapping executors, and fixes async callback
+type inference. It builds on 2.2.1's editor and planning fixes and 2.2.0's sorted
+operations, atomic file exports, correctness repairs, and execution reports.
 
-The 2.3.0 candidate starts from `v2.2.1`. Measured optimizations now
+The 2.3.0 measurements use `v2.2.1` as a separate release reference. Optimizations
 reduce setup cost for supported single-stage Python computed-column and
 projection queries. Sorted single-key grouping also avoids per-row wrapper
 allocation, and parallel maps can use a caller-owned executor. Single-collector
-grouping and further submission experiments remain candidates below. Publication
-date is still unset. Some earlier
+grouping and further submission experiments remain candidates below. Some earlier
 correctness repairs increased execution costs, and their recorded regressions
 remain in the measurement history.
 
 ## 2.3.0 candidate checkpoint
 
-The local 2.3.0 candidate adds caller-owned mapping executors and explicit
-`map_batches()` on synchronous and asynchronous flows. Each batch produces one
+The local candidate verification on October 12 covered caller-owned mapping
+executors and explicit `map_batches()` on synchronous and asynchronous flows. Each batch produces one
 result; async callbacks keep the resolved return type, including mixed immediate
 and awaitable returns. Batch sizes, buffering, ordering, pool ownership, and
 cooperative cancellation remain explicit.
@@ -442,15 +440,14 @@ without a release date. Free-threaded CPython 3.14t stays experimental and
 non-blocking; standard CPython 3.11–3.14 is the supported release matrix.
 
 Compatible fixes and internal performance changes are maintenance candidates.
-The caller-owned executor and explicit `map_batches()` additions belong in the
-2.3.0 development scope. Batch mapping uses the existing chunk and map paths,
+The caller-owned executor and explicit `map_batches()` additions ship in
+2.3.0. Batch mapping uses the existing chunk and map paths,
 produces one result per batch, and supports sync pool defaults or async map
 controls. Replay interfaces remain proposals; `reduce_by()` already covers
 per-key state reduction. Dependency updates also get their own
 lock, adapter, and platform validation; they are reviewed separately from
-performance changes. Local package version markers are now 2.3.0 for candidate
-validation; the published stable release remains 2.2.1. Candidate checks and
-release publication are separate steps.
+performance changes. The stable release is 2.3.0. The local candidate results
+above retain their original measurement dates and scope.
 
 The map-based projection, executor-forwarding removal, `Counter(map(...))`,
 frozen-field inlining, and shared Mapping-check shortcuts remain rejected.

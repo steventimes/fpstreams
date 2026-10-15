@@ -447,10 +447,9 @@ runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
 one revision. The [roadmap](../roadmap.md) tracks the remaining baseline work.
 
-## Caller-owned executors in development
+## Caller-owned executors
 
-The development checkout accepts `executor=` in `map_parallel()` and
-`parallel()`. This option is not included in the published 2.2.1 package.
+Version 2.3.0 accepts `executor=` in `map_parallel()` and `parallel()`.
 An external pool can serve repeated queries without restarting its workers:
 
 ```python
@@ -496,8 +495,8 @@ first-result latency and the time until the terminal returns.
 
 Process callbacks must be importable and picklable. Keep them at module scope,
 and launch a script's pipeline under an `if __name__ == "__main__"` guard.
-The following example uses the development `map_batches()` API intended for
-2.3.0. Installed 2.2.1 can use `chunk(4).map_parallel(...)` instead.
+The following example uses `map_batches()`, added in 2.3.0.
+Installed 2.2.1 can use `chunk(4).map_parallel(...)` instead.
 Each batch callback receives a tuple and emits one result. Expand iterable
 results explicitly with `flat_map(iter)`:
 
@@ -581,7 +580,7 @@ Use `group_by_sorted()`, `merge_sorted()`, and `join_sorted()` when inputs are
 already in ascending key order and you need incremental output or bounded state.
 They do not sort the input for you. Added in 2.2.0, they execute in Python.
 
-The development checkout avoids the selector generator and wrapper tuple for
+Version 2.3.0 avoids the selector generator and wrapper tuple for
 one-key grouping. The selected key still retains its identity, callbacks remain
 live, and type/order validation and lookahead are unchanged. A tuple-valued
 single key uses this route; grouping by multiple selectors keeps the existing
