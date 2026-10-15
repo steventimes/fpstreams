@@ -9084,6 +9084,8 @@ def test_quick_benchmark_emits_machine_readable_identity_baselines() -> None:
         if name in {
             "fpstreams_operation/sync/map_parallel",
             "fpstreams_operation/rows/group_spill_aggregate",
+            "fpstreams_sort/exact_dict/callable_field/list",
+            "fpstreams_sort/exact_dict/direct_field/list",
         }:
             expected_count = 21
         elif name.startswith(

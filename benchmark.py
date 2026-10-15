@@ -91,16 +91,20 @@ def measure(function: Task, repeats: int, *, evidence: dict[str, Any] | None = N
     if evidence is not None:
         evidence.update(calibration=calibration, samples=blocks)
 
-    def block(loops: int) -> float:
+    def block(loops: int) -> tuple[float, float]:
+        cpu_started = time.process_time()
         started = time.perf_counter()
         for _ in range(loops):
             function()
-        return time.perf_counter() - started
+        elapsed = time.perf_counter() - started
+        return elapsed, time.process_time() - cpu_started
 
     loops = 1
     while True:
-        elapsed = block(loops)
-        calibration.append({"elapsed_seconds": elapsed, "loops": loops})
+        elapsed, cpu_elapsed = block(loops)
+        calibration.append(
+            {"elapsed_seconds": elapsed, "loops": loops, "process_cpu_seconds": cpu_elapsed}
+        )
         if elapsed >= _MIN_TIMING_BLOCK_SECONDS:
             break
         if loops >= _MAX_TIMING_BLOCK_LOOPS:
@@ -109,8 +113,10 @@ def measure(function: Task, repeats: int, *, evidence: dict[str, Any] | None = N
 
     durations: list[float] = []
     for _ in range(repeats):
-        elapsed = block(loops)
-        blocks.append({"elapsed_seconds": elapsed, "loops": loops})
+        elapsed, cpu_elapsed = block(loops)
+        blocks.append(
+            {"elapsed_seconds": elapsed, "loops": loops, "process_cpu_seconds": cpu_elapsed}
+        )
         durations.append(elapsed / loops)
     return durations
 
@@ -2033,6 +2039,7 @@ def run(
                 **evidence.finish(),
                 "methodology": {
                     "timing": "calibrated_blocks_v1",
+                    "timing_diagnostics": "process_cpu_v1",
                     "timing_block_min_seconds": _MIN_TIMING_BLOCK_SECONDS,
                     "timed_output_normalization": False,
                     "resource_measurement_timed": False,

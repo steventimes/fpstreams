@@ -445,7 +445,10 @@ lack the required fields need to be regenerated.
 Cross-commit checks in CI still need a reviewed baseline that matches the
 runner's environment. Without one, the scheduled workflow compares three runs
 with a fourth from the same checkout. That checks timing consistency within
-one revision. The [roadmap](../roadmap.md) tracks the remaining baseline work.
+one revision. These four engine runs collect 21 samples per scenario. Engine
+timing blocks also record process CPU time for diagnosis; regression checks
+continue to use wall time and the existing limits. The
+[roadmap](../roadmap.md) tracks the remaining baseline work.
 
 ## Caller-owned executors
 

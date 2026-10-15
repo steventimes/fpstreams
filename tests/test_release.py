@@ -4491,6 +4491,7 @@ async def test_timer_node_owns_at_most_one_timer_task() -> None:
 def test_engine_measure_calibrates_blocks_and_retains_raw_evidence(monkeypatch) -> None:
     module = _benchmark_module()
     clock = 0.0
+    cpu_clock = 0.0
     calls = 0
 
     def task():
@@ -4498,7 +4499,13 @@ def test_engine_measure_calibrates_blocks_and_retains_raw_evidence(monkeypatch) 
         calls += 1
         clock += 0.0001
 
+    def cpu_time():
+        nonlocal cpu_clock
+        cpu_clock += 0.00004
+        return cpu_clock
+
     monkeypatch.setattr(module.time, "perf_counter", lambda: clock)
+    monkeypatch.setattr(module.time, "process_time", cpu_time)
     evidence = {}
     samples = module.measure(task, 3, evidence=evidence)
     assert samples == pytest.approx([0.0001] * 3)
@@ -4508,6 +4515,7 @@ def test_engine_measure_calibrates_blocks_and_retains_raw_evidence(monkeypatch) 
     assert len({b["loops"] for b in evidence["samples"]}) == 1
     for block, sample in zip(evidence["samples"], samples, strict=True):
         assert block["elapsed_seconds"] / block["loops"] == sample
+        assert block["process_cpu_seconds"] == pytest.approx(0.00004)
 
 
 def test_engine_measure_propagates_failure_without_retry() -> None:
@@ -4595,6 +4603,31 @@ def test_engine_block_timing_keeps_regression_gate_and_methodology_boundary() ->
     assert any(
         "methodology" in e for e in regression._comparison_errors(baseline, _report(1.0), {})
     )
+
+
+@pytest.mark.parametrize("cpu_seconds", [None, True, -1, float("nan"), float("inf")])
+def test_engine_comparison_rejects_invalid_cpu_block_diagnostics(cpu_seconds) -> None:
+    from benchmarks import regression
+
+    report = _report(1.0)
+    report["metadata"]["methodology"] = {
+        "timing": "calibrated_blocks_v1",
+        "timing_block_min_seconds": 0.005,
+        "timing_diagnostics": "process_cpu_v1",
+    }
+    row = report["results"][0]
+    block = {"elapsed_seconds": 1.0, "loops": 1, "process_cpu_seconds": 0.25}
+    row.update(
+        sample_count=1,
+        samples_seconds=[1.0],
+        timing_blocks={"calibration": [block.copy()], "samples": [block.copy()]},
+    )
+    assert regression._report_errors(report) == []
+    if cpu_seconds is None:
+        del row["timing_blocks"]["samples"][0]["process_cpu_seconds"]
+    else:
+        row["timing_blocks"]["samples"][0]["process_cpu_seconds"] = cpu_seconds
+    assert any("block" in error for error in regression._report_errors(report))
 
 
 def test_engine_measure_bounds_calibration_for_a_stalled_clock(monkeypatch) -> None:

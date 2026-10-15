@@ -179,6 +179,13 @@ def _timing_block_errors(item: dict[str, Any], methodology: dict[str, Any]) -> l
                 or elapsed <= 0
             ):
                 return error
+            cpu_seconds = block.get("process_cpu_seconds")
+            if methodology.get("timing_diagnostics") == "process_cpu_v1" and (
+                type(cpu_seconds) not in (int, float)
+                or not math.isfinite(cpu_seconds)
+                or cpu_seconds < 0
+            ):
+                return error
         if calibration[-1]["elapsed_seconds"] < minimum:
             return error
         for block, sample in zip(blocks, samples, strict=True):
