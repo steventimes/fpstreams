@@ -819,6 +819,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Completed research follow-up on October 18 (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1588,6 +1599,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Completed research follow-up on October 18 (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2334,8 +2356,9 @@ state or RSS bounds. No additional memory guarantee, partition-merging law,
 or fpstreams speedup is established by this comparison. Selected source files
 and decisions are retained in <code>artifacts/clickhouse-research-20261015/</code>.</p>
 <h3 id="references-queued-on-october-17">References queued on October 17</h3>
-<p>These repositories are saved for later review. Analysis, experiments, and
-implementation are deferred until requested.</p>
+<p>These repositories were initially saved for later review. The October 18
+follow-up completed scoped, read-only analysis of their relevant architecture
+and public interfaces. Experiments and implementation remain deferred.</p>
 <ul>
 <li><a href="https://github.com/thingsboard/thingsboard">ThingsBoard</a></li>
 <li><a href="https://github.com/StarRocks/starrocks">StarRocks</a></li>
@@ -2348,6 +2371,33 @@ implementation are deferred until requested.</p>
 paper and project list, proposed uses, and extension markers. Review status is
 recorded separately from the list.</p>
 <h2 id="next-development-steps">Next development steps</h2>
+<h3 id="completed-research-follow-up-on-october-18-unreleased">Completed research follow-up on October 18 (unreleased)</h3>
+<p>The <a href="../research-references/#october-18-completed-review-and-adopted-changes-unreleased">reference review</a>
+is complete for all 25 papers and the selected documentation and implementation
+scope of the non-paper references. The adopted changes are implemented and
+verified:</p>
+<ul>
+<li>integer-index validation before acquiring task and file resources;</li>
+<li>direct synchronous <code>filter_map()</code> execution and integration with async serial
+  fusion, preserving one mapper call per input and all results except <code>None</code>;</li>
+<li>versioned plan dictionaries and <a href="../user-guide/execution-reports/#metadata-export-unreleased">report export</a>,
+  with reports recording metric units, resource scope, and event limits;</li>
+<li>a shared selection mask for proven primitive Arrow comparison chains;</li>
+<li>earlier release of encoded buffers and completed decoded frames during spilling.</li>
+</ul>
+<p>The final source passed 4,769 Python checks with 10 skips and 88.28% branch
+coverage, the existing engine and targeted performance gates, package builds,
+and installed-wheel checks on standard Linux CPython 3.11–3.14. These are local
+development results, not a new release or Windows/macOS acceptance. The stable
+package remains 2.3.0.</p>
+<p>The synchronous cross-node fusion prototype was withdrawn after a performance
+regression; the direct <code>filter_map()</code> implementation keeps the original iterator
+boundaries. The earlier Arrow ranking prototype also remains withdrawn. Neither
+prototype is part of the verified changes. DABA, event-time and distributed
+execution, approximate aggregates, and transparent callback reordering were not
+adopted. A completed reference review does not schedule those capabilities.</p>
+<p>Further optimization candidates remain below. Start from the verified source
+and profile a concrete workload before choosing another implementation change.</p>
 <h3 id="functional-programming-source-follow-up-unreleased">Functional-programming source follow-up (unreleased)</h3>
 <p>The <a href="https://github.com/hemanth/functional-programming-jargon/blob/a362b3a6117eeaa6042fc21e032afa30bab8b5d6/readme.md#anamorphism">FP jargon glossary's unfold example</a>
 motivates <code>flow.unfold</code> and <code>aflow.unfold</code>: a callback returns <code>(value, next_state)</code>
@@ -2472,9 +2522,9 @@ selecting the reference checkout.</p>
 </tr>
 <tr>
 <td>15</td>
-<td>Longer guarded Arrow/Parquet prefixes, unreleased</td>
-<td>Three sizes, narrow and wide/nullable inputs; 216 paired profiles, with single-filter and callback controls</td>
-<td>Keep residual and conversion-error order, live selectors, and one source open; reduce validation reads next</td>
+<td>Longer guarded Arrow/Parquet prefixes and validation-column pruning, unreleased</td>
+<td>Three sizes, narrow and wide/nullable inputs; paired profiles with single-filter, callback, and scanner-cast controls</td>
+<td>Keep residual and conversion-error order, live selectors, and one source open; retain complete validation where casts cannot be ruled out</td>
 </tr>
 <tr>
 <td>16</td>

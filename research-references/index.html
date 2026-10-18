@@ -657,6 +657,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        October 18: completed review and adopted changes (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1178,6 +1189,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        October 18: completed review and adopted changes (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1212,7 +1234,7 @@ execution, spilling groups and joins, bounded async execution, and semantic pari
 mean that a source has been verified, reviewed, implemented, or benchmarked.
 <strong>Extension</strong> marks a proposed capability that requires new functionality. It
 does not mean that the capability is available or scheduled. Review notes below
-identify the limited work actually completed against these references.</p>
+distinguish source review from implemented and verified changes.</p>
 <h2 id="papers-125">Papers, 1–25</h2>
 <table>
 <thead>
@@ -1671,9 +1693,9 @@ parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.</p>
 <h2 id="review-notes">Review notes</h2>
 <p>The <a href="../roadmap/">roadmap</a> records earlier comparisons and experiments separately.
-An existing related feature does not mean that every source in this catalog has
-been reviewed. The <a href="../roadmap/#references-queued-on-october-17">six previously queued repositories</a>
-remain deferred.</p>
+The October 18 follow-up below records the completed review scope. The
+<a href="../roadmap/#references-queued-on-october-17">six previously queued repositories</a>
+received scoped, read-only analysis; experiments and implementation remain deferred.</p>
 <h3 id="october-17-prefix-counts-and-iterator-boundaries">October 17: prefix counts and iterator boundaries</h3>
 <p>Initial reading of reference 43's <a href="https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.take">iterator recipes</a>
 led to a check of fpstreams prefix operations. The Python path rejected floats
@@ -1692,6 +1714,8 @@ comparison preserves that default; a borrowing API remains a separate candidate.
 The initially attempted iterator API URL was unavailable, so the guide was
 reached through the documentation index instead.</p>
 <h3 id="versioned-paper-follow-up">Versioned paper follow-up</h3>
+<p>These were the initial checks on October 17. Full-paper reading was completed
+in the October 18 follow-up below.</p>
 <p>Metadata and abstracts were checked for references
 <a href="https://arxiv.org/abs/1612.06668v1">2</a>,
 <a href="https://arxiv.org/abs/2412.15768v2">3</a>,
@@ -1710,6 +1734,40 @@ rejected the corresponding floating-point counterexample. This does not prove
 integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.</p>
+<h3 id="october-18-completed-review-and-adopted-changes-unreleased">October 18: completed review and adopted changes (unreleased)</h3>
+<p>All 25 papers in this catalog were read in full. The project, specification,
+and commercial references were reviewed through relevant architecture documents,
+public documentation, and selected core implementations. Earlier links in the
+roadmap received the same scoped review. This does not constitute an audit of
+every upstream repository or inspection of closed-source engine internals.</p>
+<p>The resulting changes reuse fpstreams' existing execution paths:</p>
+<ul>
+<li>Query-wide task/file limits and task-scope limits normalize integer-index
+  values once and reject nonintegers before resource acquisition.</li>
+<li>Synchronous <code>filter_map()</code> removes tuple adaptation while preserving iterator
+  boundaries. Async <code>filter_map()</code> uses the existing serial fusion stage. Both
+  call the mapper once per input and discard only <code>None</code>.</li>
+<li><a href="../user-guide/execution-reports/#metadata-export-unreleased">Report metadata export</a>
+  adds a schema version, metric units, resource scope, and event limits. Plan
+  dictionaries also carry a schema version and execution mode. These are
+  fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.</li>
+<li><a href="../user-guide/performance/#preserve-arrow-batches">Guarded Arrow comparison chains</a>
+  can share a selection mask, filter payload once, or count from the mask.
+  Existing conversion, type, and source-boundary checks remain in place.</li>
+<li>Spill decoding releases encoded buffers after decoding and completed decoded
+  frames before reading the next frame.</li>
+</ul>
+<p>The adopted changes passed the complete Python checks, existing performance
+gates, package checks, and installed-wheel checks on standard Linux CPython
+3.11–3.14. They remain unreleased; this review did not publish a new package or
+establish whole-application speedups.</p>
+<p>A synchronous cross-node fusion prototype failed performance gates and was
+withdrawn. The existing <code>window_reduce()</code> uses Two-Stacks Lite; it was not
+replaced with DABA and does not promise worst-case constant work per operation.
+Event-time windows, distributed execution, approximate aggregations, and
+automatic reordering of arbitrary callbacks require separate contracts and
+were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
+the research dependencies and trial records are not product dependencies.</p>
 
 
 
