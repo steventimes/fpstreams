@@ -55,6 +55,30 @@ partition size, matches per key, output rows, and repartition depth.
 Limits must be positive integers except repartition depth, which may be zero.
 Exceeding a limit raises `BufferLimitError` and triggers query cleanup.
 
+## Shared executor budget (unreleased)
+
+`BoundedExecutor` wraps a caller-owned executor. Its limit counts unfinished
+calls across every query using that wrapper, including calls already running.
+Each query's `buffer` still bounds its retained futures and results. Closing
+the wrapper leaves the underlying pool open.
+
+::: fpstreams.BoundedExecutor
+    options:
+      show_root_heading: true
+      members: true
+      inherited_members: false
+
+## File partitions (unreleased)
+
+`FileCheckpoint` computes one output file per stable input partition and
+processing version. See the [recovery recipe](../user-guide/analytics.md#resume-file-partitions-unreleased)
+for file ownership, retries, and storage requirements.
+
+::: fpstreams.FileCheckpoint
+    options:
+      show_root_heading: true
+      members: true
+
 ## SummaryStatistics
 
 `flow(values).collect(Collectors.summarizing())` returns one mutable statistics

@@ -5,9 +5,10 @@ from __future__ import annotations
 import operator
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, SupportsIndex
 
 from .collecting.reducer import Reducer, merge_reducer_states
+from .runtime.iterators import closing_iterators
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,41 +25,58 @@ def check_reducer_laws(
     reducer: Reducer[Any, Any, Any],
     values: Iterable[Any],
     *,
-    partitions: Iterable[tuple[int, ...]],
+    partitions: Iterable[tuple[SupportsIndex, ...]],
     equivalent: Callable[[Any, Any], bool] = operator.eq,
 ) -> ReducerLawReport:
-    """Evaluate reducer laws against materialized example values."""
+    """Sample reducer laws using independent states for each merge expression.
+
+    Materialize and close the input before replaying examples. Each identity and associativity
+    branch starts from fresh initializer/step results, so in-place merging cannot alter the
+    other branch. `equivalent` compares raw states for associativity and finished outputs for
+    identity and partition equivalence. Sampled checks cannot prove laws for arbitrary inputs.
+    Initializers must produce independent state, and replay must not mutate the input examples.
+    Partition sizes support `__index__`; checked layouts contain normalized Python integers.
+    """
     if not isinstance(reducer, Reducer):
         raise TypeError("reducer must be a Reducer")
-    data = tuple(values)
+    materialized: list[Any] = []
+    iterator = iter(values)
+    with closing_iterators((iterator,)):
+        while True:
+            try:
+                materialized.append(next(iterator))
+            except StopIteration:
+                break
+    data = tuple(materialized)
+    del materialized
+
+    def accumulate(sample: Iterable[Any]) -> Any:
+        state = reducer.initializer()
+        for value in sample:
+            state = reducer.step(state, value)
+        return state
+
     reference = reducer.reduce(data)
     merge = reducer.combine
     if merge is None:
         raise ValueError("reducer must have a merge function")
 
-    identity_state = reducer.initializer()
-    sample_state = reducer.initializer()
-    for value in data:
-        sample_state = reducer.step(sample_state, value)
     identity = equivalent(
-        reducer.finish(merge(identity_state, sample_state)),
-        reducer.finish(sample_state),
+        reducer.finish(merge(reducer.initializer(), accumulate(data))),
+        reference,
     )
 
     checked: list[tuple[int, ...]] = []
     partition_equivalent = True
     for layout in partitions:
-        normalized = tuple(layout)
+        normalized = tuple(operator.index(size) for size in layout)
         checked.append(normalized)
         if any(size < 0 for size in normalized) or sum(normalized) != len(data):
             raise ValueError("partition sizes must be non-negative and sum to input length")
         states: list[Any] = []
         offset = 0
         for size in normalized:
-            state = reducer.initializer()
-            for value in data[offset : offset + size]:
-                state = reducer.step(state, value)
-            states.append(state)
+            states.append(accumulate(data[offset : offset + size]))
             offset += size
         result = reducer.finish(merge_reducer_states(states, reducer))
         if not equivalent(reference, result):
@@ -66,14 +84,11 @@ def check_reducer_laws(
 
     associative = True
     if len(data) >= 3:
-        states = []
-        for value in data[:3]:
-            state = reducer.initializer()
-            states.append(reducer.step(state, value))
-        left, middle, right = states
+        left, middle, right = (accumulate((value,)) for value in data[:3])
+        other_left, other_middle, other_right = (accumulate((value,)) for value in data[:3])
         associative = equivalent(
             merge(merge(left, middle), right),
-            merge(left, merge(middle, right)),
+            merge(other_left, merge(other_middle, other_right)),
         )
 
     return ReducerLawReport(associative, identity, partition_equivalent, tuple(checked))
@@ -83,7 +98,7 @@ def assert_reducer_laws(
     reducer: Reducer[Any, Any, Any],
     values: Iterable[Any],
     *,
-    partitions: Iterable[tuple[int, ...]],
+    partitions: Iterable[tuple[SupportsIndex, ...]],
     equivalent: Callable[[Any, Any], bool] = operator.eq,
 ) -> None:
     """Run :func:`check_reducer_laws` and raise for its first failed property."""

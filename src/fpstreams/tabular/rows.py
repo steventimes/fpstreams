@@ -10,10 +10,8 @@ from time import perf_counter_ns
 from types import BuiltinFunctionType, FunctionType
 from typing import Any, BinaryIO, Generic, Literal, TextIO, TypeVar, cast
 
-from ..collecting.aggregation import (
-    Aggregator,
-    prepare_aggregations,
-)
+from ..collecting.aggregation import prepare_aggregations
+from ..collecting.collector import Collector
 from ..errors import DuplicateKeyError, SelectionError
 from ..expressions.row import RowExpr, lit
 from ..expressions.row_eval import LazyRowEvaluator, RowProgram, cached_row_program
@@ -58,7 +56,12 @@ from .join import (
     _normalize_join_selectors,
 )
 from .polars import polars_source
-from .records import _as_record, _require_unique_names
+from .records import (
+    _as_record,
+    _explode_owned_record,
+    _require_unique_names,
+    _unpivot_owned_record,
+)
 from .spill import validate_partitions
 from .spill_limits import SpillLimits
 from .sql import (
@@ -1018,32 +1021,6 @@ def _materialized_unnest_appender(
 _CANONICAL_MATERIALIZED_UNNEST_APPENDER = _materialized_unnest_appender
 
 
-def _explode_owned_record(
-    record: dict[str, Any],
-    values: Any,
-    output_name: str,
-    outer: bool,
-) -> Iterator[dict[str, Any]]:
-    """Expand a converted record while retaining its established ownership behavior."""
-    if values is None:
-        if outer:
-            record[output_name] = None
-            yield record
-        return
-    if isinstance(values, (str, bytes, bytearray, Mapping)) or not isinstance(values, Iterable):
-        raise TypeError("explode selector must return a non-string iterable or None")
-
-    emitted = False
-    for value in values:
-        emitted = True
-        expanded = record.copy()
-        expanded[output_name] = value
-        yield expanded
-    if outer and not emitted:
-        record[output_name] = None
-        yield record
-
-
 def _explode_compatible_record(
     row: Any,
     select: Callable[[Any], Any],
@@ -1151,15 +1128,7 @@ def _unpivot_compatible_record(
     values_to: str,
 ) -> Iterator[dict[str, Any]]:
     """Reshape one owned record through the established conversion path."""
-    record = _as_record(row)
-    missing = [name for name in columns if name not in record]
-    if missing:
-        raise SelectionError(f"missing columns for unpivot: {missing!r}")
-    base = {name: value for name, value in record.items() if name not in columns}
-    if names_to in base or values_to in base:
-        raise DuplicateKeyError("unpivot output names collide with existing columns")
-    for name in columns:
-        yield {**base, names_to: name, values_to: record[name]}
+    yield from _unpivot_owned_record(_as_record(row), columns, names_to, values_to)
 
 
 class _UnpivotExpansion:
@@ -1356,9 +1325,9 @@ def _try_csv_identity_list(source_flow: Flow[Any]) -> tuple[bool, list[Any] | No
     return True, descriptor.materialize()
 
 
-def _pivot_iteration_is_current() -> bool:
-    """Keep changed iteration and source hooks on the ordinary pivot path."""
-    for owner, name, function, code in _PIVOT_ITERATION_BOUNDARIES:
+def _row_iteration_is_current() -> bool:
+    """Keep changed iteration and source hooks on the ordinary row path."""
+    for owner, name, function, code in _ROW_ITERATION_BOUNDARIES:
         if owner.__dict__.get(name) is not function or _function_code(function) is not code:
             return False
     return True
@@ -2498,7 +2467,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
                     and logical.parallel is None
                     and _BUILTIN_TYPE(root) is SourceNode
                     and _BUILTIN_TYPE(root.source) is Source
-                    and _pivot_iteration_is_current()
+                    and _row_iteration_is_current()
                 ):
                     retained = root.source.retained_sequence()
                     if retained is not None and _pivot_selectors_are_current(
@@ -2619,13 +2588,13 @@ class Rows(RowsIOMixin[T], Generic[T]):
             tempdir=tempdir,
         )
 
-    def aggregate(self, **aggregations: Aggregator) -> Rows[dict[str, Any]]:
+    def aggregate(self, **aggregations: Collector[Any, Any, Any]) -> Rows[dict[str, Any]]:
         """Run named Aggregators and return a one-row pipeline.
 
         The computation is deferred and produces a `Rows` pipeline containing one result record.
 
         Args:
-            **aggregations: Named aggregators evaluated during the same traversal.
+            **aggregations: Named collectors evaluated during the same traversal.
 
         Returns:
             A lazy one-row pipeline containing the named results.
@@ -2868,7 +2837,7 @@ class Rows(RowsIOMixin[T], Generic[T]):
         )
 
 
-_PIVOT_ITERATION_BOUNDARIES = (
+_ROW_ITERATION_BOUNDARIES = (
     (Rows, "__iter__", Rows.__iter__, Rows.__iter__.__code__),
     (Flow, "__iter__", Flow.__iter__, Flow.__iter__.__code__),
     (Flow, "_query", Flow._query, Flow._query.__code__),

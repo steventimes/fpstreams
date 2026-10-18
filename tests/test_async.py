@@ -11,6 +11,217 @@ import pytest
 import fpstreams
 
 
+@pytest.mark.parametrize("method", ["take", "limit", "drop", "skip"])
+@pytest.mark.parametrize("count", [float("nan"), float("inf"), 2.5, 2.0])
+async def test_async_prefix_counts_reject_nonintegers_before_opening_source(method, count):
+    opened = []
+
+    async def source():
+        opened.append(True)
+        yield 1
+
+    with pytest.raises(TypeError):
+        getattr(fpstreams.aflow.defer(source), method)(count)
+    assert opened == []
+
+
+@pytest.mark.parametrize(
+    "method,want", [("take", [0, 1]), ("limit", [0, 1]), ("drop", [2, 3, 4]), ("skip", [2, 3, 4])]
+)
+async def test_async_prefix_counts_normalize_index_once_and_close_source(method, want):
+    indexed = []
+    closed = []
+
+    class Count:
+        def __index__(self):
+            indexed.append(True)
+            return 2
+
+    async def source():
+        try:
+            for value in range(5):
+                yield value
+        finally:
+            closed.append(True)
+
+    query = getattr(fpstreams.aflow.defer(source), method)(Count())
+    assert indexed == [True]
+    assert closed == []
+    assert await query.to_list() == want
+    assert await query.to_list() == want
+    assert indexed == [True]
+    assert closed == [True, True]
+
+
+@pytest.mark.parametrize("method", ["take", "limit", "drop", "skip"])
+async def test_async_prefix_counts_preserve_index_error_without_opening_source(method):
+    failure = RuntimeError("count conversion failed")
+    opened = []
+
+    class Count:
+        def __index__(self):
+            raise failure
+
+    async def source():
+        opened.append(True)
+        yield 1
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(fpstreams.aflow.defer(source), method)(Count())
+    assert caught.value is failure
+    assert opened == []
+
+
+@pytest.mark.parametrize("constructor", [fpstreams.aflow, fpstreams.AsyncFlow])
+@pytest.mark.parametrize("awaitable", [False, True])
+async def test_async_unfold_is_lazy_replayable_and_preserves_none(constructor, awaitable):
+    calls = []
+
+    def step(state):
+        calls.append(state)
+        return None if state == 0 else (None if state == 2 else state, state - 1)
+
+    async def async_step(state):
+        await asyncio.sleep(0)
+        return step(state)
+
+    query = constructor.unfold(2, async_step if awaitable else step)
+    assert calls == []
+    assert await query.take(0).to_list() == []
+    assert calls == []
+    assert await query.to_list() == [None, 1]
+    assert await query.take(1).to_list() == [None]
+    assert calls == [2, 1, 0, 2]
+    assert await constructor.unfold(None, lambda state: None).to_list() == []
+
+
+async def test_async_unfold_propagates_errors_and_cancellation_without_extra_steps():
+    started = asyncio.Event()
+    cancelled = []
+
+    async def step(state):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.append(state)
+
+    query = fpstreams.aflow.unfold(7, step)
+    task = asyncio.create_task(query.to_list())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled == [7]
+    with pytest.raises(TypeError, match="function must be callable"):
+        fpstreams.aflow.unfold(0, None)
+    failure = ValueError("async step failed")
+
+    async def fail(state):
+        raise failure
+
+    with pytest.raises(ValueError) as caught:
+        await fpstreams.aflow.unfold(0, fail).to_list()
+    assert caught.value is failure
+    with pytest.raises(ValueError):
+        await fpstreams.aflow.unfold(0, lambda state: (1,)).first()
+
+
+@pytest.mark.parametrize("awaitable", [False, True])
+async def test_async_map_accum_orders_steps_and_resets_state(awaitable):
+    calls = []
+
+    def step(state, item):
+        calls.append((state, item))
+        return state + item, f"{state}:{item}"
+
+    async def async_step(state, item):
+        await asyncio.sleep(0)
+        return step(state, item)
+
+    query = fpstreams.aflow([2, 3]).map_accum(0, async_step if awaitable else step)
+    assert calls == []
+    assert await query.to_list() == ["0:2", "2:3"]
+    assert await query.to_list() == ["0:2", "2:3"]
+    assert calls == [(0, 2), (2, 3), (0, 2), (2, 3)]
+    assert await fpstreams.aflow([]).map_accum(0, step).to_list() == []
+    left, right = query.__aiter__(), query.__aiter__()
+    try:
+        assert [await anext(left), await anext(right), await anext(left), await anext(right)] == [
+            "0:2",
+            "0:2",
+            "2:3",
+            "2:3",
+        ]
+    finally:
+        await left.aclose()
+        await right.aclose()
+
+
+async def test_async_map_accum_preserves_close_errors_and_output_identity():
+    seen = []
+    closed = []
+    value = object()
+    failure = ValueError("state callback failed")
+
+    async def source():
+        try:
+            for item in (value, None):
+                seen.append(item)
+                yield item
+        finally:
+            closed.append(True)
+
+    async def step(state, item):
+        if state:
+            raise failure
+        return state + 1, item
+
+    query = fpstreams.aflow.defer(source).map_accum(0, step)
+    assert await query.take(1).to_list() == [value]
+    assert seen == [value] and closed == [True]
+    with pytest.raises(ValueError) as caught:
+        await query.to_list()
+    assert caught.value is failure and closed == [True, True]
+    assert await fpstreams.aflow([None, value]).map_accum(
+        None, lambda state, item: (state, item)
+    ).to_list() == [None, value]
+    with pytest.raises(TypeError, match="function must be callable"):
+        fpstreams.aflow([]).map_accum(0, None)
+    with pytest.raises(ValueError):
+        await fpstreams.aflow([1]).map_accum(0, lambda state, item: (item,)).to_list()
+
+
+async def test_async_map_accum_cancels_one_transition_and_closes_its_source():
+    started = asyncio.Event()
+    seen = []
+    closed = []
+    cancelled = []
+
+    async def source():
+        try:
+            for value in (1, 2):
+                seen.append(value)
+                yield value
+        finally:
+            closed.append(True)
+
+    async def step(state, value):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.append((state, value))
+
+    query = fpstreams.aflow(source()).map_accum(0, step)
+    task = asyncio.create_task(query.to_list())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen == [1] and cancelled == [(0, 1)] and closed == [True]
+
+
 @pytest.mark.parametrize("keyed", [False, True])
 async def test_async_unique_propagates_equality_failure_and_closes_source(keyed):
     failure = TypeError("async equality failed")
@@ -1614,6 +1825,175 @@ async def test_async_concat_collapse_and_end_transforms_accept_awaitables() -> N
     assert await fpstreams.aflow([]).map_first(times_ten).map_last(times_ten).to_list() == []
 
 
+async def test_async_collapse_collectors_preserve_adjacent_inputs_and_replay():
+    values = [1, 2, 4, 9, 11, 12, 20, 21, 1]
+    expected = [[1, 2, 4], [9, 11, 12], [20, 21], [1]]
+    pairs = []
+
+    async def adjacent(left, right):
+        await asyncio.sleep(0)
+        pairs.append((left, right))
+        return 0 <= right - left <= 2
+
+    query = fpstreams.aflow(values).collapse(adjacent, fpstreams.Collectors.to_list())
+    assert await query.to_list() == expected
+    assert pairs == list(pairwise(values))
+    pairs.clear()
+    assert await query.to_list() == expected
+    assert pairs == list(pairwise(values))
+    assert await fpstreams.aflow(values).collapse(
+        adjacent, fpstreams.Collectors.head(0)
+    ).to_list() == [[] for _ in expected]
+    initialized = []
+    nothing = fpstreams.Collector(lambda: initialized.append(True), lambda state, value: None)
+    assert await fpstreams.aflow([]).collapse(adjacent, nothing).to_list() == []
+    assert initialized == []
+    assert await fpstreams.aflow([None, None, 0, None]).collapse(
+        lambda a, b: a == b, fpstreams.Collectors.first()
+    ).to_list() == [None, 0, None]
+
+
+@pytest.mark.parametrize("pending", ("source", "predicate"))
+async def test_async_collapse_collector_cancellation_does_not_finish_pending_run(pending):
+    waiting = asyncio.Event()
+    closed, finished, emitted = [], [], []
+
+    async def source():
+        try:
+            for value in (1, 2, 10):
+                yield value
+            waiting.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+
+    async def adjacent(left, right):
+        if pending == "predicate" and right == 10:
+            waiting.set()
+            await asyncio.Event().wait()
+        return left // 10 == right // 10
+
+    def finish(state):
+        finished.append(tuple(state))
+        return tuple(state)
+
+    collector = fpstreams.Collector(list, lambda state, value: [*state, value], finish)
+    task = asyncio.create_task(
+        fpstreams.aflow(source()).collapse(adjacent, collector).tap(emitted.append).to_list()
+    )
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed == [True]
+        assert finished == emitted == ([(1, 2)] if pending == "source" else [])
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("hook", ("predicate", "finish", "source"))
+async def test_async_collapse_collector_failures_preserve_primary_error(hook):
+    failure = LookupError(hook)
+    cleanup = RuntimeError("async collapse cleanup failed")
+    emitted, finished = [], []
+
+    class Source:
+        def __init__(self):
+            self.values = iter((1, 2, 10))
+            self.closes = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.values)
+            except StopIteration:
+                if hook == "source":
+                    raise failure from None
+                raise StopAsyncIteration from None
+
+        async def aclose(self):
+            self.closes += 1
+            raise cleanup
+
+    async def adjacent(left, right):
+        await asyncio.sleep(0)
+        if hook == "predicate" and right == 10:
+            raise failure
+        return left // 10 == right // 10
+
+    def finish(state):
+        finished.append(tuple(state))
+        if hook == "finish":
+            raise failure
+        return tuple(state)
+
+    source = Source()
+    collector = fpstreams.Collector(list, lambda state, value: [*state, value], finish)
+    with pytest.raises(LookupError) as caught:
+        await fpstreams.aflow(source).collapse(adjacent, collector).tap(emitted.append).to_list()
+    assert caught.value is failure and source.closes == 1
+    assert any("async collapse cleanup failed" in note for note in failure.__notes__)
+    assert emitted == ([(1, 2)] if hook == "source" else [])
+    assert finished == ([(1, 2)] if hook in ("finish", "source") else [])
+
+
+async def test_collapse_collector_awaitable_results_remain_data_on_both_paths():
+    awaited = []
+
+    async def finish(state):
+        awaited.append(tuple(state))
+        return tuple(state)
+
+    collector = fpstreams.Collector(list, lambda state, value: [*state, value], finish)
+    for mode in ("sync", "async"):
+        query = fpstreams.flow([1, 1, 2]) if mode == "sync" else fpstreams.aflow([1, 1, 2])
+        query = query.collapse(lambda a, b: a == b, collector)
+        results = query.to_list() if mode == "sync" else await query.to_list()
+        assert awaited == []
+        try:
+            assert [await result for result in results] == [(1, 1), (2,)]
+            assert awaited == [(1, 1), (2,)]
+        finally:
+            for result in results:
+                result.close()
+        awaited.clear()
+
+
+async def test_collapse_dispatch_preserves_opaque_callables_and_real_collector_subclasses():
+    class Merger:
+        def __getattribute__(self, name):
+            if name == "__class__":
+                raise AssertionError("merger class inspection")
+            return object.__getattribute__(self, name)
+
+        def __call__(self, left, right):
+            return left + right
+
+    class AsyncMerger(Merger):
+        async def __call__(self, left, right):
+            return left + right
+
+    class Count(fpstreams.Collector):
+        def __getattribute__(self, name):
+            if name == "__class__":
+                raise AssertionError("collector class inspection")
+            return object.__getattribute__(self, name)
+
+    def adjacent(left, right):
+        return left == right
+
+    assert fpstreams.flow([1, 1, 2]).collapse(adjacent, Merger()).to_list() == [2, 2]
+    assert await fpstreams.aflow([1, 1, 2]).collapse(adjacent, Merger()).to_list() == [2, 2]
+    assert await fpstreams.aflow([1, 1, 2]).collapse(adjacent, AsyncMerger()).to_list() == [2, 2]
+    collector = Count(lambda: 0, lambda state, value: state + 1)
+    assert fpstreams.flow([1, 1, 2]).collapse(adjacent, collector).to_list() == [2, 1]
+    assert await fpstreams.aflow([1, 1, 2]).collapse(adjacent, collector).to_list() == [2, 1]
+
+
 @pytest.mark.asyncio
 async def test_async_attempt_and_partition_terminals_preserve_errors_and_cancellation() -> None:
     async def work(value: int) -> int:
@@ -2299,6 +2679,33 @@ async def test_async_run_with_report_allows_nested_sync_source_plans() -> None:
 
     assert execution.value == [2, 4]
     assert execution.report.compiler_engine == "async"
+    assert execution.report.events[0].compiler_engine == "async"
+    assert any(event.compiler_engine == "python" for event in execution.report.events)
+
+
+@pytest.mark.asyncio
+async def test_run_with_report_events_keep_concurrent_queries_separate() -> None:
+    async def double(value):
+        await asyncio.sleep(0)
+        return value * 2
+
+    async def observed():
+        await asyncio.sleep(0)
+        source = fpstreams.flow([1, 2]).with_engine("python").map(lambda value: value)
+        return await fpstreams.aflow(source).map_async(double).run_with_report("to_list")
+
+    async def ordinary():
+        await asyncio.sleep(0)
+        return await fpstreams.aflow([3, 4]).map_async(double).run_with_report("to_list")
+
+    diagnostic, plain = await asyncio.gather(observed(), ordinary())
+
+    assert diagnostic.value == [2, 4]
+    assert plain.value == [6, 8]
+    assert any(event.compiler_engine == "python" for event in diagnostic.report.events)
+    assert plain.report.events
+    assert all(event.compiler_engine == "async" for event in plain.report.events)
+    assert plain.report.events_truncated is False
 
 
 @pytest.mark.asyncio
@@ -2511,3 +2918,238 @@ async def test_async_backpressure_cancel_contract(ordered) -> None:
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_async_window_reduce_preserves_order_boundaries_and_replay():
+    from functools import reduce
+    from operator import add
+
+    values = [(value,) for value in range(47)]
+
+    async def source():
+        for value in values:
+            await asyncio.sleep(0)
+            yield value
+
+    for size, step in ((1, 1), (7, 1), (7, 3), (7, 7), (7, 11), (63, 3)):
+        starts = range(0, max(1, len(values) - size + 1), step)
+        expected = [reduce(add, values[start : start + size]) for start in starts]
+        query = fpstreams.aflow.defer(source).window_reduce(size, add, step=step)
+        assert await query.to_list() == expected
+        assert await query.to_list() == expected
+    assert await fpstreams.aflow([]).window_reduce(3, add).to_list() == []
+    assert (
+        await fpstreams.aflow([None] * 8).window_reduce(3, lambda a, b: None).to_list()
+        == [None] * 6
+    )
+    operation = query.explain("list").to_dict()["operations"][0]
+    assert operation["name"] == "window_reduce"
+    assert operation["state"] == {"kind": "bounded", "bound": 64, "spillable": False}
+
+
+async def test_async_window_reduce_short_circuit_and_failures_close_source():
+    from operator import add
+
+    closed = []
+    pulled = []
+    failure = LookupError("combine failed")
+    source_failure = ValueError("source failed")
+
+    async def source():
+        try:
+            for value in range(10):
+                pulled.append(value)
+                yield value
+            raise source_failure
+        finally:
+            closed.append(True)
+
+    query = fpstreams.aflow.defer(source).window_reduce(3, add)
+    assert await query.take(1).to_list() == [3]
+    assert pulled == [0, 1, 2] and closed == [True]
+
+    def combine(left, right):
+        raise failure
+
+    with pytest.raises(LookupError) as caught:
+        await fpstreams.aflow.defer(source).window_reduce(3, combine).to_list()
+    assert caught.value is failure
+    assert closed == [True, True]
+    emitted = []
+    with pytest.raises(ValueError) as caught:
+        await query.tap(emitted.append).to_list()
+    assert caught.value is source_failure and emitted == list(range(3, 25, 3))
+    assert closed == [True, True, True]
+
+
+async def test_async_window_reduce_cancellation_closes_pending_pull():
+    from operator import add
+
+    waiting = asyncio.Event()
+    closed = asyncio.Event()
+    emitted = []
+
+    async def source():
+        try:
+            for value in (1, 2, 3):
+                yield value
+            waiting.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    task = asyncio.create_task(
+        fpstreams.aflow(source()).window_reduce(3, add).tap(emitted.append).to_list()
+    )
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert emitted == [6] and closed.is_set()
+
+
+async def test_async_disjoint_window_reduce_keeps_tail_errors_identity_and_large_counts():
+    import sys
+    from operator import add
+
+    huge = sys.maxsize + 17
+    for size, step, expected in (
+        (3, 5, [3, 18]),
+        (3, 11, [3]),
+        (1, huge, [0]),
+        (huge, huge, [36]),
+        (3, huge, [3]),
+    ):
+        assert (
+            await fpstreams.aflow(range(9)).window_reduce(size, add, step=step).to_list()
+            == expected
+        )
+    left, right = object(), object()
+    values = [None, left, right, None, right]
+    assert await fpstreams.aflow(values).window_reduce(2, lambda a, b: a, step=2).to_list() == [
+        None,
+        right,
+    ]
+
+    calls, emitted, pulled = [], [], []
+    failure = LookupError("incomplete tail failed")
+    cleanup = RuntimeError("window source cleanup failed")
+
+    async def source():
+        try:
+            for value in range(7):
+                pulled.append(value)
+                yield value
+        finally:
+            raise cleanup
+
+    def combine(left, right):
+        calls.append((left, right))
+        if right == 6:
+            raise failure
+        return left + right
+
+    with pytest.raises(LookupError) as caught:
+        await (
+            fpstreams.aflow(source())
+            .window_reduce(3, combine, step=5)
+            .tap(emitted.append)
+            .to_list()
+        )
+    assert caught.value is failure
+    assert pulled == list(range(7)) and emitted == [3]
+    assert calls == [(0, 1), (1, 2), (5, 6)]
+    assert any("window source cleanup failed" in note for note in failure.__notes__)
+
+
+async def test_async_disjoint_window_reduce_cancels_pending_gap_without_combining():
+    waiting, closed = asyncio.Event(), asyncio.Event()
+    pulled, calls, emitted = [], [], []
+
+    async def source():
+        try:
+            for value in range(4):
+                pulled.append(value)
+                yield value
+            waiting.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    def combine(left, right):
+        calls.append((left, right))
+        return left + right
+
+    task = asyncio.create_task(
+        fpstreams.aflow(source()).window_reduce(3, combine, step=10).tap(emitted.append).to_list()
+    )
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert pulled == [0, 1, 2, 3] and emitted == [3] and closed.is_set()
+        assert calls == [(0, 1), (1, 2)]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("ending", ["limit", "failure", "cancel"])
+async def test_async_filter_map_fusion_handles_mixed_results_and_cleanup(ending):
+    events = []
+    empty = []
+    started = asyncio.Event()
+    failure = LookupError("async filter_map failed")
+
+    async def source():
+        try:
+            for value in range(8):
+                events.append(("pull", value))
+                yield value
+        finally:
+            events.append(("closed",))
+
+    async def resolve(value):
+        await asyncio.sleep(0)
+        return value
+
+    async def pending():
+        started.set()
+        await asyncio.Event().wait()
+
+    def mapper(value):
+        events.append(("map", value))
+        if value == 3:
+            if ending == "failure":
+                raise failure
+            return pending()
+        return resolve(empty) if value == 2 else 0 if value == 1 else None
+
+    emitted = []
+    query = (
+        fpstreams.aflow(source()).map(lambda value: value).filter_map(mapper).tap(emitted.append)
+    )
+    plan = query.explain().to_dict()
+    assert plan["mode"] == "async" and plan["schema_version"] == 1
+    if ending == "limit":
+        observed = await query.take(2).run_with_report("to_list")
+        assert observed.value == [0, []] and observed.value[1] is empty
+        assert observed.report.to_dict()["resource_scope"] == "query_owned"
+        last = 2
+    elif ending == "failure":
+        with pytest.raises(LookupError) as caught:
+            await query.to_list()
+        assert caught.value is failure
+        last = 3
+    else:
+        task = asyncio.create_task(query.to_list())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        last = 3
+    assert emitted == [0, []] and emitted[1] is empty
+    assert events == [
+        event for value in range(last + 1) for event in (("pull", value), ("map", value))
+    ] + [("closed",)]

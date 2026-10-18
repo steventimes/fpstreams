@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import heapq
+import operator
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import CodeType, FunctionType, MappingProxyType
@@ -12,6 +14,8 @@ from ..runtime._distinct import DistinctKey, HashFailure
 from . import _collector_base
 from ._collector_base import Aggregator as Aggregator
 from .collector import (
+    Collector,
+    CollectorItems,
     finish_collectors,
     initialize_collectors,
     step_collectors,
@@ -561,7 +565,9 @@ _CANONICAL_GROUP_SELECTOR_MATCHES_STEP = _group_selector_matches_step
 _CANONICAL_GROUP_SELECTOR_MATCHES_STEP_CODE = _group_selector_matches_step.__code__
 
 
-def native_group_aggregation(aggregation: Aggregator) -> NativeGroupAggregation | None:
+def native_group_aggregation(
+    aggregation: Collector[Any, Any, Any],
+) -> NativeGroupAggregation | None:
     """Recognize a factory result without trusting user-constructible native metadata."""
     if (
         _GROUP_STEP_KINDS is not _CANONICAL_GROUP_STEP_KINDS
@@ -620,7 +626,7 @@ def native_group_aggregation(aggregation: Aggregator) -> NativeGroupAggregation 
     )
 
 
-def project_count_aggregation(aggregation: Aggregator) -> bool:
+def project_count_aggregation(aggregation: Collector[Any, Any, Any]) -> bool:
     """Recognize only the constant-size count reducer built by :meth:`agg.count`.
 
     Native metadata and reducer laws are user-constructible, so neither is enough
@@ -647,7 +653,7 @@ def project_count_aggregation(aggregation: Aggregator) -> bool:
     )
 
 
-def native_aggregation_is_live(aggregation: Aggregator) -> bool:
+def native_aggregation_is_live(aggregation: Collector[Any, Any, Any]) -> bool:
     """Recognize an unchanged project-created whole-value native aggregation."""
     if project_count_aggregation(aggregation):
         return True
@@ -709,14 +715,16 @@ class _DistinctState:
         return len(self.hashable) + len(self.unhashable)
 
 
-AggregationItems = tuple[tuple[str, Aggregator], ...]
+AggregationItems = CollectorItems
 
 
-def prepare_aggregations(aggregations: Mapping[str, Aggregator]) -> AggregationItems:
+def prepare_aggregations(
+    aggregations: Mapping[str, Collector[Any, Any, Any]],
+) -> AggregationItems:
     """Validate named aggregators and freeze mapping order as `(name, aggregator)` pairs.
 
-    The mapping must be nonempty, names must be truthy, and every value must be an
-    :class:`Aggregator` rather than an arbitrary collector.
+    The mapping must be nonempty, names must be truthy, and every value must be a
+    :class:`Collector`, including aggregators built by :data:`agg`.
     """
     if not aggregations:
         raise ValueError("aggregate requires at least one named aggregation")
@@ -724,8 +732,8 @@ def prepare_aggregations(aggregations: Mapping[str, Aggregator]) -> AggregationI
     for name, aggregation in items:
         if not name:
             raise ValueError("aggregate names cannot be empty")
-        if not isinstance(aggregation, Aggregator):
-            raise TypeError(f"aggregate {name!r} must be an Aggregator")
+        if not isinstance(aggregation, Collector):
+            raise TypeError(f"aggregate {name!r} must be an Aggregator or Collector")
     return items
 
 
@@ -797,6 +805,75 @@ def finish_native_aggregations(
         else:
             result[name] = values[native.kind]
     return result
+
+
+def _extremum_by(selector: Selector, better: Callable[[Any, Any], bool]) -> Aggregator:
+    """Retain a winning item and its once-selected key without comparing payloads."""
+    select = compile_selector(selector)
+
+    def step(state: Any, row: Any) -> Any:
+        key = select(row)
+        return (key, row) if state is _MISSING or better(key, state[0]) else state
+
+    return Aggregator(
+        lambda: _MISSING,
+        step,
+        lambda state: None if state is _MISSING else state[1],
+    )
+
+
+@dataclass(slots=True, eq=False)
+class _RankedItem:
+    """Order heap entries by key and encounter index, never by their payload."""
+
+    key: Any
+    index: int
+    value: Any
+    largest: bool
+
+    def __lt__(self, other: _RankedItem) -> bool:
+        if self.key is other.key or self.key == other.key:
+            return self.index > other.index
+        return bool(self.key < other.key if self.largest else other.key < self.key)
+
+
+@dataclass(slots=True)
+class _RankedState:
+    """Retain only the requested winners and the next encounter index."""
+
+    heap: list[_RankedItem]
+    index: int = 0
+
+
+def _ranked(count: int, key: Selector | None, *, largest: bool) -> Aggregator:
+    size = operator.index(count)
+    if size < 0:
+        raise ValueError("count must be non-negative")
+    select = _identity if key is None else compile_selector(key)
+    if size == 0:
+        return Aggregator(list, lambda state, _row: state, done=lambda _state: True)
+
+    def step(state: _RankedState, row: Any) -> _RankedState:
+        selected = select(row)
+        index = state.index
+        state.index += 1
+        if len(state.heap) < size:
+            heapq.heappush(state.heap, _RankedItem(selected, index, row, largest))
+        else:
+            worst = state.heap[0]
+            # Later ties cannot displace an earlier item. Avoid allocating an
+            # entry for every discarded row while keeping key comparisons live.
+            if worst.key is selected or worst.key == selected:
+                return state
+            if worst.key < selected if largest else selected < worst.key:
+                heapq.heapreplace(state.heap, _RankedItem(selected, index, row, largest))
+        return state
+
+    return Aggregator(
+        lambda: _RankedState([]),
+        step,
+        lambda state: [item.value for item in sorted(state.heap, reverse=True)],
+    )
 
 
 class _AggFactory:
@@ -1065,6 +1142,72 @@ class _AggFactory:
             "max",
             selector,
         )
+
+    def min_by(self, selector: Selector) -> Aggregator:
+        """Keep the first whole input item with the smallest selected key.
+
+        The selector runs once per item. Each subsequent key is compared with the
+        retained key using `<`; ties keep the earlier item. One key and one item
+        are retained per aggregation state. The source is fully consumed.
+
+        Args:
+            selector: Required field, path, index, expression, or callable selecting a key.
+
+        Returns:
+            An aggregator returning the original winning item, or `None` for empty input.
+                Keys follow Python comparison rules, including errors and NaN behavior.
+        """
+        return _extremum_by(selector, operator.lt)
+
+    def max_by(self, selector: Selector) -> Aggregator:
+        """Keep the first whole input item with the largest selected key.
+
+        The selector runs once per item. Each subsequent key is compared with the
+        retained key using `>`; ties keep the earlier item. One key and one item
+        are retained per aggregation state. The source is fully consumed.
+
+        Args:
+            selector: Required field, path, index, expression, or callable selecting a key.
+
+        Returns:
+            An aggregator returning the original winning item, or `None` for empty input.
+                Keys follow Python comparison rules, including errors and NaN behavior.
+        """
+        return _extremum_by(selector, operator.gt)
+
+    def top(self, count: int, *, key: Selector | None = None) -> Aggregator:
+        """Keep up to `count` whole items in descending key order.
+
+        Equal keys retain input order. The key runs once per item and payloads
+        are never compared. Each state retains at most `count` items. Keys use
+        Python heap and sorting comparisons; use consistently ordered keys.
+
+        Args:
+            count: Non-negative integer number of items to retain.
+            key: Optional selector; `None` compares whole items.
+
+        Returns:
+            An aggregator returning a list, empty for empty input or zero count.
+                Zero count does not invoke the key or pull an independent source.
+        """
+        return _ranked(count, key, largest=True)
+
+    def bottom(self, count: int, *, key: Selector | None = None) -> Aggregator:
+        """Keep up to `count` whole items in ascending key order.
+
+        Equal keys retain input order. The key runs once per item and payloads
+        are never compared. Each state retains at most `count` items. Keys use
+        Python heap and sorting comparisons; use consistently ordered keys.
+
+        Args:
+            count: Non-negative integer number of items to retain.
+            key: Optional selector; `None` compares whole items.
+
+        Returns:
+            An aggregator returning a list, empty for empty input or zero count.
+                Zero count does not invoke the key or pull an independent source.
+        """
+        return _ranked(count, key, largest=False)
 
     def first(self, selector: Selector | None = None) -> Aggregator:
         """Build an aggregator that stops after the first selected value.

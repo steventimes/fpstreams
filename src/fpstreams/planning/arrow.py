@@ -324,8 +324,8 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
     Forced engines and non-Arrow sources return ``None``. Planning stops at the first
     unsupported operation or opaque Python callable; accepted expression nodes remain guarded
     because runtime schema and kernel support are checked by the Arrow executor. A direct
-    projection is eligible only as the plan's sole operation; finding one after another stage
-    discards that tentative prefix so Arrow expression semantics cannot leak into the result.
+    projection is eligible alone or after a chain of direct primitive comparisons. Other
+    expression/projection combinations discard the tentative prefix to retain Python semantics.
     """
     if plan.engine != "auto":
         return None
@@ -340,9 +340,8 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
                 ArrowBoundaryReason.UNSUPPORTED_OPERATION,
                 True,
             )
-        # Only a lone exact direct select may cross the row-wrapper boundary.  Combining it
-        # with an expression stage would make Arrow's overflow, null, cast, and operator
-        # protocols observable before the canonical Python projection.
+        # A final direct select may follow only guarded primitive comparisons. Other
+        # expression stages can expose Python overflow, null, cast, or callback protocols.
         callable_node = getattr(operation, "function", getattr(operation, "predicate", None))
         if type(callable_node) is RowExpr:
             if isinstance(operation, FilterOp) and operation.negate:
@@ -366,10 +365,9 @@ def plan_arrow_prefix(plan: Pipeline) -> ArrowPrefixPlan | None:
             )
         if (
             projection is not None
-            and index == 1
-            and len(plan.operations) == 2
-            and len(accepted) == 1
-            and _direct_primitive_filter(accepted[0])
+            and index == len(plan.operations) - 1
+            and len(accepted) == index
+            and all(_direct_primitive_filter(operation) for operation in accepted)
         ):
             accepted.append(operation)
             return ArrowPrefixPlan(
@@ -402,13 +400,10 @@ def supports_arrow_table_materialization(prefix: ArrowPrefixPlan) -> bool:
         return True
     if prefix.projection is None:
         return all(_direct_primitive_filter(operation) for operation in operations)
-    return bool(prefix.projection.selectors) and (
-        (len(operations) == 1 and isinstance(operations[0], MapOp))
-        or (
-            len(operations) == 2
-            and _direct_primitive_filter(operations[0])
-            and isinstance(operations[1], MapOp)
-        )
+    return (
+        bool(prefix.projection.selectors)
+        and isinstance(operations[-1], MapOp)
+        and all(_direct_primitive_filter(operation) for operation in operations[:-1])
     )
 
 

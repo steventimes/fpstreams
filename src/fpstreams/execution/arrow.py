@@ -42,6 +42,8 @@ from .sync import execute_operations
 _EXPECTED_ARROW_ERRORS = (ArithmeticError, NotImplementedError, TypeError, ValueError)
 _ARROW_PYTHON_EXTREME_MAX_ROWS = 128
 _ARROW_REDUCTION_MISSING = object()
+_COMBINED_FILTER_MIN_ROWS = 0
+_COMBINED_FILTER_MIN_COLUMNS = 1
 
 
 class BatchFallbackReason(StrEnum):
@@ -447,10 +449,8 @@ def _can_execute_batch_program(
     if projection is not None:
         if not operations or _direct_projection(operations[-1]) != projection:
             return False
-        return (len(operations) == 1 and isinstance(operations[0], MapOp)) or (
-            len(operations) == 2
-            and _direct_primitive_filter(operations[0])
-            and isinstance(operations[1], MapOp)
+        return isinstance(operations[-1], MapOp) and all(
+            _direct_primitive_filter(operation) for operation in operations[:-1]
         )
     return (len(operations) == 1 and isinstance(operations[0], (FilterOp, MapOp))) or (
         len(operations) > 1 and _direct_filter_program(operations)
@@ -468,6 +468,35 @@ def _project_batch_rows(batch: Any, projection: ArrowProjectionSpec) -> Iterator
         yield {output: row[source] for output, source in projection.selectors}
 
 
+def _combined_filter_mask(
+    batch: Any,
+    operations: tuple[Any, ...],
+    projection: ArrowProjectionSpec | None,
+) -> Any | None:
+    """Share one selection mask across already-proven primitive comparisons.
+
+    Callers retain the source-conversion and batch-safety guards. Only closed,
+    non-null primitive comparisons can be evaluated on the original batch; an
+    opaque callback or a potentially failing expression keeps sequential filtering.
+    """
+    filter_count = len(operations) - (projection is not None)
+    if (
+        filter_count < 2
+        or batch.num_rows == 0
+        or batch.num_rows < _COMBINED_FILTER_MIN_ROWS
+        or batch.num_columns < _COMBINED_FILTER_MIN_COLUMNS
+    ):
+        return None
+    filters = operations[:filter_count]
+    if not _direct_filter_program(filters):
+        return None
+    _pa, pc = _arrow_modules()
+    mask = lower_row_expression(_expr_of(filters[0]), batch)
+    for operation in filters[1:]:
+        mask = pc.and_(mask, lower_row_expression(_expr_of(operation), batch))
+    return mask
+
+
 def _execute_batch_program(
     batch: Any,
     operations: tuple[Any, ...],
@@ -476,6 +505,10 @@ def _execute_batch_program(
     """Apply a shape-preserving Arrow filter sequence and an optional final map."""
     _pa, pc = _arrow_modules()
     current = batch
+    mask = _combined_filter_mask(batch, operations, projection)
+    if mask is not None:
+        current = pc.filter(batch, mask)
+        operations = operations[-1:] if projection is not None else ()
     for index, operation in enumerate(operations):
         if projection is not None and index == len(operations) - 1:
             yield from _project_batch_rows(current, projection)
@@ -538,9 +571,11 @@ def _count_scan_columns(
 def _scan_equality(prefix: ArrowPrefixPlan) -> tuple[str, object] | None:
     """Return one exact built-in equality that a guarded source may use as an I/O hint."""
     operations = prefix.operations
-    if len(operations) not in {1, 2} or not isinstance(operations[0], FilterOp):
-        return None
-    if len(operations) == 2 and (prefix.projection is None or not isinstance(operations[1], MapOp)):
+    if (
+        not operations
+        or not isinstance(operations[0], FilterOp)
+        or not _can_execute_batch_program(operations, prefix.projection)
+    ):
         return None
     return direct_exact_equality(operations[0])
 
@@ -548,9 +583,11 @@ def _scan_equality(prefix: ArrowPrefixPlan) -> tuple[str, object] | None:
 def _scan_range_predicate(prefix: ArrowPrefixPlan) -> RangePredicate | None:
     """Return one exact i64 range that a guarded source may use as an I/O hint."""
     operations = prefix.operations
-    if len(operations) not in {1, 2} or not isinstance(operations[0], FilterOp):
-        return None
-    if len(operations) == 2 and (prefix.projection is None or not isinstance(operations[1], MapOp)):
+    if (
+        not operations
+        or not isinstance(operations[0], FilterOp)
+        or not _can_execute_batch_program(operations, prefix.projection)
+    ):
         return None
     return direct_exact_i64_range(operations[0])
 
@@ -581,9 +618,11 @@ def _execute_first_batch_program(
 def _execute_first_python_batch(
     batch: Any,
     operations: tuple[Any, ...],
+    *,
+    rows: list[Any] | None = None,
 ) -> tuple[bool, Any | None]:
     """Apply a guarded batch prefix row-by-row until its first accepted result."""
-    for item in batch_to_rows(batch):
+    for item in batch_to_rows(batch) if rows is None else rows:
         current = item
         accepted = True
         for operation in operations:
@@ -635,17 +674,13 @@ def _rechunk_batches(pa: Any, batches: Iterator[Any], batch_size: int) -> Iterat
             yield pending[0] if len(pending) == 1 else _concat_record_batches(pa, pending)
 
 
-def _execute_python_batch(batch: Any, operations: tuple[Any, ...]) -> list[Any]:
+def _execute_python_batch(
+    batch: Any, operations: tuple[Any, ...], *, rows: list[Any] | None = None
+) -> list[Any]:
     """Run one unsafe Arrow batch through the established Python row operations."""
-    current: list[Any] = batch_to_rows(batch)
-    for operation in operations:
-        if isinstance(operation, MapOp):
-            current = [operation.function(item) for item in current]
-        else:
-            current = [
-                item for item in current if bool(operation.predicate(item)) is not operation.negate
-            ]
-    return current
+    return list(
+        execute_operations(iter(batch_to_rows(batch) if rows is None else rows), operations)
+    )
 
 
 def _count_python_batch(batch: Any, operations: tuple[Any, ...]) -> int:
@@ -660,6 +695,9 @@ def _count_batch_program(
 ) -> int:
     """Evaluate one proven complete batch program and return its output cardinality."""
     _pa, pc = _arrow_modules()
+    mask = _combined_filter_mask(batch, operations, projection)
+    if mask is not None:
+        return int(pc.sum(mask).as_py())
     current = batch
     for index, operation in enumerate(operations):
         if projection is not None and index == len(operations) - 1:
@@ -721,7 +759,10 @@ def try_arrow_count(
     total = 0
     with closing_iterators((batches,)):
         for batch in batches:
-            observe_arrow_batch_rows(batch)
+            rows = observe_arrow_batch_rows(batch)
+            if rows is not None:
+                total += sum(1 for _ in execute_operations(iter(rows), prefix.operations))
+                continue
             if prefix.operation_count == 0:
                 total += batch.num_rows
                 continue
@@ -865,19 +906,20 @@ def arrow_batch_rows_are_valid(batch: Any) -> bool:
     return True
 
 
-def observe_arrow_batch_rows(batch: Any) -> None:
+def observe_arrow_batch_rows(batch: Any) -> list[dict[str, Any]] | None:
     """Observe the canonical row boundary before a kernel can discard source values.
 
     Full Arrow validation keeps ordinary primitive batches columnar.  Unsupported or
     invalid batches cross the established adapter conversion instead, which either
     proves the conversion is valid or raises the same Python-facing error as the
-    non-optimized path.
+    non-optimized path. Return converted rows so a fallback can reuse that boundary
+    without invoking extension scalar conversion a second time.
     """
     if arrow_batch_rows_are_valid(batch):
-        return
+        return None
     from ..tabular.arrow import batch_to_rows as canonical_batch_to_rows
 
-    canonical_batch_to_rows(batch)
+    return canonical_batch_to_rows(batch)
 
 
 def arrow_i64_sum(
@@ -1207,6 +1249,10 @@ def _materialize_table_batch(
     """Apply one proven batch program and retain its result as a metadata-free RecordBatch."""
     pa, pc = _arrow_modules()
     current = batch
+    mask = _combined_filter_mask(batch, operations, projection)
+    if mask is not None:
+        current = pc.filter(batch, mask)
+        operations = operations[-1:] if projection is not None else ()
     for index, operation in enumerate(operations):
         if projection is not None and index == len(operations) - 1:
             arrays = [
@@ -1236,6 +1282,7 @@ def _fallback_table_from_open_batches(
     *,
     batch_size: int,
     schema: Any | None,
+    current_rows: list[Any] | None = None,
 ) -> Any:
     """Finish an already-opened speculative scan through the canonical row conversion."""
     from ..tabular.arrow import table_from_rows
@@ -1244,7 +1291,7 @@ def _fallback_table_from_open_batches(
     def rows() -> Iterator[Any]:
         for output in prior_outputs:
             yield from batch_to_rows(output)
-        yield from _execute_python_batch(current_batch, operations)
+        yield from _execute_python_batch(current_batch, operations, rows=current_rows)
         for batch in batches:
             yield from _execute_python_batch(batch, operations)
 
@@ -1348,8 +1395,13 @@ def try_validated_retained_arrow_table(
         return False, None
 
     try:
-        for index, operation in enumerate(prefix.operations):
-            if prefix.projection is not None and index == len(prefix.operations) - 1:
+        operations = prefix.operations
+        mask = _combined_filter_mask(current, operations, prefix.projection)
+        if mask is not None:
+            current = pc.filter(current, mask)
+            operations = operations[-1:] if prefix.projection is not None else ()
+        for index, operation in enumerate(operations):
+            if prefix.projection is not None and index == len(operations) - 1:
                 current = current.select(
                     [source for _output, source in prefix.projection.selectors]
                 ).rename_columns([output for output, _source in prefix.projection.selectors])
@@ -1373,6 +1425,7 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
     *,
     batch_size: int,
     prefix: ArrowPrefixPlan | None = None,
+    schema: Any = None,
 ) -> Callable[[], Iterator[Any]] | None:
     """Return a lazy native-batch opener for one complete guarded record plan.
 
@@ -1380,6 +1433,12 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
     per-batch safety or kernel decline finishes the already-claimed source through
     that adapter, preserving one-shot ownership without reopening it.
     """
+    explicit_schema = schema is not None
+    if schema is not None:
+        from ..tabular.arrow import guarded_arrow_mean_source
+
+        if guarded_arrow_mean_source(plan.source) is None:
+            return None
     prefix = plan_arrow_prefix(plan) if prefix is None else prefix
     if (
         prefix is None
@@ -1396,6 +1455,22 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
     if not isinstance(descriptor, ArrowBatchSource):
         return None
     pa, _pc = _arrow_modules()
+    if schema is not None:
+        retained = descriptor.materialized_data
+        if (
+            descriptor.kind not in {"table", "record_batch"}
+            or not isinstance(retained, (pa.Table, pa.RecordBatch))
+            or type(schema) is not pa.Schema
+            or len(schema) == 0
+        ):
+            return None
+        expected_schema = _table_program_output_schema(pa, retained.schema, prefix.projection)
+        if (
+            expected_schema is None
+            or not expected_schema.equals(schema, check_metadata=True)
+            or not _table_output_types_are_canonical(pa, retained, prefix.projection)
+        ):
+            return None
     equality = _scan_equality(prefix) if descriptor.kind == "parquet" else None
     range_predicate = _scan_range_predicate(prefix) if descriptor.kind == "parquet" else None
     columns = _projection_scan_columns(prefix, descriptor=descriptor)
@@ -1417,15 +1492,42 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
             remaining: Iterator[Any],
             *,
             schema: Any | None,
+            current_rows: list[Any] | None = None,
         ) -> Iterator[Any]:
             from ..tabular.arrow import arrow_batch_factory
             from ..tabular.records import _record_view
 
             def rows() -> Iterator[Any]:
+                if explicit_schema:
+                    from ..tabular import arrow as arrow_adapter
+
+                    def converted_batch(
+                        batch: Any, prepared: list[Any] | None = None
+                    ) -> Iterator[Any]:
+                        for row in (
+                            arrow_adapter.batch_to_rows(batch) if prepared is None else prepared
+                        ):
+                            for operation in prefix.operations:
+                                if isinstance(operation, MapOp):
+                                    row = operation.function(row)
+                                elif bool(operation.predicate(row)) is operation.negate:
+                                    break
+                            else:
+                                yield row
+
+                    for output in prior_outputs:
+                        yield from batch_to_rows(output)
+                    if current_batch is not None:
+                        yield from converted_batch(current_batch, current_rows)
+                    for later_batch in remaining:
+                        yield from converted_batch(later_batch)
+                    return
                 for output in prior_outputs:
                     yield from batch_to_rows(output)
                 if current_batch is not None:
-                    yield from _execute_python_batch(current_batch, prefix.operations)
+                    yield from _execute_python_batch(
+                        current_batch, prefix.operations, rows=current_rows
+                    )
                 for later_batch in remaining:
                     yield from _execute_python_batch(later_batch, prefix.operations)
 
@@ -1446,14 +1548,42 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
         with closing_iterators((opened,)):
             if not prefix.operations:
                 for batch in opened:
+                    if schema is not None:
+                        from ..tabular.arrow import guarded_arrow_mean_source
+
+                        if (
+                            guarded_arrow_mean_source(plan.source) is not descriptor
+                            or not batch.schema.equals(schema, check_metadata=True)
+                            or not arrow_batch_rows_are_valid(batch)
+                        ):
+                            yield from converted([], batch, opened, schema=schema)
+                            return
                     yield from slices(batch)
                 return
 
             inference = _OutputSchemaInference(batch_size)
             pending: list[Any] = []
-            output_schema = None
+            output_schema = schema
             for batch in opened:
-                observe_arrow_batch_rows(batch)
+                if schema is not None:
+                    from ..tabular.arrow import guarded_arrow_mean_source
+
+                    batch_output_schema = _table_program_output_schema(
+                        pa, batch.schema, prefix.projection
+                    )
+                    if (
+                        guarded_arrow_mean_source(plan.source) is not descriptor
+                        or batch_output_schema is None
+                        or not batch_output_schema.equals(schema, check_metadata=True)
+                    ):
+                        yield from converted(pending, batch, opened, schema=schema)
+                        return
+                rows = observe_arrow_batch_rows(batch)
+                if rows is not None:
+                    yield from converted(
+                        pending, batch, opened, schema=output_schema, current_rows=rows
+                    )
+                    return
                 safety = prove_batch_safe(
                     batch,
                     expression_operations,
@@ -1468,6 +1598,8 @@ def try_arrow_batch_factory(  # noqa: C901 - one ownership/fallback state machin
                         output = _materialize_table_batch(
                             batch, prefix.operations, prefix.projection
                         )
+                        if schema is not None:
+                            output = pa.RecordBatch.from_arrays(output.columns, schema=schema)
                     except _EXPECTED_ARROW_ERRORS:
                         pass
                     else:
@@ -1562,14 +1694,15 @@ def try_arrow_table(
             if not _projection_is_current(prefix):
                 # The former selected field no longer determines the output dtype.
                 fallback_schema = fixed_output_schema = None
-            observe_arrow_batch_rows(batch)
+            rows = observe_arrow_batch_rows(batch)
             safety = prove_batch_safe(
                 batch,
                 expression_operations,
                 projection=prefix.projection,
             )
             if (
-                safety.safe
+                rows is None
+                and safety.safe
                 and _projection_is_current(prefix)
                 and _table_output_types_are_canonical(pa, batch, prefix.projection)
             ):
@@ -1597,6 +1730,7 @@ def try_arrow_table(
                 prefix.operations,
                 batch_size=batch_size,
                 schema=fallback_schema,
+                current_rows=rows,
             )
 
     if not outputs:
@@ -1632,7 +1766,13 @@ def _execute_arrow_first(
     )
     with closing_iterators((batches,)):
         for batch in batches:
-            observe_arrow_batch_rows(batch)
+            rows = observe_arrow_batch_rows(batch)
+            if rows is not None:
+                found, value = _execute_first_python_batch(batch, prefix.operations, rows=rows)
+                if found:
+                    yield value
+                    return
+                continue
             if prefix.operation_count == 0:
                 if batch.num_rows:
                     yield batch_to_rows(batch.slice(0, 1))[0]
@@ -1720,7 +1860,10 @@ def execute_arrow_prefix(
         )
         with closing_iterators((batches,)):
             for batch in batches:
-                observe_arrow_batch_rows(batch)
+                rows = observe_arrow_batch_rows(batch)
+                if rows is not None:
+                    yield from execute_operations(iter(rows), prefix.operations)
+                    continue
                 safety = prove_batch_safe(
                     batch,
                     expression_operations,
@@ -1734,18 +1877,7 @@ def execute_arrow_prefix(
                         continue
                     except _EXPECTED_ARROW_ERRORS:
                         pass
-                rows = batch_to_rows(batch)
-                current: list[Any] = rows
-                for operation in prefix.operations:
-                    if isinstance(operation, MapOp):
-                        current = [operation.function(item) for item in current]
-                    else:
-                        current = [
-                            item
-                            for item in current
-                            if bool(operation.predicate(item)) is not operation.negate
-                        ]
-                yield from current
+                yield from execute_operations(iter(batch_to_rows(batch)), prefix.operations)
 
     return values()
 

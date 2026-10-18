@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import operator
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, SupportsIndex, TypeVar
 
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector, compile_selector
@@ -475,6 +476,9 @@ class Collectors(Generic[T]):
         Each input is offered only to downstream states that are not already complete. Source
         consumption stops when both are complete, then `merger` receives their finished
         results in left-to-right order. Callable downstreams buffer their respective items.
+        If both downstream collectors declare a combiner at construction, partial states
+        can be combined left-to-right before finishing. The adapter reads live combiners
+        and carries neither reducer laws nor native metadata.
 
         Args:
             left: First collector or iterable-consuming callable.
@@ -515,7 +519,27 @@ class Collectors(Generic[T]):
             """Report completion only after both downstream collectors are complete."""
             return left_reduction.done(state.left) and right_reduction.done(state.right)
 
-        return Collector(initialize, step, finish, done=done)
+        def combine(first: _TeeState, second: _TeeState) -> _TeeState:
+            """Merge the two downstream states without invoking finishers or the merger."""
+            if left_reduction.combine is None or right_reduction.combine is None:
+                raise ValueError("both teeing downstream collectors must provide combine functions")
+            combined_left = left_reduction.combine(first.left, second.left)
+            # The left callback may replace or remove the right combiner.
+            if right_reduction.combine is None:
+                raise ValueError("both teeing downstream collectors must provide combine functions")
+            return _TeeState(combined_left, right_reduction.combine(first.right, second.right))
+
+        return Collector(
+            initialize,
+            step,
+            finish,
+            combine=(
+                combine
+                if left_reduction.combine is not None and right_reduction.combine is not None
+                else None
+            ),
+            done=done,
+        )
 
     @staticmethod
     def counting() -> Collector[T, int, int]:
@@ -609,14 +633,14 @@ class Collectors(Generic[T]):
         """Build a collector that stops after and returns the first input item.
 
         Empty input returns `None`. A first item whose value is itself `None` is still treated
-        as a completed result.
+        as a completed result. Later items offered by an adapter leave that result unchanged.
 
         Returns:
             A collector that consumes at most one item.
         """
         return Collector(
             lambda: _MISSING,
-            lambda _state, value: value,
+            lambda state, value: value if state is _MISSING else state,
             lambda value: None if value is _MISSING else value,
             done=lambda value: value is not _MISSING,
         )
@@ -637,44 +661,55 @@ class Collectors(Generic[T]):
         )
 
     @staticmethod
-    def head(count: int) -> Collector[T, list[T], list[T]]:
+    def head(count: SupportsIndex) -> Collector[T, list[T], list[T]]:
         """Build a collector that stops after retaining the first `count` items.
 
         A zero count completes before pulling from the source.
 
         Args:
-            count: Non-negative maximum number of items to retain.
+            count: Non-negative integer maximum, including objects implementing `__index__`.
 
         Returns:
             An early-stopping collector returning an encounter-ordered list.
 
         Raises:
+            TypeError: If `count` does not provide an integer index.
             ValueError: If `count` is negative.
         """
-        if count < 0:
+        limit = operator.index(count)
+        if limit < 0:
             raise ValueError("head count must be non-negative")
-        return Collector(list, _append, done=lambda values: len(values) >= count)
+
+        def step(values: list[T], value: T) -> list[T]:
+            """Keep a bounded head when an adapter continues offering input."""
+            if len(values) < limit:
+                values.append(value)
+            return values
+
+        return Collector(list, step, done=lambda values: len(values) >= limit)
 
     @staticmethod
-    def tail(count: int) -> Collector[T, deque[T], list[T]]:
+    def tail(count: SupportsIndex) -> Collector[T, deque[T], list[T]]:
         """Build a bounded-state collector for the final `count` input items.
 
         The source is fully consumed. Once the deque is full, each new item discards the
         oldest; a zero count retains nothing.
 
         Args:
-            count: Non-negative maximum number of trailing items to retain.
+            count: Non-negative integer maximum, including objects implementing `__index__`.
 
         Returns:
             A collector finishing its bounded deque as an encounter-ordered list.
 
         Raises:
+            TypeError: If `count` does not provide an integer index.
             ValueError: If `count` is negative.
         """
-        if count < 0:
+        limit = operator.index(count)
+        if limit < 0:
             raise ValueError("tail count must be non-negative")
         return Collector(
-            lambda: deque(maxlen=count),
+            lambda: deque(maxlen=limit),
             lambda values, value: _deque_add(values, value),
             list,
         )

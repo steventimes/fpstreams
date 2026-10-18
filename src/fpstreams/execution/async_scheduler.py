@@ -18,7 +18,7 @@ from ..physical.async_plan import (
     AsyncSwitchMapNode,
     AsyncTimerNode,
 )
-from ..planning.async_ import AsyncOperation, _Filter, _MapAsync, _Tap
+from ..planning.async_ import AsyncOperation, _Filter, _FilterMap, _MapAsync, _Tap
 from ..planning.async_utils import close_async_iterators, closing_async_iterators
 from ..runtime.query import QueryRuntime
 from ..runtime.resources import _add_cleanup_failure
@@ -37,7 +37,7 @@ from .async_timers import execute_async_timer
 async def _execute_serial_stage(
     source: AsyncIterator[Any], operations: tuple[AsyncOperation, ...]
 ) -> AsyncIterator[Any]:
-    """Fuse adjacent serial map, filter, and tap operations in physical order."""
+    """Fuse adjacent serial map, filter, filter_map, and tap operations in order."""
     async with closing_async_iterators((source,)):
         async for item in source:
             current = item
@@ -59,6 +59,15 @@ async def _execute_serial_stage(
                             break
                     finally:
                         del accepted
+                elif isinstance(operation, _FilterMap):
+                    mapped = operation.function(current)
+                    if inspect.isawaitable(mapped):
+                        mapped = await mapped
+                    current = mapped
+                    del mapped
+                    if current is None:
+                        emit = False
+                        break
                 elif isinstance(operation, _Tap):
                     action_result = operation.action(current)
                     if inspect.isawaitable(action_result):

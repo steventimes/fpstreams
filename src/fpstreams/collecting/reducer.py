@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, SupportsIndex, TypeVar
 
 from ..planning.semantics import StateProfile
+from ..runtime.iterators import closing_iterators
 from ._collector_base import Aggregator, Collector, _identity, _never_done
 
 T = TypeVar("T")
@@ -198,28 +200,37 @@ def merge_reducer_states(states: Sequence[S], reducer: Reducer[Any, S, Any]) -> 
 
 
 def run_partitioned_reducer(
-    values: Iterable[T], reducer: Reducer[T, S, R], *, partition_size: int
+    values: Iterable[T], reducer: Reducer[T, S, R], *, partition_size: SupportsIndex
 ) -> R:
     """Reduce fixed-size sequential partitions, pairwise-merge them, and finish once.
 
     The input is fully consumed without consulting the reducer's early-completion predicate.
-    Empty input still contributes one identity state. `partition_size` must be positive and
-    `reducer` must be a :class:`Reducer`.
+    Empty input still contributes one identity state. `partition_size` must provide a positive
+    integer index. It is normalized before creating state or opening the input. `reducer` must
+    be a :class:`Reducer`. The opened iterator is closed before merging and finishing, including
+    when source iteration or a partition callback fails.
     """
-    if partition_size <= 0:
+    size = operator.index(partition_size)
+    if size <= 0:
         raise ValueError("partition_size must be positive")
     if not isinstance(reducer, Reducer):
         raise TypeError("reducer must be a Reducer")
     states: list[S] = []
     state = reducer.initializer()
     count = 0
-    for value in values:
-        state = reducer.step(state, value)
-        count += 1
-        if count == partition_size:
-            states.append(state)
-            state = reducer.initializer()
-            count = 0
+    iterator = iter(values)
+    with closing_iterators((iterator,)):
+        while True:
+            try:
+                value = next(iterator)
+            except StopIteration:
+                break
+            state = reducer.step(state, value)
+            count += 1
+            if count == size:
+                states.append(state)
+                state = reducer.initializer()
+                count = 0
     if count or not states:
         states.append(state)
     return reducer.finish(merge_reducer_states(states, reducer))

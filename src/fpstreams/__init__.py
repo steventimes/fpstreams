@@ -27,7 +27,9 @@ from .errors import (
 from .expressions import Expr, FExpr, RowExpr, coalesce, col, fitem, item, lit, when
 from .functional import curry, pipe, retry
 from .primitives import Err, Ok, Option, Result
-from .runtime.report import ExecutionReport, ExecutionResult
+from .runtime.executor import BoundedExecutor
+from .runtime.report import ExecutionEvent, ExecutionReport, ExecutionResult
+from .storage.checkpoint import FileCheckpoint
 from .streams import (
     AsyncFlow,
     AsyncStream,
@@ -50,6 +52,7 @@ __all__ = [
     "Aggregator",
     "AsyncFlow",
     "AsyncStream",
+    "BoundedExecutor",
     "BufferLimitError",
     "Collector",
     "Collectors",
@@ -58,10 +61,12 @@ __all__ = [
     "EmptyFlowError",
     "EmptyInputPolicy",
     "Err",
+    "ExecutionEvent",
     "ExecutionReport",
     "ExecutionResult",
     "Expr",
     "FExpr",
+    "FileCheckpoint",
     "Flow",
     "FlowConsumedError",
     "FlowError",

@@ -44,6 +44,18 @@ assert observed.value == [1, 2, 3]
 An unsupported name raises `ValueError`. Lazy transformations and plain
 iteration are not terminals for this API.
 
+## Related inspection tools
+
+| Tool | Information returned | Executes the input pipeline |
+| --- | --- | --- |
+| `explain(terminal=...).to_dict()` | Planned engines, stages, data movement, and static semantic `diagnostics` | No |
+| `run_with_report(terminal, ...)` | Terminal value, observed route, resource counts, and bounded events in unreleased code | Yes, once |
+| `explain_reduction(collector)` | Collector declarations for combining partial states and reducer laws | No |
+
+Static `diagnostics` describe completion, ordering, and state risks in the plan.
+The execution report records observations from the terminal that ran. Reading
+its events does not call `explain()` or execute the query again.
+
 ## Report fields
 
 | Field | Meaning |
@@ -57,10 +69,44 @@ iteration are not terminals for this API.
 | `peak_owned_async_tasks` | Highest number of asyncio tasks owned by this query |
 | `peak_spill_files` | Highest number of spill files held open by this query |
 | `spill_bytes_written` | Cumulative framed spill bytes written by this query |
+| `events` | Immutable tuple containing the first 64 plan and route observations; unreleased |
+| `events_truncated` | Whether further observations exceeded the 64-event limit; unreleased |
 
 Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.
+
+## Metadata export (unreleased)
+
+Use `report.to_dict()` to copy an execution report into plain metadata for
+JSON storage or a caller-managed integration:
+
+```python
+import json
+from fpstreams import flow
+
+observed = flow([1, 2, 3]).run_with_report("sum")
+metadata = observed.report.to_dict()
+assert metadata["schema_version"] == 1
+assert metadata["kind"] == "fpstreams.execution_report"
+serialized = json.dumps(metadata)
+```
+
+The exported schema has its own version, independent of the package version.
+It includes the report fields above, `metric_units`, `resource_scope`, and the
+event limit and truncation flag. Each event becomes a new dictionary. The
+terminal value remains in `observed.value`; export reads only the recorded
+metadata and performs no query execution or network I/O.
+
+Plan explanations also export `schema_version=1`,
+`kind="fpstreams.plan_explanation"`, and a `mode` of `sync` or `async`.
+These describe planned execution. Execution reports contain observations from
+one completed terminal call.
+
+An OpenLineage adapter can use this metadata as part of a custom facet. The
+calling application must supply its Job, Run, and Dataset identities and own
+the lifecycle events. The exported dictionary is an fpstreams report schema;
+it does not infer those identities or form an OpenLineage RunEvent.
 
 ## Interpreting the route
 
@@ -93,6 +139,45 @@ of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.
 
+## Plan and route events (unreleased)
+
+`run_with_report()` collects bounded events from the existing plan and
+direct-route hooks. Read `report.events` when a compound query's outer report
+leaves a backend choice unclear. Child plans appear in encounter order while
+the report's outer `compiler_engine`, `strategy`, and `reason` keep their usual
+meaning.
+
+```python
+from fpstreams import flow
+
+child = flow([2]).map(lambda value: value * 10)
+observed = flow([1]).concat(child).run_with_report("to_list")
+
+assert observed.value == [1, 20]
+assert observed.report.events
+for event in observed.report.events:
+    print(event.kind, event.compiler_engine, event.strategy, event.reason)
+```
+
+Each immutable `ExecutionEvent` contains `kind`, `compiler_engine`, `strategy`,
+and `reason`. The kinds are `plan` for a compiler or scheduler choice,
+`strategy` for a recorded direct route, and `metadata` for an answer that avoids
+compilation. A compiler choice alone does not prove which kernels processed
+the input. A `None` compiler engine means the route hook supplied no independent
+compiler decision. Repeated observations can appear,
+and events do not form a complete execution tree or measure stage durations.
+
+Reports keep the first 64 observations. When another event would exceed that
+limit, the report sets `events_truncated=True`. Events retain diagnostic labels
+and reasons, with no references to plans, callbacks, or input objects. Collection
+does not replay the source or count individual input rows.
+
+Only `run_with_report()` calls collect events; ordinary terminals need no
+recorder. Each nested or concurrent report has its own event budget and result,
+including awaited AsyncFlow reports. Terminal exceptions propagate unchanged,
+without an `ExecutionResult`. All terminal keyword arguments remain available,
+including aggregation names such as `diagnostics` or `max_events`.
+
 ## Runtime value types
 
 `ExecutionResult` contains `value` and `report`. Both it and `ExecutionReport`
@@ -104,6 +189,11 @@ are immutable after the terminal finishes.
       members: true
 
 ::: fpstreams.ExecutionReport
+    options:
+      show_root_heading: true
+      members: true
+
+::: fpstreams.ExecutionEvent
     options:
       show_root_heading: true
       members: true

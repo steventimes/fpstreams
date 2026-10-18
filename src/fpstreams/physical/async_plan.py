@@ -14,6 +14,7 @@ from ..planning.async_ import (
     _Debounce,
     _Delay,
     _Filter,
+    _FilterMap,
     _MapAsync,
     _Merge,
     _MergeMap,
@@ -117,7 +118,7 @@ class AsyncPhysicalPlan:
 
 def _is_serial(operation: AsyncOperation) -> bool:
     """Return whether an operation can join a callback-order-preserving serial stage."""
-    return isinstance(operation, (_Filter, _Tap)) or (
+    return isinstance(operation, (_Filter, _FilterMap, _Tap)) or (
         isinstance(operation, _MapAsync)
         and operation.concurrency == 1
         and operation.timeout is None

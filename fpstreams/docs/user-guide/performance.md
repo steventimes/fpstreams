@@ -34,6 +34,13 @@ the normal way.
 
 ## Source shape matters
 
+Arrow's Parquet execution plan can read, cast, and fail before delivering a
+batch. `first()` and limited queries stop once they receive enough output, but
+cannot guarantee a result before a native source error. Source `columns` defines
+which fields are visible; a later query projection does not remove errors from
+other visible source fields. Batch size bounds batches, not the backend's I/O
+or error timing.
+
 The same values can carry different execution guarantees.
 
 | Source | Replayability | Useful information | Typical consequence |
@@ -211,6 +218,104 @@ joined = rows(left).join(
 If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.
+
+## Share a submission budget (unreleased)
+
+Several queries can reuse one executor while keeping their own `buffer` limits.
+To cap their combined unfinished work, give them the same `BoundedExecutor`:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from fpstreams import BoundedExecutor, flow
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    with BoundedExecutor(pool, max_pending=4) as budget:
+        result = flow(range(10)).map_parallel(
+            abs, executor=budget, buffer=8,
+        ).to_list()
+    assert pool.submit(abs, -1).result() == 1
+```
+
+Run independent queries from separate caller threads and pass `budget` to each.
+Calls blocked in `submit()` wait for capacity in arrival order. Completion or
+cancellation releases a slot. Shutdown wakes blocked submitters with
+`RuntimeError`; `cancel_futures=True` cancels this wrapper's queued calls.
+Running callbacks must finish cooperatively. Work submitted directly to `pool`
+does not count against the wrapper's budget.
+
+The shared limit counts tasks, not bytes or completed results. A blocked
+submitter can still retain the item it is submitting. Keep per-query buffers
+and batch sizes within the application's memory budget. Avoid waiting for
+nested work that needs the slots occupied by its own parent callbacks.
+
+## Preserve Arrow batches
+
+Use `Rows.arrow_batches()` to pass columnar data to a batch consumer. In
+unreleased code, a primitive Arrow table or record batch can keep its buffers
+when the supplied schema exactly matches the output, including field and
+schema metadata. Safe direct-field projections and primitive filters can run
+columnarly; filters may allocate output buffers. The output still respects
+`batch_size`, and an explicit zero-column schema preserves empty-record counts.
+
+```python
+import pyarrow as pa
+from fpstreams import col, rows
+
+table = pa.table({"id": [1, 2, 3], "value": [2.0, None, 4.0]})
+batches = rows.from_arrow(table).arrow_batches(
+    batch_size=2, schema=table.schema,
+).to_list()
+assert [batch.num_rows for batch in batches] == [2, 1]
+
+projected = (
+    rows.from_arrow(table)
+    .where(col("id") > 1)
+    .select(amount="value")
+    .arrow_batches(batch_size=2, schema=pa.schema([("amount", pa.float64())]))
+    .to_list()
+)
+assert projected[0].to_pylist() == [{"amount": None}, {"amount": 4.0}]
+```
+
+A cast, changed metadata, Python callback, or unsupported source uses the
+existing conversion path. Buffer reuse can keep the source allocation alive;
+make an explicit copy when independent storage is required. Measure the entire
+consumer pipeline before treating a cheaper export as an application speedup.
+
+Unreleased execution also supports multiple safe direct comparisons followed
+by a direct projection. Parquet uses only the leading comparison as a scan
+hint and retains every filter in its original order. Automatic hints must not
+hide source conversion errors: visible UTF-8, temporal, and nested fields are
+validated before automatic filtering or projection. These fields can require
+reading columns that the query later discards. Explicit source `columns` and
+`filter` define the source boundary before this validation.
+
+For primitive batches, supported comparison chains can share a boolean
+selection mask and filter the payload once. A count can use the mask directly.
+This path requires the existing source-conversion and type guards; empty,
+nullable, or unsupported inputs keep their existing execution paths.
+The tradeoff is evaluating each supported comparison on the original batch
+instead of filtering after every comparison. Offline Optuna tuning of row and
+column thresholds favored sharing on all nonempty supported batches in the
+measured shapes; this does not change the source boundary or establish an
+application speedup.
+
+A default local source with one Parquet fragment can omit safe unused fields
+from its scan request, retaining filter dependencies and every field whose
+conversion needs validation. Multiple fragments or a supplied dataset schema
+can require Arrow casts even for an integer column. Those scans retain the
+complete caller-visible projection before applying automatic query hints, so
+an unused column's cast failure remains observable. Fragment counting stops
+after two entries and does not inspect extra physical schemas.
+
+`scan_csv()` reads and validates all caller-visible typed columns before query
+projection. Inferring a type from the first block does not prove that later
+values fit it. To exclude a column at the source boundary, supply PyArrow
+`ConvertOptions(include_columns=[...])` explicitly.
+
+`polars_batches()` also preserves the height of zero-column batches. A Parquet
+write rejects nonempty rows without columns to avoid losing their row count;
+an existing output file is preserved when conversion fails.
 
 ## Async throughput
 
@@ -486,6 +591,34 @@ maps. `sequential()` clears those defaults for subsequent maps. Existing calls
 without an external executor keep their worker/backend defaults and create
 owned pools. Reuse can reduce worker startup cost; it does not make CPU-bound
 callbacks faster by itself.
+
+## Choose a batching bound
+
+| Workload | Existing operation | Bound |
+| --- | --- | --- |
+| A callback accepts a fixed number of items | `map_batches(function, size=...)` | Items per callback, with a shorter final batch |
+| Payload sizes vary | `batch_by_size(max_size, max_count=..., get_size=...).map(function)` | Sum of measured sizes and items per batch |
+| An async source may pause between items | `buffer_timeout(max_count, seconds).map(function)` | Item count or time from the first buffered item |
+| Several queries share a pool | `BoundedExecutor(pool, max_pending=...)` (unreleased) | Unfinished calls submitted through that wrapper |
+
+Set `max_count` alongside a size bound when individual items can have zero
+measured size. Choose `get_size` for the payload or service limit being enforced;
+it does not measure Python object overhead or process memory. For example:
+
+```python
+from fpstreams import flow
+
+payloads = [b"a", b"12345678", b"ab", b"1234"]
+batches = flow(payloads).batch_by_size(10, max_count=3).to_list()
+assert [sum(map(len, batch)) for batch in batches] == [9, 6]
+assert [item for batch in batches for item in batch] == payloads
+```
+
+Changing batch boundaries changes callback invocations and can change results.
+Keep that choice explicit. When tuning an expensive callback, compare several
+fixed sizes with the same input and worker policy, checking output, first-result
+latency, complete execution time, and retained payload separately. A task-count
+budget does not bound the byte size of results retained by a slow consumer.
 
 ## Process mapping and explicit batches
 

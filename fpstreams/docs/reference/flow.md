@@ -9,6 +9,137 @@ execution must create a fresh iterable. Besides ordinary iterables,
 `flow(source)` retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.
 
+## State-driven generation and mapping (unreleased)
+
+`unfold` builds a source from state, while `map_accum` transforms an existing
+source with state. They use different tuple orders:
+
+| Operation | Callback result | Emitted value |
+| --- | --- | --- |
+| `flow.unfold(seed, function)` | `(value, next_state)` or `None` to stop | `value` |
+| `query.map_accum(initial, function)` | `(next_state, output)` | `output` |
+
+```python
+from fpstreams import flow
+
+countdown = flow.unfold(3, lambda n: (n, n - 1) if n else None)
+assert countdown.to_list() == [3, 2, 1]
+assert countdown.take(1).to_list() == [3]
+```
+
+The unfold seed is not emitted by itself. Returning `(None, next_state)` emits
+an actual `None`; only returning `None` ends generation. The callback controls
+termination, so bound an infinite transition with `take` or another stopping
+operation. Construction and `take(0)` do not run the callback.
+
+```python
+from fpstreams import flow
+
+
+def running_total(total, value):
+    next_total = total + value
+    return next_total, {"value": value, "total": next_total}
+
+
+query = flow([2, 3, 5]).map_accum(0, running_total)
+assert query.to_list() == [
+    {"value": 2, "total": 2},
+    {"value": 3, "total": 5},
+    {"value": 5, "total": 10},
+]
+```
+
+`map_accum` calls the function once per consumed item in encounter order. It
+emits nothing for an empty source and does not emit its final state. Each
+evaluation starts from the supplied initial state; mutable seed objects are
+reused by reference, following `scan`. Use `flow.defer` to allocate fresh
+mutable state for each evaluation. The operation keeps the source's replay
+and cleanup rules and runs its state transitions sequentially even with
+parallel map defaults.
+
+## Reuse sliding-window aggregates (unreleased)
+
+`window_reduce(size, combine, step=1)` combines each count-based window without
+building a tuple and folding every overlapping value again:
+
+```python
+from operator import add
+from fpstreams import flow
+
+assert flow([2, 3, 5, 7]).window_reduce(3, add).to_list() == [10, 15]
+assert flow([2, 3]).window_reduce(3, add).to_list() == [5]
+```
+
+`combine` must be associative and must not modify either argument. Source values
+and returned aggregates must remain unchanged during iteration because later
+windows may reuse them. Encounter order is preserved, so a noncommutative
+associative function is supported. Floating-point addition is not associative;
+use `window(...).map(...)` when a left fold or arbitrary callback behavior matters.
+There is no automatic conversion of existing window pipelines.
+
+Empty input emits nothing. Initially short input emits one partial result;
+after a full window, incomplete trailing windows are omitted. `step` may exceed
+`size`; values in the gaps are consumed without being combined. Overlapping
+windows can group calls differently from a left fold. A combine error can arise
+while building a trailing window that would never be emitted. Stopping downstream
+closes the owned iterator chain without pulling another item.
+
+Overlapping windows use two aggregate stacks, following the storage insight in
+[Two-Stacks Lite](https://arxiv.org/abs/2009.13768). They cache at most `size + 1`
+entries. When `step >= size`, a running left fold replaces the stacks and keeps
+no raw window buffer. Both paths preserve input order and fold incomplete tails,
+even when those tails produce no output. Cached entries do not bound bytes:
+an aggregate can grow with its input.
+Combine calls are amortized constant per input item; transferring a stack can
+take linear work in `size`. This does not provide DABA's worst-case constant
+operation bound. Small windows and windows without overlap may cost more than
+an ordinary fold; compare against `window(...).map(...)` for those workloads.
+
+## Reduce adjacent runs with a Collector (unreleased)
+
+`collapse(predicate, collector)` feeds each nonempty adjacent run into fresh
+[Collector](collecting.md) state. The predicate sees neighboring input items,
+including when it is not transitive:
+
+```python
+from fpstreams import Collectors, flow
+
+query = flow([1, 2, 4, 9, 11, 1]).collapse(
+    lambda left, right: 0 <= right - left <= 2,
+    Collectors.counting(),
+)
+assert query.to_list() == [3, 2, 1]
+```
+
+Each run has its own initializer, steps, completion state, and finisher. Empty
+input emits nothing and initializes no collector. A completed collector stops
+receiving steps, while adjacent predicates keep running until the run boundary.
+For example, `Collectors.head(1)` keeps only the first item of each run; it
+cannot finish the whole query after seeing the first item.
+
+A boundary consumes one item of the next run before emitting the current
+result. The next collector is initialized when consumption resumes, so `take(1)`
+does not initialize an unused next run. The last run is finished after normal
+source exhaustion. Source errors and early termination do not flush a pending
+run. An infinite run still needs a boundary or source exhaustion to emit.
+
+The operation keeps collector state and adjacent input references without a
+raw run buffer. `Collectors.counting()` keeps one running integer;
+`Collectors.to_list()` retains every run member. A growing collector state and
+the final `to_list()` result can still grow with input size. Collector hooks run
+while reading input, so callback errors can appear earlier than with
+`group_runs(...).map(collector)`. This is an explicit overload, not an automatic
+rewrite of buffered pipelines.
+
+The adjacent predicate and the state program add work as input arrives.
+When grouping by equal keys and the groups fit in memory, compare this overload
+with `group_runs(...).map(collector)`. Buffered execution can be faster.
+
+Hooks follow the synchronous Collector protocol, including `done`. A finisher
+returning an awaitable emits that object as data. Collector `combine` and
+`native` metadata are unused by this sequential reduction. The binary merger
+form of `collapse(predicate, merger)` remains available.
+
 ## Record operations and the Rows view
 
 `Flow.rows()` creates a lazy relational view without inspecting any item. The

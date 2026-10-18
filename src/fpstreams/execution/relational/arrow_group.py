@@ -911,7 +911,9 @@ def _try_arrow_group_sum_impl(  # noqa: C901 - guarded source/backend dispatch
     if not isinstance(spec, ArrowGroupSumSpec):
         return None
 
-    if native_data.kind == "csv" and native_data.projection_opener is not None:
+    if native_data.kind == "csv" and (
+        native_data.projection_opener is not None or native_data.projection_safe
+    ):
         size_opener = native_data.byte_size_opener
         if size_opener is None:
             return None

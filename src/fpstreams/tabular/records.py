@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict, is_dataclass
 from types import MappingProxyType
 from typing import Any
@@ -51,6 +51,42 @@ _RECORD_CONTINUATIONS = (_mapping_record, _as_record_after_mapping)
 def _record_view(row: Any) -> Mapping[str, Any]:
     """Return a mapping directly, converting other supported records when needed."""
     return row if isinstance(row, Mapping) else _as_record(row)
+
+
+def _explode_owned_record(
+    record: dict[str, Any], values: Any, output_name: str, outer: bool
+) -> Iterator[dict[str, Any]]:
+    """Expand an already owned snapshot without converting or selecting again."""
+    if values is None:
+        if outer:
+            record[output_name] = None
+            yield record
+        return
+    if isinstance(values, (str, bytes, bytearray, Mapping)) or not isinstance(values, Iterable):
+        raise TypeError("explode selector must return a non-string iterable or None")
+    emitted = False
+    for value in values:
+        emitted = True
+        expanded = record.copy()
+        expanded[output_name] = value
+        yield expanded
+    if outer and not emitted:
+        record[output_name] = None
+        yield record
+
+
+def _unpivot_owned_record(
+    record: dict[str, Any], columns: tuple[str, ...], names_to: str, values_to: str
+) -> Iterator[dict[str, Any]]:
+    """Expand owned fields in caller order, preserving collision and missing-field errors."""
+    missing = [name for name in columns if name not in record]
+    if missing:
+        raise SelectionError(f"missing columns for unpivot: {missing!r}")
+    base = {name: value for name, value in record.items() if name not in columns}
+    if names_to in base or values_to in base:
+        raise DuplicateKeyError("unpivot output names collide with existing columns")
+    for name in columns:
+        yield {**base, names_to: name, values_to: record[name]}
 
 
 def _require_unique_names(names: Iterable[str], *, operation: str) -> None:

@@ -6,6 +6,7 @@ import json
 import random
 import sys
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,615 @@ import pytest
 import fpstreams
 from fpstreams import flow
 
+
+class _IndexBound:
+    def __init__(self, value=2, error=None):
+        self.value = value
+        self.error = error
+        self.calls = 0
+
+    def __index__(self):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+@pytest.mark.parametrize("name", ["head", "tail"])
+@pytest.mark.parametrize("bound", [1.5, 2.0, float("nan"), float("inf")])
+def test_bounded_collectors_reject_non_index_counts_at_construction(name, bound):
+    with pytest.raises(TypeError):
+        getattr(fpstreams.Collectors, name)(bound)
+
+
+@pytest.mark.parametrize("name", ["head", "tail"])
+@pytest.mark.parametrize("count", [0, 2])
+def test_bounded_collectors_normalize_index_counts_once_before_reuse(name, count):
+    bound = _IndexBound(count)
+    collector = getattr(fpstreams.Collectors, name)(bound)
+    assert bound.calls == 1
+    bound.value = 100
+    values = [object() for _ in range(5)]
+    expected = [] if count == 0 else values[:2] if name == "head" else values[-2:]
+    assert collector(iter(values)) == expected
+    assert collector(iter(values)) == expected
+    assert bound.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("operation", "count"), [("head", -1), ("tail", -1), ("partition", -1), ("partition", 0)]
+)
+def test_reducer_integer_indexes_keep_the_existing_nonnegative_or_positive_bounds(operation, count):
+    from fpstreams.collecting.reducer import run_partitioned_reducer
+
+    bound = _IndexBound(count)
+    with pytest.raises(ValueError):
+        if operation == "partition":
+            run_partitioned_reducer([], fpstreams.Collectors.counting(), partition_size=bound)
+        else:
+            getattr(fpstreams.Collectors, operation)(bound)
+    assert bound.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("operation", "count", "expected"),
+    [
+        ("head", False, []),
+        ("head", True, [0]),
+        ("tail", False, []),
+        ("tail", True, [4]),
+        ("head", 1 << 80, [0, 1, 2, 3, 4]),
+    ],
+)
+def test_bounded_collectors_preserve_builtin_integer_bound_behavior(operation, count, expected):
+    assert getattr(fpstreams.Collectors, operation)(count)(range(5)) == expected
+
+
+@pytest.mark.parametrize("operation", ["head", "tail", "partition"])
+def test_reducer_count_index_errors_precede_state_creation_and_source_open(operation):
+    from fpstreams.collecting.reducer import COUNT_LAWS, run_partitioned_reducer
+
+    events = []
+    failure = TypeError("integer count provider failed")
+    bound = _IndexBound(error=failure)
+
+    class Source:
+        def __iter__(self):
+            events.append("open")
+            return iter([1, 2, 3])
+
+    reducer = fpstreams.Reducer(
+        lambda: events.append("initialize") or 0,
+        lambda total, value: total + value,
+        merge=lambda a, b: a + b,
+        laws=COUNT_LAWS,
+    )
+    with pytest.raises(TypeError) as caught:
+        if operation == "partition":
+            run_partitioned_reducer(Source(), reducer, partition_size=bound)
+        else:
+            getattr(fpstreams.Collectors, operation)(bound)
+    assert caught.value is failure
+    assert bound.calls == 1
+    assert events == []
+
+
+@pytest.mark.parametrize("bound", [1.5, 2.0, float("nan"), float("inf")])
+def test_partitioned_reducer_rejects_non_index_sizes_before_consumption(bound):
+    from fpstreams.collecting.reducer import COUNT_LAWS, run_partitioned_reducer
+
+    events = []
+
+    class Source:
+        def __iter__(self):
+            events.append("open")
+            return iter([1, 2, 3])
+
+    reducer = fpstreams.Reducer(
+        lambda: events.append("initialize") or 0,
+        lambda total, value: total + value,
+        merge=lambda a, b: a + b,
+        laws=COUNT_LAWS,
+    )
+    with pytest.raises(TypeError):
+        run_partitioned_reducer(Source(), reducer, partition_size=bound)
+    assert events == []
+
+
+def test_partitioned_reducer_uses_normalized_index_size_without_changing_merge_order():
+    from fpstreams.collecting.reducer import LIST_LAWS, run_partitioned_reducer
+
+    calls = []
+    bound = _IndexBound(2)
+
+    def combine(left, right):
+        calls.append((left, right))
+        return left + right
+
+    reducer = fpstreams.Reducer(
+        tuple,
+        lambda state, value: (*state, value),
+        merge=combine,
+        laws=LIST_LAWS,
+    )
+    assert run_partitioned_reducer("abcde", reducer, partition_size=bound) == tuple("abcde")
+    assert bound.calls == 1
+    assert calls == [(("a", "b"), ("c", "d")), (("a", "b", "c", "d"), ("e",))]
+
+
+@pytest.mark.parametrize("assert_only", [False, True])
+def test_reducer_law_layouts_accept_and_report_normalized_index_sizes(assert_only):
+    from fpstreams.testing import assert_reducer_laws, check_reducer_laws
+
+    bounds = [_IndexBound(value) for value in (2, 3, 0, 5)]
+    layouts = [(bounds[0], bounds[1]), (bounds[2], bounds[3])]
+    reducer = fpstreams.Collectors.counting()
+    if assert_only:
+        assert_reducer_laws(reducer, range(5), partitions=layouts)
+    else:
+        report = check_reducer_laws(reducer, range(5), partitions=layouts)
+        assert report.associative is report.identity is report.partition_equivalent is True
+        assert report.checked_partitions == ((2, 3), (0, 5))
+        assert all(type(size) is int for layout in report.checked_partitions for size in layout)
+    assert [bound.calls for bound in bounds] == [1, 1, 1, 1]
+
+
+@pytest.mark.parametrize("mode", ["flow", "rows", "hash", "sorted", "spill", "pairs"])
+def test_named_aggregate_accepts_composed_collectors(mode: str, tmp_path: Path) -> None:
+    observations = [
+        {"group": "a", "value": 0, "weight": 2},
+        {"group": "a", "value": 8, "weight": 6},
+        {"group": "a", "value": None, "weight": 999},
+        {"group": "b", "value": None, "weight": 3},
+        {"group": "b", "value": 5, "weight": 0},
+    ]
+    weighted = fpstreams.Collectors.filtering(
+        lambda row: row["value"] is not None,
+        fpstreams.Collectors.teeing(
+            fpstreams.Collectors.summing(lambda row: row["value"] * row["weight"]),
+            fpstreams.Collectors.summing("weight"),
+            lambda numerator, denominator: numerator / denominator if denominator else None,
+        ),
+    )
+    arguments = {"mean": weighted, "count": fpstreams.agg.count()}
+    if mode == "flow":
+        result = fpstreams.flow(iter(observations)).aggregate(**arguments)
+        assert result == {"mean": 6, "count": 5}
+    elif mode == "rows":
+        assert fpstreams.rows(iter(observations)).aggregate(**arguments).to_list() == [
+            {"mean": 6, "count": 5}
+        ]
+    elif mode == "pairs":
+        result = fpstreams.pairs((row["group"], row) for row in observations).aggregate_values(
+            **arguments
+        )
+        assert result == {"a": {"mean": 6, "count": 3}, "b": {"mean": None, "count": 2}}
+    else:
+        query = fpstreams.rows(iter(observations))
+        grouped = query.group_by_sorted("group") if mode == "sorted" else query.group_by("group")
+        if mode == "spill":
+            grouped = grouped.spill(2, tempdir=tmp_path)
+        assert grouped.aggregate(**arguments).sort_by("group").to_list() == [
+            {"group": "a", "mean": 6, "count": 3},
+            {"group": "b", "mean": None, "count": 2},
+        ]
+        assert not list(tmp_path.iterdir())
+
+
 _NATIVE_PAIR_TEST_SIZE = 140_000
+
+
+@pytest.mark.asyncio
+async def test_async_named_aggregate_accepts_composed_collectors_and_closes() -> None:
+    events = []
+
+    async def source() -> AsyncIterator[int]:
+        try:
+            for value in (1, 2, 3):
+                events.append(value)
+                yield value
+        finally:
+            events.append("closed")
+
+    collector = fpstreams.Collectors.collecting_and_then(
+        fpstreams.Collectors.summing(), lambda total: (events.append("finish"), total * 2)[1]
+    )
+    assert await fpstreams.aflow(source()).aggregate(
+        doubled=collector, count=fpstreams.agg.count()
+    ) == {"doubled": 12, "count": 3}
+    assert events == [1, 2, 3, "closed", "finish"]
+
+
+@pytest.mark.parametrize("mode", ["flow", "pairs", "grouped"])
+def test_named_aggregate_does_not_trust_collector_native_metadata(mode: str) -> None:
+    from fpstreams.collecting.aggregation import NativeAggregation
+
+    seen = []
+    collector = fpstreams.Collector(
+        lambda: 0,
+        lambda total, value: seen.append(value) or total + value * 2,
+        native=NativeAggregation("count"),
+    )
+    values = list(range(4096))
+    if mode == "flow":
+        assert flow(values).aggregate(value=collector) == {"value": sum(values) * 2}
+    elif mode == "pairs":
+        actual = fpstreams.pairs(
+            (index % 2, value) for index, value in enumerate(values)
+        ).aggregate_values(value=collector)
+        assert actual == {key: {"value": sum(values[key::2]) * 2} for key in (0, 1)}
+    else:
+        actual = flow(values).group_by(lambda value: value % 2).aggregate(value=collector).to_list()
+        assert [row["value"] for row in actual] == [sum(values[key::2]) * 2 for key in (0, 1)]
+    assert seen == values
+
+
+def test_named_aggregate_preserves_empty_collector_and_reducer_laws(tmp_path: Path) -> None:
+    collector = fpstreams.Collectors.head(0)
+
+    def source() -> Iterator[int]:
+        raise AssertionError("already completed collector pulled its source")
+        yield 1
+
+    assert flow.defer(source).aggregate(result=collector) == {"result": []}
+    reducer = fpstreams.Collectors.to_list()
+    explanation = fpstreams.explain_reduction(reducer)
+    assert flow([]).aggregate(result=reducer) == {"result": []}
+    assert flow([1, 2]).aggregate(result=reducer) == {"result": [1, 2]}
+    assert fpstreams.explain_reduction(reducer) == explanation
+    records = [{"group": 1}, {"group": 1}, {"group": 2}]
+    for mode in ("hash", "sorted", "spill"):
+        query = fpstreams.rows(iter(records))
+        grouped = query.group_by_sorted("group") if mode == "sorted" else query.group_by("group")
+        if mode == "spill":
+            grouped = grouped.spill(2, tempdir=tmp_path)
+        assert grouped.aggregate(result=collector).sort_by("group").to_list() == [
+            {"group": 1, "result": []},
+            {"group": 2, "result": []},
+        ], mode
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+@pytest.mark.parametrize("count", [0, 1, 3, 10])
+def test_ranked_aggregation_matches_flow_and_keeps_stable_item_identity(kind, count):
+    records = [{"score": score, "payload": object()} for score in (3, 1, 3, 2, 3, 1)]
+    expected = getattr(flow(records), kind)(count, key="score")
+    aggregation = getattr(fpstreams.agg, kind)(count, key="score")
+    actual = aggregation(iter(records))
+    assert len(actual) == len(expected)
+    assert all(left is right for left, right in zip(actual, expected, strict=True))
+    assert aggregation(iter(records)) == actual
+    assert aggregation([]) == []
+    assert fpstreams.explain_reduction(aggregation).mergeable is False
+    assert getattr(fpstreams.agg, kind)(count)([4, 2, 9, 1]) == getattr(flow([4, 2, 9, 1]), kind)(
+        count
+    )
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_validates_count_and_selects_once(kind):
+    with pytest.raises(ValueError, match="non-negative"):
+        getattr(fpstreams.agg, kind)(-1)
+    with pytest.raises(TypeError):
+        getattr(fpstreams.agg, kind)(1.5)
+    calls = []
+    aggregation = getattr(fpstreams.agg, kind)(2, key=lambda row: calls.append(row) or row)
+    assert aggregation([4, 2, 9, 1]) == ([9, 4] if kind == "top" else [1, 2])
+    assert calls == [4, 2, 9, 1]
+    calls.clear()
+    assert getattr(fpstreams.agg, kind)(0, key=lambda row: calls.append(row))([1, 2]) == []
+    assert calls == []
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_shared_key_identity_keeps_first_ties(kind):
+    class Key:
+        def __eq__(self, other):
+            raise AssertionError("identical keys need no equality callback")
+
+    key = Key()
+    records = [object(), object(), object()]
+    actual = getattr(fpstreams.agg, kind)(2, key=lambda _row: key)(records)
+    assert actual[0] is records[0] and actual[1] is records[1]
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_zero_ranked_aggregation_closes_without_pulling_but_grouping_discovers_keys(kind):
+    events = []
+
+    class Source:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise AssertionError("zero-count aggregation must not pull")
+
+        def close(self):
+            events.append("closed")
+
+    collector = getattr(fpstreams.agg, kind)(0, key=lambda _row: pytest.fail("key called"))
+    assert collector(Source()) == []
+    assert events == ["closed"]
+    assert fpstreams.rows([{"id": 1}, {"id": 2}]).group_by("id").aggregate(
+        result=collector
+    ).to_list() == [{"id": 1, "result": []}, {"id": 2, "result": []}]
+
+
+@pytest.mark.parametrize("strategy", ["hash", "sorted", "spill"])
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_composes_with_grouping(kind, strategy, tmp_path):
+    records = [{"group": group, "score": score} for group in (1, 2) for score in (3, 1, 3, 2)]
+    source = fpstreams.rows(iter(records)).with_engine("python")
+    grouped = source.group_by_sorted("group") if strategy == "sorted" else source.group_by("group")
+    if strategy == "spill":
+        grouped = grouped.spill(partitions=2, tempdir=tmp_path)
+    actual = grouped.aggregate(
+        winners=getattr(fpstreams.agg, kind)(2, key="score"), n=fpstreams.agg.count()
+    ).to_list()
+    actual.sort(key=lambda row: row["group"])
+    for output, group in zip(actual, (1, 2), strict=True):
+        expected = getattr(
+            flow(records).filter(lambda row, group=group: row["group"] == group), kind
+        )(2, key="score")
+        assert output == {"group": group, "winners": expected, "n": 4}
+        if strategy != "spill":
+            assert all(
+                left is right for left, right in zip(output["winners"], expected, strict=True)
+            )
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_preserves_key_failure_and_closes_input(kind):
+    error = RuntimeError("ranking key")
+    events = []
+
+    def source():
+        try:
+            yield 1
+            yield 2
+        finally:
+            events.append("closed")
+
+    def key(value):
+        if value == 2:
+            raise error
+        return value
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(fpstreams.agg, kind)(2, key=key)(source())
+    assert caught.value is error
+    assert events == ["closed"]
+
+
+@pytest.mark.asyncio
+async def test_ranked_aggregation_supports_async_aggregation():
+    async def source():
+        for value in (4, 2, 9, 1):
+            yield value
+
+    assert await fpstreams.aflow(source()).aggregate(
+        high=fpstreams.agg.top(2), low=fpstreams.agg.bottom(2)
+    ) == {"high": [9, 4], "low": [1, 2]}
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_releases_losers_and_retains_only_a_bounded_set(kind):
+    import weakref
+
+    live = weakref.WeakSet()
+    peak = 0
+
+    class Item:
+        def __init__(self, score):
+            self.score = score
+
+    def source():
+        nonlocal peak
+        for score in range(2000):
+            item = Item(score)
+            live.add(item)
+            peak = max(peak, len(live))
+            yield item
+
+    result = getattr(fpstreams.agg, kind)(5, key=lambda item: item.score)(source())
+    assert [item.score for item in result] == (
+        [1999, 1998, 1997, 1996, 1995] if kind == "top" else [0, 1, 2, 3, 4]
+    )
+    assert peak <= 8
+    assert len(live) == 5
+
+
+@pytest.mark.parametrize("kind", ["top", "bottom"])
+def test_ranked_aggregation_keeps_comparison_errors_primary(kind):
+    error = ValueError("incomparable ranking keys")
+    events = []
+
+    class Key:
+        def __eq__(self, other):
+            return False
+
+        def __lt__(self, other):
+            raise error
+
+    def source():
+        try:
+            yield Key()
+            yield Key()
+        finally:
+            events.append("closed")
+
+    with pytest.raises(ValueError) as caught:
+        getattr(fpstreams.agg, kind)(3)(source())
+    assert caught.value is error
+    assert events == ["closed"]
+
+
+@pytest.mark.parametrize("reduction_type", [fpstreams.Aggregator, fpstreams.Collector])
+def test_multi_metric_grouping_observes_sibling_and_self_lifecycle_replacements(reduction_type):
+    events = []
+
+    def replacement_step(state, row):
+        events.append(("second", row["value"]))
+        return state + 10
+
+    second = reduction_type(lambda: 0, lambda state, _row: state + 1)
+
+    def first_step(state, row):
+        value = row["value"]
+        events.append(("first", value))
+        object.__setattr__(second, "step", replacement_step)
+        if value == 1:
+            object.__setattr__(second, "done", lambda state: state >= 10)
+        if value == 2:
+            from fpstreams.collecting._collector_base import _never_done
+
+            object.__setattr__(second, "done", _never_done)
+            object.__setattr__(first, "step", lambda state, row: state + row["value"] * 10)
+            object.__setattr__(first, "finish", lambda state: ("finished", state))
+        return state + value
+
+    first = reduction_type(lambda: 0, first_step)
+    actual = (
+        fpstreams.rows([{"id": 1, "value": value} for value in (1, 2, 3)])
+        .with_engine("python")
+        .group_by("id")
+        .aggregate(first=first, second=second)
+        .to_list()
+    )
+    assert actual == [{"id": 1, "first": ("finished", 33), "second": 30}]
+    assert events == [("first", 1), ("second", 1), ("first", 2), ("second", 2), ("second", 3)]
+
+
+@pytest.mark.parametrize("kind,index", [("min_by", 1), ("max_by", 0)])
+@pytest.mark.parametrize("selector", ["score", lambda row: row["score"]])
+def test_extremum_by_returns_first_winning_item_without_comparing_payloads(kind, index, selector):
+    records = [
+        {"score": 8, "payload": object()},
+        {"score": 2, "payload": object()},
+        {"score": 8, "payload": object()},
+        {"score": 2, "payload": object()},
+    ]
+    aggregation = getattr(fpstreams.agg, kind)(selector)
+    assert flow(records).aggregate(winner=aggregation)["winner"] is records[index]
+    assert fpstreams.explain_reduction(aggregation).mergeable is False
+    assert flow([]).aggregate(winner=aggregation) == {"winner": None}
+    assert flow([None]).aggregate(winner=getattr(fpstreams.agg, kind)(lambda _: 0)) == {
+        "winner": None
+    }
+
+
+@pytest.mark.parametrize("kind,index", [("min_by", 1), ("max_by", 0)])
+def test_extremum_by_selects_once_per_item_and_uses_only_strict_comparisons(kind, index):
+    events = []
+
+    class Key:
+        def __init__(self, value):
+            self.value = value
+
+        def __lt__(self, other):
+            events.append(("lt", self.value, other.value))
+            return self.value < other.value
+
+        def __gt__(self, other):
+            events.append(("gt", self.value, other.value))
+            return self.value > other.value
+
+        def __eq__(self, other):
+            raise AssertionError("key equality is unnecessary")
+
+    records = [{"score": 8}, {"score": 2}, {"score": 8}]
+
+    def select(row):
+        events.append(("select", row["score"]))
+        return Key(row["score"])
+
+    winner = getattr(fpstreams.agg, kind)(select)(records)
+    assert winner is records[index]
+    comparison = "lt" if kind == "min_by" else "gt"
+    assert events == [
+        ("select", 8),
+        ("select", 2),
+        (comparison, 2, 8),
+        ("select", 8),
+        (comparison, 8, 2 if kind == "min_by" else 8),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["min_by", "max_by"])
+@pytest.mark.parametrize("failure", ["select", "compare"])
+def test_extremum_by_preserves_callback_error_and_closes_source(kind, failure):
+    error = RuntimeError("original callback failure")
+    events = []
+
+    class BadKey:
+        def __lt__(self, other):
+            raise error
+
+        __gt__ = __lt__
+
+    def source():
+        try:
+            for value in range(3):
+                events.append(value)
+                yield value
+        finally:
+            events.append("closed")
+
+    def select(value):
+        if failure == "select" and value == 1:
+            raise error
+        return BadKey()
+
+    with pytest.raises(RuntimeError) as caught:
+        flow(source()).aggregate(winner=getattr(fpstreams.agg, kind)(select))
+    assert caught.value is error
+    assert events == [0, 1, "closed"]
+
+
+@pytest.mark.parametrize("strategy", ["hash", "sorted", "spill"])
+def test_extremum_by_groups_latest_records_and_preserves_tombstones(strategy, tmp_path):
+    records = [
+        {"id": 1, "version": 3, "deleted": True},
+        {"id": 1, "version": 1, "deleted": False},
+        {"id": 2, "version": 2, "deleted": False},
+        {"id": 2, "version": 4, "deleted": False},
+        {"id": 2, "version": 4, "deleted": True},
+    ]
+    source = fpstreams.rows(iter(records))
+    grouped = source.group_by_sorted("id") if strategy == "sorted" else source.group_by("id")
+    if strategy == "spill":
+        grouped = grouped.spill(2, tempdir=tmp_path)
+    result = grouped.aggregate(
+        first_version=fpstreams.agg.min_by("version"),
+        latest=fpstreams.agg.max_by("version"),
+        updates=fpstreams.agg.count(),
+    ).to_list()
+    assert result == [
+        {"id": 1, "first_version": records[1], "latest": records[0], "updates": 2},
+        {"id": 2, "first_version": records[2], "latest": records[3], "updates": 3},
+    ]
+    if strategy != "spill":
+        assert result[0]["latest"] is records[0]
+        assert result[1]["latest"] is records[3]
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_extremum_by_async_aggregation_keeps_order_and_closes_once():
+    events = []
+    records = [(1, "first"), (7, "winner"), (7, "tie")]
+
+    async def source():
+        try:
+            for value in records:
+                yield value
+        finally:
+            events.append("closed")
+
+    result = await fpstreams.aflow(source()).aggregate(winner=fpstreams.agg.max_by(0))
+    assert result["winner"] is records[1]
+    assert events == ["closed"]
 
 
 def _sequential_native_pairs() -> list[tuple[int, int]]:
@@ -58,6 +667,87 @@ def test_collector_subclass_uses_inherited_live_lifecycle_fields() -> None:
     collector = CustomCollector(lambda: 0, lambda state, value: state + value)
     object.__setattr__(collector, "finish", lambda state: state * 10)
     assert collector([1, 2, 3]) == 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_collapse_completed_collectors_observe_live_hooks_and_completion_truthiness(
+    asynchronous,
+):
+    from fpstreams.collecting._collector_base import _never_done
+
+    for resume in (False, True):
+        events = []
+
+        def step(state, value, events=events):
+            events.append(("step", value))
+            return [*state, value]
+
+        collector = fpstreams.Collector(list, step, tuple, done=bool)
+
+        def adjacent(left, right, events=events, collector=collector, resume=resume):
+            events.append(("pair", left, right))
+            if right == 3:
+                object.__setattr__(collector, "done", _never_done if resume else bool)
+                object.__setattr__(collector, "finish", lambda state: ("live", *state))
+            return right != 4
+
+        query = fpstreams.aflow([1, 2, 3, 4]) if asynchronous else flow([1, 2, 3, 4])
+        result = query.collapse(adjacent, collector).to_list()
+        if asynchronous:
+            result = await result
+        assert result == [("live", 1, 3) if resume else ("live", 1), ("live", 4)]
+        assert events == [
+            ("step", 1),
+            ("pair", 1, 2),
+            ("pair", 2, 3),
+            *([("step", 3)] if resume else []),
+            ("pair", 3, 4),
+            ("step", 4),
+        ]
+
+    checks = []
+
+    class Completed:
+        def __bool__(self):
+            checks.append("bool")
+            return True
+
+    collector = fpstreams.Collector(
+        list,
+        lambda state, value: [*state, value],
+        tuple,
+        done=lambda state: Completed() if state else False,
+    )
+    query = fpstreams.aflow([1, 2, 3, 4]) if asynchronous else flow([1, 2, 3, 4])
+    result = query.collapse(lambda _left, _right: True, collector).to_list()
+    if asynchronous:
+        result = await result
+    assert result == [(1,)]
+    assert checks == ["bool"] * 3
+
+    class LiveCollector(fpstreams.Collector):
+        armed = False
+
+        def __getattribute__(self, name):
+            if name == "done" and object.__getattribute__(self, "armed"):
+                object.__setattr__(self, "armed", False)
+                return _never_done
+            return super().__getattribute__(name)
+
+    # Arm the custom getter only after construction and the first completed state.
+    custom = LiveCollector(list, lambda state, value: [*state, value], tuple, done=bool)
+
+    def arm(left, _right):
+        if left == 1:
+            object.__setattr__(custom, "armed", True)
+        return True
+
+    query = fpstreams.aflow([1, 2, 3]) if asynchronous else flow([1, 2, 3])
+    result = query.collapse(arm, custom).to_list()
+    if asynchronous:
+        result = await result
+    assert result == [(1, 2)]
 
 
 def test_flow_conveniences_and_collectors_stay_thin_and_pythonic() -> None:
@@ -214,6 +904,83 @@ def test_grouping_by_steps_its_downstream_while_the_source_is_consumed() -> None
     ]
 
 
+async def test_completed_builtin_collectors_keep_first_and_head_in_group_adapters():
+    values = [("a", None), ("b", 0), ("a", 1), ("a", 2), ("b", 3)]
+    for mode in ("sync", "async"):
+        for name, downstream, expected in (
+            ("first", fpstreams.Collectors.first(), {"a": None, "b": 0}),
+            ("head0", fpstreams.Collectors.head(0), {"a": [], "b": []}),
+            ("head2", fpstreams.Collectors.head(2), {"a": [None, 1], "b": [0, 3]}),
+        ):
+            pulled, closed = [], []
+
+            def source(pulled=pulled, closed=closed):
+                try:
+                    for value in values:
+                        pulled.append(value)
+                        yield value
+                finally:
+                    closed.append(True)
+
+            mapped = fpstreams.Collectors.mapping(1, downstream)
+            collectors = {
+                "grouped": fpstreams.Collectors.grouping_by(0, mapped),
+                "partitioned": fpstreams.Collectors.partitioning_by(
+                    lambda row: row[0] == "a", mapped
+                ),
+            }
+            query = (
+                fpstreams.flow.defer(source) if mode == "sync" else fpstreams.aflow.defer(source)
+            )
+            result = (
+                query.collect(**collectors) if mode == "sync" else await query.collect(**collectors)
+            )
+            assert result == {
+                "grouped": expected,
+                "partitioned": {False: expected["b"], True: expected["a"]},
+            }, (mode, name)
+            assert pulled == values and closed == [True]
+
+
+def test_completed_builtin_collector_steps_preserve_state_identity():
+    first, later = object(), object()
+    collector = fpstreams.Collectors.first()
+    state = collector.step(collector.initializer(), first)
+    assert collector.done(state)
+    assert collector.step(state, later) is state
+    assert collector.finish(state) is first
+
+    head = fpstreams.Collectors.head(2)
+    state = head.initializer()
+    assert head.step(state, first) is state and head.step(state, later) is state
+    assert head.done(state)
+    assert head.step(state, object()) is state and state == [first, later]
+
+
+def test_group_adapters_still_step_custom_collectors_without_checking_done():
+    events = []
+
+    def step(state, value):
+        events.append(value)
+        return [*state, value]
+
+    def done(state):
+        raise AssertionError("group adapters must not consult downstream done")
+
+    downstream = fpstreams.Collector(list, step, done=done)
+    assert fpstreams.Collectors.grouping_by(lambda value: value % 2, downstream)([1, 2, 3]) == {
+        1: [1, 3],
+        0: [2],
+    }
+    assert events == [1, 2, 3]
+    events.clear()
+    assert fpstreams.Collectors.partitioning_by(lambda value: value % 2, downstream)([1, 2, 3]) == {
+        False: [2],
+        True: [1, 3],
+    }
+    assert events == [1, 2, 3]
+
+
 def test_aggregators_are_collectors_and_default_to_the_whole_value() -> None:
     total = fpstreams.agg.sum()
 
@@ -226,18 +993,20 @@ def test_aggregators_are_collectors_and_default_to_the_whole_value() -> None:
     ) == {"count": 3, "total": 6, "first": 1}
 
 
-def test_short_circuiting_aggregate_does_not_pull_an_unneeded_item() -> None:
+@pytest.mark.parametrize("factory", [fpstreams.agg.first, fpstreams.Collectors.first])
+def test_short_circuiting_aggregate_does_not_pull_an_unneeded_item(factory) -> None:
     closed = False
+    payload = object()
 
-    def values() -> Iterator[int]:
+    def values() -> Iterator[object]:
         nonlocal closed
         try:
-            yield 10
+            yield payload
             raise AssertionError("aggregate over-pulled its source")
         finally:
             closed = True
 
-    assert fpstreams.flow.defer(values).aggregate(first=fpstreams.agg.first()) == {"first": 10}
+    assert fpstreams.flow.defer(values).aggregate(first=factory())["first"] is payload
     assert closed
 
 
@@ -319,6 +1088,107 @@ def test_public_collectors_keep_step_failure_primary_when_input_close_fails(
     assert opened[0].close_calls == 1
 
 
+def test_teeing_merges_composed_partial_states_before_finishing() -> None:
+    from fractions import Fraction
+
+    from fpstreams.collecting.program import compile_collectors
+
+    finished = []
+
+    def finish_sum(name, total):
+        finished.append(name)
+        return total
+
+    collector = fpstreams.Collectors.filtering(
+        lambda row: row["value"] is not None,
+        fpstreams.Collectors.teeing(
+            fpstreams.Collectors.collecting_and_then(
+                fpstreams.Collectors.summing(lambda row: row["value"] * row["weight"]),
+                lambda total: finish_sum("numerator", total),
+            ),
+            fpstreams.Collectors.collecting_and_then(
+                fpstreams.Collectors.summing("weight"),
+                lambda total: finish_sum("denominator", total),
+            ),
+            lambda numerator, denominator: (
+                numerator,
+                denominator,
+                Fraction(numerator, denominator),
+            ),
+        ),
+    )
+    program = compile_collectors((("weighted", collector),))
+    left, right = program.initialize(), program.initialize()
+    for value in ({"value": 0, "weight": 2}, {"value": 8, "weight": 1}):
+        program.step(left, value)
+    for value in ({"value": None, "weight": 99}, {"value": 6, "weight": 3}):
+        program.step(right, value)
+
+    program.merge(left, right)
+    assert finished == []
+    assert program.finish(left) == {"weighted": (26, 6, Fraction(13, 3))}
+    assert finished == ["numerator", "denominator"]
+    assert fpstreams.explain_reduction(collector).to_dict() == {
+        "mergeable": False,
+        "combine_declared": True,
+        "laws": None,
+    }
+    assert collector.native is None
+
+
+@pytest.mark.parametrize("unmergeable", ["left", "right", "both"])
+def test_teeing_requires_both_downstream_combiners(unmergeable):
+    left = (
+        fpstreams.Collectors.first()
+        if unmergeable in {"left", "both"}
+        else fpstreams.Collectors.counting()
+    )
+    right = (
+        fpstreams.Collectors.first()
+        if unmergeable in {"right", "both"}
+        else fpstreams.Collectors.counting()
+    )
+    collector = fpstreams.Collectors.teeing(left, right, lambda a, b: (a, b))
+    assert collector.combine is None
+    assert collector([1, 2, 3]) == (
+        1 if unmergeable in {"left", "both"} else 3,
+        1 if unmergeable in {"right", "both"} else 3,
+    )
+
+
+@pytest.mark.parametrize("when", ["before", "during_left"])
+@pytest.mark.parametrize("remove", [False, True])
+def test_teeing_merge_observes_live_downstream_combiners(when, remove):
+    calls = []
+    left = fpstreams.Collectors.counting()
+    right = fpstreams.Collectors.summing()
+
+    def replace_right():
+        object.__setattr__(right, "combine", None if remove else lambda a, b: a + b + 100)
+
+    def combine_left(a, b):
+        calls.append("left")
+        if when == "during_left":
+            replace_right()
+        return a + b
+
+    object.__setattr__(left, "combine", combine_left)
+    collector = fpstreams.Collectors.teeing(left, right, lambda a, b: (a, b))
+    first, second = collector.initializer(), collector.initializer()
+    first = collector.step(first, 1)
+    second = collector.step(second, 2)
+    if when == "before":
+        replace_right()
+    assert collector.combine is not None
+    if remove:
+        with pytest.raises(ValueError, match="combine"):
+            collector.combine(first, second)
+        assert calls == ([] if when == "before" else ["left"])
+    else:
+        assert collector.finish(collector.combine(first, second)) == (2, 103)
+        assert calls == ["left"]
+
+
 def test_teeing_stops_when_both_downstreams_are_complete() -> None:
     pulls: list[int] = []
 
@@ -349,15 +1219,32 @@ def test_tail_and_only_have_bounded_state_and_explicit_cardinality() -> None:
 
 @pytest.mark.asyncio
 async def test_async_collect_accepts_one_or_many_collectors() -> None:
+    import asyncio
+
     assert await fpstreams.aflow([1, 2, 3]).collect(fpstreams.Collectors.summing()) == 6
     assert await fpstreams.aflow([1, 2, 3]).collect(
         count=fpstreams.Collectors.counting(),
         tail=fpstreams.Collectors.tail(2),
     ) == {"count": 3, "tail": [2, 3]}
+    assert await fpstreams.aflow([1, 2, 3]).collect(collector=fpstreams.Collectors.counting()) == {
+        "collector": 3
+    }
+
+    payload = asyncio.get_running_loop().create_future()
+    payload.set_result("value")
+    collector = fpstreams.Collector(lambda: 0, lambda total, item: total + item, lambda _s: payload)
+    assert fpstreams.flow([1, 2, 3]).collect(collector) is payload
+    assert await fpstreams.aflow([1, 2, 3]).collect(collector) is payload
+    assert await fpstreams.aflow([1, 2, 3]).collect(None, value=collector) == {"value": payload}
+    assert await fpstreams.aflow([1, 2, 3]).collect(lambda _values: payload) == "value"
+
+    with pytest.raises(TypeError, match="either one collector or named collectors"):
+        await fpstreams.aflow([1, 2, 3]).collect(collector, count=fpstreams.Collectors.counting())
 
 
 @pytest.mark.asyncio
-async def test_async_collect_and_aggregate_short_circuit_and_close() -> None:
+@pytest.mark.parametrize("factory", [fpstreams.agg.first, fpstreams.Collectors.first])
+async def test_async_collect_and_aggregate_short_circuit_and_close(factory) -> None:
     async def source(events: list[str]) -> AsyncIterator[int]:
         try:
             yield 10
@@ -372,9 +1259,9 @@ async def test_async_collect_and_aggregate_short_circuit_and_close() -> None:
     assert await fpstreams.aflow(source(collect_events)).collect(
         first=fpstreams.Collectors.first()
     ) == {"first": 10}
-    assert await fpstreams.aflow(source(aggregate_events)).aggregate(
-        first=fpstreams.agg.first()
-    ) == {"first": 10}
+    assert await fpstreams.aflow(source(aggregate_events)).aggregate(first=factory()) == {
+        "first": 10
+    }
     assert collect_events == ["closed"]
     assert aggregate_events == ["closed"]
 
@@ -2895,6 +3782,215 @@ def test_reducer_metadata_and_partitioned_execution_are_observable() -> None:
         run_partitioned_reducer([1], reducer, partition_size=0)
     with pytest.raises(TypeError, match="reducer must be a Reducer"):
         merge_reducer_states([1], ordinary)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("phase", "close_fails", "expected_error"),
+    [
+        ("normal", False, None),
+        ("normal", True, "cleanup"),
+        ("empty", False, None),
+        ("empty", True, "cleanup"),
+        ("next", False, "primary"),
+        ("next", True, "primary"),
+        ("step", False, "primary"),
+        ("step", True, "primary"),
+        ("initializer", False, "primary"),
+        ("initializer", True, "primary"),
+        ("merge", False, "primary"),
+        ("merge", True, "cleanup"),
+        ("finish", False, "primary"),
+        ("finish", True, "cleanup"),
+    ],
+)
+def test_partitioned_reducer_closes_owned_source_before_merge_or_finish(
+    phase, close_fails, expected_error
+):
+    from fpstreams.collecting.reducer import COUNT_LAWS, run_partitioned_reducer
+
+    events = []
+    primary = KeyboardInterrupt("source interrupted") if phase == "next" else RuntimeError(phase)
+    cleanup = OSError("source close failed")
+    values = iter([] if phase == "empty" else [1, 2, 3])
+
+    class Source:
+        def __iter__(self):
+            events.append("open")
+            return self
+
+        def __next__(self):
+            if phase == "next" and "yield" in events:
+                raise primary
+            value = next(values)
+            events.append("yield")
+            return value
+
+        def close(self):
+            events.append("close")
+            if close_fails:
+                raise cleanup
+
+    source = Source()
+    initialized = 0
+
+    def initialize():
+        nonlocal initialized
+        initialized += 1
+        if phase == "initializer" and initialized == 2:
+            raise primary
+        return 0
+
+    def step(total, value):
+        if phase == "step":
+            raise primary
+        return total + value
+
+    def merge(left, right):
+        events.append("merge")
+        if phase == "merge":
+            raise primary
+        return left + right
+
+    def finish(total):
+        events.append("finish")
+        if phase == "finish":
+            raise primary
+        return total
+
+    reducer = fpstreams.Reducer(initialize, step, finish, merge=merge, laws=COUNT_LAWS)
+    during_consumption = phase in {"next", "step", "initializer"}
+    failure = {"primary": primary, "cleanup": cleanup, None: None}[expected_error]
+    if failure is None:
+        assert run_partitioned_reducer(source, reducer, partition_size=1) == (
+            0 if phase == "empty" else 6
+        )
+    else:
+        with pytest.raises(type(failure)) as caught:
+            run_partitioned_reducer(source, reducer, partition_size=1)
+        assert caught.value is failure
+
+    assert getattr(primary, "__notes__", []) == (
+        ["cleanup failed with OSError: source close failed"]
+        if during_consumption and close_fails
+        else []
+    )
+
+    assert events.count("open") == events.count("close") == 1
+    assert events.index("close") < min(
+        (index for index, event in enumerate(events) if event in {"merge", "finish"}),
+        default=len(events),
+    )
+
+
+def test_collector_program_rejects_missing_combiners_before_any_callback() -> None:
+    from fpstreams.collecting.program import compile_collectors
+
+    calls = []
+
+    def combine(left, right):
+        calls.append("combine")
+        left.extend(right)
+        return left
+
+    collected = fpstreams.Collector(
+        list,
+        lambda state, value: [*state, value],
+        combine=combine,
+    )
+    program = compile_collectors((("values", collected), ("first", fpstreams.Collectors.first())))
+    left, right = program.initialize(), program.initialize()
+    program.step(left, 1)
+    program.step(right, 2)
+
+    with pytest.raises(ValueError, match=r"first.*not mergeable"):
+        program.merge(left, right)
+    assert calls == []
+    assert program.finish(left) == {"values": [1], "first": 1}
+    assert program.finish(right) == {"values": [2], "first": 2}
+
+
+@pytest.mark.parametrize("operation", ["sum", "subtract", "change_right"])
+def test_reducer_law_checks_do_not_reuse_mutated_partial_states(operation):
+    from dataclasses import replace
+
+    from fpstreams.collecting.reducer import COUNT_LAWS
+    from fpstreams.testing import assert_reducer_laws, check_reducer_laws
+
+    def step(state, value):
+        state[0] += value
+        return state
+
+    def combine(left, right):
+        if operation == "sum":
+            left[0] += right[0]
+            return left
+        if operation == "subtract":
+            left[0] -= right[0]
+            return left
+        right[0] += 10
+        return right
+
+    reducer = fpstreams.Reducer(
+        lambda: [0],
+        step,
+        lambda state: state[0],
+        merge=combine,
+        laws=replace(COUNT_LAWS, provenance=fpstreams.LawProvenance.USER_ASSERTED),
+    )
+    report = check_reducer_laws(reducer, [1, 2, 3], partitions=[(1, 1, 1)])
+    if operation == "sum":
+        assert report.associative is report.identity is report.partition_equivalent is True
+        assert_reducer_laws(reducer, [1, 2, 3], partitions=[(1, 1, 1)])
+    else:
+        assert report.associative is report.identity is report.partition_equivalent is False
+        with pytest.raises(AssertionError, match="not associative"):
+            assert_reducer_laws(reducer, [1, 2, 3], partitions=[(1, 1, 1)])
+
+
+@pytest.mark.parametrize("source_fails", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_reducer_law_checks_close_source_before_replaying_examples(source_fails, close_fails):
+    from fpstreams.collecting.reducer import COUNT_LAWS
+    from fpstreams.testing import check_reducer_laws
+
+    events = []
+    primary, cleanup = RuntimeError("source failed"), OSError("close failed")
+    data = iter([1, 2, 3])
+
+    class Source:
+        def __iter__(self):
+            events.append("open")
+            return self
+
+        def __next__(self):
+            if source_fails and "yield" in events:
+                raise primary
+            value = next(data)
+            events.append("yield")
+            return value
+
+        def close(self):
+            events.append("close")
+            if close_fails:
+                raise cleanup
+
+    def step(state, value):
+        assert events[-1] == "close"
+        return state + value
+
+    reducer = fpstreams.Reducer(lambda: 0, step, merge=lambda a, b: a + b, laws=COUNT_LAWS)
+    failure = primary if source_fails else cleanup if close_fails else None
+    if failure is None:
+        report = check_reducer_laws(reducer, Source(), partitions=[(1, 2)])
+        assert report.associative is report.identity is report.partition_equivalent is True
+    else:
+        with pytest.raises(type(failure)) as caught:
+            check_reducer_laws(reducer, Source(), partitions=[(1, 2)])
+        assert caught.value is failure
+    assert events.count("open") == events.count("close") == 1
+    assert getattr(primary, "__notes__", []) == (
+        ["cleanup failed with OSError: close failed"] if source_fails and close_fails else []
+    )
 
 
 def test_reducer_law_declarations_reject_invalid_contracts() -> None:

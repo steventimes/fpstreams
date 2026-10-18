@@ -2691,3 +2691,495 @@ def test_sorted_keys_reject_custom_types_before_comparison(operation, compound) 
     with pytest.raises(TypeError, match="exact int"):
         query.to_list()
     assert events == []
+
+
+def test_bounded_executor_shares_admission_and_releases_cancelled_futures() -> None:
+    """Independent submitters share one cap without transferring pool ownership."""
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+        def shutdown(self, *args, **kwargs):
+            raise AssertionError("borrowed pool was closed")
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    first = bounded.submit(int, 1)
+    entered = Event()
+
+    def submit():
+        entered.set()
+        return bounded.submit(int, 2)
+
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        waiting = callers.submit(submit)
+        assert entered.wait(5)
+        assert bounded.pending == 1
+        assert not waiting.done()
+        assert first.cancel()
+        second = waiting.result(timeout=5)
+        assert bounded.pending == 1
+        second.set_result(2)
+        assert bounded.pending == 0
+    bounded.shutdown()
+    with pytest.raises(RuntimeError, match="shutdown"):
+        bounded.submit(int, 3)
+
+
+def test_bounded_executor_submit_failure_and_immediate_completion_release_capacity() -> None:
+    from concurrent.futures import Executor, Future
+
+    from fpstreams import BoundedExecutor
+
+    class ImmediateExecutor(Executor):
+        fail = True
+
+        def submit(self, function, /, *args, **kwargs):
+            if self.fail:
+                self.fail = False
+                raise ValueError("submit failed")
+            result = Future()
+            result.set_result(function(*args, **kwargs))
+            return result
+
+    bounded = BoundedExecutor(ImmediateExecutor(), max_pending=1)
+    with pytest.raises(ValueError, match="submit failed"):
+        bounded.submit(int, 1)
+    assert bounded.pending == 0
+    assert bounded.submit(pow, 2, exp=3).result() == 8
+    assert bounded.pending == 0
+    bounded.shutdown()
+
+
+def test_bounded_executor_shutdown_wakes_blocked_submitters() -> None:
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    queued = bounded.submit(int, 1)
+    entered = Event()
+
+    def submit():
+        entered.set()
+        return bounded.submit(int, 2)
+
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        waiting = callers.submit(submit)
+        assert entered.wait(5)
+        bounded.shutdown(wait=False, cancel_futures=True)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            waiting.result(timeout=5)
+    assert queued.cancelled()
+    assert bounded.pending == 0
+    bounded.shutdown()
+
+
+def test_bounded_executor_shutdown_cancels_work_being_submitted() -> None:
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    entered, release = Event(), Event()
+
+    class GatedExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return Future()
+
+    bounded = BoundedExecutor(GatedExecutor(), max_pending=1)
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        submitting = callers.submit(bounded.submit, int, 1)
+        try:
+            assert entered.wait(5)
+            assert bounded.pending == 1
+            bounded.shutdown(wait=False, cancel_futures=True)
+        finally:
+            release.set()
+        assert submitting.result(timeout=5).cancelled()
+    bounded.shutdown()
+    assert bounded.pending == 0
+
+
+def test_bounded_executor_interrupted_admission_does_not_block_later_callers(monkeypatch) -> None:
+    from concurrent.futures import Executor, Future
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    first = bounded.submit(int, 1)
+
+    def interrupt():
+        raise KeyboardInterrupt("waiting for capacity")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(bounded._condition, "wait", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="capacity"):
+            bounded.submit(int, 2)
+    first.cancel()
+    second = bounded.submit(int, 3)
+    second.cancel()
+    bounded.shutdown()
+
+
+@pytest.mark.parametrize("limit", [0, -1, 1.5])
+def test_bounded_executor_rejects_invalid_capacity(limit) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fpstreams import BoundedExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool, pytest.raises((ValueError, TypeError)):
+        BoundedExecutor(pool, max_pending=limit)
+
+
+@pytest.mark.parametrize("ordered", [False, True])
+def test_bounded_executor_integrates_with_parallel_flows_and_keeps_pool_open(ordered) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fpstreams import BoundedExecutor, flow
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with BoundedExecutor(pool, max_pending=2) as bounded:
+            result = (
+                flow(range(12))
+                .map_parallel(abs, executor=bounded, buffer=6, ordered=ordered)
+                .to_list()
+            )
+            assert sorted(result) == list(range(12))
+            assert bounded.pending == 0
+            batches = flow(range(5)).parallel(executor=bounded).map_batches(sum, size=2).to_list()
+            assert batches == [1, 5, 4]
+        assert pool.submit(abs, -7).result(timeout=5) == 7
+
+
+def test_file_checkpoint_reopens_partitions_and_invalidates_changed_inputs(tmp_path) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("one")
+    calls = []
+
+    def transform(input_path, output_path):
+        calls.append(input_path)
+        output_path.write_text(input_path.read_text().upper())
+
+    store = FileCheckpoint(tmp_path / "results", version="uppercase-v1")
+    first = store.run(source, transform)
+    assert first.read_text() == "ONE"
+    reopened = FileCheckpoint(tmp_path / "results", version="uppercase-v1")
+    assert reopened.run(source, transform) == first
+    assert len(calls) == 1
+    source.write_text("two")
+    second = reopened.run(source, transform)
+    assert second != first and second.read_text() == "TWO"
+    assert first.read_text() == "ONE"
+    new_version = FileCheckpoint(tmp_path / "results", version="uppercase-v2")
+    assert new_version.run(source, transform) != second
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_file_checkpoint_does_not_publish_failed_or_partial_outputs(tmp_path, error_type) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    error = error_type("callback failed")
+
+    def fail(input_path, output_path):
+        output_path.write_text("partial")
+        raise error
+
+    with pytest.raises(error_type) as caught:
+        store.run(source, fail)
+    assert caught.value is error
+    assert not list((tmp_path / "results").glob("*/metadata.json"))
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    assert result.read_text() == "input"
+
+
+@pytest.mark.parametrize("corruption", ["output", "metadata", "missing"])
+def test_file_checkpoint_detects_corruption_before_reusing_results(tmp_path, corruption) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    if corruption == "output":
+        result.write_text("corrupt")
+    elif corruption == "metadata":
+        result.with_name("metadata.json").write_text("{}")
+    else:
+        result.unlink()
+
+    def forbidden(*args):
+        raise AssertionError("a corrupt checkpoint must not silently rerun side effects")
+
+    with pytest.raises(ValueError, match="checkpoint"):
+        store.run(source, forbidden)
+
+
+def test_file_checkpoint_rejects_source_mutation_and_missing_output(tmp_path) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("before")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+
+    def mutate(input_path, output_path):
+        output_path.write_text("old result")
+        input_path.write_text("after")
+
+    with pytest.raises(ValueError, match="changed"):
+        store.run(source, mutate)
+    with pytest.raises(ValueError, match="output"):
+        store.run(source, lambda i, o: None)
+    assert not list((tmp_path / "results").glob("*/metadata.json"))
+
+
+def test_file_checkpoint_concurrent_same_partition_is_not_computed_twice(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    entered, release = Event(), Event()
+
+    def transform(input_path, output_path):
+        entered.set()
+        assert release.wait(5)
+        output_path.write_text(input_path.read_text())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(store.run, source, transform)
+        try:
+            assert entered.wait(5)
+            with pytest.raises(BlockingIOError):
+                store.run(source, transform)
+        finally:
+            release.set()
+        result = running.result(timeout=5)
+    assert store.run(source, transform) == result
+
+
+def test_file_checkpoint_process_exit_releases_lock_without_publishing_partial_output(
+    tmp_path,
+) -> None:
+    """A killed worker must not leave a stale ownership claim or a reusable partial result."""
+    import subprocess
+    import sys
+
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    program = tmp_path / "worker.py"
+    program.write_text(
+        "import sys, time\n"
+        "from fpstreams import FileCheckpoint\n"
+        "def transform(input_path, output_path):\n"
+        "    output_path.write_text('partial')\n"
+        "    print('ready', flush=True)\n"
+        "    time.sleep(120)\n"
+        "FileCheckpoint(sys.argv[1], version='v1').run(sys.argv[2], transform)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(program), str(tmp_path / "results"), str(source)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+    finally:
+        process.kill()
+        process.communicate(timeout=10)
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text().upper()))
+    assert result.read_text() == "INPUT"
+    assert len(list((tmp_path / "results").glob("*/metadata.json"))) == 1
+
+
+@pytest.mark.parametrize("target", ["output", "metadata", "entry"])
+def test_file_checkpoint_rejects_symlinked_completed_entries(tmp_path, target) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    selected = result if target == "output" else result.with_name("metadata.json")
+    if target == "entry":
+        selected = result.parent
+    renamed = selected.with_name(selected.name + "-original")
+    selected.rename(renamed)
+    try:
+        selected.symlink_to(renamed, target_is_directory=target == "entry")
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+    with pytest.raises(ValueError, match="checkpoint"):
+        store.run(source, lambda i, o: o.write_text("unexpected"))
+    assert source.read_text() == "input"
+
+
+def test_file_checkpoint_runs_distinct_partitions_in_parallel(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from fpstreams import FileCheckpoint, flow
+
+    inputs = [tmp_path / f"input-{index}.txt" for index in range(2)]
+    for index, path in enumerate(inputs):
+        path.write_text(str(index))
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    barrier = Barrier(2)
+
+    def transform(input_path, output_path):
+        barrier.wait(timeout=5)
+        output_path.write_text(input_path.read_text())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = (
+            flow(inputs)
+            .map_parallel(lambda path: store.run(path, transform), executor=pool)
+            .to_list()
+        )
+    assert [path.read_text() for path in results] == ["0", "1"]
+
+
+def test_file_checkpoint_unlock_failure_preserves_the_callback_error(tmp_path, monkeypatch) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    from fpstreams import FileCheckpoint
+
+    original = fcntl.flock
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    error = ValueError("processing failed")
+
+    def flock(handle, flags):
+        if flags == fcntl.LOCK_UN:
+            raise OSError("unlock failed")
+        return original(handle, flags)
+
+    def fail(input_path, output_path):
+        raise error
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with pytest.raises(ValueError, match="processing failed") as caught:
+        FileCheckpoint(tmp_path / "results", version="v1").run(source, fail)
+    assert caught.value is error
+    assert any("unlock failed" in note for note in error.__notes__)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), 1.5])
+def test_resource_limits_reject_noninteger_counts_before_registration(invalid):
+    for field in ("max_tasks", "max_open_files"):
+        with pytest.raises(TypeError):
+            QueryLimits(**{field: invalid})
+    runtime = TaskRuntime(QueryLimits(), QueryMetrics())
+    with pytest.raises(TypeError):
+        runtime.scope("invalid", max_tasks=invalid)
+    assert runtime._scopes == [] and runtime.live_count == 0
+
+
+async def test_integer_index_limits_enforce_real_task_and_file_admission(tmp_path):
+    from fpstreams.runtime.files import FileLimitError
+    from fpstreams.runtime.query import QueryRuntime
+
+    class One:
+        def __init__(self):
+            self.calls = 0
+
+        def __index__(self):
+            self.calls += 1
+            return 1
+
+    tasks, files, scoped = One(), One(), One()
+    runtime = QueryRuntime(QueryLimits(max_tasks=tasks, max_open_files=files))
+    scope = runtime.tasks.scope("indexed", max_tasks=scoped)
+    task = scope.create_task(asyncio.sleep(10), role=TaskRole.USER_CALL)
+    try:
+        with pytest.raises(RuntimeError, match="limit"):
+            scope.create_task(asyncio.sleep(0), role=TaskRole.USER_CALL)
+        first = runtime.files.open(tmp_path / "first", "wb")
+        with pytest.raises(FileLimitError):
+            runtime.files.open(tmp_path / "rejected", "wb")
+        assert not (tmp_path / "rejected").exists()
+        first.close()
+        runtime.files.open(tmp_path / "second", "wb")
+        assert tasks.calls == files.calls == scoped.calls == 1
+    finally:
+        await runtime.aclose()
+    assert task.cancelled()
+    assert runtime.metrics.open_files == runtime.metrics.live_tasks == 0
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_spill_decoder_releases_buffers_and_prior_records_before_next_frame(batched):
+    import io
+    import weakref
+    from collections import UserDict
+
+    from fpstreams.storage.codec import SpillCodec
+
+    class Buffer(bytearray):
+        pass
+
+    codec = SpillCodec()
+    encoded = io.BytesIO()
+    codec.write_header(encoded)
+    values = (UserDict({"value": "x" * 4096}), UserDict({"value": 2}))
+    if batched:
+        codec.write_records(encoded, values)
+    else:
+        codec.write_record(encoded, values[0])
+    codec.write_record(encoded, "next frame")
+    payloads = []
+    decoded = []
+
+    class Handle(io.BytesIO):
+        reads = 0
+
+        def read(self, size=-1):
+            self.reads += 1
+            if self.reads == 4:
+                assert all(reference() is None for reference in decoded)
+            raw = super().read(size)
+            if self.reads == 3:
+                payload = Buffer(raw)
+                payloads.append(weakref.ref(payload))
+                return payload
+            return raw
+
+    handle = Handle(encoded.getvalue())
+    iterator = codec.read_records(handle)
+    for expected in values if batched else values[:1]:
+        item = next(iterator)
+        assert item == expected
+        decoded.append(weakref.ref(item))
+        assert payloads[0]() is None
+        del item
+    assert next(iterator) == "next frame"
+    assert list(iterator) == []
+    assert not handle.closed

@@ -9,7 +9,6 @@ from types import FunctionType
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from ..collecting.aggregation import (
-    Aggregator,
     finish_aggregations,
     initialize_aggregations,
     prepare_aggregations,
@@ -166,7 +165,12 @@ class Pairs(Generic[K, V]):
         try:
             value = method(*args, **kwargs)
             # A custom Pairs subclass may return without iterating the underlying Flow.
-            _record_direct_strategy(None, "pairs_direct", "pair terminal returned without a plan")
+            _record_direct_strategy(
+                None,
+                "pairs_direct",
+                "pair terminal returned without a plan",
+                only_if_unobserved=True,
+            )
             return recorder.finish(value, perf_counter_ns() - started)
         finally:
             _stop_recording(token)
@@ -433,11 +437,11 @@ class Pairs(Generic[K, V]):
         groups = self._consume(consume_groups)
         return {key: collector(values) for key, values in groups.items()}
 
-    def aggregate_values(self, **aggregations: Aggregator) -> dict[K, dict[str, Any]]:
-        """Run named Aggregators independently for every key.
+    def aggregate_values(self, **aggregations: Collector[Any, Any, Any]) -> dict[K, dict[str, Any]]:
+        """Run named collectors independently for every key.
 
         Args:
-            **aggregations: Result names mapped to aggregators maintained independently per key.
+            **aggregations: Result names mapped to collectors maintained independently per key.
 
         Returns:
             Each hashable key mapped to a dictionary of its named finished aggregation values.

@@ -15,6 +15,7 @@ from typing import (
     Generic,
     Literal,
     Protocol,
+    SupportsIndex,
     TypeVar,
     cast,
     overload,
@@ -22,6 +23,7 @@ from typing import (
 
 import fpstreams
 
+from ..collecting._collector_base import Collector
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.explain import PlanExplanation, explain_query
 from ..planning.gather import Gatherer
@@ -54,6 +56,7 @@ from ..planning.sync import (
     DropWhileOp,
     Engine,
     EnumerateOp,
+    FilterMapOp,
     FilterOp,
     FlatMapOp,
     GatherOp,
@@ -77,6 +80,7 @@ from ..planning.sync import (
     TapOp,
     UniqueOp,
     WindowOp,
+    WindowReduceOp,
     ZipLongestOp,
     ZipOp,
 )
@@ -336,6 +340,38 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             )
         )
 
+    @staticmethod
+    def unfold(seed: C, function: Callable[[C], tuple[R, C] | None]) -> Flow[R]:
+        """Generate values from state until the callback returns None.
+
+        Args:
+            seed: Initial state, reused by reference for each evaluation. Use an immutable
+                seed or `flow.defer` when each evaluation needs fresh mutable state.
+            function: Called with the current state and returns `(value, next_state)`, or
+                `None` to stop. A value inside the tuple may itself be `None`.
+
+        Returns:
+            A lazy, reopenable flow. The seed is not emitted; taking a prefix does not
+                call the function for subsequent values. Termination depends on the callback.
+
+        Raises:
+            TypeError: If function is not callable.
+        """
+        if not callable(function):
+            raise TypeError("function must be callable")
+
+        def values() -> Iterator[R]:
+            """Advance one state transition for each requested output."""
+            state = seed
+            while True:
+                result = function(state)
+                if result is None:
+                    return
+                value, state = result
+                yield value
+
+        return Flow(Source.defer(values))
+
     def __iter__(self) -> Iterator[T]:
         """Compile and execute every public iteration through the physical pipeline."""
         from ..execution.physical import execute_physical
@@ -535,7 +571,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         return self._append(FlatMapOp(function))
 
     def filter_map(self, function: Callable[[T], R | None]) -> Flow[R]:
-        """Map items and discard results equal to None.
+        """Map items and discard results that are None.
 
         Args:
             function: Maps each source item to one output value or `None`.
@@ -544,12 +580,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             A flow of non-`None` mapped results; falsey values such as `0` are retained.
         """
 
-        def transform(item: T) -> tuple[R, ...]:
-            """Return no values for a None result, otherwise return one mapped value."""
-            result = function(item)
-            return () if result is None else (result,)
-
-        return self.flat_map(transform)
+        return self._append(FilterMapOp(function))
 
     def pluck(self, selector: Selector) -> Flow[Any]:
         """Select one field, index, attribute, or nested path from each item.
@@ -845,6 +876,42 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             raise ValueError("window step must be positive")
         return self._append(WindowOp(size, step))
 
+    def window_reduce(
+        self, size: SupportsIndex, combine: Callable[[T, T], T], *, step: SupportsIndex = 1
+    ) -> Flow[T]:
+        """Reduce sliding windows while reusing ordered partial aggregates.
+
+        Args:
+            size: Number of source items in each full window.
+            combine: Associative synchronous function that never mutates its arguments.
+                Source values and returned aggregates must remain unchanged during iteration.
+            step: Number of source items between successive window starts.
+
+        Returns:
+            A flow of reduced windows, in encounter order. Empty input emits nothing;
+                input shorter than size emits one partial result. After a full window,
+                incomplete trailing windows are omitted, following [window][fpstreams.Flow.window].
+
+        Raises:
+            TypeError: If size or step does not support the integer index protocol.
+            ValueError: If size or step is less than one.
+
+        Notes:
+            Grouping of combine calls differs from a left fold. Floating-point addition
+            is not associative. Use window().map(...) for arbitrary reducers or side effects.
+            Combine may run while filling a window that is never emitted, so its errors
+            can surface before the corresponding window boundary. The queue caches at most
+            size + 1 entries, whose byte sizes may grow. Combine calls are amortized
+            constant per item; a stack transfer can take linear work in size.
+        """
+        size = operator.index(size)
+        step = operator.index(step)
+        if size <= 0:
+            raise ValueError("window size must be positive")
+        if step <= 0:
+            raise ValueError("window step must be positive")
+        return self._append(WindowReduceOp(size, step, combine))
+
     def group_runs(self, key: Selector | None = None) -> Flow[tuple[T, ...]]:
         """Group consecutive items that share the same key.
 
@@ -1002,6 +1069,33 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         return self._append(ScanOp(initial, function))
 
+    def map_accum(self, initial: C, function: Callable[[C, T], tuple[C, R]]) -> Flow[R]:
+        """Map items in encounter order while threading a separate state.
+
+        Args:
+            initial: State passed to the first callback, reused by reference for each
+                evaluation. Use `flow.defer` if mutable state must be freshly allocated.
+            function: Called as `function(state, item)` and returns `(next_state, output)`.
+                Callbacks run sequentially even when the flow has parallel map defaults.
+
+        Returns:
+            A lazy flow with one output per input, including `None` outputs. Empty input
+                emits nothing; the final state is not emitted. State holders are independent
+                for concurrent or repeated evaluations, as with `scan`.
+
+        Raises:
+            TypeError: If function is not callable.
+        """
+        if not callable(function):
+            raise TypeError("function must be callable")
+
+        def integrate(state: _FoldState[C], item: T) -> tuple[R]:
+            """Keep the replacement state and emit only the mapped output."""
+            state.value, output = function(state.value, item)
+            return (output,)
+
+        return self.gather(Gatherer(lambda: _FoldState(initial), integrate))
+
     def scan_right(
         self,
         initial: R,
@@ -1117,19 +1211,45 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         return self._append(MapLastOp(function))
 
+    @overload
+    def collapse(
+        self,
+        collapsible: Callable[[T, T], bool],
+        merger: Collector[T, C, R],
+    ) -> Flow[R]: ...
+
+    @overload
     def collapse(
         self,
         collapsible: Callable[[T, T], bool],
         merger: Callable[[T, T], T],
-    ) -> Flow[T]:
+    ) -> Flow[T]: ...
+
+    def collapse(
+        self,
+        collapsible: Callable[[T, T], bool],
+        merger: Callable[[T, T], T] | Collector[T, C, R],
+    ) -> Flow[T] | Flow[R]:
         """Merge adjacent items while collapsible returns true.
 
         Args:
             collapsible: Called on neighboring original items to decide whether a run continues.
-            merger: Combines the current run aggregate with the next item.
+            merger: Binary function combining the current aggregate with the next item,
+                or a [Collector][fpstreams.Collector] with synchronous lifecycle hooks.
 
         Returns:
-            A flow containing one merged aggregate for each contiguous collapsible run.
+            A flow containing one merged or finished result per contiguous run.
+                Empty input emits nothing and does not initialize a collector.
+
+        Notes:
+            A collector gets fresh state per nonempty run. Its done hook stops further
+            steps for that run, but all adjacent predicates still run to find the boundary.
+            One boundary item is read ahead; the next run is initialized only when
+            consumption resumes. The final run is finished only after normal exhaustion.
+            Collector hooks run while reading input, and their errors can precede errors
+            that a buffered group would encounter first. No raw run buffer is created;
+            state size depends on the collector. Combine and native metadata are unused.
+            A finisher returning an awaitable emits that object without awaiting it.
         """
         return self._append(CollapseOp(collapsible, merger))
 
@@ -1275,7 +1395,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """Describe grouped aggregation through a lazy Rows view of this flow."""
         return self.rows().group_by(*selectors, **named)
 
-    def take(self, count: int) -> Flow[T]:
+    def take(self, count: SupportsIndex) -> Flow[T]:
         """Emit at most count items, then close the upstream iterator.
 
         Args:
@@ -1285,13 +1405,15 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             A flow containing only the first `count` source items.
 
         Raises:
+            TypeError: If count does not support the integer index protocol.
             ValueError: If count is negative.
         """
+        count = operator.index(count)
         if count < 0:
             raise ValueError("take count must be non-negative")
         return self._append(TakeOp(count))
 
-    def limit(self, count: int) -> Flow[T]:
+    def limit(self, count: SupportsIndex) -> Flow[T]:
         """Emit at most count items; alias of take.
 
         Args:
@@ -1302,7 +1424,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         return self.take(count)
 
-    def drop(self, count: int) -> Flow[T]:
+    def drop(self, count: SupportsIndex) -> Flow[T]:
         """Skip count items before yielding the remainder.
 
         Args:
@@ -1312,13 +1434,15 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             A flow containing every source item after the first `count`.
 
         Raises:
+            TypeError: If count does not support the integer index protocol.
             ValueError: If count is negative.
         """
+        count = operator.index(count)
         if count < 0:
             raise ValueError("drop count must be non-negative")
         return self._append(DropOp(count))
 
-    def skip(self, count: int) -> Flow[T]:
+    def skip(self, count: SupportsIndex) -> Flow[T]:
         """Skip count items; alias of drop.
 
         Args:
@@ -1672,6 +1796,10 @@ class _FlowFactory:
             A reusable, infinite flow beginning with `seed`.
         """
         return Flow.iterate(seed, function)
+
+    def unfold(self, seed: C, function: Callable[[C], tuple[R, C] | None]) -> Flow[R]:
+        """Create a lazy state-driven source using [Flow.unfold][fpstreams.Flow.unfold]."""
+        return Flow.unfold(seed, function)
 
 
 flow = _FlowFactory()

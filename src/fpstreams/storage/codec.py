@@ -67,6 +67,7 @@ class SpillCodec:
                 value = pickle.loads(payload)
             except (pickle.UnpicklingError, EOFError, ValueError, TypeError) as error:
                 raise SpillFormatError(f"invalid spill payload: {error}") from error
+            del payload
             if isinstance(value, _SpillBatch):
                 # Batching is deliberately invisible above the codec.  Consumers
                 # continue to see the same lazy logical record stream, including
@@ -74,6 +75,7 @@ class SpillCodec:
                 yield from value.records
             else:
                 yield value
+            del value
 
     def write_record(self, handle: BinaryIO, value: object) -> int:
         """Encode one value, write its length-prefixed frame, and return bytes written."""

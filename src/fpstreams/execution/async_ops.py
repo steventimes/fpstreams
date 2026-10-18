@@ -17,6 +17,7 @@ from ..planning.async_ import (
     _DropWhile,
     _Enumerate,
     _Filter,
+    _FilterMap,
     _FlatMap,
     _Fold,
     _GroupRuns,
@@ -33,6 +34,7 @@ from ..planning.async_ import (
     _Tap,
     _Unique,
     _Window,
+    _WindowReduce,
     _Zip,
     _ZipLongest,
 )
@@ -48,6 +50,7 @@ def _pairwise(source: AsyncIterator[Any], _operation: _Pairwise) -> AsyncIterato
 AsyncOperationHandler = Callable[..., AsyncIterator[Any]]
 ASYNC_OPERATION_HANDLERS: dict[type[object], AsyncOperationHandler] = {
     _Filter: _iterators._filter,
+    _FilterMap: _iterators._filter_map,
     _Tap: _iterators._tap,
     _FlatMap: _iterators._flat_map,
     _Take: _iterators._take,
@@ -58,6 +61,7 @@ ASYNC_OPERATION_HANDLERS: dict[type[object], AsyncOperationHandler] = {
     _Chunk: _iterators._chunk,
     _BatchBySize: _iterators._batch_by_size,
     _Window: _iterators._window,
+    _WindowReduce: _iterators._window_reduce,
     _Pairwise: _pairwise,
     _GroupRuns: _iterators._group_runs,
     _Fold: _iterators._fold,

@@ -25,7 +25,6 @@ from ..planning.source import Source, SourceCapabilities, _function_code
 from ..runtime.resources import _add_cleanup_failure
 
 RecordConverter: TypeAlias = Callable[[Any], Mapping[str, Any]]
-_CSV_PROJECTION_PROBE_BYTES = 64 * 1024
 _MAX_PARQUET_PRUNING_PROBE_ROW_GROUPS = 512
 _MAX_PARQUET_PRUNING_PROBE_FRAGMENTS = 512
 _PARQUET_METADATA_COUNT_TOKEN = object()
@@ -173,6 +172,12 @@ def _batch_from_records(pa: Any, records: list[Mapping[str, Any]], schema: Any) 
             if extras:
                 raise ValueError(f"Arrow rows introduced columns {extras!r} outside the schema")
 
+    if not names and isinstance(schema, pa.Schema):
+        # An empty column mapping cannot carry a row count. A zero-field struct
+        # preserves each empty record, including a short final batch.
+        return pa.RecordBatch.from_struct_array(
+            pa.nulls(len(records), type=pa.struct([]))
+        ).replace_schema_metadata(schema.metadata)
     columns = {name: [record.get(name) for record in records] for name in names}
     return pa.RecordBatch.from_pydict(columns, schema=schema)
 
@@ -428,22 +433,15 @@ def csv_source(
     _pa, _dataset, _parquet = _arrow_modules()
     csv_module = cast(Any, import_module("pyarrow.csv"))
     size = _positive_size(batch_size)
-    csv_core = cast(Any, import_module("pyarrow._csv"))
-    input_stream_factory = _pa.lib.input_stream
-    csv_reader_factory = csv_core.open_csv
 
-    def open_reader(
-        options: Any,
-        *,
-        input_read_options: Any = read_options,
-    ) -> tuple[Any, Any]:
+    def open_reader(options: Any) -> tuple[Any, Any]:
         """Open one owned stream/reader pair and validate its output field names."""
         input_stream = _pa.input_stream(path, compression="detect")
         reader = None
         try:
             reader = csv_module.open_csv(
                 input_stream,
-                read_options=input_read_options,
+                read_options=read_options,
                 parse_options=parse_options,
                 convert_options=options,
                 memory_pool=memory_pool,
@@ -463,44 +461,6 @@ def csv_source(
     def batches() -> Iterator[Any]:
         """Read the complete caller-visible CSV schema."""
         yield from stream(convert_options)
-
-    def projected_batches(requested: tuple[str, ...]) -> Iterator[Any]:
-        """Reopen a default CSV reader with only proven-present query fields."""
-        if (
-            not requested
-            or _pa.input_stream is not input_stream_factory
-            or csv_module.open_csv is not csv_reader_factory
-            or csv_module.ReadOptions is not csv_core.ReadOptions
-            or csv_module.ConvertOptions is not csv_core.ConvertOptions
-        ):
-            yield from batches()
-            return
-        if read_options is None and parse_options is None and convert_options is None:
-            try:
-                probe, input_stream = open_reader(
-                    None,
-                    input_read_options=csv_module.ReadOptions(
-                        block_size=_CSV_PROJECTION_PROBE_BYTES
-                    ),
-                )
-            except (TypeError, ValueError):
-                # A header/record may straddle the bounded probe, or its partial view may expose
-                # a schema-validation error before a later parse error. Reopen with Arrow's
-                # established default so both successful inference and public errors remain
-                # identical to the pre-optimization path. Allocation and non-validation errors
-                # deliberately propagate instead of being mistaken for a speculative decline.
-                probe, input_stream = open_reader(None)
-        else:
-            probe, input_stream = open_reader(None)
-        with _closing(probe, input_stream):
-            available = set(probe.schema.names)
-        if any(name not in available for name in requested):
-            # Preserve lazy Rows selection semantics for missing fields: header-only inputs
-            # remain empty, while nonempty inputs fail through the canonical selector path.
-            yield from batches()
-            return
-        options = csv_module.ConvertOptions(include_columns=list(requested))
-        yield from stream(options)
 
     def records() -> Iterator[dict[str, Any]]:
         iterator = batches()
@@ -522,11 +482,9 @@ def csv_source(
         batches,
         "csv",
         size,
-        # ParseOptions is mutable.  Supplying one disables the two-open projection route so a
-        # callback installed after construction can never observe the same invalid row twice.
-        projection_opener=(
-            projected_batches if convert_options is None and parse_options is None else None
-        ),
+        # Default type inference fixes types from the first block. Dropping a column
+        # here could hide a conversion error in a later block, so query projection
+        # runs only after the full caller-visible typed scan.
         byte_size_opener=byte_size,
         projection_safe=(
             (type(path) is str or type(path) is type(Path()))
@@ -691,6 +649,83 @@ def _guarded_local_parquet_metadata_count(
     )
 
 
+def _parquet_type_can_discard_values(types: Any, value_type: Any) -> bool:
+    """Prove source scalars cannot fail Python conversion before query evaluation."""
+    return bool(
+        types.is_null(value_type)
+        or types.is_boolean(value_type)
+        or types.is_integer(value_type)
+        or types.is_floating(value_type)
+        or types.is_binary(value_type)
+        or types.is_large_binary(value_type)
+        or types.is_fixed_size_binary(value_type)
+    )
+
+
+def _parquet_scan_can_discard_values(pa: Any, schema: Any, columns: list[str] | None) -> bool:
+    """Prove every caller-visible source type can cross the Python row boundary."""
+    fields = schema if columns is None else (schema.field(name) for name in columns)
+    return all(_parquet_type_can_discard_values(pa.types, field.type) for field in fields)
+
+
+def _parquet_validation_columns(
+    pa: Any,
+    schema: Any,
+    columns: list[str] | None,
+    predicate: tuple[str, object] | RangePredicate | None,
+) -> list[str] | None:
+    """Retain query dependencies and fallible fields in the source's column order."""
+    if columns is None:
+        return None
+    needed = set(columns)
+    if predicate is not None:
+        needed.add(predicate[0])
+    return [
+        field.name
+        for field in schema
+        if field.name in needed or not _parquet_type_can_discard_values(pa.types, field.type)
+    ]
+
+
+def _parquet_has_single_fragment(dataset: Any) -> bool:
+    """Prove one default-source fragment without loading extra fragment metadata.
+
+    A multi-fragment or caller-defined dataset may cast physical columns to its
+    logical schema. Even an unused integer field can then fail during scanning.
+    Do not inspect physical schemas here: decoding their metadata can invoke
+    extension-type hooks before the canonical scan reaches those fragments.
+    """
+    try:
+        fragments = iter(dataset.get_fragments())
+        with _closing(fragments):
+            return next(fragments, None) is not None and next(fragments, None) is None
+    except MemoryError:
+        raise
+    except Exception:
+        return False
+
+
+def _filter_validated_parquet_batch(
+    batch: Any, equality: tuple[str, object] | None, range_predicate: RangePredicate | None
+) -> Any:
+    """Apply a proven leading hint after validation, including on PyArrow 16."""
+    pc = cast(Any, import_module("pyarrow.compute"))
+    if equality is not None:
+        name, value = equality
+        return batch.filter(pc.equal(batch.column(name), value))
+    assert range_predicate is not None
+    name, comparison, bound = range_predicate
+    values = batch.column(name)
+    compare = {
+        "<": pc.less,
+        "<=": pc.less_equal,
+        ">": pc.greater,
+        ">=": pc.greater_equal,
+    }[comparison]
+    # Keep nulls for the original ordered residual to raise Python's comparison error.
+    return batch.filter(pc.or_kleene(pc.is_null(values), compare(values, bound)))
+
+
 def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener construction
     source: Any,
     *,
@@ -754,10 +789,13 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
             # A replaced opener can change the live selector. Keep the public source
             # columns available when the opened batch falls back to Python.
             requested = None
+            equality = None
+            range_predicate = None
         dataset = open_dataset()
+        dataset_schema = dataset.schema
         scan_columns = projected
         scan_filter = filter
-        dataset_names = set(_schema_names(dataset.schema))
+        dataset_names = set(_schema_names(dataset_schema))
         available = set(projected) if projected is not None else dataset_names
         base_projection_is_proven = projected is None or all(
             name in dataset_names for name in projected
@@ -806,15 +844,76 @@ def _parquet_batch_factory(  # noqa: C901 - shared scan/count opener constructio
         if first_only:
             scanner_options["batch_readahead"] = 0
             scanner_options["fragment_readahead"] = 0
+        automatic_discard = bool(
+            requested_is_proven
+            and (
+                scanner_options["columns"] is not projected
+                or scanner_options["filter"] is not filter
+            )
+        )
+        native_scan_schema = bool(
+            automatic_discard
+            and metadata_count_is_guarded
+            and _parquet_has_single_fragment(dataset)
+        )
+        validate_before_discard = automatic_discard and (
+            not native_scan_schema
+            or not _parquet_scan_can_discard_values(_pa, dataset_schema, projected)
+        )
+        if validate_before_discard:
+            # The canonical adapter converts every visible field in a batch before
+            # evaluating the query. Scanner casts can also fail on later fragments.
+            # Validate that boundary before automatic hints discard source values.
+            from ..execution.arrow import arrow_schema_has_primitive_rows, observe_arrow_batch_rows
+
+            visible_schema = (
+                dataset_schema
+                if projected is None
+                else _pa.schema([dataset_schema.field(name) for name in projected])
+            )
+            if arrow_schema_has_primitive_rows(_pa, visible_schema):
+                output_columns = scanner_options["columns"]
+                output_filter = scanner_options["filter"] if filter is None else None
+                predicate = equality if equality is not None else range_predicate
+                scan_columns = (
+                    _parquet_validation_columns(
+                        _pa,
+                        visible_schema,
+                        output_columns,
+                        predicate if output_filter is not None else None,
+                    )
+                    if native_scan_schema
+                    else projected
+                )
+            else:
+                # Unsupported scalars may invoke Python conversion hooks. Leave them
+                # to the executor's single canonical row conversion and fallback.
+                validate_before_discard = False
+                scan_columns = projected
+            scanner_options["columns"] = scan_columns
+            scanner_options["filter"] = filter
         if requested is not None and projection_check is not None and not projection_check():
             scanner_options["columns"] = projected
+            scanner_options["filter"] = filter
+            validate_before_discard = False
         scanner = dataset.scanner(
             **scanner_options,
         )
         _schema_names(scanner.projected_schema)
         iterator = iter(scanner.to_batches())
         with _closing(iterator):
-            yield from iterator
+            if not validate_before_discard:
+                yield from iterator
+                return
+            for batch in iterator:
+                observe_arrow_batch_rows(batch)
+                if output_filter is not None:
+                    batch = _filter_validated_parquet_batch(batch, equality, range_predicate)
+                    if not batch.num_rows:
+                        continue
+                if output_columns is not None:
+                    batch = batch.select(output_columns)
+                yield batch
 
     def batches() -> Iterator[Any]:
         """Create a fresh scanner using the public source projection."""
@@ -984,6 +1083,8 @@ def write_parquet_rows(
     active_error: BaseException | None = None
     try:
         for batch in iterator:
+            if batch.num_rows and batch.num_columns == 0:
+                raise ValueError("cannot write nonempty rows to Parquet without columns")
             if writer is None:
                 writer = parquet.ParquetWriter(
                     temporary,

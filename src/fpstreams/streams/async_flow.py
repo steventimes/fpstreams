@@ -6,8 +6,9 @@ import asyncio
 import operator
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
-from typing import Any, Generic, TypeVar, cast, overload
+from typing import Any, Generic, SupportsIndex, TypeVar, cast, overload
 
+from ..collecting._collector_base import Collector
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.async_ import (
     AsyncLogicalPlan,
@@ -27,6 +28,7 @@ from ..planning.async_ import (
     _DropWhile,
     _Enumerate,
     _Filter,
+    _FilterMap,
     _FlatMap,
     _Fold,
     _GroupRuns,
@@ -52,6 +54,7 @@ from ..planning.async_ import (
     _to_async_iterator,
     _Unique,
     _Window,
+    _WindowReduce,
     _Zip,
     _ZipLongest,
 )
@@ -172,6 +175,50 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow over `source`; async iterator instances are one-shot.
         """
         return AsyncFlow[R](source)
+
+    @staticmethod
+    @overload
+    def unfold(seed: C, function: Callable[[C], Awaitable[tuple[R, C] | None]]) -> AsyncFlow[R]: ...
+
+    @staticmethod
+    @overload
+    def unfold(
+        seed: C, function: Callable[[C], tuple[R, C] | Awaitable[tuple[R, C] | None] | None]
+    ) -> AsyncFlow[R]: ...
+
+    @staticmethod
+    def unfold(
+        seed: C, function: Callable[[C], tuple[R, C] | Awaitable[tuple[R, C] | None] | None]
+    ) -> AsyncFlow[R]:
+        """Generate values from sync or async state transitions until None is returned.
+
+        Args:
+            seed: Initial state, reused by reference for each evaluation. Use immutable
+                state or `aflow.defer` when fresh mutable state is needed.
+            function: Sync or async callback returning `(value, next_state)`, or `None`
+                to stop. A tuple's value may be `None`. Only one callback runs at a time.
+
+        Returns:
+            A lazy, reopenable async flow that does not emit the seed or request a later
+                transition after early exit. Termination depends on the callback.
+
+        Raises:
+            TypeError: If function is not callable.
+        """
+        if not callable(function):
+            raise TypeError("function must be callable")
+
+        async def values() -> AsyncIterator[R]:
+            """Await one transition for each requested output."""
+            state = seed
+            while True:
+                result = await _resolve(function(state))
+                if result is None:
+                    return
+                value, state = result
+                yield value
+
+        return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(values)))
 
     @staticmethod
     def from_queue(
@@ -757,7 +804,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         self,
         function: Callable[[T], R | Awaitable[R | None] | None],
     ) -> AsyncFlow[R]:
-        """Map items and discard results equal to None.
+        """Map items and discard results that are None.
 
         Args:
             function: Sync or async mapper returning one output value or `None`.
@@ -765,8 +812,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         Returns:
             An async flow of non-`None` mapped results; falsey values such as `0` are retained.
         """
-        mapped = self.map(function)
-        return cast(AsyncFlow[R], mapped.filter(lambda item: item is not None))
+        return cast(AsyncFlow[R], self._append(_FilterMap(function)))
 
     def pluck(self, selector: Selector) -> AsyncFlow[Any]:
         """Select one field, index, attribute, or nested path from each item.
@@ -847,7 +893,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         return self.map(capture)
 
-    def take(self, count: int) -> AsyncFlow[T]:
+    def take(self, count: SupportsIndex) -> AsyncFlow[T]:
         """Emit at most count items and cancel pending upstream work.
 
         Args:
@@ -858,15 +904,17 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 upstream work and closes its iterators.
 
         Raises:
+            TypeError: If count does not support the integer index protocol.
             ValueError: If count is negative.
         """
+        count = operator.index(count)
         if count < 0:
             raise ValueError("count cannot be negative")
         return cast(AsyncFlow[T], self._append(_Take(count)))
 
     limit = take
 
-    def drop(self, count: int) -> AsyncFlow[T]:
+    def drop(self, count: SupportsIndex) -> AsyncFlow[T]:
         """Skip count items before yielding the remainder.
 
         Args:
@@ -876,8 +924,10 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow containing every source item after the first `count`.
 
         Raises:
+            TypeError: If count does not support the integer index protocol.
             ValueError: If count is negative.
         """
+        count = operator.index(count)
         if count < 0:
             raise ValueError("count cannot be negative")
         return cast(AsyncFlow[T], self._append(_Drop(count)))
@@ -1026,6 +1076,43 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         if step <= 0:
             raise ValueError("window step must be positive")
         return cast(AsyncFlow[tuple[T, ...]], self._append(_Window(size, step)))
+
+    def window_reduce(
+        self, size: SupportsIndex, combine: Callable[[T, T], T], *, step: SupportsIndex = 1
+    ) -> AsyncFlow[T]:
+        """Reduce sliding windows using an associative synchronous function.
+
+        Args:
+            size: Number of source items in each full window.
+            combine: Associative synchronous function that never mutates its arguments.
+                Source values and returned aggregates must remain unchanged during iteration.
+                Awaitable callbacks are not supported.
+            step: Number of source items between successive window starts.
+
+        Returns:
+            An async flow of ordered window aggregates. Empty input emits nothing;
+                initially short input emits one partial result, and trailing partial
+                windows after a full window are omitted.
+
+        Raises:
+            TypeError: If size or step does not support the integer index protocol.
+            ValueError: If size or step is less than one.
+
+        Notes:
+            Uses the same algebraic contract and cached state as
+            [Flow.window_reduce][fpstreams.Flow.window_reduce]. Callback grouping and
+            exception timing can differ from window().map_async(...). Floating-point
+            addition is not associative. Cached entry count is bounded by size + 1,
+            not by bytes. Combine calls are amortized constant per item, with linear
+            stack transfers. No background task or pull-ahead buffer is introduced.
+        """
+        size = operator.index(size)
+        step = operator.index(step)
+        if size <= 0:
+            raise ValueError("window size must be positive")
+        if step <= 0:
+            raise ValueError("window step must be positive")
+        return cast(AsyncFlow[T], self._append(_WindowReduce(size, step, combine)))
 
     def pairwise(self) -> AsyncFlow[tuple[T, T]]:
         """Emit each adjacent pair of items.
@@ -1194,6 +1281,49 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             raise TypeError("function must be callable")
         return cast(AsyncFlow[R], self._append(_Scan(initial, function)))
 
+    @overload
+    def map_accum(
+        self, initial: C, function: Callable[[C, T], Awaitable[tuple[C, R]]]
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def map_accum(
+        self, initial: C, function: Callable[[C, T], tuple[C, R] | Awaitable[tuple[C, R]]]
+    ) -> AsyncFlow[R]: ...
+
+    def map_accum(
+        self, initial: C, function: Callable[[C, T], tuple[C, R] | Awaitable[tuple[C, R]]]
+    ) -> AsyncFlow[R]:
+        """Map items sequentially while threading state through sync or async callbacks.
+
+        Args:
+            initial: State for the first callback, reused by reference for each evaluation.
+                Use `aflow.defer` if mutable state must be freshly allocated.
+            function: Called as `function(state, item)` and resolves to `(next_state, output)`.
+                Each transition is awaited before the next item is requested.
+
+        Returns:
+            A lazy async flow with one output per item, including `None` outputs. Empty
+                input emits nothing, and the final state is not emitted. Each evaluation
+                starts from initial, following `scan` semantics.
+
+        Raises:
+            TypeError: If function is not callable.
+        """
+        if not callable(function):
+            raise TypeError("function must be callable")
+
+        async def advance(state_and_output: tuple[C, R | None], item: T) -> tuple[C, R]:
+            """Separate the replacement state from the emitted value."""
+            state, output = await _resolve(function(state_and_output[0], item))
+            return state, output
+
+        start: tuple[C, R | None] = (initial, None)
+        return cast(
+            AsyncFlow[R],
+            self.scan(start, advance).map(lambda state_and_output: state_and_output[1]),
+        )
+
     def scan_right(
         self,
         initial: R,
@@ -1267,23 +1397,46 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """
         return cast(AsyncFlow[T], self._append(_MapLast(function)))
 
+    @overload
+    def collapse(
+        self,
+        collapsible: Callable[[T, T], bool | Awaitable[bool]],
+        merger: Collector[T, C, R],
+    ) -> AsyncFlow[R]: ...
+
+    @overload
     def collapse(
         self,
         collapsible: Callable[[T, T], bool | Awaitable[bool]],
         merger: Callable[[T, T], T | Awaitable[T]],
-    ) -> AsyncFlow[T]:
+    ) -> AsyncFlow[T]: ...
+
+    def collapse(
+        self,
+        collapsible: Callable[[T, T], bool | Awaitable[bool]],
+        merger: Callable[[T, T], T | Awaitable[T]] | Collector[T, C, R],
+    ) -> AsyncFlow[T] | AsyncFlow[R]:
         """Merge adjacent items while collapsible returns true.
 
         Args:
             collapsible: Sync or async predicate called on neighboring original items.
-            merger: Sync or async callback combining the current run aggregate with the next item.
+            merger: Sync or async binary callback, or a [Collector][fpstreams.Collector]
+                whose lifecycle hooks follow the synchronous Collector protocol.
 
         Returns:
-            An async flow containing one resolved aggregate per contiguous collapsible run.
+            An async flow containing one aggregate or finished result per contiguous run.
+                Empty input emits nothing and does not initialize a collector.
+
+        Notes:
+            Collector initialization, completion and boundary behavior follow
+            [Flow.collapse][fpstreams.Flow.collapse]. The adjacent predicate may be
+            awaitable. Collector hooks are synchronous; a finisher returning an awaitable
+            emits that object without awaiting it. No task or prefetch buffer is added.
+            Upstream failure or cancellation does not finish the current run.
         """
         if not callable(collapsible) or not callable(merger):
             raise TypeError("collapsible and merger must be callable")
-        return cast(AsyncFlow[T], self._append(_Collapse(collapsible, merger)))
+        return cast(AsyncFlow[T] | AsyncFlow[R], self._append(_Collapse(collapsible, merger)))
 
     def fold(
         self,
@@ -1377,6 +1530,22 @@ class _AsyncFlowFactory:
             A reusable async flow that invokes `factory` separately for each evaluation.
         """
         return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(factory)))
+
+    @overload
+    def unfold(
+        self, seed: C, function: Callable[[C], Awaitable[tuple[R, C] | None]]
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def unfold(
+        self, seed: C, function: Callable[[C], tuple[R, C] | Awaitable[tuple[R, C] | None] | None]
+    ) -> AsyncFlow[R]: ...
+
+    def unfold(
+        self, seed: C, function: Callable[[C], tuple[R, C] | Awaitable[tuple[R, C] | None] | None]
+    ) -> AsyncFlow[R]:
+        """Create a state-driven source using [AsyncFlow.unfold][fpstreams.AsyncFlow.unfold]."""
+        return AsyncFlow.unfold(seed, function)
 
     def from_queue(
         self,

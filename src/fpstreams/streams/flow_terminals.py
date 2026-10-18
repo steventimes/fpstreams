@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from numbers import Real
 from time import perf_counter_ns
-from typing import Any, Generic, Literal, TypeVar, cast
+from typing import Any, Generic, Literal, TypeVar, cast, overload
 
 from ..collecting.aggregate_program import (
     AggregationProgram,
@@ -26,7 +26,6 @@ from ..collecting.aggregate_program import (
 )
 from ..collecting.aggregation import (
     AggregationItems,
-    Aggregator,
     finish_native_aggregations,
     prepare_aggregations,
 )
@@ -106,6 +105,7 @@ from . import _flow_structural_list
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
+S = TypeVar("S")
 _MISSING = object()
 _BUILTIN_LIST: type[list[Any]] = builtins.list
 _BUILTIN_INT = builtins.int
@@ -1904,13 +1904,13 @@ class FlowTerminalsMixin(Generic[T]):
             result["std"] = math.sqrt(max(squared_deviations, 0.0) / (numeric_count - 1))
         return result
 
-    def aggregate(self, **aggregations: Aggregator) -> dict[str, Any]:
+    def aggregate(self, **aggregations: Collector[Any, Any, Any]) -> dict[str, Any]:
         """Compute several named aggregations while traversing the flow once.
 
-        All named aggregators are updated during the same source traversal.
+        Collectors and `agg` factory results share the same source traversal.
 
         Args:
-            **aggregations: Result names mapped to aggregators updated in one traversal.
+            **aggregations: Result names mapped to collectors updated in one traversal.
 
         Returns:
             Finished aggregation values keyed by the supplied argument names.
@@ -1975,6 +1975,32 @@ class FlowTerminalsMixin(Generic[T]):
         return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
 
     summarize = aggregate
+
+    @overload
+    def collect(self, collector: Collector[T, S, C], /) -> C: ...
+
+    @overload
+    def collect(
+        self,
+        collector: Callable[[Iterable[T]], C],
+        /,
+    ) -> C: ...
+
+    @overload
+    def collect(
+        self,
+        collector: None = None,
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def collect(
+        self,
+        collector: Callable[[Iterable[T]], C] | Collector[T, Any, C] | None = None,
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C | dict[str, Any]: ...
 
     def collect(
         self,

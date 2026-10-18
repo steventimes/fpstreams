@@ -65,6 +65,14 @@ class FilterOp:
 
 
 @dataclass(frozen=True, slots=True)
+class FilterMapOp:
+    """Map each input once and emit only results that are not ``None``."""
+
+    function: Callable[[Any], Any]
+    name: str = "filter_map"
+
+
+@dataclass(frozen=True, slots=True)
 class FlatMapOp:
     """Replace each input item with all values from the iterable returned by ``function``."""
 
@@ -138,6 +146,16 @@ class WindowOp:
     size: int
     step: int
     name: str = "window"
+
+
+@dataclass(frozen=True, slots=True)
+class WindowReduceOp:
+    """Reduce stepped windows using an explicitly associative, nonmutating callback."""
+
+    size: int
+    step: int
+    combine: Callable[[Any, Any], Any]
+    name: str = "window_reduce"
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,10 +299,10 @@ class MapLastOp:
 
 @dataclass(frozen=True, slots=True)
 class CollapseOp:
-    """Merge adjacent collapsible items into one aggregate per contiguous run."""
+    """Reduce adjacent runs with a binary function or a synchronous Collector."""
 
     collapsible: Callable[[Any, Any], bool]
-    merger: Callable[[Any, Any], Any]
+    merger: Callable[..., Any]
     name: str = "collapse"
 
 
@@ -293,6 +311,7 @@ Operation = (
     | ParallelMapOp
     | TapOp
     | FilterOp
+    | FilterMapOp
     | FlatMapOp
     | TakeOp
     | DropOp
@@ -302,6 +321,7 @@ Operation = (
     | UniqueOp
     | ChunkOp
     | WindowOp
+    | WindowReduceOp
     | GroupRunsOp
     | PairwiseOp
     | EnumerateOp

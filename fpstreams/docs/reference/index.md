@@ -13,6 +13,7 @@ The final table lists aliases alongside their canonical names.
 | Positional values | `flow.of(*items)` | Reusable tuple-backed source |
 | Optional single value | `flow.of_nullable(value)` | Empty for `None`, otherwise one item |
 | Repeated state transition | `flow.iterate(seed, function)` | Infinite until bounded downstream |
+| State-driven generation, unreleased | `flow.unfold(seed, function)` / `aflow.unfold(...)` | Emit `(value, next_state)` transitions until the callback returns `None` |
 | Repeated supplier | `flow.generate(supplier)` | Infinite until bounded downstream |
 | Async values | `aflow(source)` | Accepts async or supported synchronous sources |
 | Key/value values | `pairs(source)` | Explicit pair pipeline |
@@ -29,9 +30,11 @@ Tabular constructors are listed in [data input and output](io.md).
 | --- | --- |
 | One-to-one transform | `map`, `map_first`, `map_last`, `pair_map`, `tap` |
 | Zero-or-one transform | `filter`, `reject`, `filter_map`, `filter_none`, `compact` |
-| One-to-many transform | `flat_map`, `collapse` |
+| One-to-many transform | `flat_map` |
+| Adjacent-run reduction | `collapse(predicate, merger)`; the unreleased overload also accepts a Collector |
 | Prefix/suffix bounds | `take`, `drop`, `take_while`, `take_while_inclusive`, `drop_while` |
 | Stateful transform | `scan`, `scan_right`, `fold_by`, `reduce_by`, `gather` |
+| Stateful mapping, unreleased | `map_accum(initial, function)` emits outputs from `(next_state, output)` transitions |
 | De-duplication | `unique`, `unique_by`, `distinct`, `distinct_by` |
 | Error/value partitioning | `attempt`, `partition_results` |
 | Engine/concurrency view | `with_engine`, `parallel`, `sequential`, `map_parallel` |
@@ -43,6 +46,8 @@ See [Flow](flow.md) for complete signatures.
 | Category | Canonical methods |
 | --- | --- |
 | Fixed grouping | `chunk`, `window`, `pairwise`, `batch` |
+| Window aggregation (unreleased) | `window_reduce(size, combine, step=1)` |
+| One callback per batch | `map_batches` |
 | Conditional grouping | `chunk_by`, `batch_by_size`, `constrained_batches`, `group_runs`, `collapse` |
 | Stable order | `sort_by`, `sorted`, `external_sort_by`, `top`, `bottom` |
 | Position | `enumerate`, `zip_with_index`, `map_first`, `map_last` |
@@ -104,6 +109,8 @@ multi-reduction programs.
 | --- | --- |
 | Counts | `agg.count`, `agg.count_where`, `agg.count_distinct` |
 | Numeric | `agg.sum`, `agg.mean`, `agg.variance`, `agg.std`, `agg.min`, `agg.max` |
+| Item by key | `agg.min_by`, `agg.max_by` (unreleased) |
+| Ranked items | `agg.top`, `agg.bottom` (unreleased) |
 | Encounter order | `agg.first`, `agg.last` |
 | Truth | `agg.any`, `agg.all` |
 | Collection | `agg.collect` |
@@ -112,6 +119,10 @@ Collector factories in `Collectors` cover general iterable reduction, mapping,
 filtering, partitioning, grouping, joining, and downstream composition. Reducer
 objects describe associative laws when parallel or tree reduction needs explicit
 proof.
+
+The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-unreleased)
+uses collector composition for grouped p50 and p90 values, with explicit
+missing-value and small-group policies.
 
 ## Transform pairs
 
@@ -165,8 +176,10 @@ See the full operator and precedence notes under [expressions](expressions.md).
 | --- | --- |
 | Optional/result values | `Option`, `Result`, `Ok`, `Err` |
 | Statistics | `SummaryStatistics` |
-| Execution reports | `ExecutionResult`, `ExecutionReport` |
+| Execution reports | `ExecutionResult`, `ExecutionReport`; unreleased `ExecutionEvent` and versioned report/event `to_dict()` export ([guide](../user-guide/execution-reports.md#metadata-export-unreleased)) |
 | Spill budgets | `SpillLimits` |
+| Shared executor budget, unreleased | `BoundedExecutor` |
+| File partition recovery, unreleased | `FileCheckpoint` |
 | Collection laws | `Reducer`, `ReducerAggregator`, `ReducerLaws`, `ReducerLawError`, `LawProvenance`, `ReductionExplanation` |
 | Error base | `FlowError` |
 | User-facing errors | `FlowConsumedError`, `EmptyFlowError`, `SelectionError`, `DuplicateKeyError`, `NativeUnsupportedError`, `BufferLimitError` |

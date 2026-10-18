@@ -10,8 +10,10 @@ from __future__ import annotations
 import operator
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator
-from typing import Any
+from typing import Any, cast
 
+from ..collecting._collector_base import Collector, _never_done
+from ..collecting.program import compile_collectors
 from ..errors import BufferLimitError
 from ..planning.async_ import (
     _Append,
@@ -24,6 +26,7 @@ from ..planning.async_ import (
     _DropWhile,
     _Enumerate,
     _Filter,
+    _FilterMap,
     _FlatMap,
     _Fold,
     _GroupRuns,
@@ -39,12 +42,14 @@ from ..planning.async_ import (
     _Tap,
     _Unique,
     _Window,
+    _WindowReduce,
     _Zip,
     _ZipLongest,
 )
 from ..planning.async_utils import _resolve, closing_async_iterators
 from ..runtime._distinct import DistinctKey, HashFailure
 from ..runtime.iterators import closing_iterators
+from .window_reduce import WindowReducer
 
 
 async def _filter(source: AsyncIterator[Any], operation: _Filter) -> AsyncIterator[Any]:
@@ -61,6 +66,15 @@ async def _tap(source: AsyncIterator[Any], operation: _Tap) -> AsyncIterator[Any
         async for item in source:
             await _resolve(operation.action(item))
             yield item
+
+
+async def _filter_map(source: AsyncIterator[Any], operation: _FilterMap) -> AsyncIterator[Any]:
+    """Map and await one item at a time, retaining every result except ``None``."""
+    async with closing_async_iterators((source,)):
+        async for item in source:
+            result = await _resolve(operation.function(item))
+            if result is not None:
+                yield result
 
 
 async def _flat_map(source: AsyncIterator[Any], operation: _FlatMap) -> AsyncIterator[Any]:
@@ -215,6 +229,43 @@ async def _window(source: AsyncIterator[Any], operation: _Window) -> AsyncIterat
                     current.append(await anext(source))
                 except StopAsyncIteration:
                     return
+
+
+async def _window_reduce(
+    source: AsyncIterator[Any], operation: _WindowReduce
+) -> AsyncIterator[Any]:
+    """Reduce ordered windows and close upstream on failure or cancellation."""
+    async with closing_async_iterators((source,)):
+        if operation.step >= operation.size:
+            size = operation.size
+            skip = operation.step - size
+            combine = operation.combine
+            count = 0
+            gap = 0
+            emitted = False
+            total = None
+            async for item in source:
+                if gap:
+                    gap -= 1
+                    continue
+                total = item if count == 0 else combine(total, item)
+                count += 1
+                if count == size:
+                    emitted = True
+                    yield total
+                    count = 0
+                    total = None
+                    gap = skip
+            if not emitted and count:
+                yield total
+            return
+
+        state = WindowReducer(operation.size, operation.step, operation.combine)
+        async for item in source:
+            if state.push(item):
+                yield state.result()
+        for result in state.finish():
+            yield result
 
 
 async def _pairwise(source: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -497,6 +548,32 @@ async def _collapse(source: AsyncIterator[Any], operation: _Collapse) -> AsyncIt
     the current run aggregate with the new item. Both callbacks may be awaitable.
     """
     async with closing_async_iterators((source,)):
+        # Preserve opaque callable instances without inspecting their __class__ hook.
+        if issubclass(type(operation.merger), Collector):
+            collector = cast("Collector[Any, Any, Any]", operation.merger)
+            program = compile_collectors((("value", collector),))
+            try:
+                previous = await anext(source)
+            except StopAsyncIteration:
+                return
+            state = program.initialize()
+            program.step(state, previous)
+            async for item in source:
+                if await _resolve(operation.collapsible(previous, item)):
+                    # Keep live sentinel replacements and custom subclass hooks visible.
+                    if (
+                        state.completed[0] is not True
+                        or type(collector) is not Collector
+                        or collector.done is _never_done
+                    ):
+                        program.step(state, item)
+                else:
+                    yield program.finish(state)["value"]
+                    state = program.initialize()
+                    program.step(state, item)
+                previous = item
+            yield program.finish(state)["value"]
+            return
         try:
             previous = aggregate = await anext(source)
         except StopAsyncIteration:

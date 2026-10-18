@@ -21,6 +21,7 @@ from .async_ import (
     _DropWhile,
     _Enumerate,
     _Filter,
+    _FilterMap,
     _FlatMap,
     _Fold,
     _GroupRuns,
@@ -45,6 +46,7 @@ from .async_ import (
     _Timeout,
     _Unique,
     _Window,
+    _WindowReduce,
     _Zip,
     _ZipLongest,
 )
@@ -67,6 +69,7 @@ from .sync import (
     DropOp,
     DropWhileOp,
     EnumerateOp,
+    FilterMapOp,
     FilterOp,
     FlatMapOp,
     GatherOp,
@@ -87,6 +90,7 @@ from .sync import (
     TapOp,
     UniqueOp,
     WindowOp,
+    WindowReduceOp,
     ZipLongestOp,
     ZipOp,
 )
@@ -434,6 +438,11 @@ def _state_bounded(operation: Any) -> StateProfile:
     return StateProfile.bounded(max(0, int(bound or 0)))
 
 
+def _window_reduce_state(operation: Any) -> StateProfile:
+    """Bound cached entries, including the back aggregate, rather than their byte size."""
+    return StateProfile.bounded(operation.size + 1)
+
+
 def _state_unique(_operation: Any) -> StateProfile:
     """Classify distinct-value tracking as state that grows with observed keys."""
     return StateProfile.grows_with_keys()
@@ -491,6 +500,7 @@ _SYNC_RULE_ITEMS = [
         ),
     ),
     _rule(FilterOp, transfer=_filter),
+    _rule(FilterMapOp, transfer=_filter),
     _rule(DropWhileOp, transfer=_filter),
     _rule(FlatMapOp, transfer=_flat_map),
     _rule(TakeOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_take),
@@ -513,6 +523,13 @@ _SYNC_RULE_ITEMS = [
         progress=ProgressKind.PREFIX_EMITTING,
         state=_state_bounded,
         transfer=_window,
+    ),
+    _rule(
+        WindowReduceOp,
+        progress=ProgressKind.PREFIX_EMITTING,
+        state=_window_reduce_state,
+        transfer=_window,
+        requires_order=True,
     ),
     _rule(GroupRunsOp, progress=ProgressKind.PREFIX_EMITTING, state=_state_input),
     _rule(PairwiseOp, progress=ProgressKind.PREFIX_EMITTING, transfer=_pairwise),
@@ -558,6 +575,7 @@ SYNC_OPERATOR_RULES: dict[type[Any], OperatorRule] = dict(_SYNC_RULE_ITEMS)
 _ASYNC_NAMES: dict[type[Any], str] = {
     _MapAsync: "map_async",
     _Filter: "filter",
+    _FilterMap: "filter_map",
     _Tap: "tap",
     _FlatMap: "flat_map",
     _Merge: "merge",
@@ -579,6 +597,7 @@ _ASYNC_NAMES: dict[type[Any], str] = {
     _Chunk: "chunk",
     _BatchBySize: "batch_by_size",
     _Window: "window",
+    _WindowReduce: "window_reduce",
     _Pairwise: "pairwise",
     _GroupRuns: "group_runs",
     _Fold: "fold",
@@ -653,7 +672,7 @@ for _class, _name in _ASYNC_NAMES.items():
         _progress = ProgressKind.PREFIX_EMITTING
         _state = _state_bounded
         _transfer = _unknown_cardinality
-    elif _class is _Filter:
+    elif _class in {_Filter, _FilterMap}:
         _transfer = _filter
     elif _class is _FlatMap:
         _transfer = _flat_map
@@ -691,6 +710,11 @@ for _class, _name in _ASYNC_NAMES.items():
         _progress = ProgressKind.PREFIX_EMITTING
         _state = _state_bounded
         _transfer = _window
+    elif _class is _WindowReduce:
+        _progress = ProgressKind.PREFIX_EMITTING
+        _state = _window_reduce_state
+        _transfer = _window
+        _requires_order = True
     elif _class is _Pairwise:
         _progress = ProgressKind.PREFIX_EMITTING
         _transfer = _pairwise

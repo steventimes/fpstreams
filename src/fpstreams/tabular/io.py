@@ -349,14 +349,33 @@ class RowsIOMixin(Generic[T]):
                 native_factory = try_arrow_batch_factory(pipeline, batch_size=size)
                 if native_factory is not None:
                     return flow.defer(native_factory)
-        return flow.defer(
-            arrow_batch_factory(
-                self,
-                batch_size=size,
-                schema=schema,
-                as_record=_record_view,
-            )
+        fallback = arrow_batch_factory(
+            self,
+            batch_size=size,
+            schema=schema,
+            as_record=_record_view,
         )
+        if schema is None:
+            return flow.defer(fallback)
+
+        def explicit_batches() -> Iterator[Any]:
+            from .rows import Rows, _row_iteration_is_current
+
+            if type(self) is Rows and type(self._flow) is Flow and _row_iteration_is_current():
+                try:
+                    pipeline = self._flow._pipeline
+                except TypeError:
+                    pipeline = None
+                if pipeline is not None:
+                    from ..execution.arrow import try_arrow_batch_factory
+
+                    factory = try_arrow_batch_factory(pipeline, batch_size=size, schema=schema)
+                    if factory is not None:
+                        yield from factory()
+                        return
+            yield from fallback()
+
+        return flow.defer(explicit_batches)
 
     to_arrow_batches = arrow_batches
 
@@ -502,9 +521,14 @@ class RowsIOMixin(Generic[T]):
             A Flow that preserves batch order and inherits upstream cleanup behavior.
         """
         pl = polars_module()
-        return self.arrow_batches(batch_size=batch_size, schema=schema).map(
-            lambda batch: pl.from_arrow(batch, rechunk=False)
-        )
+
+        def convert(batch: Any) -> Any:
+            if batch.num_rows and batch.num_columns == 0:
+                pa, _dataset, _parquet = _arrow_modules()
+                batch = pa.Table.from_batches([batch])
+            return pl.from_arrow(batch, rechunk=False)
+
+        return self.arrow_batches(batch_size=batch_size, schema=schema).map(convert)
 
     to_polars_batches = polars_batches
 
@@ -659,6 +683,7 @@ class RowsIOMixin(Generic[T]):
             if_exists: Error before consuming rows, or atomically replace the target.
             batch_size: Maximum rows converted and written per row group.
             schema: Optional Arrow schema, required to write an empty pipeline.
+                Nonempty rows require at least one column to preserve their row count.
             compression: Compression setting passed to PyArrow ParquetWriter.
             use_dictionary: Dictionary-encoding setting passed to ParquetWriter.
             write_statistics: Column-statistics setting passed to ParquetWriter.

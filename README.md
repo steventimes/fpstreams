@@ -314,22 +314,31 @@ python_result = pipeline.with_engine("python").to_list()
 native_result = pipeline.with_engine("native").to_list()
 ~~~
 
-Use `run_with_report()` to execute a terminal and inspect its recorded route.
-Version 2.2.0 adds Pairs terminals such as
-`flow([("a", 1)]).pairs().run_with_report("group_values")`. See the
+Use `run_with_report()` to get a terminal's value, recorded route, and query-owned
+resource counts in one execution. Pairs supports terminals such as
+`flow([("a", 1)]).pairs().run_with_report("group_values")`. Unreleased code also
+includes up to 64 child plan and route observations in `report.events`. See the
 [execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
 for supported terminals and the limits of route reporting.
+
+Unreleased code also includes `BoundedExecutor` for a shared submission limit
+across queries and `FileCheckpoint` for verified file-partition recovery. See
+the [resource controls](https://steventimes.github.io/fpstreams/user-guide/performance/#share-a-submission-budget-unreleased)
+and [file-partition recipe](https://steventimes.github.io/fpstreams/user-guide/analytics/#resume-file-partitions-unreleased)
+for ownership, memory, and retry semantics. These additions are not in PyPI 2.3.0.
+
+Unreleased `flow.unfold` / `aflow.unfold` generate values from explicit state
+transitions. `Flow.map_accum` and `AsyncFlow.map_accum` update state while mapping
+each input to one output. See the
+[state examples](https://steventimes.github.io/fpstreams/reference/flow/#state-driven-generation-and-mapping-unreleased)
+for termination, tuple ordering, and mutable-state ownership. These APIs are
+not in PyPI 2.3.0.
 
 A forced native plan raises `NativeUnsupportedError` if its complete types or
 operations cannot run natively. In particular, the presence of an internal
 native relational specialization does not make the complete relation eligible
 for `with_engine("native")`. An unsupported forced relational plan fails before
 claiming its one-shot sources; `auto` selects a legal fallback path.
-
-[`run_with_report()`](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
-returns a terminal's value, recorded route, and query-owned resource counts in
-one execution. It records the outer plan and some direct paths; it does not
-identify every internal kernel or runtime fallback.
 
 Identity list and tuple materialization stays in Python. Large, supported integer
 sums and numeric range reductions may use Rust in `auto` mode. `count()` uses a

@@ -72,13 +72,39 @@ def test_core_factory_types_without_optional_adapters(tmp_path: Path, monkeypatc
         pytest.skip("core typing regression requires mypy from the type quality group")
     consumer = tmp_path / "consumer.py"
     consumer.write_text(
-        "from collections.abc import Awaitable\n"
-        "from typing import assert_type\n"
-        "from fpstreams import AsyncFlow, Flow, Rows, aflow, flow, rows\n"
+        "from collections.abc import Awaitable, Iterable\n"
+        "from typing import Any, assert_type\n"
+        "from fpstreams import AsyncFlow, Collector, Collectors, Flow, Rows, aflow, flow, rows\n"
         "assert_type(flow([1, 2]), Flow[int])\n"
         'assert_type(rows([{"value": 1}]), Rows[dict[str, int]])\n'
         "assert_type(flow(flow([1, 2])), Flow[int])\n"
         "assert_type(flow([1, 2]).map_batches(lambda batch: batch[0] + 1, size=2), Flow[int])\n"
+        "def unfold_step(state: int) -> tuple[str, int] | None:\n"
+        "    return (str(state), state - 1) if state else None\n"
+        "async def async_unfold_step(state: int) -> tuple[str, int] | None:\n"
+        "    return unfold_step(state)\n"
+        "def mixed_unfold_step(state: int) -> "
+        "tuple[str, int] | Awaitable[tuple[str, int] | None] | None:\n"
+        "    return unfold_step(state) if state % 2 else async_unfold_step(state)\n"
+        "def accum_step(state: int, value: int) -> tuple[int, str]:\n"
+        "    return state + value, str(state)\n"
+        "async def async_accum_step(state: int, value: int) -> tuple[int, str]:\n"
+        "    return accum_step(state, value)\n"
+        "def mixed_accum_step(state: int, value: int) -> "
+        "tuple[int, str] | Awaitable[tuple[int, str]]:\n"
+        "    return accum_step(state, value) if value % 2 else async_accum_step(state, value)\n"
+        "assert_type(flow.unfold(2, unfold_step), Flow[str])\n"
+        "assert_type(Flow.unfold(2, unfold_step), Flow[str])\n"
+        "assert_type(flow([1, 2]).map_accum(0, accum_step), Flow[str])\n"
+        "assert_type(aflow.unfold(2, unfold_step), AsyncFlow[str])\n"
+        "assert_type(aflow.unfold(2, async_unfold_step), AsyncFlow[str])\n"
+        "assert_type(aflow.unfold(2, mixed_unfold_step), AsyncFlow[str])\n"
+        "assert_type(AsyncFlow.unfold(2, unfold_step), AsyncFlow[str])\n"
+        "assert_type(AsyncFlow.unfold(2, async_unfold_step), AsyncFlow[str])\n"
+        "assert_type(AsyncFlow.unfold(2, mixed_unfold_step), AsyncFlow[str])\n"
+        "assert_type(aflow([1, 2]).map_accum(0, accum_step), AsyncFlow[str])\n"
+        "assert_type(aflow([1, 2]).map_accum(0, async_accum_step), AsyncFlow[str])\n"
+        "assert_type(aflow([1, 2]).map_accum(0, mixed_accum_step), AsyncFlow[str])\n"
         'assert_type(rows(rows([{"value": 1}])), Rows[dict[str, int]])\n'
         "async def async_item(value: int) -> int:\n    return value + 1\n"
         "async def async_batch(batch: tuple[int, ...]) -> int:\n    return sum(batch)\n"
@@ -93,7 +119,56 @@ def test_core_factory_types_without_optional_adapters(tmp_path: Path, monkeypatc
         "assert_type(aflow([1, 2]).map_async(mixed_item), AsyncFlow[int])\n"
         "assert_type(aflow([1, 2]).map_batches(mixed_batch, size=2), AsyncFlow[int])\n"
         "assert_type(aflow([1, 2]).map_batches(lambda batch: str(batch), size=2), "
-        "AsyncFlow[str])\n",
+        "AsyncFlow[str])\n"
+        "listed: Collector[int, list[int], list[int]] = Collectors.to_list()\n"
+        "counted: Collector[int, int, int] = Collectors.counting()\n"
+        "absent: Collector[int, None, None] = Collector(lambda: None, lambda state, value: None)\n"
+        "def adjacent(left: int, right: int) -> bool:\n    return left == right\n"
+        "async def async_adjacent(left: int, right: int) -> bool:\n    return left == right\n"
+        "assert_type(flow([1, 2]).collapse(adjacent, listed), Flow[list[int]])\n"
+        "assert_type(flow([1, 2]).collapse(adjacent, Collectors.to_list()), Flow[list[int]])\n"
+        "assert_type(flow([1, 2]).collapse(adjacent, counted), Flow[int])\n"
+        "assert_type(aflow([1, 2]).collapse(async_adjacent, listed), AsyncFlow[list[int]])\n"
+        "assert_type(aflow([1, 2]).collapse(async_adjacent, Collectors.to_list()), "
+        "AsyncFlow[list[int]])\n"
+        "dictionary: Collector[int, dict[int, str], dict[int, str]] = "
+        "Collectors.to_dict(lambda value: value, lambda value: str(value))\n"
+        "assert_type(flow([1, 2]).collect(listed), list[int])\n"
+        "assert_type(flow([1, 2]).collect(Collectors.to_list()), list[int])\n"
+        "assert_type(flow([1, 2]).collect(counted), int)\n"
+        "assert_type(flow([1, 2]).collect(absent), None)\n"
+        "assert_type(flow([1, 2]).collect(dictionary), dict[int, str])\n"
+        "assert_type(flow([1, 2]).collect(size=counted), dict[str, Any])\n"
+        "assert_type(flow([1, 2]).collect(None, size=counted), dict[str, Any])\n"
+        "assert_type(flow([1, 2]).collect(collector=counted), dict[str, Any])\n"
+        "def collect_text(values: Iterable[int]) -> str:\n    return str(sum(values))\n"
+        "assert_type(flow([1, 2]).collect(collect_text), str)\n"
+        "def forward_collect(collector: Collector[int, Any, int] | None, "
+        "named: dict[str, Collector[int, Any, Any]]) -> int | dict[str, Any]:\n"
+        "    result = flow([1, 2]).collect(collector, **named)\n"
+        "    assert_type(result, int | dict[str, Any])\n"
+        "    return result\n"
+        "async def finish_async(values: list[int]) -> str:\n    return str(sum(values))\n"
+        "payload: Collector[int, list[int], Awaitable[str]] = "
+        "Collector(list, lambda state, value: state + [value], finish_async)\n"
+        "assert_type(flow([1, 2]).collect(payload), Awaitable[str])\n"
+        "assert_type(flow([1, 2]).collapse(adjacent, payload), Flow[Awaitable[str]])\n"
+        "assert_type(aflow([1, 2]).collapse(async_adjacent, payload), AsyncFlow[Awaitable[str]])\n"
+        "async def collect_typed() -> None:\n"
+        "    assert_type(await aflow([1, 2]).collect(listed), list[int])\n"
+        "    assert_type(await aflow([1, 2]).collect(Collectors.to_list()), list[int])\n"
+        "    assert_type(await aflow([1, 2]).collect(counted), int)\n"
+        "    assert_type(await aflow([1, 2]).collect(absent), None)\n"
+        "    assert_type(await aflow([1, 2]).collect(dictionary), dict[int, str])\n"
+        "    assert_type(await aflow([1, 2]).collect(size=counted), dict[str, Any])\n"
+        "    assert_type(await aflow([1, 2]).collect(None, size=counted), dict[str, Any])\n"
+        "    assert_type(await aflow([1, 2]).collect(collector=counted), dict[str, Any])\n"
+        "    assert_type(await aflow([1, 2]).collect(payload), Awaitable[str])\n"
+        "async def forward_async_collect(collector: Collector[int, Any, int] | None, "
+        "named: dict[str, Collector[int, Any, Any]]) -> int | dict[str, Any]:\n"
+        "    result = await aflow([1, 2]).collect(collector, **named)\n"
+        "    assert_type(result, int | dict[str, Any])\n"
+        "    return result\n",
         encoding="utf-8",
     )
     configuration = tmp_path / "mypy.ini"
@@ -2587,25 +2662,45 @@ def test_competitive_stateful_reduce_recreates_rows_and_bounded_evidence(tmp_pat
         assert result["invalid"] == 33
 
 
-def test_every_registered_competitive_case_executes_with_equal_outputs() -> None:
-    """The advertised full matrix contains executable workloads rather than placeholder IDs."""
+@pytest.mark.parametrize("size", [1, 24])
+def test_every_registered_competitive_case_executes_with_equal_outputs(size, tmp_path) -> None:
+    """Every workload agrees with its peers and remains correct on a second execution."""
+    from copy import deepcopy
+
+    import numpy as np
+    import pandas as pd
+
+    from benchmarks import competitive
+
+    executed = []
+    for spec in competitive._CASE_SPECS:
+        case = competitive._build_case(spec, size, np, pd, tmp_path)
+        if case.validate is not None:
+            case.validate()
+        reference = case.references[0]
+        # Own the normalized oracle so later calls cannot mutate its expected value.
+        expected = deepcopy(reference.normalize(reference.task()))
+        for implementation in (case.candidate, *case.references, *case.ceilings):
+            for _ in range(2):
+                actual = implementation.normalize(implementation.task())
+                assert case.outputs_equal(actual, expected), (
+                    spec.case_id,
+                    implementation.variant or implementation.library,
+                )
+        executed.append(spec.case_id)
+
+    assert set(executed) == set(_benchmark_module().list_competitive_cases())
+
+
+def test_competitive_report_accepts_the_minimum_positive_size() -> None:
+    """A one-item workload still produces a complete report with real timing samples."""
     module = _benchmark_module()
-
-    report = module.run_competitive(size=24, repeats=1)
-
-    assert {comparison["case"] for comparison in report["comparisons"]} == set(
-        module.list_competitive_cases()
-    )
-    assert all(comparison["outputs_equal"] is True for comparison in report["comparisons"])
-
-
-def test_full_competitive_matrix_accepts_the_minimum_positive_size() -> None:
-    """A valid size of one does not break sample statistics or relational edge cases."""
-    report = _benchmark_module().run_competitive(size=1, repeats=1)
+    report = module.run_competitive(size=1, repeats=1, quick=True)
 
     assert {comparison["case"] for comparison in report["comparisons"]} == set(
-        _benchmark_module().list_competitive_cases()
+        module.list_competitive_cases(quick=True)
     )
+    assert all(math.isfinite(row["stdev_seconds"]) for row in report["results"])
 
 
 def test_competitive_variant_cases_measure_distinct_workloads(tmp_path: Path) -> None:

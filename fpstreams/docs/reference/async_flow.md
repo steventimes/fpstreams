@@ -11,6 +11,7 @@ Use `aflow(source)` with an iterable or async iterable.
 | --- | --- |
 | `aflow(source)` | Wrap a synchronous or asynchronous iterable |
 | `aflow.defer(factory)` | Call the source factory for each execution |
+| `aflow.unfold(seed, function)` (unreleased) | Resolve `(value, next_state)` transitions until `None` is returned |
 | `aflow.from_queue(queue, stop=...)` | Read a caller-owned `asyncio.Queue` once, optionally until an identity sentinel |
 | `aflow.from_file(path)` | Read text lines without blocking the event loop |
 | `aflow.interval(seconds)` | Emit increasing integers on a timer |
@@ -19,6 +20,93 @@ Use `aflow(source)` with an iterable or async iterable.
 Queue sources do not call `task_done()` and do not own the producer or queue.
 Avoid `prefetch()` when `Queue.join()` or per-item acknowledgements must track
 each `get()` exactly.
+
+## Thread state through async callbacks (unreleased)
+
+`AsyncFlow.unfold` and `aflow.unfold` accept synchronous, asynchronous, or mixed
+callbacks. Each call resolves before the next transition starts. Returning
+`(None, next_state)` emits `None`; returning `None` ends the source.
+
+`map_accum(initial, function)` consumes an existing source in encounter order.
+The callback resolves to `(next_state, output)`, and only the output is emitted:
+
+```python
+import asyncio
+from fpstreams import aflow
+
+
+async def countdown(state: int) -> tuple[int, int] | None:
+    await asyncio.sleep(0)
+    return (state, state - 1) if state else None
+
+
+async def running(total: int, value: int) -> tuple[int, int]:
+    await asyncio.sleep(0)
+    next_total = total + value
+    return next_total, next_total
+
+
+async def main():
+    query = aflow.unfold(3, countdown).map_accum(0, running)
+    assert await query.to_list() == [3, 5, 6]
+```
+
+Neither operation starts background work or prefetches the next transition.
+Cancellation propagates to the active callback and closes the owned iterator
+chain. Each evaluation begins with the supplied seed by reference; use
+`aflow.defer` when mutable state needs a new instance. See the
+[synchronous state examples](flow.md#state-driven-generation-and-mapping-unreleased)
+for tuple ordering and empty-input behavior.
+
+## Reuse sliding-window aggregates (unreleased)
+
+`AsyncFlow.window_reduce(size, combine, step=1)` uses the same ordered aggregation
+strategies and [algebraic contract](flow.md#reuse-sliding-window-aggregates-unreleased)
+as the synchronous operation. The combine function is synchronous. It must be
+associative and must not modify its arguments; source values and emitted
+aggregates must remain unchanged during iteration. Awaitable combine functions
+are not supported.
+
+```python
+import asyncio
+from operator import add
+from fpstreams import aflow
+
+async def main():
+    assert await aflow([2, 3, 5, 7]).window_reduce(3, add).to_list() == [10, 15]
+```
+
+Nonoverlapping windows use a running fold without a raw window buffer.
+The operation creates no background task or prefetch buffer. Cancellation while
+waiting for the next source item propagates upstream and closes the iterator
+chain. A stack transfer runs synchronously and can take linear work in the
+window size; this operation adds no scheduling checkpoint inside a combine call.
+
+## Reduce adjacent runs with a Collector (unreleased)
+
+`AsyncFlow.collapse(predicate, collector)` follows the same
+[run and Collector rules](flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
+The adjacent predicate may be synchronous or awaitable:
+
+```python
+import asyncio
+from fpstreams import Collectors, aflow
+
+async def adjacent(left, right):
+    await asyncio.sleep(0)
+    return 0 <= right - left <= 2
+
+async def main():
+    result = await aflow([1, 2, 4, 9, 11, 1]).collapse(
+        adjacent, Collectors.head(1)
+    ).to_list()
+    assert result == [[1], [9], [1]]
+```
+
+Collector hooks retain their synchronous protocol. An awaitable returned by
+the finisher is emitted as data, without an implicit await. No background task
+or prefetch buffer is added. Cancellation while reading the source or waiting
+for the predicate closes upstream without finishing the pending run.
 
 ## Bound pull-ahead work
 

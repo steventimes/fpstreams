@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Coroutine
 from enum import StrEnum
+from operator import index
 from typing import Any, TypeVar
 
 from . import failpoints
@@ -228,8 +229,10 @@ class TaskScope:
     def __init__(self, runtime: TaskRuntime, name: str, *, max_tasks: int | None) -> None:
         if not name:
             raise ValueError("task scope name cannot be empty")
-        if max_tasks is not None and max_tasks < 1:
-            raise ValueError("task scope max_tasks must be at least 1")
+        if max_tasks is not None:
+            max_tasks = index(max_tasks)
+            if max_tasks < 1:
+                raise ValueError("task scope max_tasks must be at least 1")
         self._runtime = runtime
         self.name = name
         self._max_tasks = max_tasks

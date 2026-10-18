@@ -3,6 +3,132 @@
 This file records user-visible and compatibility-relevant changes in fpstreams 2,
 including changed defaults.
 
+## Unreleased
+
+### Added
+
+- `ExecutionReport.to_dict()` and `ExecutionEvent.to_dict()` export plain
+  metadata. Report and plan dictionaries carry an independent schema version;
+  reports include metric units, query-owned resource scope, and event limits.
+
+- `Flow.collapse(predicate, collector)` and its async equivalent reduce each
+  adjacent run with existing Collector state. Completion stops further steps
+  within a run while predicates continue to find its boundary. Collector hooks
+  remain synchronous, and awaitable finisher results are emitted as data.
+
+- `Flow.window_reduce(size, combine, step=1)` and `AsyncFlow.window_reduce(...)`
+  reuse ordered partial aggregates across count-based windows. The synchronous
+  combine function must be associative and nonmutating. Cached entries are
+  bounded by `size + 1`; byte sizes and individual stack transfers are not.
+  Nonoverlapping windows use a running fold without retaining a raw window buffer.
+
+- `flow.unfold(seed, function)` and `aflow.unfold(...)` generate values lazily
+  from `(value, next_state)` transitions until the callback returns `None`.
+  Class constructors expose the same operation; async transitions may be awaitable.
+- `Flow.map_accum(initial, function)` and `AsyncFlow.map_accum(...)` thread
+  state through ordered callbacks returning `(next_state, output)`, emitting
+  one output per input through the existing gather/scan execution paths.
+- `agg.min_by(selector)` and `agg.max_by(selector)` retain a whole winning
+  item in one pass. Ties keep the first item and empty input returns `None`;
+  the factories reuse existing grouped, async, and spill aggregation.
+- `agg.top(count, key=...)` and `agg.bottom(count, key=...)` retain a bounded
+  list of whole items per group, ordered by key with stable ties. They compose
+  with the existing global, async, sorted, and spill aggregation paths.
+- `run_with_report()` includes up to 64 immutable plan and route events in
+  `report.events`, with `events_truncated` marking further observations. Child
+  plans keep their own labels without replacing the outer route. Flow, Rows,
+  Pairs, and AsyncFlow use the same recorder.
+- `BoundedExecutor(executor, max_pending=...)` shares one unfinished-task budget
+  across independent queries. It accepts existing thread or process pools,
+  releases capacity on completion or cancellation, and keeps the borrowed pool open.
+- `FileCheckpoint(directory, version=...)` stores verified outputs for stable
+  file partitions. Each successful callback publishes an output file and its
+  metadata together; later runs verify input and output hashes before reuse.
+
+### Changed
+
+- `filter_map()` avoids intermediate tuple adaptation in synchronous pipelines
+  and the extra predicate callback in async serial fusion. It calls the mapper
+  once per input and keeps every result except `None`.
+- Proven primitive Arrow comparison chains can share a selection mask,
+  filtering payload once or counting directly from the mask. Offline Optuna
+  tuning favored nonempty batches with at least one column in the measured shapes.
+- Spill decoding releases encoded buffers before yielding decoded records
+  and releases completed decoded frames before reading the next frame.
+
+- `Collectors.head()` and `tail()` accept integer-index objects, with matching
+  `SupportsIndex` annotations. Partitioned reducer execution and reducer-law
+  layouts use the same integer protocol.
+- `Collectors.teeing()` can combine partial states when both downstream
+  collectors provide combiners. It keeps their live callbacks and carries no
+  inferred reducer laws or native metadata.
+- Named `aggregate()` and `Pairs.aggregate_values()` accept any `Collector`,
+  including composed `Collectors` and existing `agg` factory results. Global,
+  async, grouped, sorted, and spill paths share the existing collector lifecycle.
+- Multi-collector Python aggregation reuses its state-list references within
+  each row while retaining live callbacks and their declaration order.
+- Retained primitive Arrow tables and record batches can keep their native
+  buffers when `arrow_batches(schema=...)` receives the matching output schema,
+  including metadata. Safe direct-field projections and primitive filters can
+  execute columnarly. Casts, Python callbacks, and unsupported sources retain
+  the existing conversion path.
+- Arrow execution accepts chains of safe direct comparisons followed by a
+  direct projection. Parquet keeps only the leading comparison as an automatic
+  scan hint; all filters remain in the ordered residual program.
+- Default local Parquet scans with one fragment can omit safe unused fields
+  from validation scans, retaining query dependencies and fields whose Python
+  conversion can fail. Sources with possible scanner casts retain the full
+  caller-visible projection before automatic filtering and projection.
+
+### Fixed
+
+- Query-wide task/file limits and task-scope limits reject noninteger values,
+  including NaN, before resource acquisition. Integer-index values are
+  normalized once during construction.
+
+- `Collectors.first()` and `head(count)` preserve completed state when used
+  inside `grouping_by` or `partitioning_by`. Previously, `first()` returned the
+  last group item and `head()` could retain the whole group, even with a zero
+  count. Grouping adapters continue to read all input and step custom collectors.
+- `Flow` and `AsyncFlow` validate `take`, `limit`, `drop`, and `skip` counts
+  through the integer index protocol before building the operation. Noninteger
+  values, including NaN and infinity, raise `TypeError` before opening the source.
+  This prevents async prefix operations from silently rounding counts or losing
+  their limit.
+- `Flow.collect()` and `AsyncFlow.collect()` preserve a single streaming
+  collector's finished result type in type checkers. Named collectors return
+  a dictionary, while optional or dynamically forwarded arguments retain the
+  general result union. Runtime dispatch and validation are unchanged.
+- `Collectors.head()` and `tail()` reject floats, including NaN and infinity,
+  at construction. Partitioned reducer execution validates `partition_size`
+  before creating state or opening input, preventing non-integer values from
+  silently removing partition boundaries.
+- Partitioned reducer execution closes its input iterator on exhaustion and
+  failure, before merging states or finishing. Cleanup failures preserve an
+  active source or callback exception.
+- Collector programs reject missing combiners before invoking any merge
+  callback, preventing avoidable partial mutations on invalid merge requests.
+- Reducer law checks build independent states for each merge expression,
+  preventing in-place combiners from producing false identity or associativity
+  results. The input iterator closes before the examples are replayed.
+- Unsafe Arrow batches evaluate filters in row order and stop when downstream
+  consumers stop, preserving Python exception order and early-exit behavior.
+- Arrow prefix fallbacks reuse converted rows, so custom extension scalars
+  cross the Python conversion boundary once per input batch.
+- Automatic Parquet hints preserve conversion errors in discarded fields and
+  rows, including casts across fragments and supplied dataset schemas.
+  Types whose Python conversion can fail are validated before automatic
+  filtering or projection; explicit source `columns` and `filter` still define
+  which values the source exposes.
+- `scan_csv()` validates every caller-visible column before query projection,
+  preserving conversion errors in later CSV blocks. It opens the typed source
+  once; explicit source conversion options still control included columns.
+- An explicit zero-column Arrow schema preserves the input row count in
+  `arrow_batches()` and `to_arrow()`, including partial final batches.
+- Polars batch exports preserve the height of zero-column inputs. Parquet
+  writes reject nonempty rows without columns, preserving an existing target
+  instead of publishing a file that loses the input row count.
+
 ## 2.3.0 - 2026-10-15
 
 ### Fixed

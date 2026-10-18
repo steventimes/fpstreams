@@ -5,10 +5,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
-from ..collecting.aggregation import (
-    Aggregator,
-    prepare_aggregations,
-)
+from ..collecting.aggregation import prepare_aggregations
+from ..collecting.collector import Collector
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector
 from ..planning.logical import GroupAggregateNode, GroupAggregateSpec, SortedGroupAggregateNode
@@ -72,13 +70,13 @@ class GroupedRows(Generic[T]):
             limits=limits or SpillLimits(),
         )
 
-    def aggregate(self, **aggregations: Aggregator) -> Rows[dict[str, Any]]:
+    def aggregate(self, **aggregations: Collector[Any, Any, Any]) -> Rows[dict[str, Any]]:
         """Compute named aggregations independently for each group.
 
         Grouping and aggregation remain deferred until the returned `Rows` pipeline is consumed.
 
         Args:
-            **aggregations: Named aggregators evaluated during the same traversal.
+            **aggregations: Named collectors evaluated during the same traversal.
 
         Returns:
             A lazy row pipeline containing one aggregate record per group.

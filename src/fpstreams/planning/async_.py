@@ -171,6 +171,13 @@ class _Tap:
 
 
 @dataclass(frozen=True, slots=True)
+class _FilterMap:
+    """Map each input once, await its result if needed, and discard ``None``."""
+
+    function: Callable[[Any], Any]
+
+
+@dataclass(frozen=True, slots=True)
 class _FlatMap:
     """Expand each item into a synchronous or asynchronous iterable returned by ``function``."""
 
@@ -323,6 +330,15 @@ class _Window:
 
 
 @dataclass(frozen=True, slots=True)
+class _WindowReduce:
+    """Reduce stepped windows with an associative, nonmutating synchronous callback."""
+
+    size: int
+    step: int
+    combine: Callable[[Any, Any], Any]
+
+
+@dataclass(frozen=True, slots=True)
 class _Pairwise:
     """Emit overlapping pairs of adjacent input items."""
 
@@ -443,15 +459,16 @@ class _MapLast:
 
 @dataclass(frozen=True, slots=True)
 class _Collapse:
-    """Merge adjacent collapsible items into awaited aggregates for each contiguous run."""
+    """Reduce adjacent runs with an awaitable binary merger or synchronous Collector."""
 
     collapsible: Callable[[Any, Any], Any]
-    merger: Callable[[Any, Any], Any]
+    merger: Callable[..., Any]
 
 
 AsyncOperation = (
     _MapAsync
     | _Filter
+    | _FilterMap
     | _Tap
     | _FlatMap
     | _Merge
@@ -473,6 +490,7 @@ AsyncOperation = (
     | _Chunk
     | _BatchBySize
     | _Window
+    | _WindowReduce
     | _Pairwise
     | _GroupRuns
     | _Fold

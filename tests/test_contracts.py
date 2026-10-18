@@ -481,6 +481,9 @@ def test_sync_explain_v2_schema_is_frozen() -> None:
     payload = flow.defer(lambda: iter([2, 1])).sorted().explain("list").to_dict()
 
     assert set(payload) == {
+        "schema_version",
+        "kind",
+        "mode",
         "terminal",
         "source",
         "requested_engine",
@@ -514,7 +517,16 @@ def test_sync_explain_v2_schema_is_frozen() -> None:
 def test_async_explain_v2_schema_is_frozen() -> None:
     payload = aflow([1, 2]).map(lambda value: value + 1).explain("list").to_dict()
 
-    assert set(payload) == {"terminal", "source", "operations", "semantics", "diagnostics"}
+    assert set(payload) == {
+        "schema_version",
+        "kind",
+        "mode",
+        "terminal",
+        "source",
+        "operations",
+        "semantics",
+        "diagnostics",
+    }
     assert set(payload["source"]) == {
         "termination",
         "cardinality",

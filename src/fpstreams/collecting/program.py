@@ -62,12 +62,14 @@ class CollectorProgram:
                 state.completed[0] = collector.done(state.values[0])
             return
 
+        values = state.values
+        completed = state.completed
         for index, collector in enumerate(self.layout.collectors):
-            if collector.done is not _never_done and state.completed[index]:
+            if collector.done is not _never_done and completed[index]:
                 continue
-            state.values[index] = collector.step(state.values[index], value)
+            values[index] = collector.step(values[index], value)
             if collector.done is not _never_done:
-                state.completed[index] = collector.done(state.values[index])
+                completed[index] = collector.done(values[index])
 
     def done(self, state: CollectorState) -> bool:
         """Return whether each collector has completed at its current indexed state."""
@@ -83,7 +85,14 @@ class CollectorProgram:
         }
 
     def merge(self, left: CollectorState, right: CollectorState) -> None:
-        """Validate all combiners first, then replace left values atomically."""
+        """Validate combiners before callbacks and publish returned values together.
+
+        A user combiner may mutate its arguments; those mutations cannot be rolled back if a
+        later callback fails. Recheck each live combiner when its turn arrives.
+        """
+        for name, collector in zip(self.layout.names, self.layout.collectors, strict=True):
+            if collector.combine is None:
+                raise ValueError(f"collector {name!r} is not mergeable")
         merged: list[Any] = []
         for name, collector, left_value, right_value in zip(
             self.layout.names,

@@ -7,9 +7,9 @@ import operator
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from time import perf_counter_ns
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast, overload
 
-from ..collecting.aggregation import Aggregator, prepare_aggregations
+from ..collecting.aggregation import prepare_aggregations
 from ..collecting.collector import (
     Collector,
     CollectorItems,
@@ -36,6 +36,7 @@ from ..runtime.report import ExecutionResult, _start_recording, _stop_recording
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
+S = TypeVar("S")
 _REPORTABLE_ASYNC_TERMINALS = frozenset(
     {
         "aggregate",
@@ -485,6 +486,25 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                     maximum_key = item_key
             return minimum, maximum
 
+    @overload
+    async def collect(self, collector: Collector[T, S, C], /) -> C: ...
+
+    @overload
+    async def collect(
+        self,
+        collector: None = None,
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def collect(
+        self,
+        collector: (Callable[[Iterable[T]], C | Awaitable[C]] | Collector[T, Any, C] | None) = None,
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C | dict[str, Any]: ...
+
     async def collect(
         self,
         collector: (Callable[[Iterable[T]], C | Awaitable[C]] | Collector[T, Any, C] | None) = None,
@@ -513,13 +533,13 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             return cast(C, await _resolve(collector(await self.to_list())))
         return await _run_async_collectors(self, prepare_collectors(cast(Any, collectors)))
 
-    async def aggregate(self, **aggregations: Aggregator) -> dict[str, Any]:
+    async def aggregate(self, **aggregations: Collector[Any, Any, Any]) -> dict[str, Any]:
         """Compute several named aggregations while traversing the async flow once.
 
-        All named aggregators are updated during the same asynchronous traversal.
+        Collectors and `agg` factory results share the same asynchronous traversal.
 
         Args:
-            **aggregations: Result names mapped to aggregators updated in one async traversal.
+            **aggregations: Result names mapped to collectors updated in one async traversal.
 
         Returns:
             Finished aggregation values keyed by the supplied argument names.

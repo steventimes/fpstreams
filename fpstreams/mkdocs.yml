@@ -57,6 +57,7 @@ nav:
       - FAQ: faq.md
   - Try in browser: playground.md
   - v2 status and roadmap: roadmap.md
+  - Research references: research-references.md
   - API reference:
       - API index: reference/index.md
       - Flow: reference/flow.md

@@ -19,8 +19,10 @@ from concurrent.futures import (
 )
 from itertools import dropwhile, islice, pairwise, takewhile, zip_longest
 from multiprocessing import get_context
-from typing import Any
+from typing import Any, cast
 
+from ..collecting._collector_base import Collector, _never_done
+from ..collecting.program import compile_collectors
 from ..errors import BufferLimitError, SelectionError
 from ..expressions.selectors import _direct_field
 from ..planning._pair_stages import PAIR_KEY_SELECTOR, PairFlatMapDescriptor
@@ -34,6 +36,7 @@ from ..planning.sync import (
     DropOp,
     DropWhileOp,
     EnumerateOp,
+    FilterMapOp,
     FilterOp,
     FlatMapOp,
     GatherOp,
@@ -55,6 +58,7 @@ from ..planning.sync import (
     TapOp,
     UniqueOp,
     WindowOp,
+    WindowReduceOp,
     ZipLongestOp,
     ZipOp,
 )
@@ -63,6 +67,7 @@ from ..runtime.iterators import close_iterators as close_iterators
 from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
 from .sorting import external_sort
+from .window_reduce import WindowReducer, reduce_disjoint_windows
 
 
 def _map(iterator: Iterator[Any], operation: MapOp) -> Iterator[Any]:
@@ -166,6 +171,15 @@ def _filter(iterator: Iterator[Any], operation: FilterOp) -> Iterator[Any]:
             yield item
 
 
+def _filter_map(iterator: Iterator[Any], operation: FilterMapOp) -> Iterator[Any]:
+    """Call the mapper once per item without constructing nested iterables."""
+    function = operation.function
+    for item in iterator:
+        result = function(item)
+        if result is not None:
+            yield result
+
+
 def _flat_map(iterator: Iterator[Any], operation: FlatMapOp) -> Iterator[Any]:
     """Map each item to an iterable and flatten those iterables in source order."""
     function = operation.function
@@ -257,6 +271,20 @@ def _window(iterator: Iterator[Any], operation: WindowOp) -> Iterator[tuple[Any,
                 current.append(next(iterator))
             except StopIteration:
                 return
+
+
+def _window_reduce(iterator: Iterator[Any], operation: WindowReduceOp) -> Iterator[Any]:
+    """Reduce windows with fresh shared state for each evaluation."""
+    if operation.step >= operation.size:
+        yield from reduce_disjoint_windows(
+            iterator, operation.size, operation.step, operation.combine
+        )
+        return
+    state = WindowReducer(operation.size, operation.step, operation.combine)
+    for item in iterator:
+        if state.push(item):
+            yield state.result()
+    yield from state.finish()
 
 
 def _group_runs(iterator: Iterator[Any], operation: GroupRunsOp) -> Iterator[tuple[Any, ...]]:
@@ -470,6 +498,33 @@ def _collapse(iterator: Iterator[Any], operation: CollapseOp) -> Iterator[Any]:
     Collapsibility is tested on neighboring original items, while merger combines
     the current run aggregate with the new item.
     """
+    # Use the real type: isinstance may invoke a callable's custom __class__ hook.
+    if issubclass(type(operation.merger), Collector):
+        collector = cast("Collector[Any, Any, Any]", operation.merger)
+        program = compile_collectors((("value", collector),))
+        try:
+            previous = next(iterator)
+        except StopIteration:
+            return
+        state = program.initialize()
+        program.step(state, previous)
+        for item in iterator:
+            if operation.collapsible(previous, item):
+                # Completed base collectors need only boundary checks. Keep the live
+                # sentinel escape hatch and subclass hooks on the canonical path.
+                if (
+                    state.completed[0] is not True
+                    or type(collector) is not Collector
+                    or collector.done is _never_done
+                ):
+                    program.step(state, item)
+            else:
+                yield program.finish(state)["value"]
+                state = program.initialize()
+                program.step(state, item)
+            previous = item
+        yield program.finish(state)["value"]
+        return
     try:
         previous = aggregate = next(iterator)
     except StopIteration:
@@ -552,6 +607,7 @@ OPERATION_HANDLERS: dict[type[object], OperationHandler] = {
     ParallelMapOp: _map_parallel,
     TapOp: _tap,
     FilterOp: _filter,
+    FilterMapOp: _filter_map,
     FlatMapOp: _flat_map,
     TakeOp: _take,
     DropOp: _drop,
@@ -561,6 +617,7 @@ OPERATION_HANDLERS: dict[type[object], OperationHandler] = {
     UniqueOp: _unique,
     ChunkOp: _chunk,
     WindowOp: _window,
+    WindowReduceOp: _window_reduce,
     GroupRunsOp: _group_runs,
     PairwiseOp: _pairwise,
     EnumerateOp: _enumerate,

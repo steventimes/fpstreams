@@ -5573,10 +5573,35 @@ def test_scan_csv_is_reusable_typed_and_keeps_from_csv_string_semantics(tmp_path
     }
 
 
-def test_scan_csv_pushes_query_projection_with_filter_dependencies(
+@pytest.mark.parametrize("terminal", ["to_list", "count", "to_arrow", "arrow_batches"])
+def test_scan_csv_projection_preserves_late_unused_column_conversion_error(
+    tmp_path: Path, terminal: str
+) -> None:
+    """A late type violation outside the inferred first block remains observable."""
+    path = tmp_path / "late-type-error.csv"
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("id,value,unused\n")
+        for index in range(250_000):
+            handle.write(f"{index},{index},{'bad' if index == 249_999 else 0}\n")
+    for filter_count in (1, 2):
+        query = fpstreams.rows.scan_csv(path).where(fpstreams.col("id") >= 249_990)
+        if filter_count == 2:
+            query = query.where(fpstreams.col("id") < 249_995)
+        query = query.select("value")
+        errors = []
+        for candidate in (query.with_engine("python"), query):
+            with pytest.raises(pa.ArrowInvalid) as caught:
+                result = getattr(candidate, terminal)()
+                if terminal == "arrow_batches":
+                    list(result)
+            errors.append(str(caught.value))
+        assert errors[0] == errors[1]
+
+
+def test_scan_csv_keeps_source_fields_before_query_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default scans parse only output and filter fields once a closed query is known."""
+    """Typed scans validate every visible source field before query projection."""
     from fpstreams.execution import arrow as arrow_execution
 
     path = tmp_path / "wide.csv"
@@ -5603,14 +5628,16 @@ def test_scan_csv_pushes_query_projection_with_filter_dependencies(
     )
 
     assert result == [{"payload": "two"}, {"payload": "three"}]
-    assert schemas == [("payload", "id"), ("payload", "id")]
+    assert schemas == [("id", "payload", "unused_a", "unused_b")] * 2
 
 
 def _observe_csv_reader_options(query, block_sizes):
     """Observe fpstreams reader setup without replacing the guarded PyArrow entrypoint."""
     descriptor = query._flow._terminal_context("list")[1].source.native_data
-    project = descriptor.projection_opener
-    cells = dict(zip(project.__code__.co_freevars, project.__closure__, strict=True))
+    opener = descriptor.opener
+    outer = dict(zip(opener.__code__.co_freevars, opener.__closure__, strict=True))
+    stream = outer["stream"].cell_contents
+    cells = dict(zip(stream.__code__.co_freevars, stream.__closure__, strict=True))
     open_reader = cells["open_reader"].cell_contents
 
     def traced_open_reader(*args, **options):
@@ -5621,8 +5648,8 @@ def _observe_csv_reader_options(query, block_sizes):
     cells["open_reader"].cell_contents = traced_open_reader
 
 
-def test_scan_csv_uses_a_bounded_default_projection_probe(tmp_path: Path) -> None:
-    """Projection discovery reads a small header block before the ordinary typed stream."""
+def test_scan_csv_projection_uses_one_typed_source_open(tmp_path: Path) -> None:
+    """Query projection neither probes nor reopens a typed CSV source."""
     path = tmp_path / "probe.csv"
     path.write_text("id,unused\n1,10\n2,20\n", encoding="utf-8")
     block_sizes: list[int | None] = []
@@ -5630,14 +5657,14 @@ def test_scan_csv_uses_a_bounded_default_projection_probe(tmp_path: Path) -> Non
     _observe_csv_reader_options(query, block_sizes)
 
     assert query.to_list() == [{"id": 1}, {"id": 2}]
-    assert block_sizes == [64 * 1024, None]
+    assert block_sizes == [None]
 
 
 @pytest.mark.parametrize("long_header", [False, True])
-def test_scan_csv_projection_probe_retries_records_larger_than_its_block(
+def test_scan_csv_projection_keeps_default_inference_for_long_headers_and_records(
     tmp_path: Path, long_header: bool
 ) -> None:
-    """A straddling header or first record falls back to Arrow's default inference block."""
+    """Long headers and records retain Arrow's default inference with one source open."""
     path = tmp_path / "long.csv"
     long_value = "x" * 150_000
     if long_header:
@@ -5649,7 +5676,7 @@ def test_scan_csv_projection_probe_retries_records_larger_than_its_block(
     _observe_csv_reader_options(query, block_sizes)
 
     assert query.to_list() == [{"id": 1}]
-    assert block_sizes == [64 * 1024, None, None]
+    assert block_sizes == [None]
 
 
 def test_scan_csv_projection_probe_preserves_later_parse_error_precedence(tmp_path: Path) -> None:
@@ -5694,7 +5721,7 @@ def test_scan_csv_preserves_deferred_and_missing_field_behavior(tmp_path: Path) 
 def test_scan_csv_closes_early_terminal_and_projected_streams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both short-circuited reading and projected probe/data pairs release their streams."""
+    """Both short-circuited and projected reading release their single owned stream."""
     path = tmp_path / "close.csv"
     path.write_text("id,unused\n1,10\n2,20\n", encoding="utf-8")
     opened: list[object] = []
@@ -5715,12 +5742,12 @@ def test_scan_csv_closes_early_terminal_and_projected_streams(
 
     opened.clear()
     assert fpstreams.rows.scan_csv(path).select("id").to_list() == [{"id": 1}, {"id": 2}]
-    assert len(opened) == 2
+    assert len(opened) == 1
     assert all(stream.closed for stream in opened)  # type: ignore[attr-defined]
 
 
 def test_scan_csv_does_not_repeat_invalid_row_callbacks_for_projection(tmp_path: Path) -> None:
-    """A user parse callback disables the schema-probe optimization to remain exactly-once."""
+    """Projection retains one typed scan and calls each invalid-row callback once."""
     import pyarrow.csv as pacsv
 
     path = tmp_path / "invalid.csv"
@@ -16363,6 +16390,36 @@ def test_arrow_multiple_direct_filters_validate_every_filter_before_batch_execut
     )
 
 
+@pytest.mark.parametrize("terminal", ["to_list", "count", "to_arrow", "arrow_batches"])
+@pytest.mark.parametrize("projection", [False, True])
+def test_arrow_unsafe_filter_sequence_preserves_row_first_exception_order(terminal, projection):
+    """The first row's later filter must fail before the second row's earlier filter."""
+    table = pa.table({"x": [1, None], "y": [None, 1]})
+    query = (
+        fpstreams.rows.from_arrow(table)
+        .where(fpstreams.col("x") >= 0)
+        .where(fpstreams.col("y") < 2)
+    )
+    if projection:
+        query = query.select("x")
+    with pytest.raises(TypeError, match=r"^'<' not supported"):
+        result = getattr(query, terminal)()
+        if terminal == "arrow_batches":
+            list(result)
+
+
+@pytest.mark.parametrize("flow_view", [False, True])
+def test_arrow_unsafe_filter_prefix_does_not_visit_tail_after_take(flow_view):
+    """Closing a nullable prefix after its first output never evaluates the tail row."""
+    query = (
+        fpstreams.rows.from_arrow(pa.table({"x": [1, None], "y": [1, 1]}))
+        .where(fpstreams.col("x") >= 0)
+        .where(fpstreams.col("y") < 2)
+    )
+    limited = query.to_flow().take(1) if flow_view else query.limit(1)
+    assert limited.to_list() == [{"x": 1, "y": 1}]
+
+
 def test_arrow_negated_filter_discards_every_tentative_batch_prefix() -> None:
     """A later reject cannot expose an earlier Arrow expression's overflow semantics."""
     maximum = 2**63 - 1
@@ -17026,10 +17083,10 @@ def test_parquet_metadata_count_preserves_duplicate_schema_error() -> None:
     assert str(automatic.value) == str(canonical.value)
 
 
-def test_parquet_query_projection_reaches_scanner_with_filter_dependencies(
+def test_parquet_query_projection_keeps_filter_dependencies_at_executor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The scanner reads output and filter fields, but not unrelated Parquet columns."""
+    """Validated scan outputs retain filter fields and drop unrelated Parquet columns."""
     from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "wide.parquet"
@@ -17066,10 +17123,10 @@ def test_parquet_query_projection_reaches_scanner_with_filter_dependencies(
     assert schemas == [("payload", "id"), ("payload", "id")]
 
 
-def test_parquet_exact_equality_reaches_scanner_and_keeps_the_python_residual(
+def test_parquet_exact_equality_narrows_batches_and_keeps_the_python_residual(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A proven equality may prune at scan time while the original filter still executes."""
+    """A proven equality narrows validated batches while the original filter still executes."""
     from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "equality.parquet"
@@ -17109,6 +17166,516 @@ def test_parquet_exact_equality_reaches_scanner_and_keeps_the_python_residual(
     assert len(predicates) == 1
 
 
+@pytest.mark.parametrize("kind", ["utf8", "date"])
+@pytest.mark.parametrize("filtered_out", [False, True])
+@pytest.mark.parametrize("filter_count", [1, 2])
+@pytest.mark.parametrize("terminal", ["to_list", "count", "first"])
+def test_parquet_query_hints_preserve_source_conversion_errors(
+    tmp_path: Path, kind: str, filtered_out: bool, filter_count: int, terminal: str
+) -> None:
+    """Automatic hints cannot hide invalid values in discarded columns or row groups."""
+    if kind == "utf8":
+        bad = pa.array([b"\xff", b"ok"], type=pa.binary()).view(pa.string())
+        error = UnicodeDecodeError
+    else:
+        bad = pa.array([2**31 - 1, 0], type=pa.int32()).view(pa.date32())
+        error = OverflowError
+    target = tmp_path / "invalid-unused.parquet"
+    pq.write_table(pa.table({"id": [0, 1], "bad": bad}), target, row_group_size=1)
+    query = fpstreams.rows.from_parquet(target).where(
+        fpstreams.col("id") >= (1 if filtered_out else 0)
+    )
+    if filter_count == 2:
+        query = query.where(fpstreams.col("id") < 2)
+    query = query.select("id")
+    with pytest.raises(error) as canonical:
+        getattr(query.with_engine("python"), terminal)()
+    with pytest.raises(error) as automatic:
+        getattr(query, terminal)()
+    assert automatic.value.args == canonical.value.args
+
+
+@pytest.mark.parametrize("public_projection", [False, True])
+@pytest.mark.parametrize("return_predicate", [False, True])
+@pytest.mark.parametrize(
+    ("source_filter", "hint"),
+    [(False, "range"), (False, "equality"), (False, None), (True, "range")],
+)
+def test_parquet_conversion_validation_skips_only_safe_unused_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    public_projection: bool,
+    return_predicate: bool,
+    source_filter: bool,
+    hint: str | None,
+) -> None:
+    """One scan retains all fallible fields in source order and every query dependency."""
+    from fpstreams.planning.arrow_source import ArrowScanRequest
+    from fpstreams.tabular import arrow as adapter
+
+    target = tmp_path / "validation-columns.parquet"
+    table = pa.table(
+        {
+            "safe_extra": [0.0, 1.0, 2.0],
+            "left": [None, "a", "b"],
+            "id": [0, 1, 2],
+            "right": ["c", "d", "e"],
+            "payload": [10, 20, 30],
+            "nullable_safe": pa.array([None, 4, 5], type=pa.int64()),
+            "binary_safe": [b"\xff"] * 3,
+        }
+    )
+    pq.write_table(table, target, row_group_size=1)
+    source_columns = (
+        ["right", "payload", "safe_extra", "left", "id", "nullable_safe"]
+        if public_projection
+        else None
+    )
+    visible = source_columns if source_columns is not None else table.schema.names
+    options = []
+    opened = []
+    dataset = ds.dataset
+
+    class ObservedDataset:
+        def __init__(self, value):
+            self.value = value
+
+        def __getattr__(self, name):
+            return getattr(self.value, name)
+
+        def scanner(self, **scan_options):
+            options.append(scan_options)
+            return self.value.scanner(**scan_options)
+
+    def observed_dataset(*args, **kwargs):
+        opened.append(True)
+        return ObservedDataset(dataset(*args, **kwargs))
+
+    monkeypatch.setattr(ds, "dataset", observed_dataset)
+    _base, _size, _projected, requested, _count = adapter._parquet_batch_factory(
+        target, columns=source_columns, filter=ds.field("id") >= 1 if source_filter else None
+    )
+    wanted = ("payload", "id") if return_predicate else ("payload",)
+    request = ArrowScanRequest(
+        columns=wanted,
+        range_predicate=("id", ">=", 1) if hint == "range" else None,
+        equality=("id", 2) if hint == "equality" else None,
+    )
+    kept = [2] if hint == "equality" else ([1, 2] if hint == "range" else [0, 1, 2])
+    expected = [
+        {"payload": (index + 1) * 10, **({"id": index} if return_predicate else {})}
+        for index in kept
+    ]
+    assert [row for batch in requested(request) for row in batch.to_pylist()] == expected
+    assert opened == [True]
+    assert len(options) == 1
+    validation_fields = {"left", "right", *wanted}
+    if hint is not None and not source_filter:
+        validation_fields.add("id")
+    assert options[0]["columns"] == [name for name in visible if name in validation_fields]
+    assert options[0]["filter"] is not None if source_filter else options[0]["filter"] is None
+
+
+@pytest.mark.parametrize("public_projection", [False, True])
+@pytest.mark.parametrize("terminal", ["to_list", "count", "first"])
+def test_parquet_validation_projection_preserves_conversion_error_order(
+    tmp_path: Path, public_projection: bool, terminal: str
+) -> None:
+    """Discarding safe fields never reorders two fallible fields at the row boundary."""
+    target = tmp_path / "two-invalid-columns.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "unused": [7, 8],
+                "left": pa.array([b"ok", b"\xff"], type=pa.binary()).view(pa.string()),
+                "id": [0, 1],
+                "right": pa.array([b"\xfe", b"ok"], type=pa.binary()).view(pa.string()),
+            }
+        ),
+        target,
+    )
+    source_columns = ["right", "id", "left", "unused"] if public_projection else None
+    query = (
+        fpstreams.rows.from_parquet(target, columns=source_columns)
+        .where(fpstreams.col("id") >= 1)
+        .where(fpstreams.col("id") < 3)
+        .select("id")
+    )
+    errors = []
+    for candidate in (query.with_engine("python"), query):
+        with pytest.raises(UnicodeDecodeError) as error:
+            getattr(candidate, terminal)()
+        errors.append(error.value.args)
+    assert errors[0] == errors[1]
+    assert errors[0][1] == (b"\xfe" if public_projection else b"\xff")
+
+
+@pytest.mark.parametrize("text_field", [False, True])
+@pytest.mark.parametrize("lower", [0, 1])
+@pytest.mark.parametrize("terminal", ["to_list", "count", "to_arrow"])
+def test_parquet_query_hints_preserve_fragment_cast_errors(
+    tmp_path: Path, text_field: bool, lower: int, terminal: str
+) -> None:
+    """A logical integer field can still fail while casting a later fragment's strings."""
+    first = {"id": [0], "value": [10], "unused": [1]}
+    second = {"id": [1], "value": [20], "unused": ["bad"]}
+    if text_field:
+        first["label"] = ["a"]
+        second["label"] = ["b"]
+    pq.write_table(pa.table(first), tmp_path / "a.parquet")
+    pq.write_table(pa.table(second), tmp_path / "b.parquet")
+    query = (
+        fpstreams.rows.from_parquet(tmp_path).where(fpstreams.col("id") >= lower).select("value")
+    )
+    errors = []
+    for candidate in (query.with_engine("python"), query):
+        with pytest.raises(pa.ArrowInvalid) as error:
+            getattr(candidate, terminal)()
+        errors.append(str(error.value))
+    assert errors[0] == errors[1]
+
+
+@pytest.mark.parametrize("source_kind", ["fragments", "schema_cast"])
+@pytest.mark.parametrize("use_threads", [False, True])
+def test_parquet_native_cast_errors_follow_the_explicit_source_projection(
+    tmp_path: Path,
+    source_kind: str,
+    use_threads: bool,
+) -> None:
+    """Full visible casts must fail; explicit source columns can omit unrelated casts."""
+    source: object = tmp_path
+    if source_kind == "fragments":
+        pq.write_table(pa.table({"id": [0], "value": [10], "unused": [1]}), tmp_path / "a.parquet")
+        pq.write_table(
+            pa.table({"id": [1], "value": [20], "unused": ["bad"]}), tmp_path / "b.parquet"
+        )
+    else:
+        path = tmp_path / "cast.parquet"
+        pq.write_table(
+            pa.table({"id": [0, 1], "value": [10, 20], "unused": ["1", "bad"]}),
+            path,
+            row_group_size=1,
+        )
+        source = ds.dataset(
+            path,
+            format="parquet",
+            schema=pa.schema([("id", pa.int64()), ("value", pa.int64()), ("unused", pa.int64())]),
+        )
+    query = (
+        fpstreams.rows.from_parquet(source, batch_size=1, use_threads=use_threads)
+        .where(fpstreams.col("id") >= 0)
+        .select("value")
+    )
+    for candidate in (query, query.with_engine("python")):
+        with pytest.raises(pa.ArrowInvalid, match="bad"):
+            candidate.to_list()
+    projected = (
+        fpstreams.rows.from_parquet(
+            source,
+            columns=["id", "value"],
+            batch_size=1,
+            use_threads=use_threads,
+        )
+        .where(fpstreams.col("id") >= 0)
+        .select("value")
+    )
+    for candidate in (projected, projected.with_engine("python")):
+        assert candidate.first() == {"value": 10}
+        assert candidate.limit(1).to_list() == [{"value": 10}]
+        assert candidate.to_list() == [{"value": 10}, {"value": 20}]
+
+
+@pytest.mark.parametrize("fail_before_first", [False, True])
+def test_parquet_consumption_preserves_delivered_prefixes_and_source_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_before_first: bool,
+) -> None:
+    """Do not pull beyond a delivered prefix or replay a source that failed before it."""
+    from types import SimpleNamespace
+
+    from fpstreams.tabular import arrow as adapter
+
+    events = []
+    failure = pa.ArrowInvalid("source cast failed")
+    schema = pa.schema([("id", pa.int64()), ("value", pa.int64())])
+
+    class Scanner:
+        projected_schema = schema
+
+        def to_batches(self) -> Iterator[object]:
+            events.append("open")
+            try:
+                if fail_before_first:
+                    raise failure
+                events.append("first")
+                yield pa.record_batch({"id": [0], "value": [10]})
+                events.append("later")
+                raise failure
+            finally:
+                events.append("close")
+
+    class Dataset:
+        def __init__(self) -> None:
+            self.schema = schema
+
+        def scanner(self, **_options: object) -> Scanner:
+            return Scanner()
+
+    monkeypatch.setattr(
+        adapter,
+        "_arrow_modules",
+        lambda: (pa, SimpleNamespace(Dataset=Dataset, field=ds.field), object()),
+    )
+    query = (
+        fpstreams.rows.from_parquet(Dataset(), batch_size=1)
+        .where(fpstreams.col("id") >= 0)
+        .select("value")
+    )
+    for candidate in (query, query.with_engine("python")):
+        for terminal, expected in (
+            (lambda q: q.first(), {"value": 10}),
+            (lambda q: q.limit(1).to_list(), [{"value": 10}]),
+            (lambda q: q.to_flow().take(1).to_list(), [{"value": 10}]),
+        ):
+            events.clear()
+            if fail_before_first:
+                with pytest.raises(pa.ArrowInvalid) as caught:
+                    terminal(candidate)
+                assert caught.value is failure
+                assert events == ["open", "close"]
+            else:
+                result = terminal(candidate)
+                assert result == expected
+                assert events == ["open", "first", "close"]
+        events.clear()
+        with pytest.raises(pa.ArrowInvalid) as caught:
+            candidate.to_list()
+        assert caught.value is failure
+        assert events == (
+            ["open", "close"] if fail_before_first else ["open", "first", "later", "close"]
+        )
+
+
+@pytest.mark.parametrize("public_columns", [False, True])
+def test_parquet_supplied_dataset_schema_keeps_its_cast_boundary(
+    tmp_path: Path, public_columns: bool
+) -> None:
+    target = tmp_path / "cast.parquet"
+    pq.write_table(pa.table({"id": [1], "unused": ["bad"]}), target)
+    source = ds.dataset(
+        target, format="parquet", schema=pa.schema([("id", pa.int64()), ("unused", pa.int64())])
+    )
+    query = fpstreams.rows.from_parquet(source, columns=["id"] if public_columns else None).where(
+        fpstreams.col("id") >= 0
+    )
+    if public_columns:
+        assert query.count() == query.with_engine("python").count() == 1
+    else:
+        for candidate in (query.with_engine("python"), query):
+            with pytest.raises(pa.ArrowInvalid, match="Failed to parse string"):
+                candidate.count()
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3])
+def test_parquet_single_fragment_probe_bounds_and_closes_enumeration(count: int) -> None:
+    from fpstreams.tabular import arrow as adapter
+
+    events = []
+
+    class Fragment:
+        @property
+        def physical_schema(self):
+            raise AssertionError("schema proof must not deserialize extension metadata")
+
+        @property
+        def metadata(self):
+            raise AssertionError("schema proof must not load metadata")
+
+    class Dataset:
+        def get_fragments(self):
+            try:
+                for index in range(count):
+                    events.append(index)
+                    yield Fragment()
+            finally:
+                events.append("closed")
+
+    assert adapter._parquet_has_single_fragment(Dataset()) is (count == 1)
+    assert events == [*range(min(count, 2)), "closed"]
+
+
+@pytest.mark.parametrize("adapter", ["retained", "parquet"])
+@pytest.mark.parametrize("keep_extension", [False, True])
+@pytest.mark.parametrize("filter_count", [1, 2])
+@pytest.mark.parametrize("terminal", ["to_list", "count", "to_arrow", "arrow_batches", "first"])
+def test_arrow_filter_projection_converts_extension_scalars_once(
+    tmp_path: Path, adapter: str, keep_extension: bool, filter_count: int, terminal: str
+) -> None:
+    """A speculative prefix must not repeat or skip Python extension conversion hooks."""
+    conversions: list[int] = []
+
+    class TracedScalar(pa.ExtensionScalar):
+        def as_py(self, **_kwargs: object) -> int:
+            value = self.value.as_py()
+            conversions.append(value)
+            return value
+
+    class TracedType(pa.ExtensionType):
+        def __init__(self) -> None:
+            super().__init__(pa.int64(), "fpstreams.test.prefix-conversion")
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, _storage: object, _metadata: bytes) -> TracedType:
+            return cls()
+
+        def __arrow_ext_scalar_class__(self) -> type[TracedScalar]:
+            return TracedScalar
+
+    extension = TracedType()
+    pa.register_extension_type(extension)
+    try:
+        table = pa.table(
+            {"id": [0, 1], "value": pa.ExtensionArray.from_storage(extension, pa.array([10, 20]))}
+        )
+        if adapter == "parquet":
+            target = tmp_path / "extension.parquet"
+            pq.write_table(table, target)
+            source = fpstreams.rows.from_parquet(target)
+        else:
+            source = fpstreams.rows.from_arrow(table)
+        query = source.where(fpstreams.col("id") >= 0)
+        if filter_count == 2:
+            query = query.where(fpstreams.col("id") < 2)
+        query = query.select("value" if keep_extension else "id")
+        outputs = []
+        observations = []
+        for candidate in (query.with_engine("python"), query):
+            conversions.clear()
+            result = getattr(candidate, terminal)()
+            if terminal == "arrow_batches":
+                result = list(result)
+            if terminal in {"arrow_batches", "to_arrow"}:
+                result = (
+                    [row for batch in result for row in batch.to_pylist()]
+                    if terminal == "arrow_batches"
+                    else result.to_pylist()
+                )
+            outputs.append(result)
+            observations.append(list(conversions))
+        assert outputs[0] == outputs[1]
+        assert observations == [[10, 20], [10, 20]]
+    finally:
+        pa.unregister_extension_type(extension.extension_name)
+
+
+def test_parquet_explicit_source_hints_define_the_conversion_boundary(tmp_path: Path) -> None:
+    bad = pa.array([b"\xff", b"ok"], type=pa.binary()).view(pa.string())
+    target = tmp_path / "explicit-hints.parquet"
+    pq.write_table(pa.table({"id": [0, 1], "bad": bad}), target, row_group_size=1)
+    projected = fpstreams.rows.from_parquet(target, columns=["id"])
+    filtered = fpstreams.rows.from_parquet(target, filter=ds.field("id") == 1)
+    for source, expected in ((projected, [{"id": 0}, {"id": 1}]), (filtered, [{"id": 1}])):
+        query = source.where(fpstreams.col("id") >= 0).where(fpstreams.col("id") < 2).select("id")
+        assert query.to_list() == query.with_engine("python").to_list() == expected
+
+
+@pytest.mark.parametrize("replaced_opener", [False, True])
+def test_parquet_invalidated_projection_also_discards_automatic_predicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replaced_opener: bool
+) -> None:
+    from fpstreams.planning.arrow_source import ArrowScanRequest
+    from fpstreams.tabular import arrow as adapter
+
+    target = tmp_path / "invalidated-hints.parquet"
+    pq.write_table(pa.table({"id": [0, 1], "value": [10, 20]}), target, row_group_size=1)
+    _base, _size, _projected, requested, _count = adapter._parquet_batch_factory(target)
+    if replaced_opener:
+        original = ds.dataset
+        monkeypatch.setattr(ds, "dataset", lambda *args, **kwargs: original(*args, **kwargs))
+    request = ArrowScanRequest(
+        columns=("value",),
+        range_predicate=("id", ">=", 1),
+        projection_check=lambda: replaced_opener,
+    )
+    assert [row for batch in requested(request) for row in batch.to_pylist()] == [
+        {"id": 0, "value": 10},
+        {"id": 1, "value": 20},
+    ]
+
+
+@pytest.mark.parametrize("third_filter", [False, True])
+def test_parquet_filter_chain_projection_keeps_only_leading_scan_hint(
+    tmp_path, monkeypatch, third_filter
+):
+    """A longer safe prefix reads required fields, using only the original first range."""
+    from fpstreams.execution import arrow as execution
+
+    target = tmp_path / "prefix.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": list(range(40)),
+                "payload": [f"v{x}" for x in range(40)],
+                "unused": list(range(40)),
+            }
+        ),
+        target,
+        row_group_size=10,
+    )
+    batches = []
+    execute = execution._execute_batch_program
+
+    def tracked(batch, operations, projection):
+        batches.append((batch.num_rows, tuple(batch.schema.names), len(operations)))
+        yield from execute(batch, operations, projection)
+
+    monkeypatch.setattr(execution, "_execute_batch_program", tracked)
+    query = fpstreams.rows.from_parquet(target).where(fpstreams.col("id") >= 35)
+    query = query.where(fpstreams.col("id") < 39)
+    if third_filter:
+        query = query.where(fpstreams.col("payload") != "v37")
+    assert query.select(value="payload").to_list() == (
+        [{"value": "v35"}, {"value": "v36"}, {"value": "v38"}]
+        if third_filter
+        else [{"value": "v35"}, {"value": "v36"}, {"value": "v37"}, {"value": "v38"}]
+    )
+    assert batches == [(5, ("payload", "id"), 4 if third_filter else 3)]
+
+
+def test_retained_arrow_filter_chain_projection_stays_columnar_with_explicit_schema(monkeypatch):
+    from fpstreams.execution import arrow as execution
+
+    table = pa.table({"id": [0, 1, 2, 3], "value": [10, 20, 30, 40]}).replace_schema_metadata(
+        {b"origin": b"test"}
+    )
+    schema = pa.schema([("chosen", pa.int64())])
+    calls = []
+    materialize = execution._materialize_table_batch
+
+    def tracked(batch, operations, projection):
+        calls.append(batch.num_rows)
+        return materialize(batch, operations, projection)
+
+    monkeypatch.setattr(execution, "_materialize_table_batch", tracked)
+    batches = (
+        fpstreams.rows.from_arrow(table)
+        .where(fpstreams.col("id") >= 1)
+        .where(fpstreams.col("id") < 3)
+        .select(chosen="value")
+        .arrow_batches(schema=schema)
+        .to_list()
+    )
+    assert [row for batch in batches for row in batch.to_pylist()] == [
+        {"chosen": 20},
+        {"chosen": 30},
+    ]
+    assert all(batch.schema.equals(schema, check_metadata=True) for batch in batches)
+    assert calls == [4]
+
+
 @pytest.mark.parametrize(
     ("predicate", "expected"),
     [
@@ -17122,13 +17689,13 @@ def test_parquet_exact_equality_reaches_scanner_and_keeps_the_python_residual(
         (fpstreams.lit(35) <= fpstreams.col("id"), [35, 36, 37, 38, 39]),
     ],
 )
-def test_parquet_exact_i64_range_prunes_before_the_python_residual(
+def test_parquet_exact_i64_range_narrows_batches_before_the_python_residual(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     predicate: object,
     expected: list[int],
 ) -> None:
-    """Four direct range operators, including literal-left forms, prune clustered row groups."""
+    """Four direct ranges, including literal-left forms, narrow validated scan outputs."""
     from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "range.parquet"
@@ -17297,7 +17864,7 @@ def test_parquet_range_hint_rejects_an_internal_dotted_field_node(tmp_path: Path
     assert query.to_list() == expected
 
 
-def test_parquet_equality_pushdown_prunes_across_multiple_files(
+def test_parquet_equality_narrows_validated_batches_across_multiple_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The bounded metadata probe considers every fragment before enabling its hint."""
@@ -20693,6 +21260,8 @@ def test_rows_run_with_report_keeps_the_rows_terminal_surface() -> None:
     assert execution.value == [{"value": 1}, {"value": 2}]
     assert execution.report.terminal == "to_list"
     assert execution.report.strategy == "planned:python"
+    assert execution.report.events[0].compiler_engine == "python"
+    assert execution.report.events_truncated is False
 
 
 def test_numpy_group_planner_marks_only_direct_integer_columnar_shapes() -> None:
@@ -22726,8 +23295,8 @@ def test_numpy_group_deopts_before_replaced_hash_is_observed(
 
 
 @pytest.mark.parametrize("prefixed", [False, True], ids=["direct", "prefix"])
-def test_only_a_root_numpy_group_updates_non_list_execution_reports(prefixed: bool) -> None:
-    """A root relational hit is real evidence; the same group nested under a stage is not."""
+def test_numpy_group_run_with_report_preserves_the_outer_route(prefixed: bool) -> None:
+    """Keep the root summary while observing direct routes inside child groups."""
     np = pytest.importorskip("numpy")
 
     source = fpstreams.rows.from_numpy(
@@ -22745,6 +23314,12 @@ def test_only_a_root_numpy_group_updates_non_list_execution_reports(prefixed: bo
     assert root_execution.report.strategy == "numpy_direct"
     assert nested_execution.value == root_execution.value
     assert nested_execution.report.strategy == "planned:python"
+    assert any(
+        event.kind == "strategy"
+        and event.strategy == "numpy_direct"
+        and event.compiler_engine is None
+        for event in nested_execution.report.events
+    )
 
 
 def test_parquet_error_publish_does_not_overwrite_racing_creator(tmp_path, monkeypatch):
@@ -23436,3 +24011,502 @@ def test_sorted_group_key_wrapper_observes_constructor_replacements(builtin, mon
     )
     assert result == [{"key": 1, "rows": 1}, {"key": 2, "rows": 1}, {"key": 3, "rows": 1}]
     assert events.count(builtin) == (2 if builtin == "tuple" else 6)
+
+
+@pytest.mark.parametrize("source_kind", ["table", "record_batch"])
+def test_matching_explicit_arrow_batch_schema_preserves_native_buffers(source_kind) -> None:
+    """An unchanged explicit schema must not force retained Arrow data through Python rows."""
+    table = pa.table({"id": [1, 2, 3], "value": [1.5, None, -0.0], "name": ["a", "b", "c"]})
+    source = table if source_kind == "table" else table.to_batches()[0]
+    batches = (
+        fpstreams.rows.from_arrow(source).arrow_batches(batch_size=2, schema=table.schema).to_list()
+    )
+    assert [batch.num_rows for batch in batches] == [2, 1]
+    assert pa.Table.from_batches(batches).equals(table, check_metadata=True)
+    assert (
+        batches[0].column(0).buffers()[1].address == table.column(0).chunk(0).buffers()[1].address
+    )
+
+
+@pytest.mark.parametrize(
+    "override", ["rows_subclass", "flow_subclass", "rows_method", "flow_method"]
+)
+def test_explicit_arrow_batch_schema_preserves_overridden_iteration(override, monkeypatch) -> None:
+    table = pa.table({"value": [1, 2, 3]})
+    source = fpstreams.rows.from_arrow(table)
+    original_rows_iter = fpstreams.Rows.__iter__
+    original_flow_iter = fpstreams.Flow.__iter__
+
+    def row_iter(self):
+        for row in original_rows_iter(self):
+            yield {"value": row["value"] + 10}
+
+    def flow_iter(self):
+        for row in original_flow_iter(self):
+            yield {"value": row["value"] + 10}
+
+    if override == "rows_subclass":
+
+        class CustomRows(fpstreams.Rows):
+            __iter__ = row_iter
+
+        source = CustomRows(source._flow)
+    elif override == "flow_subclass":
+
+        class CustomFlow(fpstreams.Flow):
+            __iter__ = flow_iter
+
+        source = fpstreams.Rows(CustomFlow._from_logical(source._flow._logical_plan))
+    elif override == "rows_method":
+        monkeypatch.setattr(fpstreams.Rows, "__iter__", row_iter)
+    else:
+        monkeypatch.setattr(fpstreams.Flow, "__iter__", flow_iter)
+    batches = source.arrow_batches(batch_size=2, schema=table.schema).to_list()
+    assert pa.Table.from_batches(batches).to_pylist() == [
+        {"value": 11},
+        {"value": 12},
+        {"value": 13},
+    ]
+
+
+@pytest.mark.parametrize("mode", ["cast", "projection", "callback", "metadata"])
+def test_explicit_arrow_batch_schema_preserves_conversion_and_callback_semantics(mode) -> None:
+    table = pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+    source = fpstreams.rows.from_arrow(table)
+    schema = table.schema
+    calls = []
+    if mode == "cast":
+        schema = pa.schema([("id", pa.int32()), ("name", pa.string())])
+    elif mode == "projection":
+        source = source.select("id")
+        schema = pa.schema([("id", pa.int64())])
+    elif mode == "callback":
+        source = source.map(lambda row: calls.append(row["id"]) or row).rows()
+    else:
+        schema = table.schema.with_metadata({b"example": b"retained"})
+    batches = source.arrow_batches(batch_size=2, schema=schema).to_list()
+    assert all(batch.schema.equals(schema, check_metadata=True) for batch in batches)
+    assert [batch.num_rows for batch in batches] == [2, 1]
+    assert [row["id"] for batch in batches for row in batch.to_pylist()] == [1, 2, 3]
+    assert calls == ([1, 2, 3] if mode == "callback" else [])
+
+
+@pytest.mark.parametrize("operation", ["select", "where", "where_select"])
+@pytest.mark.parametrize("source_kind", ["table", "record_batch"])
+def test_explicit_arrow_batch_schema_executes_safe_prefix_columnarly(
+    operation, source_kind, monkeypatch
+):
+    from fpstreams.execution import arrow as execution
+
+    table = pa.table({"id": [1, 2, 3, 4], "value": [None, 8, 9, 10]})
+    data = table if source_kind == "table" else table.to_batches()[0]
+    source = fpstreams.rows.from_arrow(data, batch_size=2)
+    schema = table.schema
+    if "where" in operation:
+        source = source.where(fpstreams.col("id") > 1)
+    if "select" in operation:
+        source = source.select(score="value")
+        schema = pa.schema([("score", pa.int64())])
+    expected = source.with_engine("python").arrow_batches(batch_size=3, schema=schema).to_list()
+    calls = []
+    original = execution._materialize_table_batch
+
+    def tracked(*args):
+        calls.append(args[0].num_rows)
+        return original(*args)
+
+    monkeypatch.setattr(execution, "_materialize_table_batch", tracked)
+    actual = source.arrow_batches(batch_size=3, schema=schema).to_list()
+    assert calls == [2, 2]
+    assert [batch.to_pylist() for batch in actual] == [batch.to_pylist() for batch in expected]
+    assert all(batch.schema.equals(schema, check_metadata=True) for batch in actual)
+
+
+def test_explicit_arrow_prefix_observes_midstream_conversion_hook(monkeypatch):
+    from fpstreams.tabular import arrow as adapter
+
+    table = pa.table({"id": [1, 2, 3, 4], "value": [5, 6, 7, 8]})
+    source = fpstreams.rows.from_arrow(table, batch_size=2).select("value")
+    schema = pa.schema([("value", pa.int64())])
+    iterator = iter(source.arrow_batches(batch_size=2, schema=schema))
+    assert next(iterator).to_pylist() == [{"value": 5}, {"value": 6}]
+    calls = []
+    original = adapter.batch_to_rows
+
+    def changed(batch):
+        calls.append(batch.num_rows)
+        return [{**row, "value": row["value"] + 10} for row in original(batch)]
+
+    monkeypatch.setattr(adapter, "batch_to_rows", changed)
+    assert next(iterator).to_pylist() == [{"value": 17}, {"value": 18}]
+    with pytest.raises(StopIteration):
+        next(iterator)
+    assert calls == [2]
+
+
+@pytest.mark.parametrize("operation", ["select", "where_select"])
+def test_explicit_arrow_prefix_does_not_hide_invalid_dropped_values(operation):
+    import struct
+
+    invalid = pa.Array.from_buffers(
+        pa.string(),
+        1,
+        [None, pa.py_buffer(struct.pack("<ii", 0, 1)), pa.py_buffer(b"\xff")],
+    )
+    source = fpstreams.rows.from_arrow(pa.table({"id": [1], "bad": invalid}))
+    if operation == "where_select":
+        source = source.where(fpstreams.col("id") > 2)
+    source = source.select("id")
+    with pytest.raises(UnicodeDecodeError):
+        source.arrow_batches(schema=pa.schema([("id", pa.int64())])).to_list()
+
+
+def test_explicit_arrow_prefix_preserves_nullable_predicate_errors_and_source_metadata():
+    schema = pa.schema(
+        [pa.field("id", pa.int64(), metadata={b"unit": b"count"})], metadata={b"source": b"example"}
+    )
+    table = pa.Table.from_pydict({"id": [1, None, 3]}, schema=schema)
+    query = fpstreams.rows.from_arrow(table).where(fpstreams.col("id") > 1)
+    with pytest.raises(TypeError):
+        query.arrow_batches(schema=schema).to_list()
+    selected = fpstreams.rows.from_arrow(table).select("id")
+    output_schema = pa.schema([schema.field("id")])
+    actual = selected.arrow_batches(batch_size=2, schema=output_schema).to_list()
+    assert [batch.to_pylist() for batch in actual] == [[{"id": 1}, {"id": None}], [{"id": 3}]]
+    assert all(batch.schema.equals(output_schema, check_metadata=True) for batch in actual)
+
+
+@pytest.mark.parametrize("mutation", ["reorder", "dtype", "extra"])
+def test_explicit_arrow_prefix_revalidates_each_batch_schema(mutation):
+    table = pa.table({"id": [1, 2, 3, 4], "value": [10, 20, 30, 40]})
+    source = fpstreams.rows.from_arrow(table, batch_size=2)
+    first = table.slice(0, 2).to_batches()[0]
+    second = table.slice(2, 2)
+    if mutation == "reorder":
+        second = second.select(["value", "id"])
+    elif mutation == "dtype":
+        second = second.cast(pa.schema([("id", pa.int64()), ("value", pa.float64())]))
+    else:
+        second = second.append_column("extra", pa.array([1, 2]))
+    descriptor = source._flow._pipeline.source.native_data
+    object.__setattr__(descriptor, "opener", lambda: iter((first, second.to_batches()[0])))
+    query = source.where(fpstreams.col("id") > 0)
+    if mutation == "extra":
+        for engine in ("python", "auto"):
+            iterator = iter(
+                query.with_engine(engine).arrow_batches(schema=table.schema, batch_size=2)
+            )
+            assert next(iterator).to_pylist() == [{"id": 1, "value": 10}, {"id": 2, "value": 20}]
+            with pytest.raises(ValueError, match="outside the schema"):
+                next(iterator)
+    else:
+        for engine in ("python", "auto"):
+            actual = (
+                query.with_engine(engine).arrow_batches(schema=table.schema, batch_size=2).to_list()
+            )
+            assert [row for batch in actual for row in batch.to_pylist()] == table.to_pylist()
+            assert all(batch.schema.equals(table.schema, check_metadata=True) for batch in actual)
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+@pytest.mark.parametrize("source_kind", ["table", "record_batch", "records"])
+def test_explicit_arrow_batch_schema_preserves_zero_column_cardinality(engine, source_kind) -> None:
+    schema = pa.schema([], metadata={b"source": b"empty-fields"})
+    table = pa.table({"value": [1, 2, 3]}).replace_schema_metadata(schema.metadata).select([])
+    source = fpstreams.rows(iter([{}, {}, {}]))
+    if source_kind != "records":
+        source = fpstreams.rows.from_arrow(
+            table if source_kind == "table" else table.to_batches()[0]
+        )
+    actual = source.with_engine(engine).arrow_batches(batch_size=2, schema=schema).to_list()
+    assert [batch.num_rows for batch in actual] == [2, 1]
+    assert [row for batch in actual for row in batch.to_pylist()] == [{}, {}, {}]
+    assert all(batch.schema.equals(schema, check_metadata=True) for batch in actual)
+
+
+def test_zero_column_arrow_schema_preserves_table_rows_and_rejects_extra_fields() -> None:
+    schema = pa.schema([])
+    assert fpstreams.rows([{}, {}, {}]).to_arrow(schema=schema, batch_size=2).num_rows == 3
+    assert fpstreams.rows([]).arrow_batches(schema=schema).to_list() == []
+    assert fpstreams.rows([]).to_arrow(schema=schema).num_rows == 0
+    with pytest.raises(ValueError, match="outside the schema"):
+        fpstreams.rows([{}, {"extra": 1}]).arrow_batches(schema=schema).to_list()
+    with pytest.raises(ValueError, match="without columns"):
+        fpstreams.rows([{}]).arrow_batches().to_list()
+
+    class InvalidSchema:
+        names = ()
+        metadata = None
+
+    with pytest.raises(TypeError):
+        fpstreams.rows([{}]).arrow_batches(schema=InvalidSchema()).to_list()
+
+
+def test_zero_column_output_adapters_preserve_rows_and_batch_bounds():
+    schema = pa.schema([])
+    source = fpstreams.rows([{}, {}, {}])
+    pytest.importorskip("polars")
+    batches = source.polars_batches(schema=schema, batch_size=2).to_list()
+    assert [batch.shape for batch in batches] == [(2, 0), (1, 0)]
+    retained = pa.table({"value": [1, 2, 3]}).select([])
+    assert [
+        batch.shape for batch in fpstreams.rows.from_arrow(retained).polars_batches(batch_size=2)
+    ] == [(2, 0), (1, 0)]
+    assert source.to_polars(schema=schema).shape == (3, 0)
+    pytest.importorskip("pandas")
+    assert source.to_pandas(schema=schema).shape == (3, 0)
+    assert source.to_numpy().shape == (3, 0)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_zero_column_parquet_write_fails_without_publishing_or_replacing(existing, tmp_path):
+    target = tmp_path / "rows.parquet"
+    if existing:
+        fpstreams.rows([{"id": 7}]).to_parquet(target)
+    before = target.read_bytes() if existing else None
+    events = []
+
+    def source():
+        try:
+            yield {}
+            yield {}
+        finally:
+            events.append("closed")
+
+    with pytest.raises(ValueError, match="without columns"):
+        fpstreams.rows(source()).to_parquet(target, schema=pa.schema([]), if_exists="replace")
+    assert events == ["closed"]
+    assert (target.read_bytes() if target.exists() else None) == before
+    assert sorted(tmp_path.iterdir()) == ([target] if existing else [])
+    empty = tmp_path / "empty.parquet"
+    assert fpstreams.rows([]).to_parquet(empty, schema=pa.schema([])) == 0
+    assert fpstreams.rows.from_parquet(empty).to_list() == []
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_explicit_arrow_batch_schema_does_not_skip_invalid_utf8_errors(late) -> None:
+    import struct
+
+    payload = bytearray(b"a" if late else b"\xff")
+    invalid = pa.Array.from_buffers(
+        pa.string(),
+        1,
+        [None, pa.py_buffer(struct.pack("<ii", 0, 1)), pa.py_buffer(payload)],
+    )
+    table = pa.table({"value": invalid})
+    batches = fpstreams.rows.from_arrow(table).arrow_batches(schema=table.schema)
+    if late:
+        payload[0] = 255
+    with pytest.raises(UnicodeDecodeError):
+        batches.to_list()
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_explicit_arrow_batch_schema_keeps_changed_row_conversion_observable(
+    late, monkeypatch
+) -> None:
+    from fpstreams.tabular import arrow as adapter
+
+    table = pa.table({"value": [1, 2, 3]})
+    source = fpstreams.rows.from_arrow(table)
+    error = ValueError("row conversion hook")
+    batches = source.arrow_batches(schema=table.schema) if late else None
+
+    def reject(batch):
+        raise error
+
+    monkeypatch.setattr(adapter, "batch_to_rows", reject)
+    with pytest.raises(ValueError, match="row conversion hook") as caught:
+        (batches if late else source.arrow_batches(schema=table.schema)).to_list()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("owner", [fpstreams.Rows, fpstreams.Flow])
+def test_explicit_arrow_batch_schema_observes_iteration_changes_after_construction(
+    owner, monkeypatch
+) -> None:
+    table = pa.table({"value": [1, 2, 3]})
+    source = fpstreams.rows.from_arrow(table)
+    batches = source.arrow_batches(schema=table.schema)
+    original = owner.__iter__
+
+    def changed(self):
+        for row in original(self):
+            yield {"value": row["value"] + 10}
+
+    monkeypatch.setattr(owner, "__iter__", changed)
+    assert pa.Table.from_batches(batches.to_list()).to_pylist() == [
+        {"value": 11},
+        {"value": 12},
+        {"value": 13},
+    ]
+
+
+@pytest.mark.parametrize(
+    "scalar_type",
+    [
+        pa.int8(),
+        pa.int64(),
+        pa.uint64(),
+        pa.float32(),
+        pa.float64(),
+        pa.bool_(),
+        pa.string(),
+        pa.large_string(),
+        pa.binary(),
+        pa.large_binary(),
+        pa.null(),
+        pa.list_(pa.int64()),
+        pa.dictionary(pa.int8(), pa.string()),
+    ],
+)
+def test_explicit_arrow_batch_schema_matches_python_conversion_for_scalar_families(
+    scalar_type,
+) -> None:
+    if pa.types.is_boolean(scalar_type):
+        values = [True, None, False]
+    elif (
+        pa.types.is_string(scalar_type)
+        or pa.types.is_large_string(scalar_type)
+        or pa.types.is_dictionary(scalar_type)
+    ):
+        values = ["one", None, "two"]
+    elif pa.types.is_binary(scalar_type) or pa.types.is_large_binary(scalar_type):
+        values = [b"one", None, b"two"]
+    elif pa.types.is_null(scalar_type):
+        values = [None, None, None]
+    elif pa.types.is_list(scalar_type):
+        values = [[1, 2], None, []]
+    elif pa.types.is_floating(scalar_type):
+        values = [-0.0, None, 1.25]
+    elif pa.types.is_uint64(scalar_type):
+        values = [2**64 - 1, None, 0]
+    else:
+        values = [1, None, 2]
+    table = pa.table({"value": pa.array(values, type=scalar_type)})
+    source = fpstreams.rows.from_arrow(table)
+    expected = (
+        source.with_engine("python").arrow_batches(batch_size=2, schema=table.schema).to_list()
+    )
+    actual = source.arrow_batches(batch_size=2, schema=table.schema).to_list()
+    assert [batch.num_rows for batch in actual] == [batch.num_rows for batch in expected]
+    assert all(
+        a.schema.equals(b.schema, check_metadata=True)
+        for a, b in zip(actual, expected, strict=True)
+    )
+    assert pa.Table.from_batches(actual).to_pylist() == pa.Table.from_batches(expected).to_pylist()
+
+
+def test_explicit_arrow_batch_schema_observes_conversion_changes_between_source_batches(
+    monkeypatch,
+) -> None:
+    from fpstreams.tabular import arrow as adapter
+
+    table = pa.table({"value": [1, 2, 3]})
+    batches = fpstreams.rows.from_arrow(table, batch_size=1).arrow_batches(
+        batch_size=1, schema=table.schema
+    )
+    iterator = iter(batches)
+    try:
+        assert next(iterator).to_pylist() == [{"value": 1}]
+
+        def reject(batch):
+            raise ValueError("changed conversion between batches")
+
+        monkeypatch.setattr(adapter, "batch_to_rows", reject)
+        with pytest.raises(ValueError, match="between batches"):
+            next(iterator)
+    finally:
+        iterator.close()
+
+
+def test_explicit_arrow_batch_schema_validates_mutable_buffers_between_source_batches() -> None:
+    import struct
+
+    payload = bytearray(b"ab")
+    array = pa.Array.from_buffers(
+        pa.string(),
+        2,
+        [None, pa.py_buffer(struct.pack("<iii", 0, 1, 2)), pa.py_buffer(payload)],
+    )
+    table = pa.table({"value": array})
+    batches = fpstreams.rows.from_arrow(table, batch_size=1).arrow_batches(
+        batch_size=1, schema=table.schema
+    )
+    iterator = iter(batches)
+    try:
+        assert next(iterator).to_pylist() == [{"value": "a"}]
+        payload[1] = 255
+        with pytest.raises(UnicodeDecodeError):
+            next(iterator)
+    finally:
+        iterator.close()
+
+
+@pytest.mark.parametrize("retained", ["table", "batch"])
+def test_arrow_shared_masks_preserve_results_without_repeated_payload_filters(
+    monkeypatch, retained
+):
+    from fpstreams.execution import arrow as execution
+
+    values = list(range(2048))
+    table = pa.table({f"v{column}": [value + column for value in values] for column in range(12)})
+    data = table if retained == "table" else table.to_batches()[0]
+    query = (
+        fpstreams.Rows.from_arrow(data)
+        .where(fpstreams.col("v0") >= 17)
+        .where(fpstreams.col("v1") < 2000)
+    )
+    expected = [{f"v{column}": value + column for column in range(12)} for value in range(17, 1999)]
+    monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_ROWS", 1)
+    monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_COLUMNS", 1)
+    _pa, pc = execution._arrow_modules()
+    original = pc.filter
+    filtered = []
+
+    def record_filter(batch, mask, *args, **kwargs):
+        filtered.append(batch.num_rows)
+        return original(batch, mask, *args, **kwargs)
+
+    monkeypatch.setattr(pc, "filter", record_filter)
+    assert query.count() == len(expected)
+    assert filtered == []
+    assert query.to_arrow().to_pylist() == expected
+    assert len(filtered) == 1
+    filtered.clear()
+    assert query.select(left="v0", right="v0").to_list() == [
+        {"left": row["v0"], "right": row["v0"]} for row in expected
+    ]
+    assert len(filtered) == 1
+
+
+def test_arrow_shared_mask_thresholds_keep_empty_batches_and_unsafe_callbacks_safe(monkeypatch):
+    from fpstreams.execution import arrow as execution
+
+    monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_ROWS", 0)
+    monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_COLUMNS", 0)
+    empty = pa.record_batch({"v": pa.array([], type=pa.int64())})
+    query = (
+        fpstreams.Rows.from_arrow(empty).where(fpstreams.col("v") > 0).where(fpstreams.col("v") < 9)
+    )
+    assert query.count() == 0
+    assert query.to_list() == []
+
+    calls = []
+    failure = LookupError("callback must retain its original row boundary")
+
+    def callback(row):
+        calls.append(row["v"])
+        if row["v"] == 2:
+            raise failure
+        return True
+
+    query = (
+        fpstreams.Rows.from_arrow(pa.table({"v": [1, 2, 3]}))
+        .where(fpstreams.col("v") >= 2)
+        .where(callback)
+        .where(fpstreams.col("v") < 2)
+    )
+    with pytest.raises(LookupError) as caught:
+        query.to_list()
+    assert caught.value is failure and calls == [2]

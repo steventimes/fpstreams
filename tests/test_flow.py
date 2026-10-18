@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from contextlib import closing
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -24,6 +25,183 @@ from fpstreams import Downstream, Gatherer, NativeUnsupportedError, SelectionErr
 
 def test_flow_collects_any_iterable() -> None:
     assert flow(range(4)).to_list() == [0, 1, 2, 3]
+
+
+@pytest.mark.parametrize("method", ["take", "limit", "drop", "skip"])
+@pytest.mark.parametrize("count", [float("nan"), float("inf"), 2.5, 2.0])
+def test_prefix_counts_reject_nonintegers_before_opening_source(method, count):
+    opened = []
+
+    def source():
+        opened.append(True)
+        return iter(range(5))
+
+    with pytest.raises(TypeError):
+        getattr(flow.defer(source), method)(count)
+    assert opened == []
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+@pytest.mark.parametrize(
+    "method,want", [("take", [0, 1]), ("limit", [0, 1]), ("drop", [2, 3, 4]), ("skip", [2, 3, 4])]
+)
+def test_prefix_counts_normalize_index_once_and_close_source(engine, method, want):
+    indexed = []
+    closed = []
+
+    class Count:
+        def __index__(self):
+            indexed.append(True)
+            return 2
+
+    def source():
+        try:
+            yield from range(5)
+        finally:
+            closed.append(True)
+
+    query = getattr(flow.defer(source).with_engine(engine), method)(Count())
+    assert indexed == [True]
+    assert closed == []
+    assert query.to_list() == want
+    assert query.to_list() == want
+    assert indexed == [True]
+    assert closed == [True, True]
+
+
+@pytest.mark.parametrize("method", ["take", "limit", "drop", "skip"])
+def test_prefix_counts_preserve_index_error_without_opening_source(method):
+    failure = RuntimeError("count conversion failed")
+    opened = []
+
+    class Count:
+        def __index__(self):
+            raise failure
+
+    def source():
+        opened.append(True)
+        return iter(range(5))
+
+    with pytest.raises(RuntimeError) as caught:
+        getattr(flow.defer(source), method)(Count())
+    assert caught.value is failure
+    assert opened == []
+
+
+@pytest.mark.parametrize("constructor", [flow, fpstreams.Flow])
+def test_unfold_is_lazy_restarts_from_seed_and_keeps_none_values(constructor):
+    calls = []
+
+    def step(state):
+        calls.append(state)
+        return None if state == 0 else (None if state == 2 else state, state - 1)
+
+    query = constructor.unfold(2, step)
+    assert calls == []
+    assert query.take(0).to_list() == []
+    assert calls == []
+    assert query.to_list() == [None, 1]
+    assert query.to_list() == [None, 1]
+    assert calls == [2, 1, 0, 2, 1, 0]
+    assert constructor.unfold(None, lambda state: None).to_list() == []
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+def test_unfold_stops_without_calling_the_next_step_and_preserves_output_identity(engine):
+    value = object()
+    calls = []
+
+    def step(state):
+        calls.append(state)
+        return value, state + 1
+
+    query = flow.unfold(0, step).with_engine(engine)
+    assert query.take(1).to_list() == [value]
+    assert calls == [0]
+    observed = query.run_with_report("first")
+    assert observed.value is value
+    assert calls == [0, 0]
+
+
+def test_unfold_validates_callbacks_and_propagates_step_errors():
+    with pytest.raises(TypeError, match="function must be callable"):
+        flow.unfold(0, None)
+    failure = ValueError("step failed")
+
+    def fail(state):
+        raise failure
+
+    with pytest.raises(ValueError) as caught:
+        flow.unfold(0, fail).to_list()
+    assert caught.value is failure
+    for malformed in (False, (1,), (1, 2, 3)):
+        with pytest.raises((TypeError, ValueError)):
+            flow.unfold(0, lambda state, result=malformed: result).first()
+
+
+@pytest.mark.parametrize("engine", ["auto", "python"])
+def test_map_accum_emits_outputs_and_keeps_per_iteration_state(engine):
+    calls = []
+
+    def step(state, item):
+        calls.append((state, item))
+        return state + item, f"{state}:{item}"
+
+    query = flow([2, 3]).with_engine(engine).map_accum(0, step)
+    assert calls == []
+    assert query.to_list() == ["0:2", "2:3"]
+    assert query.to_list() == ["0:2", "2:3"]
+    assert calls == [(0, 2), (2, 3), (0, 2), (2, 3)]
+    assert flow([]).map_accum(0, step).to_list() == []
+    with closing(iter(query)) as left, closing(iter(query)) as right:
+        assert [next(left), next(right), next(left), next(right)] == ["0:2", "0:2", "2:3", "2:3"]
+
+
+def test_map_accum_preserves_none_identity_early_close_and_exception_identity():
+    seen = []
+    closed = []
+    value = object()
+    failure = ValueError("state step failed")
+
+    def source():
+        try:
+            for item in (value, None):
+                seen.append(item)
+                yield item
+        finally:
+            closed.append(True)
+
+    def step(state, item):
+        if state:
+            raise failure
+        return state + 1, item
+
+    assert flow.defer(source).map_accum(0, step).take(1).to_list() == [value]
+    assert seen == [value] and closed == [True]
+    assert flow([None, value]).map_accum(None, lambda state, item: (state, item)).to_list() == [
+        None,
+        value,
+    ]
+    with pytest.raises(ValueError) as caught:
+        flow.defer(source).map_accum(0, step).to_list()
+    assert caught.value is failure
+    assert closed == [True, True]
+    with pytest.raises(TypeError, match="function must be callable"):
+        flow([]).map_accum(0, None)
+    with pytest.raises(ValueError):
+        flow([1]).map_accum(0, lambda state, item: (item,)).to_list()
+
+
+def test_map_accum_does_not_parallelize_state_transitions():
+    caller = threading.get_ident()
+
+    def step(total, value):
+        assert threading.get_ident() == caller
+        total += value
+        return total, total
+
+    query = flow([1, 2, 3]).parallel(workers=2, backend="thread", buffer=2)
+    assert query.map_accum(0, step).to_list() == [1, 3, 6]
 
 
 @pytest.mark.parametrize("engine", ["auto", "python"])
@@ -3898,6 +4076,196 @@ def test_stream_ex_inspired_operations_avoid_manual_bookkeeping() -> None:
     assert ends == [10, 2, 300]
 
 
+def test_collapse_collectors_match_independent_adjacent_runs_and_replay():
+    from itertools import pairwise
+    from random import Random
+
+    random = Random(9267)
+    time = 0
+    data = []
+    for index in range(1003):
+        time += random.choice((0, 1, 2, 7))
+        data.append({"at": time, "value": None if index % 7 == 0 else index % 11})
+    boundaries = (
+        [0]
+        + [i for i in range(1, len(data)) if data[i]["at"] - data[i - 1]["at"] > 2]
+        + [len(data)]
+    )
+    groups = [data[start:end] for start, end in pairwise(boundaries)]
+
+    def adjacent(left, right):
+        return right["at"] - left["at"] <= 2
+
+    collector = fpstreams.Collectors.teeing(
+        fpstreams.Collectors.filtering(
+            lambda row: row["value"] is not None,
+            fpstreams.Collectors.mapping("value", fpstreams.Collectors.summing()),
+        ),
+        fpstreams.Collectors.counting(),
+        lambda total, count: {"total": total, "count": count},
+    )
+    expected = [
+        {
+            "total": sum(row["value"] for row in group if row["value"] is not None),
+            "count": len(group),
+        }
+        for group in groups
+    ]
+    for engine in ("auto", "python"):
+        source = flow(data).with_engine(engine)
+        query = source.collapse(adjacent, merger=collector)
+        assert query.to_list() == query.to_list() == expected
+        lists = source.collapse(adjacent, fpstreams.Collectors.to_list()).to_list()
+        assert lists == groups and lists[0][0] is data[0] and lists[0] is not lists[1]
+        assert source.collapse(adjacent, fpstreams.Collectors.head(0)).to_list() == [
+            [] for _ in groups
+        ]
+        nothing = fpstreams.Collector(lambda: None, lambda state, value: None)
+        assert source.collapse(adjacent, nothing).to_list() == [None] * len(groups)
+    assert flow([None, None, 0, 0, None]).collapse(
+        lambda a, b: a == b, fpstreams.Collectors.first()
+    ).to_list() == [None, 0, None]
+
+
+def test_collapse_collector_done_preserves_boundaries_and_defers_next_run():
+    from itertools import count
+
+    events = []
+
+    def source():
+        events.append("open")
+        try:
+            for index in count():
+                value = index // 3 * 10 + index % 3 + 1
+                events.append(("pull", value))
+                yield value
+        finally:
+            events.append("close")
+
+    def initialize():
+        events.append("initialize")
+        return []
+
+    def step(state, value):
+        events.append(("step", value))
+        state.append(value)
+        return state
+
+    def done(state):
+        events.append(("done", len(state)))
+        return len(state) == 1
+
+    def finish(state):
+        events.append(("finish", state[0]))
+        return tuple(state)
+
+    def adjacent(left, right):
+        events.append(("predicate", left, right))
+        return left // 10 == right // 10
+
+    collector = fpstreams.Collector(initialize, step, finish, done=done)
+    query = flow.defer(source).collapse(adjacent, collector)
+    assert events == []
+    assert query.take(2).to_list() == [(1,), (11,)]
+    assert events == [
+        "open",
+        ("pull", 1),
+        "initialize",
+        ("done", 0),
+        ("step", 1),
+        ("done", 1),
+        ("pull", 2),
+        ("predicate", 1, 2),
+        ("pull", 3),
+        ("predicate", 2, 3),
+        ("pull", 11),
+        ("predicate", 3, 11),
+        ("finish", 1),
+        "initialize",
+        ("done", 0),
+        ("step", 11),
+        ("done", 1),
+        ("pull", 12),
+        ("predicate", 11, 12),
+        ("pull", 13),
+        ("predicate", 12, 13),
+        ("pull", 21),
+        ("predicate", 13, 21),
+        ("finish", 11),
+        "close",
+    ]
+    events.clear()
+    assert query.take(0).to_list() == [] and events == []
+    assert flow([]).collapse(adjacent, collector).to_list() == [] and events == []
+
+
+@pytest.mark.parametrize(
+    "hook", ("initialize", "initial_done", "step", "done", "predicate", "finish", "source")
+)
+def test_collapse_collector_failure_stops_hooks_and_preserves_cleanup_notes(hook):
+    failure = LookupError(hook)
+    cleanup = RuntimeError("collapse source cleanup failed")
+    emitted, finished = [], []
+
+    def fail(name):
+        if hook == name:
+            raise failure
+
+    class Source:
+        def __init__(self):
+            self.values = iter((1, 2, 10, 11))
+            self.closes = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self.values)
+            except StopIteration:
+                fail("source")
+                raise
+
+        def close(self):
+            self.closes += 1
+            raise cleanup
+
+    def initialize():
+        fail("initialize")
+        return []
+
+    def step(state, value):
+        if value == 2:
+            fail("step")
+        state.append(value)
+        return state
+
+    def done(state):
+        fail({0: "initial_done", 2: "done"}.get(len(state)))
+        return False
+
+    def finish(state):
+        finished.append(tuple(state))
+        fail("finish")
+        return tuple(state)
+
+    def adjacent(left, right):
+        if right == 10:
+            fail("predicate")
+        return left // 10 == right // 10
+
+    source = Source()
+    collector = fpstreams.Collector(initialize, step, finish, done=done)
+    with pytest.raises(LookupError) as caught:
+        flow.defer(lambda source=source: source).collapse(adjacent, collector).tap(
+            emitted.append
+        ).to_list()
+    assert caught.value is failure and source.closes == 1
+    assert any("collapse source cleanup failed" in note for note in failure.__notes__)
+    assert emitted == ([(1, 2)] if hook == "source" else [])
+    assert finished == ([(1, 2)] if hook in ("finish", "source") else [])
+
+
 def test_explain_reports_fusion_and_forced_engine_rejections() -> None:
     explanation = flow(range(10)).map(str).filter(bool).take(2).explain().to_dict()
 
@@ -3924,6 +4292,9 @@ def test_explain_preserves_serialization_order() -> None:
     payload = flow(range(3)).map(str).filter(bool).take(1).with_engine("python").explain().to_dict()
 
     assert tuple(payload) == (
+        "schema_version",
+        "kind",
+        "mode",
         "terminal",
         "source",
         "requested_engine",
@@ -9186,8 +9557,11 @@ def test_run_with_report_runs_one_real_terminal_and_returns_immutable_metrics() 
     assert execution.report.peak_owned_async_tasks == 0
     assert execution.report.peak_spill_files == 0
     assert execution.report.spill_bytes_written == 0
+    assert isinstance(execution.report.events, tuple)
     with pytest.raises(AttributeError):
         execution.report.compiler_engine = "native"  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        execution.report.events[0].reason = "changed"  # type: ignore[misc]
 
 
 def test_run_with_report_preserves_exact_count_metadata_shortcut() -> None:
@@ -9198,6 +9572,10 @@ def test_run_with_report_preserves_exact_count_metadata_shortcut() -> None:
     assert execution.report.compiler_engine == "not_compiled"
     assert execution.report.strategy == "metadata"
     assert "cardinality" in execution.report.reason
+    assert len(execution.report.events) == 1
+    assert execution.report.events[0].kind == "metadata"
+    assert execution.report.events[0].compiler_engine == "not_compiled"
+    assert execution.report.events_truncated is False
 
 
 def test_run_with_report_captures_external_sort_spill_metrics(tmp_path: Path) -> None:
@@ -9226,15 +9604,137 @@ def test_run_with_report_preserves_terminal_exception_and_resets_scope() -> None
     assert fpstreams.flow([1]).run_with_report("to_list").value == [1]
 
 
-def test_run_with_report_allows_composite_child_plans() -> None:
-    execution = (
-        fpstreams.flow([1])
-        .concat(fpstreams.flow([2]).map(lambda value: value * 10))
-        .run_with_report("to_list")
+@pytest.mark.parametrize(
+    "outer_engine,child_engine,mapper",
+    [
+        pytest.param("auto", "auto", lambda value: value * 10, id="python-callback"),
+        pytest.param("python", "native", fpstreams.item * 10, id="native-child"),
+    ],
+)
+def test_run_with_report_allows_composite_child_plans(outer_engine, child_engine, mapper) -> None:
+    child = fpstreams.flow([2, 3]).with_engine(child_engine).map(mapper)
+    query = fpstreams.flow([1]).with_engine(outer_engine).concat(child)
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == [1, 20, 30]
+    assert execution.report.terminal == "to_list"
+    assert execution.report.requested_engine == outer_engine
+    assert execution.report.compiler_engine == "python"
+    assert execution.report.strategy == "planned:python"
+    assert len(execution.report.events) >= 2
+    assert execution.report.events[0].compiler_engine == "python"
+    expected_child_engine = "native" if child_engine == "native" else "python"
+    assert any(
+        event.kind == "plan" and event.compiler_engine == expected_child_engine
+        for event in execution.report.events
+    )
+    assert execution.report.events_truncated is False
+
+
+@pytest.mark.parametrize("count", [64, 65, 80])
+def test_run_with_report_events_are_bounded_for_each_terminal(count: int) -> None:
+    query = fpstreams.flow([0]).concat(*(fpstreams.flow([value]) for value in range(1, count)))
+
+    execution = query.run_with_report("to_list")
+
+    assert execution.value == list(range(count))
+    assert len(execution.report.events) == 64
+    assert execution.report.events_truncated is (count > 64)
+    subsequent = fpstreams.flow([1]).run_with_report("count")
+    assert len(subsequent.report.events) == 1
+    assert subsequent.report.events_truncated is False
+
+
+def test_execution_report_keeps_the_existing_positional_constructor() -> None:
+    report = fpstreams.ExecutionReport(
+        "count", "auto", "not_compiled", "metadata", "size", 0, 0, 0, 0
     )
 
-    assert execution.value == [1, 20]
+    assert report.events == ()
+    assert report.events_truncated is False
+
+
+def test_run_with_report_events_do_not_replay_or_preconsume_a_short_circuited_source() -> None:
+    calls = []
+
+    def source():
+        try:
+            calls.append("first")
+            yield 1
+            calls.append("second")
+            yield 2
+        finally:
+            calls.append("close")
+
+    execution = fpstreams.flow(source()).take(1).run_with_report("to_list")
+
+    assert execution.value == [1]
+    assert calls == ["first", "close"]
+    assert execution.report.events
+
+
+def test_run_with_report_events_do_not_retain_input_objects() -> None:
+    import gc
+    import weakref
+
+    class Payload:
+        pass
+
+    value = Payload()
+    reference = weakref.ref(value)
+    execution = fpstreams.flow(iter([value])).map(lambda _value: 1).run_with_report("sum")
+    del value
+    gc.collect()
+
+    assert execution.value == 1
+    assert reference() is None
+
+
+@pytest.mark.parametrize(
+    "inner_engine,mapper,expected",
+    [
+        pytest.param("auto", None, [1, 2], id="auto-identity"),
+        pytest.param("native", fpstreams.item + 1, [2, 3], id="native-mapped"),
+    ],
+)
+def test_run_with_report_allows_nested_reported_terminals_in_callbacks(
+    inner_engine, mapper, expected
+) -> None:
+    reports = []
+
+    def inner_sum(value):
+        child = fpstreams.flow([value]).with_engine(inner_engine)
+        if mapper is not None:
+            child = child.map(mapper)
+        inner = child.run_with_report("sum")
+        reports.append(inner.report)
+        return inner.value
+
+    execution = (
+        fpstreams.flow([1, 2]).with_engine("python").map(inner_sum).run_with_report("to_list")
+    )
+
+    assert execution.value == expected
     assert execution.report.terminal == "to_list"
+    assert all(event.compiler_engine == "python" for event in execution.report.events)
+    assert len(reports) == 2
+    assert all(report.requested_engine == inner_engine for report in reports)
+    expected_inner_engine = "native" if inner_engine == "native" else "python"
+    assert all(
+        any(event.compiler_engine == expected_inner_engine for event in report.events)
+        for report in reports
+    )
+
+
+def test_run_with_report_events_leave_named_pair_aggregation_arguments_available() -> None:
+    execution = fpstreams.pairs([("a", 2), ("a", 3)]).run_with_report(
+        "aggregate_values", diagnostics=fpstreams.agg.sum(), max_events=fpstreams.agg.count()
+    )
+
+    assert execution.value == {"a": {"diagnostics": 5, "max_events": 2}}
+    assert any(event.strategy == execution.report.strategy for event in execution.report.events)
+    assert not any(event.strategy == "pairs_direct" for event in execution.report.events)
 
 
 def test_run_with_report_preserves_outer_engine_for_iteration_terminals() -> None:
@@ -9256,17 +9756,6 @@ def test_run_with_report_handles_direct_none_and_non_consuming_collector() -> No
     assert collect_result.value == 42
     assert collect_result.report.compiler_engine == "not_compiled"
     assert collect_result.report.strategy == "dynamic_collector"
-
-
-def test_run_with_report_allows_nested_reported_terminals_in_callbacks() -> None:
-    execution = (
-        fpstreams.flow([1, 2])
-        .map(lambda value: fpstreams.flow([value]).run_with_report("sum").value)
-        .run_with_report("to_list")
-    )
-
-    assert execution.value == [1, 2]
-    assert execution.report.terminal == "to_list"
 
 
 def test_run_with_report_rejects_lazy_operations_before_execution() -> None:
@@ -10306,3 +10795,299 @@ def test_flow_csv_safety_includes_headers_without_changing_lookup(tmp_path, safe
             ["'=1+1", "' \t@command", "normal"] if safe else names,
             ["3", "'-text" if safe else "-text", "-2"],
         ]
+
+
+def test_window_reduce_matches_independent_ordered_window_oracle():
+    from functools import reduce
+    from random import Random
+
+    rng = Random(7493)
+    values = [(rng.randrange(1, 17), rng.randrange(31)) for _ in range(137)]
+
+    # Affine-function composition is associative, order-sensitive and fixed-size.
+    def combine(left, right):
+        a, b = left
+        c, d = right
+        return a * c % 1009, (a * d + b) % 1009
+
+    for count in (0, 1, 6, 37, 137):
+        for size, step in ((1, 1), (7, 1), (7, 3), (7, 7), (7, 11), (19, 5)):
+            data = values[:count]
+            starts = range(0, max(1, count - size + 1), step) if count else ()
+            expected = [reduce(combine, data[start : start + size]) for start in starts]
+            for engine in ("auto", "python"):
+                query = flow.defer(lambda data=data: iter(data)).with_engine(engine)
+                result = query.window_reduce(size, combine, step=step)
+                assert result.to_list() == expected
+                assert result.to_list() == expected  # Every execution owns fresh queue state.
+    assert flow([None] * 12).window_reduce(3, lambda a, b: None).to_list() == [None] * 10
+
+
+def test_window_reduce_reuses_state_and_short_circuits_without_extra_callbacks():
+    from itertools import count
+
+    calls = []
+    pulls = []
+    closes = []
+
+    def combine(left, right):
+        calls.append((left, right))
+        return left + right
+
+    def source():
+        try:
+            for value in count():
+                pulls.append(value)
+                yield value
+        finally:
+            closes.append(True)
+
+    assert flow.defer(source).window_reduce(256, combine).take(1000).to_list() == [
+        256 * start + 255 * 256 // 2 for start in range(1000)
+    ]
+    assert len(pulls) == 1255
+    assert len(calls) < 3 * len(pulls)  # Recomputing each window needs 255000 calls.
+    assert closes == [True]
+
+    calls.clear()
+    pulls.clear()
+    closes.clear()
+    assert flow.defer(source).window_reduce(3, combine).take(1).to_list() == [3]
+    assert pulls == [0, 1, 2] and calls == [(0, 1), (1, 2)] and closes == [True]
+    assert flow.defer(source).window_reduce(3, combine).take(0).to_list() == []
+    assert pulls == [0, 1, 2] and closes == [True]
+
+
+def test_window_reduce_transfer_failure_preserves_exception_and_closes_source():
+    failure = LookupError("aggregate transfer failed")
+    cleanup = RuntimeError("source cleanup failed")
+    pulls = []
+    emitted = []
+
+    def source():
+        try:
+            for value in (1, 2, 3, 4, 5):
+                pulls.append(value)
+                yield value
+        finally:
+            raise cleanup
+
+    def combine(left, right):
+        if (left, right) == (2, 3):
+            raise failure
+        return left + right
+
+    with pytest.raises(LookupError) as caught:
+        flow.defer(source).window_reduce(3, combine).tap(emitted.append).to_list()
+    assert caught.value is failure
+    assert pulls == [1, 2, 3, 4] and emitted == [6]
+    assert any("source cleanup failed" in note for note in failure.__notes__)
+
+
+def test_window_reduce_validates_before_opening_and_reports_real_plan_bounds():
+    import operator
+
+    indexed = []
+    opened = []
+
+    class Count:
+        def __index__(self):
+            indexed.append(True)
+            return 4
+
+    def source():
+        opened.append(True)
+        return iter(range(10))
+
+    for kwargs in (
+        {"size": 2.5},
+        {"size": 0},
+        {"size": 4, "step": float("nan")},
+        {"size": 4, "step": -1},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            flow.defer(source).window_reduce(combine=operator.add, **kwargs)
+    assert opened == []
+    query = flow(range(10)).window_reduce(Count(), operator.add, step=3)
+    assert indexed == [True]
+    operation = query.explain("list").to_dict()["semantics"]["operations"][0]
+    assert operation["name"] == "window_reduce"
+    assert operation["progress"] == "prefix_emitting"
+    assert operation["state"] == {"kind": "bounded", "bound": 5, "spillable": False}
+    assert operation["output"]["cardinality"] == {"kind": "exact", "value": len(query.to_list())}
+    assert indexed == [True]
+    with pytest.raises(NativeUnsupportedError):
+        flow.defer(source).window_reduce(4, operator.add).with_engine("native").to_list()
+    assert opened == []
+
+
+def test_disjoint_window_reduce_keeps_iterator_identity_eof_and_large_counts():
+    import operator
+
+    class Source:
+        def __init__(self, values):
+            self.values = iter(values)
+            self.iterations = self.ends = self.closes = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return self
+
+        def __next__(self):
+            try:
+                return next(self.values)
+            except StopIteration:
+                self.ends += 1
+                if self.ends == 1:
+                    raise
+                raise AssertionError("pulled after exhaustion") from None
+
+        def close(self):
+            self.closes += 1
+
+    huge = sys.maxsize + 17
+    # Exercise partial windows, partial gaps, and counts beyond islice's limit.
+    for size, step, expected in (
+        (3, 5, [3, 18]),
+        (3, 11, [3]),
+        (1, huge, [0]),
+        (huge, huge, [36]),
+        (3, huge, [3]),
+    ):
+        source = Source(range(9))
+        assert (
+            flow.defer(lambda source=source: source)
+            .window_reduce(size, operator.add, step=step)
+            .to_list()
+            == expected
+        )
+        assert source.ends == source.closes == 1
+        assert source.iterations == 2  # Source opening, then one operation-level iteration.
+
+    left, right = object(), object()
+    values = [None, left, right, None, right]
+    assert flow(values).window_reduce(2, lambda a, b: a, step=2).to_list() == [None, right]
+    assert flow(values).window_reduce(2, lambda a, b: b, step=3).to_list() == [left, right]
+
+
+def test_disjoint_window_reduce_folds_suppressed_tail_and_preserves_cleanup_failure():
+    failure = LookupError("incomplete tail failed")
+    cleanup = RuntimeError("window source cleanup failed")
+    pulls, calls, emitted = [], [], []
+
+    def source():
+        try:
+            for value in range(7):
+                pulls.append(value)
+                yield value
+        finally:
+            raise cleanup
+
+    def combine(left, right):
+        calls.append((left, right))
+        if right == 6:
+            raise failure
+        return left + right
+
+    with pytest.raises(LookupError) as caught:
+        flow.defer(source).window_reduce(3, combine, step=5).tap(emitted.append).to_list()
+    assert caught.value is failure
+    assert pulls == list(range(7)) and emitted == [3]
+    assert calls == [(0, 1), (1, 2), (5, 6)]
+    assert any("window source cleanup failed" in note for note in failure.__notes__)
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_filter_map_fusion_preserves_order_identity_and_short_circuit(engine):
+    events = []
+    empty = []
+
+    def source():
+        try:
+            for value in range(8):
+                events.append(("pull", value))
+                yield value
+        finally:
+            events.append(("close",))
+
+    def mapper(value):
+        events.append(("map", value))
+        return {1: 0, 3: empty}.get(value)
+
+    result = (
+        flow(source())
+        .with_engine(engine)
+        .map(lambda value: value)
+        .filter_map(mapper)
+        .tap(lambda value: events.append(("tap", value)))
+        .take(2)
+        .to_list()
+    )
+    assert result == [0, []] and result[1] is empty
+    assert events == [
+        ("pull", 0),
+        ("map", 0),
+        ("pull", 1),
+        ("map", 1),
+        ("tap", 0),
+        ("pull", 2),
+        ("map", 2),
+        ("pull", 3),
+        ("map", 3),
+        ("tap", empty),
+        ("close",),
+    ]
+
+
+def test_filter_map_fusion_propagates_failure_and_closes_without_replay():
+    events = []
+    failure = LookupError("filter_map mapper failed")
+
+    def source():
+        try:
+            for value in range(6):
+                events.append(value)
+                yield value
+        finally:
+            events.append("closed")
+
+    def mapper(value):
+        if value == 3:
+            raise failure
+        return value if value % 2 == 0 else None
+
+    emitted = []
+    with pytest.raises(LookupError) as caught:
+        flow(source()).filter_map(mapper).tap(emitted.append).to_list()
+    assert caught.value is failure
+    assert events == [0, 1, 2, 3, "closed"]
+    assert emitted == [0, 2]
+
+
+def test_report_metadata_export_is_detached_and_never_inspects_terminal_values():
+    class PrivateValue:
+        def __repr__(self):
+            raise AssertionError("metadata must not inspect terminal values")
+
+    calls = []
+    value = PrivateValue()
+    query = flow([value]).tap(lambda item: calls.append(id(item)))
+    planned = query.explain().to_dict()
+    assert calls == []
+    assert (planned["schema_version"], planned["kind"], planned["mode"]) == (
+        1,
+        "fpstreams.plan_explanation",
+        "sync",
+    )
+    observed = query.run_with_report("to_list")
+    metadata = observed.report.to_dict()
+    assert json.loads(json.dumps(metadata)) == metadata
+    assert metadata["kind"] == "fpstreams.execution_report"
+    assert metadata["schema_version"] == 1
+    assert metadata["resource_scope"] == "query_owned"
+    assert metadata["metric_units"]["elapsed_ns"] == "nanoseconds"
+    assert "value" not in metadata and calls == [id(value)]
+    metadata["events"][0]["reason"] = "changed"
+    metadata["metric_units"].clear()
+    assert observed.report.to_dict()["events"][0]["reason"] != "changed"
+    assert observed.report.to_dict()["metric_units"]["elapsed_ns"] == "nanoseconds"

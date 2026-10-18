@@ -277,6 +277,9 @@ class PlanExplanation:
         )
 
         result = {
+            "schema_version": 1,
+            "kind": "fpstreams.plan_explanation",
+            "mode": "sync",
             "terminal": self.terminal,
             "source": {
                 "reiterable": capabilities.reiterable,
@@ -460,6 +463,9 @@ class AsyncPlanExplanation:
         diagnostics."""
         semantics = analyze_async_plan(self.plan, self.terminal)
         return {
+            "schema_version": 1,
+            "kind": "fpstreams.plan_explanation",
+            "mode": "async",
             "terminal": self.terminal,
             "source": self.plan.source.facts.to_dict(),
             "operations": [item.to_dict() for item in semantics.operations],
