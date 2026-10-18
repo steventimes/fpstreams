@@ -1668,6 +1668,11 @@
 
 
 <h1 id="v2-status-and-roadmap">v2 status and roadmap</h1>
+<p><a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.1">Version 2.4.1</a>
+separates relational planning, grouping, and synchronous terminal helpers into
+dedicated modules. It preserves the public API, live callback bindings, source
+ownership, and fallback rules. The internal module map is in
+<a href="https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md#internal-execution-code">CONTRIBUTING.md</a>.</p>
 <p><a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.0">Version 2.4.0</a>
 adds stateful pipeline operations, composed collectors, shared execution limits,
 file recovery, and versioned report export. It also improves guarded Arrow
@@ -2599,7 +2604,7 @@ produces one result per batch, and supports sync pool defaults or async map
 controls. Replay interfaces remain proposals; <code>reduce_by()</code> already covers
 per-key state reduction. Dependency updates also get their own
 lock, adapter, and platform validation; they are reviewed separately from
-performance changes. The stable release is 2.4.0. The local candidate results
+performance changes. The stable release is 2.4.1. The local candidate results
 above retain their original measurement dates and scope.</p>
 <p>The map-based projection, executor-forwarding removal, <code>Counter(map(...))</code>,
 frozen-field inlining, and shared Mapping-check shortcuts remain rejected.
