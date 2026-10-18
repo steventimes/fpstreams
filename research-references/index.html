@@ -1,0 +1,1777 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Lazy Python pipelines for iterables and records, with bounded async concurrency.">
+      
+      
+      
+        <link rel="canonical" href="https://steventimes.github.io/fpstreams/research-references/">
+      
+      
+        <link rel="prev" href="../roadmap/">
+      
+      
+        <link rel="next" href="../reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Research references - fpstreams</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../assets/stylesheets/playground.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#research-references" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="fpstreams" class="md-header__button md-logo" aria-label="fpstreams" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fpstreams
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Research references
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="fpstreams" class="md-nav__button md-logo" aria-label="fpstreams" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    fpstreams
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/steventimes/fpstreams" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    steventimes/fpstreams
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance and execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/analytics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming analytics recipes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/execution-reports/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution reports
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playground/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try in browser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 status and roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#papers-125" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Papers, 1–25
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-source-projects-and-specifications-2663" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open-source projects and specifications, 26–63
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commercial-engines-and-services-6473" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commercial engines and services, 64–73
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#additional-reference-streamex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Additional reference: StreamEx
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#review-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review notes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Review notes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#october-17-prefix-counts-and-iterator-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        October 17: prefix counts and iterator boundaries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#versioned-paper-follow-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioned paper follow-up
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/async_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AsyncFlow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/rows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/pairs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pairs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data input and output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/collecting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Collecting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/gatherers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gatherers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/containers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Option and Result
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/functional/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Functional utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors and runtime values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#papers-125" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Papers, 1–25
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-source-projects-and-specifications-2663" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open-source projects and specifications, 26–63
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commercial-engines-and-services-6473" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commercial engines and services, 64–73
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#additional-reference-streamex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Additional reference: StreamEx
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#review-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Review notes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Review notes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#october-17-prefix-counts-and-iterator-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        October 17: prefix counts and iterator boundaries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#versioned-paper-follow-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioned paper follow-up
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="research-references">Research references</h1>
+<p>This catalog records the 73 references supplied on October 17, 2026, with their
+proposed uses for <a href="https://github.com/steventimes/fpstreams">fpstreams</a>. Topics
+include lazy pipelines, logical and physical plans, mixed Python/Rust/Arrow/NumPy
+execution, spilling groups and joins, bounded async execution, and semantic parity.</p>
+<p>Titles, categories, and links below follow the supplied list. Inclusion does not
+mean that a source has been verified, reviewed, implemented, or benchmarked.
+<strong>Extension</strong> marks a proposed capability that requires new functionality. It
+does not mean that the capability is available or scheduled. Review notes below
+identify the limited work actually completed against these references.</p>
+<h2 id="papers-125">Papers, 1–25</h2>
+<table>
+<thead>
+<tr>
+<th>No.</th>
+<th>Reference</th>
+<th>Proposed use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><a href="https://www.cs.tufts.edu/~nr/cs257/archive/duncan-coutts/stream-fusion.pdf">Stream Fusion: From Lists to Streams to Nothing at All</a></td>
+<td>Fuse map, filter, zip, and fold while reducing intermediate objects.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="https://arxiv.org/abs/1612.06668">Stream Fusion, to Completeness</a></td>
+<td>Study fusion of nested streams, zip, and early termination.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="https://arxiv.org/abs/2412.15768">Complete Fusion for Stateful Streams</a></td>
+<td>Establish verifiable transformation rules for stateful stream fusion.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="https://www.cidrdb.org/cidr2005/papers/P19.pdf">MonetDB/X100: Hyper-Pipelining Query Execution</a></td>
+<td>Measure cache-friendly batch sizes and amortize per-row dispatch.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="https://www.vldb.org/pvldb/vol4/p539-neumann.pdf">Efficiently Compiling Efficient Query Plans for Modern Hardware</a></td>
+<td>Compare data-centric code generation and pipeline fusion boundaries.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="https://ir.cwi.nl/pub/18550">Vectorization vs. Compilation in Query Execution</a></td>
+<td>Decide which operators suit batch vectorization or compiled fusion.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><a href="https://www.vldb.org/pvldb/vol11/p2209-kersten.pdf">Everything You Always Wanted to Know About Compiled and Vectorized Queries But Were Afraid to Ask</a></td>
+<td>Calibrate mixed execution against computation and memory-access patterns.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><a href="https://dawn.cs.stanford.edu/publications/weld/weld-common-runtime-high-performance-data-analytics">Weld: A Common Runtime for High Performance Data Analytics</a></td>
+<td>Reduce data movement across Python, NumPy, and Arrow.</td>
+</tr>
+<tr>
+<td>9</td>
+<td><a href="https://cs.brown.edu/people/lspiegel/files/Tuplex_Preprint2020.pdf">Tuplex: Data Science in Python at Native Code Speed</a></td>
+<td>Study common-type native paths and exceptional Python fallback.</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="https://15799.courses.cs.cmu.edu/spring2025/papers/04-volcano/graefe-icde1994.pdf">Volcano—An Extensible and Parallel Query Evaluation System</a></td>
+<td>Compare iterator execution, operator lifecycles, and parallel exchange boundaries.</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="https://15721.courses.cs.cmu.edu/spring2016/papers/graefe-ieee1995.pdf">The Cascades Framework for Query Optimization</a></td>
+<td>Separate optimization rules, cost estimates, and physical strategy selection.</td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="https://ir.cwi.nl/pub/22547">Morsel-Driven Parallelism</a></td>
+<td>Balance fine-grained batch scheduling, NUMA, and skew.</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="https://dsf.berkeley.edu/papers/sigmod00-eddy.pdf">Eddies: Continuously Adaptive Query Processing</a></td>
+<td>Explore runtime adaptation only for pure operators that can safely be reordered.</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="https://ir.cwi.nl/pub/24379">How Good Are Query Optimizers, Really?</a></td>
+<td>Test join selection with cardinality errors and skewed data.</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="https://duckdb.org/pdf/ICDE2024-kuiper-boncz-muehleisen-out-of-core.pdf">Robust External Hash Aggregation in the Solid State Age</a></td>
+<td>Improve spill layout and performance under memory pressure.</td>
+</tr>
+<tr>
+<td>16</td>
+<td><a href="https://db.in.tum.de/~birler/papers/hashtable.pdf">Simple, Efficient, and Robust Hash Tables for Join Processing</a></td>
+<td>Study join-specific hash tables, negative-probe filtering, and skew.</td>
+</tr>
+<tr>
+<td>17</td>
+<td><a href="https://www-db.cs.tum.edu/~bandle/papers/bandle-partitionVsNonPartition.pdf">To Partition, or Not to Partition, That is the Join Question in a Real System</a></td>
+<td>Measure partitioning costs across join input sizes.</td>
+</tr>
+<tr>
+<td>18</td>
+<td><a href="https://arxiv.org/abs/2505.04153">Global Hash Tables Strike Back!</a></td>
+<td>Compare shared and partitioned aggregation under memory pressure and skew.</td>
+</tr>
+<tr>
+<td>19</td>
+<td><a href="https://arxiv.org/abs/2009.13768">In-Order Sliding-Window Aggregation in Worst-Case Constant Time</a></td>
+<td>Evaluate DABA to avoid repeating window computations.</td>
+</tr>
+<tr>
+<td>20</td>
+<td><a href="https://research.google/pubs/the-dataflow-model-a-practical-approach-to-balancing-correctness-latency-and-cost-in-massive-scale-unbounded-out-of-order-data-processing/">The Dataflow Model</a></td>
+<td><strong>Extension.</strong> Define event-time windows, watermarks, late data, and result revisions.</td>
+</tr>
+<tr>
+<td>21</td>
+<td><a href="https://research.google/pubs/naiad-a-timely-dataflow-system/">Naiad: A Timely Dataflow System</a></td>
+<td><strong>Extension.</strong> Study progress tracking and cyclic incremental dataflow.</td>
+</tr>
+<tr>
+<td>22</td>
+<td><a href="https://vldb.org/cidrdb/papers/2020/p29-neumann-cidr20.pdf">Umbra: A Disk-Based System with In-Memory Performance</a></td>
+<td>Compare buffer management across memory and disk execution.</td>
+</tr>
+<tr>
+<td>23</td>
+<td><a href="https://amplab.cs.berkeley.edu/publication/spark-sql-relational-data-processing-in-spark/">Spark SQL: Relational Data Processing in Spark</a></td>
+<td>Study a shared optimizer for relational expressions and functional pipelines.</td>
+</tr>
+<tr>
+<td>24</td>
+<td><a href="https://vldb.org/pvldb/vol15/p3372-pedreira.pdf">Velox: Meta’s Unified Execution Engine</a></td>
+<td>Separate reusable kernels, connectors, and resource management.</td>
+</tr>
+<tr>
+<td>25</td>
+<td><a href="https://zenodo.org/records/2157816">Adaptive Execution of Compiled Queries</a></td>
+<td>Study switching between interpreted and compiled execution for short queries.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="open-source-projects-and-specifications-2663">Open-source projects and specifications, 26–63</h2>
+<table>
+<thead>
+<tr>
+<th>No.</th>
+<th>Reference</th>
+<th>Proposed use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>26</td>
+<td><a href="https://github.com/duckdb/duckdb">DuckDB</a></td>
+<td>Compare vectorized operators, external sorting, and external hash aggregation.</td>
+</tr>
+<tr>
+<td>27</td>
+<td><a href="https://github.com/pola-rs/polars">Polars</a></td>
+<td>Compare streaming plans, expression optimization, and columnar grouping.</td>
+</tr>
+<tr>
+<td>28</td>
+<td><a href="https://github.com/apache/datafusion">Apache DataFusion</a></td>
+<td>Study Rust execution plans, optimizer rules, and shared spill budgets.</td>
+</tr>
+<tr>
+<td>29</td>
+<td><a href="https://arrow.apache.org/docs/cpp/acero/overview.html">Apache Arrow Acero</a></td>
+<td>Compare batch dataflow, backpressure, and Arrow operator composition.</td>
+</tr>
+<tr>
+<td>30</td>
+<td><a href="https://github.com/facebookincubator/velox">Velox</a></td>
+<td>Study encoded vectors, lazy materialization, and executor memory management.</td>
+</tr>
+<tr>
+<td>31</td>
+<td><a href="https://github.com/substrait-io/substrait">Substrait, an open specification</a></td>
+<td>Explore serializable and inspectable relational plans across backends.</td>
+</tr>
+<tr>
+<td>32</td>
+<td><a href="https://github.com/ibis-project/ibis">Ibis</a></td>
+<td>Compare compilation boundaries from one expression API to multiple backends.</td>
+</tr>
+<tr>
+<td>33</td>
+<td><a href="https://github.com/narwhals-dev/narwhals">Narwhals</a></td>
+<td>Improve DataFrame adaptation, static typing, and optional dependency isolation.</td>
+</tr>
+<tr>
+<td>34</td>
+<td><a href="https://github.com/Eventual-Inc/Daft">Daft</a></td>
+<td>Compare pipelines combining Python UDFs and Rust columnar execution.</td>
+</tr>
+<tr>
+<td>35</td>
+<td><a href="https://github.com/dask/dask">Dask</a></td>
+<td>Study task fusion, chunk granularity, and scheduler overhead.</td>
+</tr>
+<tr>
+<td>36</td>
+<td><a href="https://github.com/ray-project/ray">Ray Data</a></td>
+<td>Compare batch mapping, concurrency budgets, and producer/consumer backpressure.</td>
+</tr>
+<tr>
+<td>37</td>
+<td><a href="https://github.com/vaexio/vaex">Vaex</a></td>
+<td>Study memory mapping and virtual columns to reduce array copies.</td>
+</tr>
+<tr>
+<td>38</td>
+<td><a href="https://github.com/PyO3/pyo3">PyO3</a></td>
+<td>Check batch FFI, object borrowing, and GIL release boundaries.</td>
+</tr>
+<tr>
+<td>39</td>
+<td><a href="https://github.com/PyO3/rust-numpy">rust-numpy</a></td>
+<td>Check shared NumPy buffer lifetimes, strides, and writability.</td>
+</tr>
+<tr>
+<td>40</td>
+<td><a href="https://github.com/pydata/numexpr">NumExpr</a></td>
+<td>Compare chunked expression evaluation and temporary array costs.</td>
+</tr>
+<tr>
+<td>41</td>
+<td><a href="https://github.com/numba/numba">Numba</a></td>
+<td>Compare numeric specialization, compilation caches, and parallel reduction.</td>
+</tr>
+<tr>
+<td>42</td>
+<td><a href="https://github.com/pytoolz/cytoolz">cytoolz</a></td>
+<td>Compare functional grouping, joins, and reduction internals.</td>
+</tr>
+<tr>
+<td>43</td>
+<td><a href="https://github.com/more-itertools/more-itertools">more-itertools</a></td>
+<td>Check lazy windows, chunking, grouping, and iterator boundaries.</td>
+</tr>
+<tr>
+<td>44</td>
+<td><a href="https://github.com/vxgmichel/aiostream">aiostream</a></td>
+<td>Compare ordered concurrent maps, task limits, and safe closing.</td>
+</tr>
+<tr>
+<td>45</td>
+<td><a href="https://asyncstdlib.readthedocs.io/en/stable/index.html">asyncstdlib</a></td>
+<td>Compare async iterator borrowing, scoped closing, and exception propagation.</td>
+</tr>
+<tr>
+<td>46</td>
+<td><a href="https://github.com/ReactiveX/RxPY">ReactiveX for Python / RxPY</a></td>
+<td>Compare debounce, switch, merge, and time-operator semantics.</td>
+</tr>
+<tr>
+<td>47</td>
+<td><a href="https://github.com/agronholm/anyio">AnyIO</a></td>
+<td>Study task groups, cancellation scopes, and bounded object streams.</td>
+</tr>
+<tr>
+<td>48</td>
+<td><a href="https://github.com/python-trio/trio">Trio</a></td>
+<td>Compare structured concurrency, cancellation, and task cleanup.</td>
+</tr>
+<tr>
+<td>49</td>
+<td><a href="https://github.com/python-streamz/streamz">Streamz</a></td>
+<td>Compare branching dataflow, feedback, and slow-consumer backpressure.</td>
+</tr>
+<tr>
+<td>50</td>
+<td><a href="https://github.com/apache/flink">Apache Flink</a></td>
+<td><strong>Extension.</strong> Study windows, state backends, and backpressure diagnostics.</td>
+</tr>
+<tr>
+<td>51</td>
+<td><a href="https://github.com/apache/beam">Apache Beam</a></td>
+<td><strong>Extension.</strong> Study composable Combine, window triggers, and batch/stream semantics.</td>
+</tr>
+<tr>
+<td>52</td>
+<td><a href="https://github.com/TimelyDataflow/differential-dataflow">Differential Dataflow</a></td>
+<td><strong>Extension.</strong> Explore incremental joins, grouping, and indexed intermediate state.</td>
+</tr>
+<tr>
+<td>53</td>
+<td><a href="https://github.com/strymonas/strymonas-ocaml">Strymonas, a research implementation</a></td>
+<td>Inspect generated loops for complex stream combinations without intermediate objects.</td>
+</tr>
+<tr>
+<td>54</td>
+<td><a href="https://github.com/rust-lang/hashbrown">hashbrown</a></td>
+<td>Compare SIMD probing and compact hash layouts for native grouping.</td>
+</tr>
+<tr>
+<td>55</td>
+<td><a href="https://github.com/rayon-rs/rayon">Rayon</a></td>
+<td>Explore native parallel iteration, reduction, and thread-pool reuse.</td>
+</tr>
+<tr>
+<td>56</td>
+<td><a href="https://github.com/psf/pyperf">pyperf</a></td>
+<td>Improve process warmup, environment capture, and regression comparison.</td>
+</tr>
+<tr>
+<td>57</td>
+<td><a href="https://github.com/HypothesisWorks/hypothesis">Hypothesis</a></td>
+<td>Generate boundary inputs for Python/native semantic equivalence checks.</td>
+</tr>
+<tr>
+<td>58</td>
+<td><a href="https://github.com/IBM/sliding-window-aggregators">IBM Sliding Window Aggregators</a></td>
+<td>Compare DABA and related window algorithms and benchmarks.</td>
+</tr>
+<tr>
+<td>59</td>
+<td><a href="https://github.com/sfu-db/connector-x">ConnectorX</a></td>
+<td>Study database-to-Arrow batch reads with fewer copies.</td>
+</tr>
+<tr>
+<td>60</td>
+<td><a href="https://github.com/apache/arrow-nanoarrow">Apache Arrow nanoarrow</a></td>
+<td>Compare Arrow C Data/C Stream interoperability and lifetimes.</td>
+</tr>
+<tr>
+<td>61</td>
+<td><a href="https://github.com/apache/datasketches">Apache DataSketches</a></td>
+<td>Evaluate optional bounded-state approximate cardinality and quantile collectors.</td>
+</tr>
+<tr>
+<td>62</td>
+<td><a href="https://github.com/ijl/orjson">orjson</a></td>
+<td>Compare Rust/Python JSON encoding, decoding, and output types.</td>
+</tr>
+<tr>
+<td>63</td>
+<td><a href="https://github.com/simdjson/simdjson">simdjson</a></td>
+<td>Explore batched JSONL parsing and field access on demand.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="commercial-engines-and-services-6473">Commercial engines and services, 64–73</h2>
+<p>These entries are references to public documentation. They do not establish
+access to proprietary implementations or authorize use of a hosted service.</p>
+<table>
+<thead>
+<tr>
+<th>No.</th>
+<th>Reference</th>
+<th>Proposed use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>64</td>
+<td><a href="https://docs.databricks.com/gcp/en/compute/photon">Databricks Photon, a proprietary engine</a></td>
+<td>Compare documented vectorization coverage, fallback reasons, and diagnostics.</td>
+</tr>
+<tr>
+<td>65</td>
+<td><a href="https://www.tableau.com/developer/learning/tableau-hyper-api">Tableau Hyper, a proprietary engine</a></td>
+<td>Compare batch inserts, type conversion, and embedded analytics interfaces.</td>
+</tr>
+<tr>
+<td>66</td>
+<td><a href="https://docs.snowflake.com/en/developer-guide/snowpark/python/pandas-on-snowflake">Snowflake / Snowpark, a commercial backend with open-source clients</a></td>
+<td>Compare lazy pushdown, UDF costs, and local/backend switching.</td>
+</tr>
+<tr>
+<td>67</td>
+<td><a href="https://motherduck.com/blog/announcing-motherduck-duckdb-in-the-cloud/">MotherDuck, a commercial service based on DuckDB</a></td>
+<td>Study hybrid local/remote plans and input transfer costs.</td>
+</tr>
+<tr>
+<td>68</td>
+<td><a href="https://docs.coiled.io/blog/fine-performance-metrics.html">Coiled, a commercial service based on Dask</a></td>
+<td>Compare separate compute, transfer, and spill times in reports.</td>
+</tr>
+<tr>
+<td>69</td>
+<td><a href="https://docs.anyscale.com/monitoring/workload-debugging/data-dashboard">Anyscale, a commercial service based on Ray</a></td>
+<td>Compare backpressure, memory-failure diagnostics, and batch task status.</td>
+</tr>
+<tr>
+<td>70</td>
+<td><a href="https://docs.cloud.pola.rs/polars-cloud/run/query-profile/">Polars Cloud, a commercial service with an open-source Polars core</a></td>
+<td>Compare stage graphs and CPU, I/O, and shuffle diagnostics.</td>
+</tr>
+<tr>
+<td>71</td>
+<td><a href="https://docs.singlestore.com/cloud/query-data/advanced-query-topics/code-generation/">SingleStore, a proprietary engine</a></td>
+<td>Study interpretation before compilation and parameterized plan caching.</td>
+</tr>
+<tr>
+<td>72</td>
+<td><a href="https://www.actian.com/databases/analytics-engine/">Actian Analytics Engine, formerly Vector, a proprietary engine</a></td>
+<td>Compare cache-friendly vectors, column compression, and block pruning.</td>
+</tr>
+<tr>
+<td>73</td>
+<td><a href="https://cedardb.com/docs/technology/">CedarDB, a commercial engine</a></td>
+<td>Study tiered compilation, buffer management, and specialized hash joins.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="additional-reference-streamex">Additional reference: StreamEx</h2>
+<p><a href="https://github.com/amaembo/streamex">StreamEx</a> extends Java's Stream API.
+The initial comparison used its
+<a href="https://github.com/amaembo/streamex/blob/streamex-0.8.4/wiki/CHEATSHEET.md">cheatsheet</a>
+and selected implementations in the <code>streamex-0.8.4</code> tag. This supplements the
+original 73 entries without renumbering them. Selected code was read in
+<a href="https://github.com/amaembo/streamex/blob/streamex-0.8.4/src/main/java/one/util/streamex/StreamEx.java"><code>StreamEx</code></a>
+and <a href="https://github.com/amaembo/streamex/blob/streamex-0.8.4/src/main/java/one/util/streamex/MoreCollectors.java"><code>MoreCollectors</code></a>.
+No upstream code was executed or copied into fpstreams.
+The <a href="https://github.com/amaembo/streamex/releases/tag/streamex-0.9.0">0.9.0 release notes</a>
+were also checked. They add nullness annotations and null-terminated helpers,
+and report a fix for filtering entries with null keys or values. The source
+comparison below remains pinned to 0.8.4.</p>
+<table>
+<thead>
+<tr>
+<th>StreamEx feature</th>
+<th>fpstreams comparison and next question</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pairMap</code>, <code>mapFirst</code>, <code>mapLast</code>, <code>scanLeft</code></td>
+<td>Existing <code>pairwise().map(...)</code>, <code>map_first</code>, <code>map_last</code>, and <code>scan</code> cover related uses. Check callback order and allocation costs before adding shortcuts.</td>
+</tr>
+<tr>
+<td><code>groupRuns</code>, <code>collapse</code>, <code>runLengths</code></td>
+<td><code>group_runs(key)</code> groups equal adjacent keys; <code>collapse(predicate, merger)</code> supports pair predicates. These have different contracts. The unreleased Collector overload reduces runs without a raw run buffer.</td>
+</tr>
+<tr>
+<td><code>collapse(predicate, collector)</code></td>
+<td>Existing <code>Rows.group_by_sorted(...).aggregate(...)</code> covers ascending supported keys. The unreleased <code>collapse</code> overload covers arbitrary adjacent predicates and async pipelines through the same Collector state program. Memory depends on the Collector's state; a run needs a boundary or source exhaustion to emit.</td>
+</tr>
+<tr>
+<td><code>MoreCollectors.reducingWithZero</code></td>
+<td>Compare with the existing <code>Collector.done</code> protocol. An absorbing value requires an explicit user contract; ordinary reducers cannot safely infer early termination.</td>
+</tr>
+<tr>
+<td><code>headTail</code></td>
+<td>Study iterator ownership, replay, and cleanup before exposing a live tail. Existing <code>unfold</code>, <code>map_accum</code>, and Gatherer already cover many stateful transformations.</td>
+</tr>
+</tbody>
+</table>
+<p>For example,
+<a href="https://github.com/amaembo/streamex/blob/streamex-0.8.4/src/main/java/one/util/streamex/AbstractStreamEx.java#L1647-L1684"><code>scanLeft(seed, accumulator)</code></a>
+is a terminal operation that includes the seed in its result list. fpstreams
+<code>scan(initial, function)</code> is lazy and emits only states produced from input items.
+Copying the Java name would obscure that difference.</p>
+<p>These are API comparisons, not a claim of semantic equivalence or measured
+performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">unreleased Collector overload</a>
+preserves the existing binary merger form without adding a new method name. Java
+parallel streams do not establish fpstreams support for distributed execution,
+event-time windows, or watermarks.</p>
+<h2 id="review-notes">Review notes</h2>
+<p>The <a href="../roadmap/">roadmap</a> records earlier comparisons and experiments separately.
+An existing related feature does not mean that every source in this catalog has
+been reviewed. The <a href="../roadmap/#references-queued-on-october-17">six previously queued repositories</a>
+remain deferred.</p>
+<h3 id="october-17-prefix-counts-and-iterator-boundaries">October 17: prefix counts and iterator boundaries</h3>
+<p>Initial reading of reference 43's <a href="https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.take">iterator recipes</a>
+led to a check of fpstreams prefix operations. The Python path rejected floats
+only during execution, while the async path accepted them: <code>take(2.5)</code> emitted
+three items and <code>take(float("nan"))</code> emitted the entire finite input.</p>
+<p>The unreleased fix normalizes <code>take</code>, <code>limit</code>, <code>drop</code>, and <code>skip</code> counts once
+through the <a href="https://docs.python.org/3.12/library/operator.html#operator.index">integer index protocol</a>
+when constructing the operation. Both APIs accept integer-index objects and
+reject floats before opening a source. Integer behavior, zero-count boundaries,
+iterator cleanup, and existing execution paths remain subject to regression
+checks. No upstream implementation was copied or executed.</p>
+<p>Reference 45's <a href="https://asyncstdlib.readthedocs.io/en/stable/source/notes/iter_scope.html">iterator-scoping guide</a>
+distinguishes owning an iterator from borrowing it for several operations.
+fpstreams already closes owned async iterators on early termination. This
+comparison preserves that default; a borrowing API remains a separate candidate.
+The initially attempted iterator API URL was unavailable, so the guide was
+reached through the documentation index instead.</p>
+<h3 id="versioned-paper-follow-up">Versioned paper follow-up</h3>
+<p>Metadata and abstracts were checked for references
+<a href="https://arxiv.org/abs/1612.06668v1">2</a>,
+<a href="https://arxiv.org/abs/2412.15768v2">3</a>,
+<a href="https://arxiv.org/abs/2505.04153v2">18</a>, and
+<a href="https://arxiv.org/abs/2009.13768v1">19</a>. Their supplied titles match the papers,
+including abbreviated titles for 3 and 18. These checks are not full-paper reviews.</p>
+<p>The streaming model and scope sections of reference 3 describe an acyclic,
+single-consumer compilation model with declared state. Its allocation guarantee
+depends on individual operators avoiding calls and allocations. For fpstreams,
+our inference is to evaluate fusion within proven expression paths first, while
+preserving observable Python callbacks, exceptions, and iterator cleanup.
+The paper does not establish a speedup or unrestricted fusion for this library.</p>
+<p>Reference 19 assumes an associative aggregate operation. A local probe using the
+existing reducer law checker accepted a small exact-integer sum sample and
+rejected the corresponding floating-point counterexample. This does not prove
+integer laws for arbitrary user reducers. DABA remains a candidate requiring an
+explicit algebraic contract; it cannot silently replace arbitrary window
+callbacks or change initial partial-window behavior.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "content.code.copy", "content.tabs.link"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

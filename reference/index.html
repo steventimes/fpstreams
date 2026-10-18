@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://steventimes.github.io/fpstreams/reference/">
       
       
-        <link rel="prev" href="../roadmap/">
+        <link rel="prev" href="../research-references/">
       
       
         <link rel="next" href="flow/">
@@ -517,6 +517,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../research-references/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -563,7 +590,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <div class="md-nav__link md-nav__container">
@@ -585,14 +612,14 @@
             </a>
             
               
-              <label class="md-nav__link md-nav__link--active" for="__nav_5" id="__nav_5_label" tabindex="">
+              <label class="md-nav__link md-nav__link--active" for="__nav_6" id="__nav_6_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1137,6 +1164,11 @@ The final table lists aliases alongside their canonical names.</p>
 <td>Infinite until bounded downstream</td>
 </tr>
 <tr>
+<td>State-driven generation, unreleased</td>
+<td><code>flow.unfold(seed, function)</code> / <code>aflow.unfold(...)</code></td>
+<td>Emit <code>(value, next_state)</code> transitions until the callback returns <code>None</code></td>
+</tr>
+<tr>
 <td>Repeated supplier</td>
 <td><code>flow.generate(supplier)</code></td>
 <td>Infinite until bounded downstream</td>
@@ -1193,7 +1225,11 @@ The final table lists aliases alongside their canonical names.</p>
 </tr>
 <tr>
 <td>One-to-many transform</td>
-<td><code>flat_map</code>, <code>collapse</code></td>
+<td><code>flat_map</code></td>
+</tr>
+<tr>
+<td>Adjacent-run reduction</td>
+<td><code>collapse(predicate, merger)</code>; the unreleased overload also accepts a Collector</td>
 </tr>
 <tr>
 <td>Prefix/suffix bounds</td>
@@ -1202,6 +1238,10 @@ The final table lists aliases alongside their canonical names.</p>
 <tr>
 <td>Stateful transform</td>
 <td><code>scan</code>, <code>scan_right</code>, <code>fold_by</code>, <code>reduce_by</code>, <code>gather</code></td>
+</tr>
+<tr>
+<td>Stateful mapping, unreleased</td>
+<td><code>map_accum(initial, function)</code> emits outputs from <code>(next_state, output)</code> transitions</td>
 </tr>
 <tr>
 <td>De-duplication</td>
@@ -1230,6 +1270,14 @@ The final table lists aliases alongside their canonical names.</p>
 <tr>
 <td>Fixed grouping</td>
 <td><code>chunk</code>, <code>window</code>, <code>pairwise</code>, <code>batch</code></td>
+</tr>
+<tr>
+<td>Window aggregation (unreleased)</td>
+<td><code>window_reduce(size, combine, step=1)</code></td>
+</tr>
+<tr>
+<td>One callback per batch</td>
+<td><code>map_batches</code></td>
 </tr>
 <tr>
 <td>Conditional grouping</td>
@@ -1403,6 +1451,14 @@ multi-reduction programs.</p>
 <td><code>agg.sum</code>, <code>agg.mean</code>, <code>agg.variance</code>, <code>agg.std</code>, <code>agg.min</code>, <code>agg.max</code></td>
 </tr>
 <tr>
+<td>Item by key</td>
+<td><code>agg.min_by</code>, <code>agg.max_by</code> (unreleased)</td>
+</tr>
+<tr>
+<td>Ranked items</td>
+<td><code>agg.top</code>, <code>agg.bottom</code> (unreleased)</td>
+</tr>
+<tr>
 <td>Encounter order</td>
 <td><code>agg.first</code>, <code>agg.last</code></td>
 </tr>
@@ -1420,6 +1476,9 @@ multi-reduction programs.</p>
 filtering, partitioning, grouping, joining, and downstream composition. Reducer
 objects describe associative laws when parallel or tree reduction needs explicit
 proof.</p>
+<p>The <a href="../user-guide/analytics/#exact-grouped-percentiles-unreleased">exact percentile recipe</a>
+uses collector composition for grouped p50 and p90 values, with explicit
+missing-value and small-group policies.</p>
 <h2 id="transform-pairs">Transform pairs</h2>
 <table>
 <thead>
@@ -1556,11 +1615,19 @@ method on <a href="async_flow/">AsyncFlow</a>.</p>
 </tr>
 <tr>
 <td>Execution reports</td>
-<td><code>ExecutionResult</code>, <code>ExecutionReport</code></td>
+<td><code>ExecutionResult</code>, <code>ExecutionReport</code>; unreleased <code>ExecutionEvent</code> and versioned report/event <code>to_dict()</code> export (<a href="../user-guide/execution-reports/#metadata-export-unreleased">guide</a>)</td>
 </tr>
 <tr>
 <td>Spill budgets</td>
 <td><code>SpillLimits</code></td>
+</tr>
+<tr>
+<td>Shared executor budget, unreleased</td>
+<td><code>BoundedExecutor</code></td>
+</tr>
+<tr>
+<td>File partition recovery, unreleased</td>
+<td><code>FileCheckpoint</code></td>
 </tr>
 <tr>
 <td>Collection laws</td>

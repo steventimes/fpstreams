@@ -517,6 +517,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research-references/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -563,7 +590,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <div class="md-nav__link md-nav__container">
@@ -585,14 +612,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3880,7 +3907,8 @@ failures remove the temporary file.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional Arrow schema, required to write an empty pipeline.</p>
+                <p>Optional Arrow schema, required to write an empty pipeline.
+Nonempty rows require at least one column to preserve their row count.</p>
               </div>
             </td>
             <td>
@@ -7961,7 +7989,7 @@ temporary files after completion, failure, or downstream short-circuit.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">aggregate</span><span class="p">(</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">**</span><span class="n">aggregations</span><span class="p">:</span> <span class="n">Aggregator</span><span class="p">,</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">**</span><span class="n">aggregations</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -7987,16 +8015,16 @@ temporary files after completion, failure, or downstream short-circuit.</p>
                 <code>**aggregations</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Aggregator
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
 
 
   
       dataclass
-   (fpstreams.collecting.aggregation.Aggregator)" href="../collecting/#fpstreams.Aggregator">Aggregator</a></code>
+   (fpstreams.collecting.collector.Collector)" href="../collecting/#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named aggregators evaluated during the same traversal.</p>
+                <p>Named collectors evaluated during the same traversal.</p>
               </div>
             </td>
             <td>
@@ -8736,7 +8764,7 @@ expected.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">aggregate</span><span class="p">(</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">**</span><span class="n">aggregations</span><span class="p">:</span> <span class="n">Aggregator</span><span class="p">,</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">**</span><span class="n">aggregations</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -8762,16 +8790,16 @@ expected.</p>
                 <code>**aggregations</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Aggregator
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
 
 
   
       dataclass
-   (fpstreams.collecting.aggregation.Aggregator)" href="../collecting/#fpstreams.Aggregator">Aggregator</a></code>
+   (fpstreams.collecting.collector.Collector)" href="../collecting/#fpstreams.Collector">Collector</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Named aggregators evaluated during the same traversal.</p>
+                <p>Named collectors evaluated during the same traversal.</p>
               </div>
             </td>
             <td>

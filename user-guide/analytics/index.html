@@ -437,6 +437,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#select-records-by-version-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Select records by version (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rank-records-within-each-group-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rank records within each group (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#feed-normalized-records-without-another-list" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -448,10 +470,32 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-a-weighted-collector-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compose a weighted collector (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#keep-valid-weighted-denominators" class="md-nav__link">
     <span class="md-ellipsis">
       
         Keep valid weighted denominators
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-grouped-percentiles-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact grouped percentiles (unreleased)
       
     </span>
   </a>
@@ -474,6 +518,17 @@
     <span class="md-ellipsis">
       
         Write batches in one transaction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resume-file-partitions-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resume file partitions (unreleased)
       
     </span>
   </a>
@@ -612,6 +667,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../../research-references/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
       
@@ -654,7 +736,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -676,14 +758,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1037,6 +1119,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#select-records-by-version-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Select records by version (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rank-records-within-each-group-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rank records within each group (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#feed-normalized-records-without-another-list" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1048,10 +1152,32 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-a-weighted-collector-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compose a weighted collector (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#keep-valid-weighted-denominators" class="md-nav__link">
     <span class="md-ellipsis">
       
         Keep valid weighted denominators
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-grouped-percentiles-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact grouped percentiles (unreleased)
       
     </span>
   </a>
@@ -1080,6 +1206,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#resume-file-partitions-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resume file partitions (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1101,108 +1238,255 @@
 
 
 <h1 id="streaming-analytics-recipes">Streaming analytics recipes</h1>
-<p>These examples use existing v2 APIs. Normalize identifiers, dates, units, and
+<p>These examples use v2 APIs; sections marked unreleased require the development
+version. Normalize identifiers, dates, units, and
 duplicate-record policy before aggregation. Keep the record grain explicit:
 a player-match row and a player-season row answer different questions.</p>
+<h2 id="select-records-by-version-unreleased">Select records by version (unreleased)</h2>
+<p><code>agg.max_by</code> retains the whole record with the largest selected key. This lets
+you resolve a finite batch of out-of-order updates without collecting and
+sorting each group. <code>agg.min_by</code> selects the smallest key instead.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">changes</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;revision&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;deleted&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">},</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;revision&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;deleted&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">12</span><span class="p">},</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;revision&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;deleted&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">},</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;revision&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;deleted&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">19</span><span class="p">},</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">]</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">current</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">rows</span><span class="p">(</span><span class="n">changes</span><span class="p">)</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;id&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">record</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">max_by</span><span class="p">(</span><span class="s2">&quot;revision&quot;</span><span class="p">))</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="k">lambda</span> <span class="n">group</span><span class="p">:</span> <span class="n">group</span><span class="p">[</span><span class="s2">&quot;record&quot;</span><span class="p">])</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="k">lambda</span> <span class="n">record</span><span class="p">:</span> <span class="ow">not</span> <span class="n">record</span><span class="p">[</span><span class="s2">&quot;deleted&quot;</span><span class="p">])</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="p">)</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="k">assert</span> <span class="n">current</span> <span class="o">==</span> <span class="p">[</span><span class="n">changes</span><span class="p">[</span><span class="mi">3</span><span class="p">]]</span>
+</code></pre></div>
+<p>Choose the winner before discarding deletion records; filtering deletions first
+would restore an older value for <code>a</code>. Equal keys keep the first record. Use a
+composite key such as <code>lambda row: (row["revision"], row["sequence"])</code> when your
+data defines a tie breaker. Missing and incomparable keys need an explicit
+normalization policy. Hash grouping retains one key and one candidate per group,
+along with its group index; sorted grouping retains the current group plus
+lookahead. This computes a batch result. Persisting a change log and reconciling
+partial updates require application-specific storage and merge rules.</p>
+<h2 id="rank-records-within-each-group-unreleased">Rank records within each group (unreleased)</h2>
+<p>Use <code>agg.top</code> or <code>agg.bottom</code> when each group needs several ranked records.
+The aggregator retains up to the requested number instead of collecting the
+whole group. Equal keys keep input order.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">players</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Jo&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Sam&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="mi">6</span><span class="p">},</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Lee&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="mi">11</span><span class="p">},</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Kai&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="p">]</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">leaders</span> <span class="o">=</span> <span class="n">rows</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">players</span><span class="p">))</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="n">best</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">top</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;score&quot;</span><span class="p">),</span> <span class="n">count</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="k">assert</span> <span class="n">leaders</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;best&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">players</span><span class="p">[</span><span class="mi">2</span><span class="p">],</span> <span class="n">players</span><span class="p">[</span><span class="mi">0</span><span class="p">]],</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">},</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;best&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">players</span><span class="p">[</span><span class="mi">1</span><span class="p">]],</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="p">]</span>
+</code></pre></div>
+<p><code>agg.bottom(2, key="score")</code> returns ascending scores. Both factories accept
+the usual field, path, index, expression, and callable selectors. Normalize
+missing values and use keys with a consistent order. Each state retains at
+most K records; hash grouping also retains its group index, and spill follows
+the existing serialized-record contract. The heap takes O(log K) comparisons
+per item and final ordering takes O(K log K). A single winner can use
+<code>agg.min_by</code> or <code>agg.max_by</code>.</p>
+<p>Bounded state does not guarantee lower latency or allocation for small groups.
+Collecting a small group and ranking it with Python's standard library can be
+faster. Measure the full query when choosing between those approaches.</p>
 <h2 id="feed-normalized-records-without-another-list">Feed normalized records without another list</h2>
 <p>For each normalized match, generate one record for each team:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">team_records</span><span class="p">(</span><span class="n">matches</span><span class="p">):</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">for</span> <span class="n">match</span> <span class="ow">in</span> <span class="n">matches</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="k">for</span> <span class="n">team</span><span class="p">,</span> <span class="n">scored</span><span class="p">,</span> <span class="n">conceded</span> <span class="ow">in</span> <span class="p">(</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>            <span class="p">(</span><span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_team&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_goals&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_goals&quot;</span><span class="p">]),</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>            <span class="p">(</span><span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_team&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_goals&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_goals&quot;</span><span class="p">]),</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="p">):</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="k">yield</span> <span class="p">{</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>                <span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="n">team</span><span class="p">,</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>                <span class="s2">&quot;points&quot;</span><span class="p">:</span> <span class="mi">3</span> <span class="k">if</span> <span class="n">scored</span> <span class="o">&gt;</span> <span class="n">conceded</span> <span class="k">else</span> <span class="nb">int</span><span class="p">(</span><span class="n">scored</span> <span class="o">==</span> <span class="n">conceded</span><span class="p">),</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>                <span class="s2">&quot;goals_for&quot;</span><span class="p">:</span> <span class="n">scored</span><span class="p">,</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>                <span class="s2">&quot;goals_against&quot;</span><span class="p">:</span> <span class="n">conceded</span><span class="p">,</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            <span class="p">}</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">matches</span> <span class="o">=</span> <span class="p">[</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="p">{</span><span class="s2">&quot;home_team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;away_team&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;home_goals&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;away_goals&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">},</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    <span class="p">{</span><span class="s2">&quot;home_team&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;away_team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;home_goals&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;away_goals&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="p">]</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">summary</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    <span class="n">flow</span><span class="p">(</span><span class="n">team_records</span><span class="p">(</span><span class="n">matches</span><span class="p">))</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>        <span class="n">matches</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>        <span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        <span class="n">goals_for</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;goals_for&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>        <span class="n">goals_against</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;goals_against&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    <span class="p">)</span>
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>    <span class="o">.</span><span class="n">sort_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="p">)</span>
-<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="k">assert</span> <span class="n">summary</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="p">{</span>
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>    <span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;matches&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;points&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span>
-<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>    <span class="s2">&quot;goals_for&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;goals_against&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
-<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">team_records</span><span class="p">(</span><span class="n">matches</span><span class="p">):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="k">for</span> <span class="n">match</span> <span class="ow">in</span> <span class="n">matches</span><span class="p">:</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="k">for</span> <span class="n">team</span><span class="p">,</span> <span class="n">scored</span><span class="p">,</span> <span class="n">conceded</span> <span class="ow">in</span> <span class="p">(</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>            <span class="p">(</span><span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_team&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_goals&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_goals&quot;</span><span class="p">]),</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>            <span class="p">(</span><span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_team&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;away_goals&quot;</span><span class="p">],</span> <span class="n">match</span><span class="p">[</span><span class="s2">&quot;home_goals&quot;</span><span class="p">]),</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="p">):</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>            <span class="k">yield</span> <span class="p">{</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>                <span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="n">team</span><span class="p">,</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>                <span class="s2">&quot;points&quot;</span><span class="p">:</span> <span class="mi">3</span> <span class="k">if</span> <span class="n">scored</span> <span class="o">&gt;</span> <span class="n">conceded</span> <span class="k">else</span> <span class="nb">int</span><span class="p">(</span><span class="n">scored</span> <span class="o">==</span> <span class="n">conceded</span><span class="p">),</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>                <span class="s2">&quot;goals_for&quot;</span><span class="p">:</span> <span class="n">scored</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>                <span class="s2">&quot;goals_against&quot;</span><span class="p">:</span> <span class="n">conceded</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>            <span class="p">}</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">matches</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    <span class="p">{</span><span class="s2">&quot;home_team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;away_team&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;home_goals&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;away_goals&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">},</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>    <span class="p">{</span><span class="s2">&quot;home_team&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;away_team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;home_goals&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;away_goals&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="p">]</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="n">summary</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>    <span class="n">flow</span><span class="p">(</span><span class="n">team_records</span><span class="p">(</span><span class="n">matches</span><span class="p">))</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>        <span class="n">matches</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>        <span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">),</span>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>        <span class="n">goals_for</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;goals_for&quot;</span><span class="p">),</span>
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>        <span class="n">goals_against</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;goals_against&quot;</span><span class="p">),</span>
+<a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a>    <span class="p">)</span>
+<a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>    <span class="o">.</span><span class="n">sort_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a><span class="p">)</span>
+<a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a><span class="k">assert</span> <span class="n">summary</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="p">{</span>
+<a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a>    <span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">,</span> <span class="s2">&quot;matches&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;points&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-2-36" name="__codelineno-2-36" href="#__codelineno-2-36"></a>    <span class="s2">&quot;goals_for&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;goals_against&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-2-37" name="__codelineno-2-37" href="#__codelineno-2-37"></a><span class="p">}</span>
 </code></pre></div>
 <p>The projection generates records as they are consumed. Any upstream list,
 deduplication dictionary, or sorting step still has its own cost. Hash grouping
 keeps state for every distinct team. A retained dict list may qualify for a
 native route that a generator does not; measure both shapes before choosing.</p>
+<h2 id="compose-a-weighted-collector-unreleased">Compose a weighted collector (unreleased)</h2>
+<p>Use the existing collector combinators when a metric needs its own filter and
+finisher. Named aggregation now accepts these collectors directly, so the same
+definition works for global totals and individual groups:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">agg</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">observations</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;seconds&quot;</span><span class="p">:</span> <span class="mi">30</span><span class="p">},</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mi">6</span><span class="p">,</span> <span class="s2">&quot;seconds&quot;</span><span class="p">:</span> <span class="mi">90</span><span class="p">},</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;seconds&quot;</span><span class="p">:</span> <span class="mi">300</span><span class="p">},</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;seconds&quot;</span><span class="p">:</span> <span class="mi">60</span><span class="p">},</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">]</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">weighted_speed</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">filtering</span><span class="p">(</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="n">Collectors</span><span class="o">.</span><span class="n">teeing</span><span class="p">(</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>        <span class="n">Collectors</span><span class="o">.</span><span class="n">summing</span><span class="p">(</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;seconds&quot;</span><span class="p">]),</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>        <span class="n">Collectors</span><span class="o">.</span><span class="n">summing</span><span class="p">(</span><span class="s2">&quot;seconds&quot;</span><span class="p">),</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>        <span class="k">lambda</span> <span class="n">numerator</span><span class="p">,</span> <span class="n">denominator</span><span class="p">:</span> <span class="n">numerator</span> <span class="o">/</span> <span class="n">denominator</span> <span class="k">if</span> <span class="n">denominator</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="p">),</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="p">)</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">rows</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">observations</span><span class="p">))</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>    <span class="n">mean_speed</span><span class="o">=</span><span class="n">weighted_speed</span><span class="p">,</span> <span class="n">observations</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="k">assert</span> <span class="n">summary</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;mean_speed&quot;</span><span class="p">:</span> <span class="mf">4.5</span><span class="p">,</span> <span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">},</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;mean_speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="p">]</span>
+</code></pre></div>
+<p>The filter treats a measured zero as valid and excludes an unknown speed from
+both sums. The finisher chooses <code>None</code> for a zero denominator. Normalization,
+finite-value checks, weight validation, and duplicate handling remain part of
+the metric definition. Summing uses ordinary Python arithmetic. Keep the two
+totals as separate outputs when they are needed for auditing or later merging.</p>
 <h2 id="keep-valid-weighted-denominators">Keep valid weighted denominators</h2>
 <p>Accumulate the numerator and its valid denominator together. A missing value
 contributes to neither, while a measured zero remains a valid observation.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">observations</span> <span class="o">=</span> <span class="p">[</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">60</span><span class="p">},</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">6.0</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">120</span><span class="p">},</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">90</span><span class="p">},</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">]</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">weighted</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">flow</span><span class="p">(</span><span class="n">observations</span><span class="p">)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="n">numerator</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;observed_seconds&quot;</span><span class="p">]</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>            <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        <span class="p">),</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        <span class="n">denominator</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;observed_seconds&quot;</span><span class="p">]</span> <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>        <span class="p">),</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>    <span class="p">)</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>        <span class="n">numerator</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;numerator&quot;</span><span class="p">),</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>        <span class="n">denominator</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;denominator&quot;</span><span class="p">),</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>        <span class="n">observations</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    <span class="p">)</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>    <span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>        <span class="n">mean_speed</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;numerator&quot;</span><span class="p">]</span> <span class="o">/</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;denominator&quot;</span><span class="p">]</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>            <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;denominator&quot;</span><span class="p">]</span> <span class="k">else</span> <span class="kc">None</span>
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>        <span class="p">)</span>
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>    <span class="p">)</span>
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>    <span class="o">.</span><span class="n">sort_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span>
-<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="p">)</span>
-<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="k">assert</span> <span class="n">weighted</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;mean_speed&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">5.0</span>
-<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="k">assert</span> <span class="n">weighted</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="s2">&quot;mean_speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">observations</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">60</span><span class="p">},</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">6.0</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">120</span><span class="p">},</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;observed_seconds&quot;</span><span class="p">:</span> <span class="mi">90</span><span class="p">},</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">]</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">weighted</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">flow</span><span class="p">(</span><span class="n">observations</span><span class="p">)</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        <span class="n">numerator</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;observed_seconds&quot;</span><span class="p">]</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>            <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        <span class="p">),</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>        <span class="n">denominator</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;observed_seconds&quot;</span><span class="p">]</span> <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>        <span class="p">),</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>    <span class="p">)</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>        <span class="n">numerator</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;numerator&quot;</span><span class="p">),</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>        <span class="n">denominator</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;denominator&quot;</span><span class="p">),</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>        <span class="n">observations</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>    <span class="p">)</span>
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>    <span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>
+<a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>        <span class="n">mean_speed</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="p">(</span>
+<a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>            <span class="n">row</span><span class="p">[</span><span class="s2">&quot;numerator&quot;</span><span class="p">]</span> <span class="o">/</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;denominator&quot;</span><span class="p">]</span>
+<a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>            <span class="k">if</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;denominator&quot;</span><span class="p">]</span> <span class="k">else</span> <span class="kc">None</span>
+<a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>        <span class="p">)</span>
+<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>    <span class="p">)</span>
+<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>    <span class="o">.</span><span class="n">sort_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a><span class="p">)</span>
+<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a><span class="k">assert</span> <span class="n">weighted</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;mean_speed&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">5.0</span>
+<a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a><span class="k">assert</span> <span class="n">weighted</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="s2">&quot;mean_speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span>
 </code></pre></div>
 <p>Validate finite values and nonnegative weights when normalizing the source.
 Choose weights for the metric: action coordinates use valid action counts,
 speed observations use observed time, and rates per 90 minutes use the minutes
 for which the event count is known. Repeated matches contribute at their stated
 grain. A weighted mean of match-level percentiles is not a pooled percentile.</p>
+<h2 id="exact-grouped-percentiles-unreleased">Exact grouped percentiles (unreleased)</h2>
+<p>Compose a collector when a finite set of speed observations needs several
+percentiles. This example computes unweighted p50 and p90 values using the
+standard library's <a href="https://docs.python.org/3/library/statistics.html#statistics.quantiles">inclusive quantiles</a>.
+Normalize speeds to finite numbers before this step; only <code>None</code> is missing,
+so a measured zero remains part of the distribution.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">statistics</span><span class="w"> </span><span class="kn">import</span> <span class="n">quantiles</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">speed_percentiles</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">count</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="n">values</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="n">values</span><span class="p">[</span><span class="mi">0</span><span class="p">]}</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="n">cuts</span> <span class="o">=</span> <span class="n">quantiles</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">n</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s2">&quot;inclusive&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="n">count</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="n">cuts</span><span class="p">[</span><span class="mi">4</span><span class="p">],</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="n">cuts</span><span class="p">[</span><span class="mi">8</span><span class="p">]}</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="n">speed_distribution</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">filtering</span><span class="p">(</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    <span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;speed&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>    <span class="n">Collectors</span><span class="o">.</span><span class="n">mapping</span><span class="p">(</span>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>        <span class="s2">&quot;speed&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>        <span class="n">Collectors</span><span class="o">.</span><span class="n">collecting_and_then</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">to_list</span><span class="p">(),</span> <span class="n">speed_percentiles</span><span class="p">),</span>
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>    <span class="p">),</span>
+<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="p">)</span>
+<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="n">observations</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">},</span>
+<a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">4.0</span><span class="p">},</span>
+<a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">8.0</span><span class="p">},</span>
+<a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">10.0</span><span class="p">},</span>
+<a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">},</span>
+<a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">},</span>
+<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="mf">7.0</span><span class="p">},</span>
+<a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="p">]</span>
+<a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">rows</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">observations</span><span class="p">))</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;player&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a>    <span class="n">speed</span><span class="o">=</span><span class="n">speed_distribution</span><span class="p">,</span>
+<a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="k">assert</span> <span class="n">summary</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="mf">6.0</span><span class="p">,</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="mf">9.4</span><span class="p">}},</span>
+<a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}},</span>
+<a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a>    <span class="p">{</span><span class="s2">&quot;player&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;speed&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;observations&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;p50&quot;</span><span class="p">:</span> <span class="mf">7.0</span><span class="p">,</span> <span class="s2">&quot;p90&quot;</span><span class="p">:</span> <span class="mf">7.0</span><span class="p">}},</span>
+<a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="p">]</span>
+</code></pre></div>
+<p>Inclusive quantiles interpolate between ordered observations, treating the
+minimum and maximum as the endpoints. The explicit empty and single-value
+policies above also keep this recipe consistent across supported Python versions.
+<code>observations</code> counts the non-missing speeds in this result.
+Each group receives its own list, and one <code>quantiles</code> call supplies both outputs.
+Exact percentiles retain every valid observation in each active group; spilling
+partitions does not bound that list's size. Keep source, player and observation
+grain consistent when pooling observations.</p>
 <h2 id="filter-sqlite-rows-before-conversion">Filter SQLite rows before conversion</h2>
 <p>Project only needed columns and bind selection values separately from SQL:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Rows</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">selected</span> <span class="o">=</span> <span class="n">Rows</span><span class="o">.</span><span class="n">from_sqlite</span><span class="p">(</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="s2">&quot;matches.sqlite&quot;</span><span class="p">,</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;SELECT team_id, points FROM matches</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="sd">       WHERE source = ? AND version = ? AND match_date &gt;= ?&quot;&quot;&quot;</span><span class="p">,</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="p">(</span><span class="s2">&quot;tracking&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;2026-01-01&quot;</span><span class="p">),</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="p">)</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="n">totals</span> <span class="o">=</span> <span class="n">selected</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team_id&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">))</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Rows</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">selected</span> <span class="o">=</span> <span class="n">Rows</span><span class="o">.</span><span class="n">from_sqlite</span><span class="p">(</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="s2">&quot;matches.sqlite&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;SELECT team_id, points FROM matches</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="sd">       WHERE source = ? AND version = ? AND match_date &gt;= ?&quot;&quot;&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="p">(</span><span class="s2">&quot;tracking&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;2026-01-01&quot;</span><span class="p">),</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="p">)</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="n">totals</span> <span class="o">=</span> <span class="n">selected</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team_id&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">))</span>
 </code></pre></div>
 <p>Use a consistent ISO date representation for this text comparison. The source
 uses <code>fetchmany()</code> and opens one connection for each iteration. Early exit or
@@ -1211,9 +1495,9 @@ conversion, aggregation, and output separately before attributing a change to
 the stream engine. This query selects the input explicitly; it does not depend
 on automatic SQL pushdown.</p>
 <h2 id="write-batches-in-one-transaction">Write batches in one transaction</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">written</span> <span class="o">=</span> <span class="n">totals</span><span class="o">.</span><span class="n">to_sqlite</span><span class="p">(</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s2">&quot;results.sqlite&quot;</span><span class="p">,</span> <span class="s2">&quot;team_totals&quot;</span><span class="p">,</span> <span class="n">if_exists</span><span class="o">=</span><span class="s2">&quot;replace&quot;</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">written</span> <span class="o">=</span> <span class="n">totals</span><span class="o">.</span><span class="n">to_sqlite</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="s2">&quot;results.sqlite&quot;</span><span class="p">,</span> <span class="s2">&quot;team_totals&quot;</span><span class="p">,</span> <span class="n">if_exists</span><span class="o">=</span><span class="s2">&quot;replace&quot;</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="p">)</span>
 </code></pre></div>
 <p><code>batch_size</code> controls each <code>executemany()</code> call. The sink commits once after the
 complete write succeeds. A failed later batch rolls back earlier batches, and
@@ -1222,6 +1506,62 @@ policies for your application's keys. If independent import tasks need separate
 recovery checkpoints, manage those task boundaries in the application. Retrying
 a failed atomic write and retrying an already committed append have different
 duplicate-record consequences.</p>
+<h2 id="resume-file-partitions-unreleased">Resume file partitions (unreleased)</h2>
+<p>For a collection of stable JSONL files, checkpoint each partition separately.
+The callback writes one result file; later stages receive its path instead of
+the full result payload.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">BoundedExecutor</span><span class="p">,</span> <span class="n">FileCheckpoint</span><span class="p">,</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">summarize</span><span class="p">(</span><span class="n">input_path</span><span class="p">,</span> <span class="n">output_path</span><span class="p">):</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">rows</span><span class="o">.</span><span class="n">from_jsonl</span><span class="p">(</span><span class="n">input_path</span><span class="p">)</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>        <span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">),</span> <span class="n">matches</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">count</span><span class="p">(),</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="p">)</span><span class="o">.</span><span class="n">to_jsonl</span><span class="p">(</span><span class="n">output_path</span><span class="p">)</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="n">checkpoint</span> <span class="o">=</span> <span class="n">FileCheckpoint</span><span class="p">(</span><span class="s2">&quot;completed&quot;</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s2">&quot;team-totals-v1&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="n">process_partition</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span><span class="n">checkpoint</span><span class="o">.</span><span class="n">run</span><span class="p">,</span> <span class="n">function</span><span class="o">=</span><span class="n">summarize</span><span class="p">)</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="n">inputs</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;partitions&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">&quot;*.jsonl&quot;</span><span class="p">))</span>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="k">with</span> <span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span> <span class="k">as</span> <span class="n">pool</span><span class="p">:</span>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>    <span class="k">with</span> <span class="n">BoundedExecutor</span><span class="p">(</span><span class="n">pool</span><span class="p">,</span> <span class="n">max_pending</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span> <span class="k">as</span> <span class="n">budget</span><span class="p">:</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>        <span class="n">result_files</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span><span class="o">.</span><span class="n">map_parallel</span><span class="p">(</span>
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>            <span class="n">process_partition</span><span class="p">,</span> <span class="n">executor</span><span class="o">=</span><span class="n">budget</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>        <span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a><span class="n">totals</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>    <span class="n">flow</span><span class="p">(</span><span class="n">result_files</span><span class="p">)</span><span class="o">.</span><span class="n">flat_map</span><span class="p">(</span><span class="n">rows</span><span class="o">.</span><span class="n">from_jsonl</span><span class="p">)</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>    <span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;points&quot;</span><span class="p">),</span> <span class="n">matches</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;matches&quot;</span><span class="p">))</span>
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="p">)</span>
+</code></pre></div>
+<p>Repeat the same invocation after a failure. Completed partitions are verified
+and reused; partitions without a committed result run again. The existing
+<code>attempt()</code> operation can collect individual failures while allowing other
+partitions to finish. Async <code>retry()</code> already provides attempt limits, backoff,
+jitter, and exception filtering for async callbacks.</p>
+<p>The final aggregation sums each partition's counts because the same team can
+appear in several files. <code>flat_map(rows.from_jsonl)</code> reads the result files
+lazily and closes each reader when it finishes or the consumer stops.</p>
+<p>The resolved input path, its SHA256, and <code>version</code> identify a partition. Change
+<code>version</code> when callback code, options, or external dependencies can change its
+result. Inputs must stay unchanged during processing. Cache hits read input
+and output bytes to verify their hashes, so they still incur file I/O. A corrupt
+completed entry raises <code>ValueError</code> without silently rerunning side effects.</p>
+<p>Keep the checkpoint directory on trusted local storage. Each successful run
+publishes the output and JSON metadata together using a same-filesystem rename.
+The callback must close its regular output file before returning. Partial runs
+are not reusable, and publication does not guarantee durability after power
+loss. A concurrently running duplicate raises <code>BlockingIOError</code>. OS locks are
+released on process exit; their small lock files remain in the directory.
+Forced termination can leave <code>.stage-*</code> directories, which you can remove after
+active jobs have stopped. Completed entries remain until you remove them.</p>
+<p>This checkpoints the output file. Database writes, network calls, and other
+callback side effects need their own idempotency. Arbitrary iterators are not
+replayed. Use a separate application transaction when multiple partition
+outputs must become visible together.</p>
 
 
 

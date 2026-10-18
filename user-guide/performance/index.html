@@ -508,6 +508,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Share a submission budget (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#preserve-arrow-batches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preserve Arrow batches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#async-throughput" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -545,6 +567,17 @@
     <span class="md-ellipsis">
       
         Caller-owned executors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choose-a-batching-bound" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose a batching bound
       
     </span>
   </a>
@@ -733,6 +766,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../../research-references/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
       
@@ -775,7 +835,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -797,14 +857,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1257,6 +1317,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Share a submission budget (unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#preserve-arrow-batches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preserve Arrow batches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#async-throughput" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1294,6 +1376,17 @@
     <span class="md-ellipsis">
       
         Caller-owned executors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choose-a-batching-bound" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose a batching bound
       
     </span>
   </a>
@@ -1370,6 +1463,12 @@ fallbacks. Confirm the relevant route before attributing a timing to a backend.<
 cardinality and no operation invalidates it. A one-shot iterator is consumed in
 the normal way.</p>
 <h2 id="source-shape-matters">Source shape matters</h2>
+<p>Arrow's Parquet execution plan can read, cast, and fail before delivering a
+batch. <code>first()</code> and limited queries stop once they receive enough output, but
+cannot guarantee a result before a native source error. Source <code>columns</code> defines
+which fields are visible; a later query projection does not remove errors from
+other visible source fields. Batch size bounds batches, not the backend's I/O
+or error timing.</p>
 <p>The same values can carry different execution guarantees.</p>
 <table>
 <thead>
@@ -1555,11 +1654,93 @@ working set is not acceptable. Configure limits from an operational budget:</p>
 <p>If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.</p>
+<h2 id="share-a-submission-budget-unreleased">Share a submission budget (unreleased)</h2>
+<p>Several queries can reuse one executor while keeping their own <code>buffer</code> limits.
+To cap their combined unfinished work, give them the same <code>BoundedExecutor</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">BoundedExecutor</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="k">with</span> <span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span> <span class="k">as</span> <span class="n">pool</span><span class="p">:</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="k">with</span> <span class="n">BoundedExecutor</span><span class="p">(</span><span class="n">pool</span><span class="p">,</span> <span class="n">max_pending</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span> <span class="k">as</span> <span class="n">budget</span><span class="p">:</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">))</span><span class="o">.</span><span class="n">map_parallel</span><span class="p">(</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>            <span class="nb">abs</span><span class="p">,</span> <span class="n">executor</span><span class="o">=</span><span class="n">budget</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="k">assert</span> <span class="n">pool</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="nb">abs</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">result</span><span class="p">()</span> <span class="o">==</span> <span class="mi">1</span>
+</code></pre></div>
+<p>Run independent queries from separate caller threads and pass <code>budget</code> to each.
+Calls blocked in <code>submit()</code> wait for capacity in arrival order. Completion or
+cancellation releases a slot. Shutdown wakes blocked submitters with
+<code>RuntimeError</code>; <code>cancel_futures=True</code> cancels this wrapper's queued calls.
+Running callbacks must finish cooperatively. Work submitted directly to <code>pool</code>
+does not count against the wrapper's budget.</p>
+<p>The shared limit counts tasks, not bytes or completed results. A blocked
+submitter can still retain the item it is submitting. Keep per-query buffers
+and batch sizes within the application's memory budget. Avoid waiting for
+nested work that needs the slots occupied by its own parent callbacks.</p>
+<h2 id="preserve-arrow-batches">Preserve Arrow batches</h2>
+<p>Use <code>Rows.arrow_batches()</code> to pass columnar data to a batch consumer. In
+unreleased code, a primitive Arrow table or record batch can keep its buffers
+when the supplied schema exactly matches the output, including field and
+schema metadata. Safe direct-field projections and primitive filters can run
+columnarly; filters may allocate output buffers. The output still respects
+<code>batch_size</code>, and an explicit zero-column schema preserves empty-record counts.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">table</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">table</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mf">2.0</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">]})</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">batches</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">from_arrow</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="o">.</span><span class="n">arrow_batches</span><span class="p">(</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="n">table</span><span class="o">.</span><span class="n">schema</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">assert</span> <span class="p">[</span><span class="n">batch</span><span class="o">.</span><span class="n">num_rows</span> <span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">batches</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="n">projected</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="n">rows</span><span class="o">.</span><span class="n">from_arrow</span><span class="p">(</span><span class="n">table</span><span class="p">)</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    <span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;id&quot;</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">)</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    <span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">amount</span><span class="o">=</span><span class="s2">&quot;value&quot;</span><span class="p">)</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    <span class="o">.</span><span class="n">arrow_batches</span><span class="p">(</span><span class="n">batch_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="n">pa</span><span class="o">.</span><span class="n">schema</span><span class="p">([(</span><span class="s2">&quot;amount&quot;</span><span class="p">,</span> <span class="n">pa</span><span class="o">.</span><span class="n">float64</span><span class="p">())]))</span>
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="p">)</span>
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="k">assert</span> <span class="n">projected</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">to_pylist</span><span class="p">()</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mf">4.0</span><span class="p">}]</span>
+</code></pre></div>
+<p>A cast, changed metadata, Python callback, or unsupported source uses the
+existing conversion path. Buffer reuse can keep the source allocation alive;
+make an explicit copy when independent storage is required. Measure the entire
+consumer pipeline before treating a cheaper export as an application speedup.</p>
+<p>Unreleased execution also supports multiple safe direct comparisons followed
+by a direct projection. Parquet uses only the leading comparison as a scan
+hint and retains every filter in its original order. Automatic hints must not
+hide source conversion errors: visible UTF-8, temporal, and nested fields are
+validated before automatic filtering or projection. These fields can require
+reading columns that the query later discards. Explicit source <code>columns</code> and
+<code>filter</code> define the source boundary before this validation.</p>
+<p>For primitive batches, supported comparison chains can share a boolean
+selection mask and filter the payload once. A count can use the mask directly.
+This path requires the existing source-conversion and type guards; empty,
+nullable, or unsupported inputs keep their existing execution paths.
+The tradeoff is evaluating each supported comparison on the original batch
+instead of filtering after every comparison. Offline Optuna tuning of row and
+column thresholds favored sharing on all nonempty supported batches in the
+measured shapes; this does not change the source boundary or establish an
+application speedup.</p>
+<p>A default local source with one Parquet fragment can omit safe unused fields
+from its scan request, retaining filter dependencies and every field whose
+conversion needs validation. Multiple fragments or a supplied dataset schema
+can require Arrow casts even for an integer column. Those scans retain the
+complete caller-visible projection before applying automatic query hints, so
+an unused column's cast failure remains observable. Fragment counting stops
+after two entries and does not inspect extra physical schemas.</p>
+<p><code>scan_csv()</code> reads and validates all caller-visible typed columns before query
+projection. Inferring a type from the first block does not prove that later
+values fit it. To exclude a column at the source boundary, supply PyArrow
+<code>ConvertOptions(include_columns=[...])</code> explicitly.</p>
+<p><code>polars_batches()</code> also preserves the height of zero-column batches. A Parquet
+write rejects nonempty rows without columns to avoid losing their row count;
+an existing output file is preserved when conversion fails.</p>
 <h2 id="async-throughput">Async throughput</h2>
 <p>For I/O-bound work, <code>map_async</code> exposes concurrency and ordering separately.
 Higher concurrency is useful only until the upstream service, connection pool,
 CPU, or memory becomes the bottleneck.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">urls</span><span class="p">)</span><span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">fetch</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">16</span><span class="p">,</span> <span class="n">ordered</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">urls</span><span class="p">)</span><span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">fetch</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">16</span><span class="p">,</span> <span class="n">ordered</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
 </code></pre></div>
 <p><code>ordered=False</code> can return completed work sooner. Bounded buffers and explicit
 timeouts protect memory and latency. Short-circuiting or failure cancels owned
@@ -1637,9 +1818,9 @@ the callback, lifetime, and cleanup requirements for each stage.</p>
 <p>The repository runner compares engine paths and offers a separate Python,
 NumPy, and pandas comparison suite. List the available scenarios before choosing
 what to measure:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--list-scenarios<span class="w"> </span>--quick<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;fpstreams_operation/sync/*&#39;</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--list-scenarios<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--list-scenarios<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.with_columns*&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--list-scenarios<span class="w"> </span>--quick<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;fpstreams_operation/sync/*&#39;</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--list-scenarios<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--list-scenarios<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.with_columns*&#39;</span>
 </code></pre></div>
 <p>Both suites support <code>--quick</code> and <code>--include</code> when listing. For the engine suite,
 <code>--domain</code> selects integer workloads, floating-point workloads, or both. Engine
@@ -1726,22 +1907,22 @@ record a plan. An <code>observed</code> outer route still has the limits describ
 directory. Use the same runner and Python environment for both sides. Build
 the release extension for each checkout first, and keep size, filters, domain,
 and quick mode identical:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nv">FPSTREAMS_BENCHMARK_SOURCE</span><span class="o">=</span>/path/to/base/src<span class="w"> </span>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/base-10000-run-1.json
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/current-10000-run-1.json
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nv">FPSTREAMS_BENCHMARK_SOURCE</span><span class="o">=</span>/path/to/base/src<span class="w"> </span>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/base-10000-run-1.json
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>.venv/bin/python<span class="w"> </span>benchmark.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span>--competitive<span class="w"> </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">5</span><span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;rows.join.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span>--json<span class="w"> </span>artifacts/current-10000-run-1.json
 </code></pre></div>
 <p>Repeat both commands with <code>run-2</code> and <code>run-3</code> filenames. Keep the raw reports and
 write the baseline to a separate file:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span>--create-baseline<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--provenance<span class="w"> </span>local_one_shot_unreviewed<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--output<span class="w"> </span>artifacts/base-10000-median.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>artifacts/base-10000-run-1.json<span class="w"> </span>artifacts/base-10000-run-2.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>artifacts/base-10000-run-3.json
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>artifacts/base-10000-median.json<span class="w"> </span>artifacts/current-10000-run-1.json
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span>--create-baseline<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--provenance<span class="w"> </span>local_one_shot_unreviewed<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--output<span class="w"> </span>artifacts/base-10000-median.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>artifacts/base-10000-run-1.json<span class="w"> </span>artifacts/base-10000-run-2.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span>artifacts/base-10000-run-3.json
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>.venv/bin/python<span class="w"> </span>benchmarks/regression.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span>artifacts/base-10000-median.json<span class="w"> </span>artifacts/current-10000-run-1.json
 </code></pre></div>
 <p>Compare each current run against that baseline, then repeat at another size.
 The baseline retains each run's provenance. Code hashes, Git revisions, and
@@ -1758,22 +1939,22 @@ continue to use wall time and the existing limits. The
 <h2 id="caller-owned-executors">Caller-owned executors</h2>
 <p>Version 2.3.0 accepts <code>executor=</code> in <code>map_parallel()</code> and <code>parallel()</code>.
 An external pool can serve repeated queries without restarting its workers:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcessPoolExecutor</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">multiprocessing</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_context</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">square</span><span class="p">(</span><span class="n">value</span><span class="p">):</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="k">return</span> <span class="n">value</span> <span class="o">*</span> <span class="n">value</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="k">with</span> <span class="n">ProcessPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">mp_context</span><span class="o">=</span><span class="n">get_context</span><span class="p">(</span><span class="s2">&quot;spawn&quot;</span><span class="p">))</span> <span class="k">as</span> <span class="n">pool</span><span class="p">:</span>
-<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>        <span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">))</span><span class="o">.</span><span class="n">map_parallel</span><span class="p">(</span><span class="n">square</span><span class="p">,</span> <span class="n">executor</span><span class="o">=</span><span class="n">pool</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>        <span class="n">first</span> <span class="o">=</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>        <span class="n">second</span> <span class="o">=</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>        <span class="k">assert</span> <span class="n">first</span> <span class="o">==</span> <span class="n">second</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcessPoolExecutor</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">multiprocessing</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_context</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">square</span><span class="p">(</span><span class="n">value</span><span class="p">):</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="k">return</span> <span class="n">value</span> <span class="o">*</span> <span class="n">value</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>    <span class="k">with</span> <span class="n">ProcessPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">mp_context</span><span class="o">=</span><span class="n">get_context</span><span class="p">(</span><span class="s2">&quot;spawn&quot;</span><span class="p">))</span> <span class="k">as</span> <span class="n">pool</span><span class="p">:</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>        <span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">))</span><span class="o">.</span><span class="n">map_parallel</span><span class="p">(</span><span class="n">square</span><span class="p">,</span> <span class="n">executor</span><span class="o">=</span><span class="n">pool</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>        <span class="n">first</span> <span class="o">=</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>        <span class="n">second</span> <span class="o">=</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>        <span class="k">assert</span> <span class="n">first</span> <span class="o">==</span> <span class="n">second</span>
 </code></pre></div>
 <p>The caller creates and closes the external pool. Each query cancels its own
 queued futures and waits for its own running mappers on early exit or failure.
@@ -1786,6 +1967,53 @@ maps. <code>sequential()</code> clears those defaults for subsequent maps. Exist
 without an external executor keep their worker/backend defaults and create
 owned pools. Reuse can reduce worker startup cost; it does not make CPU-bound
 callbacks faster by itself.</p>
+<h2 id="choose-a-batching-bound">Choose a batching bound</h2>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th>Existing operation</th>
+<th>Bound</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A callback accepts a fixed number of items</td>
+<td><code>map_batches(function, size=...)</code></td>
+<td>Items per callback, with a shorter final batch</td>
+</tr>
+<tr>
+<td>Payload sizes vary</td>
+<td><code>batch_by_size(max_size, max_count=..., get_size=...).map(function)</code></td>
+<td>Sum of measured sizes and items per batch</td>
+</tr>
+<tr>
+<td>An async source may pause between items</td>
+<td><code>buffer_timeout(max_count, seconds).map(function)</code></td>
+<td>Item count or time from the first buffered item</td>
+</tr>
+<tr>
+<td>Several queries share a pool</td>
+<td><code>BoundedExecutor(pool, max_pending=...)</code> (unreleased)</td>
+<td>Unfinished calls submitted through that wrapper</td>
+</tr>
+</tbody>
+</table>
+<p>Set <code>max_count</code> alongside a size bound when individual items can have zero
+measured size. Choose <code>get_size</code> for the payload or service limit being enforced;
+it does not measure Python object overhead or process memory. For example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="n">payloads</span> <span class="o">=</span> <span class="p">[</span><span class="sa">b</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="sa">b</span><span class="s2">&quot;12345678&quot;</span><span class="p">,</span> <span class="sa">b</span><span class="s2">&quot;ab&quot;</span><span class="p">,</span> <span class="sa">b</span><span class="s2">&quot;1234&quot;</span><span class="p">]</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="n">batches</span> <span class="o">=</span> <span class="n">flow</span><span class="p">(</span><span class="n">payloads</span><span class="p">)</span><span class="o">.</span><span class="n">batch_by_size</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="n">max_count</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="k">assert</span> <span class="p">[</span><span class="nb">sum</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="nb">len</span><span class="p">,</span> <span class="n">batch</span><span class="p">))</span> <span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">batches</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="mi">9</span><span class="p">,</span> <span class="mi">6</span><span class="p">]</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="k">assert</span> <span class="p">[</span><span class="n">item</span> <span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">batches</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">batch</span><span class="p">]</span> <span class="o">==</span> <span class="n">payloads</span>
+</code></pre></div>
+<p>Changing batch boundaries changes callback invocations and can change results.
+Keep that choice explicit. When tuning an expensive callback, compare several
+fixed sizes with the same input and worker policy, checking output, first-result
+latency, complete execution time, and retained payload separately. A task-count
+budget does not bound the byte size of results retained by a slow consumer.</p>
 <h2 id="process-mapping-and-explicit-batches">Process mapping and explicit batches</h2>
 <p>Without <code>executor=</code>, <code>map_parallel()</code> creates a worker pool for each execution,
 and its process backend uses <code>spawn</code>. A supplied pool keeps the caller's start
@@ -1799,22 +2027,22 @@ The following example uses <code>map_batches()</code>, added in 2.3.0.
 Installed 2.2.1 can use <code>chunk(4).map_parallel(...)</code> instead.
 Each batch callback receives a tuple and emits one result. Expand iterable
 results explicitly with <code>flat_map(iter)</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">square_batch</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">value</span> <span class="o">*</span> <span class="n">value</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">batch</span><span class="p">)</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
-<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>    <span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>        <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">17</span><span class="p">))</span>
-<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>        <span class="o">.</span><span class="n">parallel</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>        <span class="o">.</span><span class="n">map_batches</span><span class="p">(</span><span class="n">square_batch</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>        <span class="o">.</span><span class="n">flat_map</span><span class="p">(</span><span class="nb">iter</span><span class="p">)</span>
-<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>        <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>    <span class="p">)</span>
-<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[</span><span class="n">value</span> <span class="o">*</span> <span class="n">value</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">17</span><span class="p">)]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">square_batch</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">value</span> <span class="o">*</span> <span class="n">value</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">batch</span><span class="p">)</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>    <span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>        <span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">17</span><span class="p">))</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>        <span class="o">.</span><span class="n">parallel</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;process&quot;</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>        <span class="o">.</span><span class="n">map_batches</span><span class="p">(</span><span class="n">square_batch</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>        <span class="o">.</span><span class="n">flat_map</span><span class="p">(</span><span class="nb">iter</span><span class="p">)</span>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>        <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>    <span class="p">)</span>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[</span><span class="n">value</span> <span class="o">*</span> <span class="n">value</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">17</span><span class="p">)]</span>
 </code></pre></div>
 <p>With batch mapping, <code>buffer</code> counts batches, each holding up to <code>size</code> original
 items. A batch callback can process items beyond the first result a downstream
@@ -1835,26 +2063,26 @@ defaults to one call in flight. Explicit concurrency changes the unit of work
 to a batch. <code>timeout</code> is cooperative: callbacks run on the event loop, so a
 callback that blocks that loop cannot be interrupted by timeout or cancellation.
 Use asynchronous I/O in async callbacks:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">total_batch</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="k">return</span> <span class="nb">sum</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">summarize</span><span class="p">():</span>
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>        <span class="n">aflow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">7</span><span class="p">))</span>
-<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>        <span class="o">.</span><span class="n">map_batches</span><span class="p">(</span><span class="n">total_batch</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
-<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>        <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>    <span class="p">)</span>
-<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">6</span><span class="p">]</span>
-<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>
-<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>
-<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a>    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">summarize</span><span class="p">())</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">total_batch</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>    <span class="k">return</span> <span class="nb">sum</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">summarize</span><span class="p">():</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>        <span class="n">aflow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">7</span><span class="p">))</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>        <span class="o">.</span><span class="n">map_batches</span><span class="p">(</span><span class="n">total_batch</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">buffer</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>        <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a>    <span class="p">)</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">6</span><span class="p">]</span>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a>
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a>
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a>    <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">summarize</span><span class="p">())</span>
 </code></pre></div>
 <p>Both forms include a shorter final batch and leave callback results intact.
 Empty sources do not call the mapper. Early exit can skip some submitted
@@ -1948,8 +2176,8 @@ output, and stopping after 16 outputs. It validates complete ordered values
 before timing, including full-consumption tasks whose timed terminal is <code>count()</code>.
 For larger benchmark sizes, join row budgets explicitly scale to cover the
 fixture; library defaults remain unchanged. To reproduce this local comparison:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;sorted.*&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">7</span><span class="w"> </span>--json<span class="w"> </span>artifacts/sorted-10000.json
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark.py<span class="w"> </span>--competitive<span class="w"> </span>--include<span class="w"> </span><span class="s1">&#39;sorted.*&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span>--size<span class="w"> </span><span class="m">10000</span><span class="w"> </span>--repeats<span class="w"> </span><span class="m">7</span><span class="w"> </span>--json<span class="w"> </span>artifacts/sorted-10000.json
 </code></pre></div>
 
 
