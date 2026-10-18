@@ -12,7 +12,9 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
 The current stable release is
-[2.4.0](https://github.com/steventimes/fpstreams/releases/tag/v2.4.0). It adds
+[2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1). This maintenance
+release reorganizes planner and execution internals with no public API changes.
+Version 2.4.0 adds
 stateful pipeline operations, composed aggregation, shared execution limits,
 file recovery, and versioned execution metadata. It includes the batch mapping,
 caller-owned executors, and async typing fixes introduced in 2.3.0.

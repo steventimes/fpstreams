@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "fpstreams"
-version = "2.4.0"
+version = "2.4.1"
 description = "Lazy Python pipelines for iterables and records, with bounded async concurrency."
 readme = "README.md"
 authors = [

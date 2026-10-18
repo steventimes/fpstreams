@@ -5,6 +5,8 @@ including changed defaults.
 
 ## Unreleased
 
+## 2.4.1 - 2026-10-18
+
 ### Changed
 
 - Separate relational candidate recognition and tree compilation from the general

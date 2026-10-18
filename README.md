@@ -11,8 +11,9 @@ Lazy Python pipelines for iterables and records, with bounded async concurrency.
 
 Python 3.11 or newer is required.
 
-The current stable release is [2.4.0](https://github.com/steventimes/fpstreams/releases/tag/v2.4.0).
-It adds stateful pipeline operations, composed aggregation, shared execution
+The current stable release is [2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1).
+This maintenance release reorganizes planner and execution internals with no public API changes.
+Version 2.4.0 added stateful pipeline operations, composed aggregation, shared execution
 limits, file recovery, and versioned execution metadata. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
 [performance guide](https://steventimes.github.io/fpstreams/user-guide/performance/#process-mapping-and-explicit-batches)

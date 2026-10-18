@@ -1,5 +1,5 @@
 {
-  "version": "2.4.0",
+  "version": "2.4.1",
   "root_exports": [
     "Aggregator",
     "AsyncFlow",
@@ -12840,7 +12840,7 @@
     "__version__": {
       "kind": "constant",
       "target": "builtins.str",
-      "value": "2.4.0",
+      "value": "2.4.1",
       "signature": null,
       "callables": {},
       "properties": []
