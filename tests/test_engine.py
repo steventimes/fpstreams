@@ -7505,7 +7505,7 @@ def test_exact_record_multi_active_timer_preserves_python_list_growth(
     import signal
 
     from fpstreams import _native
-    from fpstreams.execution.relational import _execute_authoritative_group
+    from fpstreams.execution.relational.collector_group import execute_collector_group
 
     records = [(0, 1)] * 500_000
     previous = signal.getsignal(signal.SIGALRM)
@@ -7518,7 +7518,7 @@ def test_exact_record_multi_active_timer_preserves_python_list_growth(
 
     def append_once(_signum: int, frame: object) -> None:
         nonlocal appended
-        if not appended and getattr(frame, "f_code", None) is _execute_authoritative_group.__code__:
+        if not appended and getattr(frame, "f_code", None) is execute_collector_group.__code__:
             records.append((0, 999))
             appended = True
 

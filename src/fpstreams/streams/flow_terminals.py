@@ -10,9 +10,10 @@ import json
 import math
 import operator
 import os
+import sys as _sys
 from collections import Counter, deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from numbers import Real
 from time import perf_counter_ns
 from typing import Any, Generic, Literal, TypeVar, cast, overload
@@ -40,7 +41,7 @@ from ..collecting.statistics import (
     validate_ddof,
     variance_from,
 )
-from ..errors import BufferLimitError, EmptyFlowError, NativeUnsupportedError
+from ..errors import BufferLimitError, EmptyFlowError
 from ..execution import (
     exact_count,
     execute,
@@ -50,7 +51,7 @@ from ..execution import (
     try_native_statistics,
     try_native_terminal,
 )
-from ..execution.physical import execute_physical, operations_from_physical_nodes
+from ..execution.physical import execute_physical
 from ..execution.sync import open_operations
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.selectors import Selector, compile_selector
@@ -58,8 +59,6 @@ from ..io_safety import output_path, spreadsheet_safe_cell
 from ..physical.plan import (
     BackendPayload,
     PhysicalPlan,
-    SortPhysicalNode,
-    SortStrategy,
 )
 from ..planning.compiler import compile_query
 from ..planning.logical import Pipeline, Query, SourceNode, linear_pipeline
@@ -84,15 +83,13 @@ from ..planning.source import (
 from ..planning.sync import (
     DropOp,
     Operation,
-    ParallelMapOp,
     SortOp,
     TakeOp,
 )
 from ..primitives.result import Err, Ok
 from ..runtime import failpoints as _failpoints
 from ..runtime.failpoints import has_active_failpoints
-from ..runtime.iterators import close_iterators, closing_iterators
-from ..runtime.query import QueryRuntime
+from ..runtime.iterators import closing_iterators
 from ..runtime.report import (
     ExecutionResult,
     _record_direct_strategy,
@@ -100,7 +97,40 @@ from ..runtime.report import (
     _start_recording,
     _stop_recording,
 )
-from . import _flow_structural_list
+from . import _flow_frequencies, _flow_materialize, _flow_numeric, _flow_structural_list
+from ._flow_frequencies import (
+    _prepend_frequency_boundary as _prepend_frequency_boundary,
+)
+from ._flow_frequencies import (
+    _update_identity_frequency_counts as _update_identity_frequency_counts,
+)
+from ._flow_materialize import (
+    _canonical_python_materializer as _canonical_python_materializer,
+)
+from ._flow_materialize import (
+    _direct_python_scalar_loop as _direct_python_scalar_loop,
+)
+from ._flow_materialize import (
+    _open_direct_python_scalar_values as _open_direct_python_scalar_values,
+)
+from ._flow_materialize import (
+    _try_direct_arrow_list as _try_direct_arrow_list,
+)
+from ._flow_materialize import (
+    _try_direct_numpy_list as _try_direct_numpy_list,
+)
+from ._flow_materialize import (
+    _try_direct_python_scalar_sum as _try_direct_python_scalar_sum,
+)
+from ._flow_numeric import (
+    _f64_total_compatibility_fallback as _f64_total_compatibility_fallback,
+)
+from ._flow_numeric import (
+    _minmax_python_values as _minmax_python_values,
+)
+from ._flow_numeric import (
+    _requires_sequential_f64_total as _requires_sequential_f64_total,
+)
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -261,8 +291,6 @@ _CANONICAL_MEAN_SOURCE_METHOD_BINDINGS = (
 _MINMAX_NATIVE_MASK = NativeAggregateMask(
     frozenset({NativeAggregateField.MINIMUM, NativeAggregateField.MAXIMUM})
 ).bits
-_SCALAR_FUSION_MIN_ROWS = 4_096
-_NATIVE_IDENTITY_SORT_MIN_ROWS = 32_768
 _NATIVE_NUMPY_I64_MIN_ROWS = 4_096
 _NATIVE_ITERATOR_MEAN_MIN_ROWS = 128
 _I64_MIN = -(1 << 63)
@@ -345,280 +373,6 @@ def _compensated_mean_dependencies_are_live(
     return _math_dict.get("isfinite") is _isfinite
 
 
-def _try_direct_numeric_iterator_mean(
-    pipeline: Pipeline,
-    iterator: Iterator[Any],
-) -> tuple[bool, float | None, bool]:
-    """Consume a callback-free exact prefix, then resume custom values in Python."""
-    iterator_type = _BUILTIN_TYPE(iterator)
-    try:
-        if iterator_type is _LIST_ITERATOR_TYPE:
-            estimated_rows = _LIST_ITERATOR_LENGTH_HINT(iterator)
-        elif iterator_type is _TUPLE_ITERATOR_TYPE:
-            estimated_rows = _TUPLE_ITERATOR_LENGTH_HINT(iterator)
-        elif iterator_type is _RANGE_ITERATOR_TYPE:
-            estimated_rows = _RANGE_ITERATOR_LENGTH_HINT(iterator)
-        elif iterator_type is _LONG_RANGE_ITERATOR_TYPE:
-            estimated_rows = _LONG_RANGE_ITERATOR_LENGTH_HINT(iterator)
-        else:
-            return False, None, False
-    except OverflowError:
-        return False, None, False
-    if (
-        estimated_rows < _NATIVE_ITERATOR_MEAN_MIN_ROWS
-        or pipeline.engine != "auto"
-        or has_active_failpoints()
-        or not _auto_mean_fastpath_is_safe()
-    ):
-        return False, None, False
-    from ..execution.native import execute_numeric_iterator_mean
-
-    outcome = execute_numeric_iterator_mean(
-        iterator,
-        _CANONICAL_MEAN_NATIVE_BINDINGS,
-        _CANONICAL_COMPENSATED_MEAN,
-        _CANONICAL_COMPENSATED_MEAN_CODE,
-        _iterator_mean_continuation_is_safe,
-    )
-    if outcome is None:
-        return False, None, False
-    status, count, total, compensation, boundary = outcome
-    if status == 0:
-        return True, (total + compensation) / count if count else None, False
-    if status == 3 and count == 0:
-        return False, None, False
-    if status == 2:
-        if boundary is None:
-            raise RuntimeError("native iterator mean omitted its Python boundary")
-        boundary_holder = [boundary]
-        del outcome, boundary
-        return (
-            True,
-            _continue_compensated_mean(
-                iterator,
-                count,
-                total,
-                compensation,
-                _CANONICAL_MEAN_ISFINITE,
-                boundary_holder,
-            ),
-            True,
-        )
-    if status == 3:
-        return (
-            True,
-            _continue_compensated_mean(
-                iterator,
-                count,
-                total,
-                compensation,
-                _CANONICAL_MEAN_ISFINITE,
-            ),
-            True,
-        )
-    raise RuntimeError(f"native iterator mean returned unknown status {status}")
-
-
-def _run_opened_auto_numeric_mean(
-    pipeline: Pipeline,
-    native_decision: EngineDecision | None,
-    arrow_prefix: Any | None = None,
-) -> tuple[float | None, str, str]:
-    """Open the live source once, then use Rust only when that iterator proves retained data."""
-    source_iterator = pipeline.source.open()
-    native_safe = _canonical_mean_source_boundaries_are_live() and not has_active_failpoints()
-    if native_safe and type(pipeline.source) is Source:
-        retained = pipeline.source.retained_sequence()
-        if type(retained) in (list, tuple, range):
-            retained_sequence = cast(list[Any] | tuple[Any, ...] | range, retained)
-        else:
-            retained_sequence = None
-        retained_iterator_matches = (
-            retained_sequence is not None
-            and _iterator_starts_at_retained_sequence(source_iterator, retained_sequence)
-        )
-        from ..tabular.numpy import guarded_numpy_f64_column, guarded_numpy_i64_column
-
-        native_kind = (
-            native_decision.program.kind
-            if native_decision is not None and native_decision.program is not None
-            else None
-        )
-        numpy_source_matches = retained_sequence is None and (
-            (native_kind == "i64" and guarded_numpy_i64_column(pipeline.source) is not None)
-            or (native_kind == "f64" and guarded_numpy_f64_column(pipeline.source) is not None)
-        )
-        if (
-            (retained_iterator_matches or numpy_source_matches)
-            and not has_active_failpoints()
-            and _auto_mean_fastpath_is_safe()
-        ):
-            try:
-                native, result = try_native_mean(pipeline, decision=native_decision)
-            except BaseException as error:
-                close_iterators((source_iterator,), active_error=error)
-                raise
-            if native:
-                close_iterators((source_iterator,))
-                return (
-                    result,
-                    "rust_direct",
-                    "the live source opened before its proven numeric storage was reduced in Rust",
-                )
-        if arrow_prefix is not None:
-            from ..execution.arrow import try_arrow_numeric_field_mean
-            from ..tabular.arrow import guarded_arrow_mean_source
-
-            if (
-                guarded_arrow_mean_source(pipeline.source) is not None
-                and not has_active_failpoints()
-                and _auto_mean_fastpath_is_safe()
-            ):
-                try:
-                    handled, result = try_arrow_numeric_field_mean(pipeline, arrow_prefix)
-                except BaseException as error:
-                    close_iterators((source_iterator,), active_error=error)
-                    raise
-                if handled:
-                    close_iterators((source_iterator,))
-                    return (
-                        result,
-                        "arrow_direct",
-                        "the live source opened before a compensated Arrow column reduction",
-                    )
-
-    with open_operations(source_iterator, pipeline.operations) as iterator:
-        handled, result, hybrid = _try_direct_numeric_iterator_mean(pipeline, iterator)
-        if handled:
-            return (
-                result,
-                "rust_python_hybrid" if hybrid else "rust_direct",
-                (
-                    "a callback-free numeric prefix continued through the canonical Python "
-                    "compensated mean loop"
-                    if hybrid
-                    else "the opened numeric iterator was reduced by a callback-free "
-                    "compensated Rust loop"
-                ),
-            )
-        return (
-            compensated_mean(iterator),
-            "python_direct",
-            "the live opened source required the canonical Python compensated mean loop",
-        )
-
-
-def _sum_python_pipeline(pipeline: Pipeline, start: Any) -> Any:
-    """Reduce a Python iterator chain in CPython's C loop under query-scoped ownership."""
-    with open_operations(
-        pipeline.source.open(),
-        pipeline.operations,
-        fuse_callable_map_filter=True,
-    ) as iterator:
-        return builtins.sum(iterator, start)
-
-
-def _run_statistics_aggregations(
-    pipeline: Pipeline,
-    items: AggregationItems,
-    program: AggregationProgram,
-    native_decision: EngineDecision | None,
-) -> dict[str, Any]:
-    """Run one statistics snapshot or enter the canonical collectors once."""
-    native, statistics = try_native_statistics(pipeline, decision=native_decision)
-    if native:
-        if statistics is None:
-            raise RuntimeError("native statistics result is missing")
-        count, mean, squared_deviations = statistics
-        return finish_native_aggregations(
-            items,
-            (
-                count,
-                0,
-                None,
-                None,
-                None,
-                None,
-                mean,
-                squared_deviations,
-            ),
-        )
-    # A rejected or failed statistics attempt may already have touched
-    # conversion protocols. Do not observe user state through another ABI.
-    return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
-
-
-def _run_mean_only_aggregations(
-    physical: PhysicalPlan,
-    pipeline: Pipeline,
-    items: AggregationItems,
-    program: AggregationProgram,
-    native_decision: EngineDecision | None,
-) -> dict[str, Any]:
-    """Run repeated mean aggregators without bypassing automatic source-open semantics."""
-    if pipeline.engine == "auto" and physical.parallel is None and pipeline.parallel is None:
-        payload = physical.backend_payload
-        arrow_prefix = payload.arrow_prefix if isinstance(payload, BackendPayload) else None
-        result, strategy, reason = _run_opened_auto_numeric_mean(
-            pipeline,
-            native_decision,
-            arrow_prefix,
-        )
-        _record_direct_strategy(physical, strategy, reason)
-        return {name: result for name, _aggregation in items}
-    if pipeline.engine == "native":
-        native, result = try_native_mean(pipeline, decision=native_decision)
-        if native:
-            return {name: result for name, _aggregation in items}
-    return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
-
-
-def _requires_sequential_f64_total(
-    mask: NativeAggregateMask | None,
-    decision: EngineDecision | None,
-) -> bool:
-    """Return whether an aggregate plan depends on the versioned float-total ABI."""
-    return (
-        mask is not None
-        and NativeAggregateField.TOTAL in mask.fields
-        and decision is not None
-        and decision.program is not None
-        and decision.program.kind == "f64"
-    )
-
-
-def _f64_total_compatibility_fallback(
-    pipeline: Pipeline,
-    program: AggregationProgram,
-    decision: EngineDecision | None,
-) -> dict[str, Any] | None:
-    """Fall back or reject when an older wheel cannot preserve aggregate sum order."""
-    if not _requires_sequential_f64_total(program.native_mask, decision):
-        return None
-    from ..execution.native import sequential_f64_aggregate_total_available
-
-    if sequential_f64_aggregate_total_available():
-        return None
-    reason = "native extension lacks sequential f64 aggregate total support"
-    if pipeline.engine == "native":
-        raise NativeUnsupportedError(reason)
-    return run_collector_program(execute(pipeline, auto_native=False), program.collectors)
-
-
-def _minmax_python_values(iterator: Iterator[Any]) -> tuple[Any, Any]:
-    """Compare keyless values directly while their caller retains iterator ownership."""
-    try:
-        minimum = maximum = next(iterator)
-    except StopIteration:
-        raise EmptyFlowError("minmax() requires at least one item") from None
-    for item in iterator:
-        if item < minimum:
-            minimum = item
-        if item > maximum:
-            maximum = item
-    return minimum, maximum
-
-
 @contextmanager
 def _open_python_pipeline_values(
     pipeline: Pipeline,
@@ -671,410 +425,6 @@ def _open_terminal_values(
         iterator = execute(pipeline, auto_native=False)
     with closing_iterators((iterator,)):
         yield iterator
-
-
-@contextmanager
-def _open_frequency_values(
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-    *,
-    direct_range: bool,
-    has_key: bool,
-) -> Generator[Iterator[Any], None, None]:
-    """Preserve key callbacks before reading later inputs in automatic linear plans."""
-    from ..runtime.failpoints import has_active_failpoints
-
-    if (
-        has_key
-        and pipeline is not None
-        and pipeline.engine == "auto"
-        and physical.root is None
-        and physical.parallel is None
-    ):
-        with _open_python_pipeline_values(pipeline) as iterator:
-            _record_direct_strategy(
-                physical,
-                "python_frequency",
-                "Python frequency counting preserves key callbacks before later input reads",
-            )
-            yield iterator
-        return
-
-    payload = physical.backend_payload
-    python_selected = (
-        physical.root is None
-        and physical.parallel is None
-        and pipeline is not None
-        and isinstance(payload, BackendPayload)
-        and payload.arrow_prefix is None
-        and payload.native_decision is not None
-        and payload.native_decision.engine == "python"
-    )
-    instrumented_auto = (
-        has_active_failpoints() and pipeline is not None and pipeline.engine != "native"
-    )
-    if direct_range or python_selected or instrumented_auto:
-        with _open_terminal_values(physical, pipeline) as iterator:
-            yield iterator
-        return
-
-    iterator = execute_physical(physical)
-    with closing_iterators((iterator,)):
-        yield iterator
-
-
-def _update_identity_frequency_counts(
-    values: Iterable[Any],
-    counts: dict[Any, int],
-) -> dict[Any, int]:
-    get_count = counts.get
-    for selected in values:
-        try:
-            count = get_count(selected, 0)
-        except TypeError:
-            raise TypeError("reduce_by() keys must be hashable") from None
-        counts[selected] = count + 1
-    return counts
-
-
-def _try_native_identity_frequencies(
-    pipeline: Pipeline | None,
-    physical: PhysicalPlan | None = None,
-) -> tuple[bool, dict[Any, int] | None]:
-    """Count retained builtin keys without observing custom key protocols."""
-    if (
-        pipeline is None
-        or pipeline.engine == "python"
-        or pipeline.operations
-        or has_active_failpoints()
-        or type(source := pipeline.source.native_data) not in (list, tuple)
-    ):
-        return False, None
-    try:
-        from .. import _native
-    except ImportError:
-        return False, None
-
-    kernel = getattr(_native, "frequencies_i64_exact_v1", None)
-    if kernel is None:
-        return False, None
-    result = kernel(source)
-    if result is None:
-        return False, None
-    if type(result) is dict:
-        _record_direct_strategy(
-            physical, "rust_direct", "native integer frequency counting completed"
-        )
-        return True, result
-    counts, remainder = cast(tuple[dict[Any, int], Iterator[Any]], result)
-    continue_native = getattr(_native, "frequencies_exact_prefix_v1", None)
-    if continue_native is not None:
-        outcome = continue_native(counts, remainder)
-        if outcome is not None:
-            boundary, exhausted = outcome
-            if exhausted:
-                _record_direct_strategy(
-                    physical,
-                    "rust_direct",
-                    "native frequency counting completed for exact builtin keys",
-                )
-                return True, counts
-            remainder = _prepend_frequency_boundary(boundary, remainder)
-            del boundary, outcome
-    counts = _update_identity_frequency_counts(remainder, counts)
-    _record_direct_strategy(
-        physical, "python_frequency", "Python counting completed after the native frequency prefix"
-    )
-    return True, counts
-
-
-def _prepend_frequency_boundary(first: Any, remainder: Iterator[Any]) -> Iterator[Any]:
-    """Pass a native boundary to Python once, retaining normal loop-variable lifetimes."""
-    yield first
-    del first
-    yield from remainder
-
-
-def _try_numpy_frequency_iterator(
-    iterator: Iterator[Any], physical: PhysicalPlan, pipeline: Pipeline | None
-) -> dict[Any, int] | None:
-    """Count a selected NumPy stream through its existing runtime-owned generator."""
-    payload = physical.backend_payload
-    if (
-        pipeline is None
-        or pipeline.engine != "auto"
-        or pipeline.operations
-        or physical.root is not None
-        or physical.parallel is not None
-        or not isinstance(payload, BackendPayload)
-        or payload.arrow_prefix is not None
-        or payload.native_decision is None
-        or payload.native_decision.engine != "native"
-        or has_active_failpoints()
-    ):
-        return None
-    from ..tabular.numpy import NumpyColumnSource
-
-    if type(pipeline.source.native_data) is not NumpyColumnSource:
-        return None
-    try:
-        from .. import _native
-    except ImportError:
-        return None
-    kernel = getattr(_native, "frequencies_iter_prefix_v1", None)
-    if kernel is None or (outcome := kernel(iterator)) is None:
-        return None
-    counts, boundary, exhausted = outcome
-    if exhausted:
-        _record_direct_strategy(
-            physical,
-            "rust_direct",
-            "native frequency counting consumed the selected NumPy iterator",
-        )
-        return cast(dict[Any, int], counts)
-    remainder = _prepend_frequency_boundary(boundary, iterator)
-    del boundary, outcome
-    counts = _update_identity_frequency_counts(remainder, counts)
-    _record_direct_strategy(
-        physical, "python_frequency", "Python counting completed after the native iterator prefix"
-    )
-    return counts
-
-
-def _try_direct_python_materialize(
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-    target: str,
-    materializer: Callable[[Iterable[Any]], Any],
-) -> tuple[bool, Any | None]:
-    """Drain one selected linear Python plan without executor forwarding."""
-    payload = physical.backend_payload
-    python_selected = payload is None or (
-        isinstance(payload, BackendPayload)
-        and payload.arrow_prefix is None
-        and payload.native_decision is not None
-        and payload.native_decision.engine == "python"
-    )
-    if (
-        physical.root is not None
-        or physical.parallel is not None
-        or pipeline is None
-        or _failpoints.has_active_failpoints is not _CANONICAL_HAS_ACTIVE_FAILPOINTS
-        or _READ_FUNCTION_CODE(_CANONICAL_HAS_ACTIVE_FAILPOINTS)
-        is not _CANONICAL_HAS_ACTIVE_FAILPOINTS_CODE
-        or _CANONICAL_HAS_ACTIVE_FAILPOINTS()
-        or not python_selected
-        or not _canonical_python_materializer(target, materializer)
-    ):
-        return False, None
-
-    retained_source = _flow_structural_list._retained_sequence(pipeline.source)
-    if retained_source is not None:
-        scalar_loop = _direct_python_scalar_loop(physical, pipeline, retained_source)
-        if scalar_loop is not None:
-            with _open_direct_python_scalar_values(pipeline, scalar_loop) as iterator:
-                return True, materializer(iterator)
-    elif target not in ("list", "tuple"):
-        return False, None
-
-    operations = operations_from_physical_nodes(physical.nodes)
-    # An opaque identity iterator may expose a user-defined __length_hint__ that the
-    # canonical executor's forwarding generators intentionally hide. Every planned
-    # operation produces an fpstreams-owned iterator boundary, while exact retained
-    # sources have only side-effect-free built-in length hints.
-    if not operations and retained_source is None:
-        return False, None
-    if any(isinstance(operation, ParallelMapOp) for operation in operations):
-        return False, None
-    if any(
-        isinstance(node, SortPhysicalNode) and node.strategy is SortStrategy.ARROW_STABLE
-        for node in physical.nodes
-    ):
-        return False, None
-
-    with _open_direct_python_materialize_values(pipeline, operations) as iterator:
-        return True, materializer(iterator)
-
-
-@contextmanager
-def _open_direct_python_materialize_values(
-    pipeline: Pipeline,
-    operations: tuple[Operation, ...],
-) -> Generator[Iterator[Any], None, None]:
-    """Own one real source open and its canonical linear iterator chain."""
-    runtime = QueryRuntime()
-    active_error: BaseException | None = None
-    try:
-        source_iterator = pipeline.source.open()
-        with open_operations(
-            source_iterator,
-            operations,
-            runtime=runtime,
-            fuse_callable_map_filter=True,
-        ) as iterator:
-            yield iterator
-    except BaseException as error:
-        active_error = error
-        runtime.close(None if isinstance(error, GeneratorExit) else error)
-        raise
-    finally:
-        if active_error is None:
-            runtime.close()
-
-
-def _canonical_python_materializer(
-    target: str,
-    materializer: Callable[[Iterable[Any]], Any],
-) -> bool:
-    """Require the exact constructor whose eager source ownership the fast path models."""
-    if target == "list":
-        return materializer is _BUILTIN_LIST
-    if target == "tuple":
-        return materializer is _BUILTIN_TUPLE
-    if target == "set":
-        return materializer is _BUILTIN_SET
-    raise RuntimeError(f"unknown materialization target {target!r}")
-
-
-def _direct_python_scalar_loop(
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-    retained_source: object | None,
-) -> Callable[[Iterator[Any]], Iterator[Any]] | None:
-    """Return a bounded scalar loop only for a Python-selected container query."""
-    from ..runtime.failpoints import has_active_failpoints
-
-    exact_size = None if pipeline is None else pipeline.source.current_exact_size()
-    python_selected = pipeline is not None and (
-        pipeline.engine == "python"
-        or (pipeline.engine == "auto" and physical.decision.selected_engine == "python")
-    )
-    if (
-        physical.root is not None
-        or pipeline is None
-        or not python_selected
-        or has_active_failpoints()
-        or retained_source is None
-        or exact_size is None
-        or exact_size < _SCALAR_FUSION_MIN_ROWS
-    ):
-        return None
-    from ..execution._scalar_fusion import compile_scalar_fusion
-
-    return compile_scalar_fusion(physical.nodes)
-
-
-@contextmanager
-def _open_direct_python_scalar_values(
-    pipeline: Pipeline,
-    scalar_loop: Callable[[Iterator[Any]], Iterator[Any]],
-) -> Generator[Iterator[Any], None, None]:
-    """Open and close the exact-container source around one generated scalar loop."""
-    with QueryRuntime():
-        source_iterator = pipeline.source.open()
-        iterator = scalar_loop(source_iterator)
-        with closing_iterators((iterator, source_iterator)):
-            yield iterator
-
-
-def _try_direct_python_scalar_sum(
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-    start: Any,
-) -> tuple[bool, Any | None]:
-    """Reduce one large closed scalar Python plan without per-stage callbacks."""
-    retained_source = (
-        None if pipeline is None else _flow_structural_list._retained_sequence(pipeline.source)
-    )
-    scalar_loop = _direct_python_scalar_loop(physical, pipeline, retained_source)
-    if scalar_loop is None or pipeline is None:
-        return False, None
-    with _open_direct_python_scalar_values(pipeline, scalar_loop) as iterator:
-        return True, builtins.sum(iterator, start)
-
-
-def _try_direct_numpy_list(
-    owner: Any,
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-) -> tuple[bool, list[Any] | None]:
-    """Collect exact identity NumPy rows without executor generator forwarding."""
-    from .flow import Flow
-
-    if (
-        type(owner) is not Flow
-        or physical.root is not None
-        or physical.parallel is not None
-        or pipeline is None
-        or pipeline.engine != "auto"
-        or pipeline.parallel is not None
-        or pipeline.operations
-        or type(pipeline.source) is not Source
-        or Source.__dict__.get("open") is not _CANONICAL_SOURCE_OPEN
-        or Source.__dict__.get("open_native") is not _CANONICAL_SOURCE_OPEN_NATIVE
-    ):
-        return False, None
-
-    from ..runtime.failpoints import hit
-    from ..tabular.numpy import (
-        NumpyRowSource,
-        guarded_numpy_identity_source,
-        numpy_identity_rows,
-    )
-
-    descriptor = guarded_numpy_identity_source(pipeline.source)
-    if descriptor is None or not 1 <= len(descriptor.columns) <= 8:
-        return False, None
-
-    opened = pipeline.source.open_native(NumpyRowSource)
-    hit("source.open.after")
-    result = numpy_identity_rows(opened)
-    _record_direct_strategy(
-        physical,
-        "numpy_direct",
-        "identity NumPy rows were collected at their retained source boundary",
-    )
-    return True, result
-
-
-def _try_direct_arrow_list(
-    physical: PhysicalPlan,
-    pipeline: Pipeline | None,
-) -> tuple[bool, list[Any] | None]:
-    """Collect a replayable identity Arrow source without per-row generator forwarding."""
-    from ..runtime.failpoints import has_active_failpoints, hit
-
-    if (
-        physical.root is not None
-        or pipeline is None
-        or pipeline.engine != "auto"
-        or pipeline.parallel is not None
-        or pipeline.operations
-    ):
-        return False, None
-
-    from ..planning.arrow_source import ArrowBatchSource
-    from ..tabular import arrow as arrow_adapter
-
-    descriptor = pipeline.source.native_data
-    if not isinstance(descriptor, ArrowBatchSource) or descriptor.kind not in {
-        "table",
-        "record_batch",
-    }:
-        return False, None
-    if has_active_failpoints():
-        return False, None
-
-    pipeline.source.open_native(ArrowBatchSource)
-    hit("source.open.after")
-    batches = descriptor.open_batches()
-    result: list[Any] = []
-    try:
-        for batch in batches:
-            result.extend(arrow_adapter.batch_to_rows(batch))
-    finally:
-        arrow_adapter._close(batches)
-    return True, result
 
 
 def _canonical_mean_functions_are_live(
@@ -1323,16 +673,142 @@ def _iterator_starts_at_retained_sequence(
     return remaining is source and type(offset) is int and offset == 0
 
 
-def _materialize_opened_python_sort(
-    source_iterator: Iterator[Any],
-    operation: SortOp,
-) -> list[Any]:
-    """Finish one already-opened source through the canonical sort boundary."""
-    with (
-        QueryRuntime() as runtime,
-        open_operations(source_iterator, (operation,), runtime=runtime) as iterator,
-    ):
-        return _BUILTIN_LIST(iterator)
+def _sum_python_pipeline(pipeline: Pipeline, start: Any) -> Any:
+    """Reduce through the current Python operation opener under query ownership."""
+    return _flow_numeric._sum_python_pipeline(
+        pipeline, start, hooks=cast(_flow_numeric.NumericHooks, _sys.modules[__name__])
+    )
+
+
+def _open_direct_python_materialize_values(
+    pipeline: Pipeline, operations: tuple[Operation, ...]
+) -> AbstractContextManager[Iterator[Any]]:
+    """Preserve the live operation opener while a direct materializer owns the input."""
+    return _flow_materialize._open_direct_python_materialize_values(
+        pipeline, operations, hooks=cast(_flow_materialize.MaterializeHooks, _sys.modules[__name__])
+    )
+
+
+def _materialize_opened_python_sort(source_iterator: Iterator[Any], operation: SortOp) -> list[Any]:
+    """Finish an opened sort through the current Python operation boundary."""
+    return _flow_materialize._materialize_opened_python_sort(
+        source_iterator,
+        operation,
+        hooks=cast(_flow_materialize.MaterializeHooks, _sys.modules[__name__]),
+    )
+
+
+def _try_direct_numeric_iterator_mean(
+    pipeline: Pipeline,
+    iterator: Iterator[Any],
+) -> tuple[bool, float | None, bool]:
+    """Consume a callback-free exact prefix, then resume custom values in Python."""
+    return _flow_numeric._try_direct_numeric_iterator_mean(
+        pipeline, iterator, hooks=cast(_flow_numeric.NumericHooks, _sys.modules[__name__])
+    )
+
+
+def _run_opened_auto_numeric_mean(
+    pipeline: Pipeline,
+    native_decision: EngineDecision | None,
+    arrow_prefix: Any | None = None,
+) -> tuple[float | None, str, str]:
+    """Open the live source once, then use Rust only when that iterator proves retained data."""
+    return _flow_numeric._run_opened_auto_numeric_mean(
+        pipeline,
+        native_decision,
+        arrow_prefix,
+        hooks=cast(_flow_numeric.NumericHooks, _sys.modules[__name__]),
+    )
+
+
+def _run_statistics_aggregations(
+    pipeline: Pipeline,
+    items: AggregationItems,
+    program: AggregationProgram,
+    native_decision: EngineDecision | None,
+) -> dict[str, Any]:
+    """Run one statistics snapshot or enter the canonical collectors once."""
+    return _flow_numeric._run_statistics_aggregations(
+        pipeline,
+        items,
+        program,
+        native_decision,
+        hooks=cast(_flow_numeric.NumericHooks, _sys.modules[__name__]),
+    )
+
+
+def _run_mean_only_aggregations(
+    physical: PhysicalPlan,
+    pipeline: Pipeline,
+    items: AggregationItems,
+    program: AggregationProgram,
+    native_decision: EngineDecision | None,
+) -> dict[str, Any]:
+    """Run repeated mean aggregators without bypassing automatic source-open semantics."""
+    return _flow_numeric._run_mean_only_aggregations(
+        physical,
+        pipeline,
+        items,
+        program,
+        native_decision,
+        hooks=cast(_flow_numeric.NumericHooks, _sys.modules[__name__]),
+    )
+
+
+def _open_frequency_values(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+    *,
+    direct_range: bool,
+    has_key: bool,
+) -> AbstractContextManager[Iterator[Any]]:
+    """Preserve key callbacks before reading later inputs in automatic linear plans."""
+    return _flow_frequencies._open_frequency_values(
+        physical,
+        pipeline,
+        direct_range=direct_range,
+        has_key=has_key,
+        hooks=cast(_flow_frequencies.FrequencyHooks, _sys.modules[__name__]),
+    )
+
+
+def _try_native_identity_frequencies(
+    pipeline: Pipeline | None,
+    physical: PhysicalPlan | None = None,
+) -> tuple[bool, dict[Any, int] | None]:
+    """Count retained builtin keys without observing custom key protocols."""
+    return _flow_frequencies._try_native_identity_frequencies(
+        pipeline, physical, hooks=cast(_flow_frequencies.FrequencyHooks, _sys.modules[__name__])
+    )
+
+
+def _try_numpy_frequency_iterator(
+    iterator: Iterator[Any], physical: PhysicalPlan, pipeline: Pipeline | None
+) -> dict[Any, int] | None:
+    """Count a selected NumPy stream through its existing runtime-owned generator."""
+    return _flow_frequencies._try_numpy_frequency_iterator(
+        iterator,
+        physical,
+        pipeline,
+        hooks=cast(_flow_frequencies.FrequencyHooks, _sys.modules[__name__]),
+    )
+
+
+def _try_direct_python_materialize(
+    physical: PhysicalPlan,
+    pipeline: Pipeline | None,
+    target: str,
+    materializer: Callable[[Iterable[Any]], Any],
+) -> tuple[bool, Any | None]:
+    """Drain one selected linear Python plan without executor forwarding."""
+    return _flow_materialize._try_direct_python_materialize(
+        physical,
+        pipeline,
+        target,
+        materializer,
+        hooks=cast(_flow_materialize.MaterializeHooks, _sys.modules[__name__]),
+    )
 
 
 def _try_direct_sort_list(
@@ -1340,93 +816,9 @@ def _try_direct_sort_list(
     pipeline: Pipeline | None,
 ) -> tuple[bool, list[Any] | None]:
     """Materialize one planner-selected direct Arrow or retained Python sort."""
-    if len(physical.nodes) != 1 or not isinstance(node := physical.nodes[0], SortPhysicalNode):
-        return False, None
-    if node.strategy is SortStrategy.ARROW_STABLE:
-        from ..execution.arrow import materialize_retained_arrow_stable_sort
-
-        result = materialize_retained_arrow_stable_sort(physical)
-        return result is not None, result
-    operation = node.operation
-    payload = physical.backend_payload
-    python_selected = isinstance(payload, BackendPayload) and (
-        payload.arrow_prefix is None
-        and payload.native_decision is not None
-        and payload.native_decision.engine == "python"
+    return _flow_materialize._try_direct_sort_list(
+        physical, pipeline, hooks=cast(_flow_materialize.MaterializeHooks, _sys.modules[__name__])
     )
-    if (
-        pipeline is None
-        or node.strategy is not SortStrategy.IN_MEMORY
-        or type(operation) is not SortOp
-        or physical.parallel is not None
-        or physical.engine != "auto"
-        or pipeline.engine != "auto"
-        or physical.source is not pipeline.source
-        or type(pipeline.source) is not Source
-        or Source.__dict__.get("open") is not _CANONICAL_SOURCE_OPEN
-        or Source.__dict__.get("retained_sequence") is not _CANONICAL_RETAINED_SEQUENCE
-        or len(pipeline.operations) != 1
-        or pipeline.operations[0] is not operation
-        or operation.key is not None
-        or operation.buffer_size is not None
-        or not python_selected
-        or has_active_failpoints()
-        or builtins.sorted is not _BUILTIN_SORTED
-    ):
-        return False, None
-    retained = pipeline.source.retained_sequence()
-    if type(retained) not in (list, tuple):
-        return False, None
-    source = cast(list[Any] | tuple[Any, ...], retained)
-    if len(source) < _NATIVE_IDENTITY_SORT_MIN_ROWS or type(operation.reverse) is not bool:
-        return False, None
-    try:
-        source_iterator = pipeline.source.open()
-    except StopIteration as error:
-        raise RuntimeError("generator raised StopIteration") from error
-
-    try:
-        from fpstreams import _native
-    except ImportError:
-        return True, _materialize_opened_python_sort(source_iterator, operation)
-    native_sort = getattr(_native, "sort_i64_exact_sequence_v1", None)
-    if (
-        not callable(native_sort)
-        or has_active_failpoints()
-        or builtins.sorted is not _BUILTIN_SORTED
-        or Source.__dict__.get("open") is not _CANONICAL_SOURCE_OPEN
-        or Source.__dict__.get("retained_sequence") is not _CANONICAL_RETAINED_SEQUENCE
-        or pipeline.source.retained_sequence() is not source
-        or not _iterator_starts_at_retained_sequence(source_iterator, source)
-    ):
-        result = _materialize_opened_python_sort(source_iterator, operation)
-        _record_direct_strategy(
-            physical,
-            "python_direct",
-            "the opened sort source continued through canonical Python execution",
-        )
-        return True, result
-
-    try:
-        result = native_sort(source, operation.reverse)
-    except BaseException as error:
-        close_iterators((source_iterator,), active_error=error)
-        raise
-    if result is None:
-        result = _materialize_opened_python_sort(source_iterator, operation)
-        _record_direct_strategy(
-            physical,
-            "python_direct",
-            "the adaptive integer sort retained canonical Python execution",
-        )
-        return True, result
-    close_iterators((source_iterator,))
-    _record_direct_strategy(
-        physical,
-        "rust_direct",
-        "retained exact integers were stably sorted by the Rust direct sink",
-    )
-    return True, cast(list[Any], result)
 
 
 class FlowTerminalsMixin(Generic[T]):

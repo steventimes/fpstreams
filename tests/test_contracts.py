@@ -753,6 +753,56 @@ def test_analyzable_map_and_filter_compile_once(monkeypatch) -> None:
     assert calls == 2
 
 
+def test_relational_compilation_uses_live_unary_compiler_without_opening_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive plans share the current compiler while keeping callbacks and input unopened."""
+    from fpstreams.planning import compiler
+
+    events: list[str] = []
+    original = compiler._compile_node
+
+    def source() -> Iterator[dict[str, int]]:
+        events.append("open")
+        yield {"key": 1, "value": 3}
+
+    def tracked(index, operation):
+        events.append("compile:first")
+        monkeypatch.setattr(compiler, "_compile_node", later)
+        return original(index, operation)
+
+    def later(index, operation):
+        events.append("compile:later")
+        return original(index, operation)
+
+    def mapped(record):
+        events.append("map")
+        return record
+
+    grouped = (
+        fpstreams.rows(source())
+        .map(mapped)
+        .group_by("key")
+        .aggregate(total=fpstreams.agg.sum("value"))
+        .map(mapped)
+    )
+    monkeypatch.setattr(compiler, "_compile_node", tracked)
+    physical = compiler.compile_query(grouped._query("list"))
+
+    assert physical.root is not None
+    assert events == ["compile:first", "compile:later"]
+    assert grouped.to_list() == [{"key": 1, "total": 3}]
+    assert events == [
+        "compile:first",
+        "compile:later",
+        "compile:later",
+        "compile:later",
+        "open",
+        "map",
+        "map",
+    ]
+
+
 def test_opaque_callback_remains_row_physical_node() -> None:
     """Arbitrary Python callbacks remain a no-reorder/no-replay compatibility barrier."""
     physical = compile_query(flow([1]).map(lambda value: value + 1)._query("list"))

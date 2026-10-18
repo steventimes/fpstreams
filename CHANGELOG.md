@@ -5,6 +5,12 @@ including changed defaults.
 
 ## Unreleased
 
+### Changed
+
+- Separate relational candidate recognition and tree compilation from the general
+  compiler. Native grouping, Collector grouping, and synchronous terminal helpers
+  now live in domain modules; public interfaces and execution rules stay the same.
+
 ## 2.4.0 - 2026-10-18
 
 ### Added

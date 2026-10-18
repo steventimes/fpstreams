@@ -30,6 +30,23 @@ uv run maturin develop --release
 - Do not add a fast path that recognizes benchmark fixtures or only wins at one
   fixed size, type, or cardinality.
 
+## Internal execution code
+
+`planning/compiler.py` owns unary-stage compilation and source-free plan caches.
+`planning/relational.py` builds relation trees using that same stage compiler;
+`planning/relational_specs.py` recognizes backend candidates without opening inputs.
+
+`execution/relational/` keeps dispatch and live source/selector proofs at its
+package entry point. `native_group.py` owns optional native grouping ABIs, and
+`collector_group.py` owns first-seen Collector state and cleanup. Its hash lookup
+must observe replacements made by key and Collector callbacks.
+
+`streams/flow_terminals.py` keeps public methods and canonical identity guards.
+Its numeric, frequency, and materialization helpers accept the live terminal
+owner through explicit protocols. Keep a binding live when callbacks can replace it;
+copying that binding into a helper module can silently bypass the replacement.
+Regression coverage belongs in the existing contract, engine, and flow tests.
+
 ## Run the checks
 
 Run the checks that cover your change; CI runs the complete matrix. Core Python

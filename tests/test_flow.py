@@ -2689,6 +2689,37 @@ def test_auto_unique_range_fallback_closes_a_changed_iterator_once() -> None:
     assert values.close_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("terminal", "engine", "expected"),
+    [("sum", "python", 9), ("mean", "auto", 3.0), ("to_tuple", "python", (2, 3, 4))],
+)
+def test_terminal_helpers_keep_live_operation_opener(
+    monkeypatch: pytest.MonkeyPatch, terminal: str, engine: str, expected: object
+) -> None:
+    """Helper extraction must keep the terminal owner's opener and single close observable."""
+    from fpstreams.streams import flow_terminals
+
+    events: list[str] = []
+    original = flow_terminals.open_operations
+
+    def tracked(*args, **kwargs):
+        events.append("operations")
+        return original(*args, **kwargs)
+
+    def source() -> Iterator[int]:
+        events.append("open")
+        try:
+            yield from (1, 2, 3)
+        finally:
+            events.append("close")
+
+    monkeypatch.setattr(flow_terminals, "open_operations", tracked)
+    query = flow(source()).with_engine(engine).map(lambda value: value + 1)
+
+    assert getattr(query, terminal)() == expected
+    assert events == ["operations", "open", "close"]
+
+
 def test_auto_unique_range_deopts_when_wrapped_iterator_builder_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
