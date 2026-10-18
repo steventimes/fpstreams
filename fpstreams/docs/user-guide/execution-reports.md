@@ -49,7 +49,7 @@ iteration are not terminals for this API.
 | Tool | Information returned | Executes the input pipeline |
 | --- | --- | --- |
 | `explain(terminal=...).to_dict()` | Planned engines, stages, data movement, and static semantic `diagnostics` | No |
-| `run_with_report(terminal, ...)` | Terminal value, observed route, resource counts, and bounded events in unreleased code | Yes, once |
+| `run_with_report(terminal, ...)` | Terminal value, observed route, resource counts, and bounded events (events added in 2.4.0) | Yes, once |
 | `explain_reduction(collector)` | Collector declarations for combining partial states and reducer laws | No |
 
 Static `diagnostics` describe completion, ordering, and state risks in the plan.
@@ -69,14 +69,14 @@ its events does not call `explain()` or execute the query again.
 | `peak_owned_async_tasks` | Highest number of asyncio tasks owned by this query |
 | `peak_spill_files` | Highest number of spill files held open by this query |
 | `spill_bytes_written` | Cumulative framed spill bytes written by this query |
-| `events` | Immutable tuple containing the first 64 plan and route observations; unreleased |
-| `events_truncated` | Whether further observations exceeded the 64-event limit; unreleased |
+| `events` | Immutable tuple containing the first 64 plan and route observations; 2.4.0 |
+| `events_truncated` | Whether further observations exceeded the 64-event limit; 2.4.0 |
 
 Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.
 
-## Metadata export (unreleased)
+## Metadata export (2.4.0) {#metadata-export-unreleased}
 
 Use `report.to_dict()` to copy an execution report into plain metadata for
 JSON storage or a caller-managed integration:
@@ -139,7 +139,7 @@ of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.
 
-## Plan and route events (unreleased)
+## Plan and route events (2.4.0) {#plan-and-route-events-unreleased}
 
 `run_with_report()` collects bounded events from the existing plan and
 direct-route hooks. Read `report.events` when a compound query's outer report

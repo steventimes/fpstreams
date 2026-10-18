@@ -12,25 +12,24 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
 The current stable release is
-[2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0). It adds
-`map_batches()` to sync and async flows, caller-owned executors for parallel
-mapping, and async callback typing fixes. The examples use the `2.3` API,
-including explicit sorted operations, atomic file exports, and Pairs execution
-reports. Batch and executor examples are in the
+[2.4.0](https://github.com/steventimes/fpstreams/releases/tag/v2.4.0). It adds
+stateful pipeline operations, composed aggregation, shared execution limits,
+file recovery, and versioned execution metadata. It includes the batch mapping,
+caller-owned executors, and async typing fixes introduced in 2.3.0.
+Batch and executor examples are in the
 [performance guide](user-guide/performance.md#process-mapping-and-explicit-batches).
 
 See the [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md)
 for shipped changes and the [roadmap](roadmap.md#next-development-steps) for
 upcoming candidates.
 
-The development branch also includes unreleased
+Version 2.4.0 also includes
 [state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-unreleased),
 [sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-unreleased),
 and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
 [Versioned report export](user-guide/execution-reports.md#metadata-export-unreleased)
-supports JSON storage and caller-managed metadata integration. These additions
-are not in the PyPI 2.3.0 package; the roadmap separates verified development
-changes from remaining candidates.
+supports JSON storage and caller-managed metadata integration. The roadmap
+separates these verified changes from remaining candidates.
 
 ## Installation
 

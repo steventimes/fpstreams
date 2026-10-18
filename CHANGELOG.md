@@ -5,6 +5,8 @@ including changed defaults.
 
 ## Unreleased
 
+## 2.4.0 - 2026-10-18
+
 ### Added
 
 - `ExecutionReport.to_dict()` and `ExecutionEvent.to_dict()` export plain

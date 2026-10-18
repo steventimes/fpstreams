@@ -91,8 +91,8 @@ records their normalized Python integer values.
 | `agg.std(selector, ddof=1)` | Standard deviation |
 | `agg.count_distinct(selector)` | Number of distinct values |
 | `agg.min(selector)` / `agg.max(selector)` | Smallest or largest value |
-| `agg.min_by(selector)` / `agg.max_by(selector)` | Whole item with the smallest or largest key (unreleased) |
-| `agg.top(count, key=...)` / `agg.bottom(count, key=...)` | Up to `count` whole items in descending or ascending key order (unreleased) |
+| `agg.min_by(selector)` / `agg.max_by(selector)` | Whole item with the smallest or largest key (2.4.0) |
+| `agg.top(count, key=...)` / `agg.bottom(count, key=...)` | Up to `count` whole items in descending or ascending key order (2.4.0) |
 | `agg.first(selector)` / `agg.last(selector)` | Boundary values |
 | `agg.collect(selector, into=list)` | Values collected with a constructor |
 

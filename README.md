@@ -11,9 +11,9 @@ Lazy Python pipelines for iterables and records, with bounded async concurrency.
 
 Python 3.11 or newer is required.
 
-The current stable release is [2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0).
-It adds explicit `map_batches()` for sync and async pipelines, reusable mapping
-executors, and async callback typing fixes. See the
+The current stable release is [2.4.0](https://github.com/steventimes/fpstreams/releases/tag/v2.4.0).
+It adds stateful pipeline operations, composed aggregation, shared execution
+limits, file recovery, and versioned execution metadata. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
 [performance guide](https://steventimes.github.io/fpstreams/user-guide/performance/#process-mapping-and-explicit-batches)
 for batch and executor examples. The
@@ -316,30 +316,30 @@ native_result = pipeline.with_engine("native").to_list()
 
 Use `run_with_report()` to get a terminal's value, recorded route, and query-owned
 resource counts in one execution. Pairs supports terminals such as
-`flow([("a", 1)]).pairs().run_with_report("group_values")`. Unreleased code also
+`flow([("a", 1)]).pairs().run_with_report("group_values")`. Version 2.4.0 also
 includes up to 64 child plan and route observations in `report.events`. See the
 [execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
 for supported terminals and the limits of route reporting.
 
-Unreleased `report.to_dict()` exports versioned metadata with metric units,
+In 2.4.0, `report.to_dict()` exports versioned metadata with metric units,
 resource scope, and event limits. It excludes the terminal value and does not
 rerun the query. See the
 [metadata export guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/#metadata-export-unreleased)
-for JSON storage and caller-managed OpenLineage integration. This report export
-is not in PyPI 2.3.0.
+for JSON storage and caller-managed OpenLineage integration. Report export
+requires 2.4.0 or newer.
 
-Unreleased code also includes `BoundedExecutor` for a shared submission limit
+Version 2.4.0 also includes `BoundedExecutor` for a shared submission limit
 across queries and `FileCheckpoint` for verified file-partition recovery. See
 the [resource controls](https://steventimes.github.io/fpstreams/user-guide/performance/#share-a-submission-budget-unreleased)
 and [file-partition recipe](https://steventimes.github.io/fpstreams/user-guide/analytics/#resume-file-partitions-unreleased)
-for ownership, memory, and retry semantics. These additions are not in PyPI 2.3.0.
+for ownership, memory, and retry semantics. These additions require 2.4.0 or newer.
 
-Unreleased `flow.unfold` / `aflow.unfold` generate values from explicit state
+In 2.4.0, `flow.unfold` / `aflow.unfold` generate values from explicit state
 transitions. `Flow.map_accum` and `AsyncFlow.map_accum` update state while mapping
 each input to one output. See the
 [state examples](https://steventimes.github.io/fpstreams/reference/flow/#state-driven-generation-and-mapping-unreleased)
-for termination, tuple ordering, and mutable-state ownership. These APIs are
-not in PyPI 2.3.0.
+for termination, tuple ordering, and mutable-state ownership. These APIs require
+2.4.0 or newer.
 
 A forced native plan raises `NativeUnsupportedError` if its complete types or
 operations cannot run natively. In particular, the presence of an internal

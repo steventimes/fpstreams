@@ -44,7 +44,7 @@ from .streams import (
 from .tabular import Rows, SpillLimits
 from .tabular.factory import rows as rows
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 Stream = Flow
 ParallelStream = Flow
 

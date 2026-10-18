@@ -120,8 +120,8 @@ comparison below remains pinned to 0.8.4.
 | StreamEx feature | fpstreams comparison and next question |
 | --- | --- |
 | `pairMap`, `mapFirst`, `mapLast`, `scanLeft` | Existing `pairwise().map(...)`, `map_first`, `map_last`, and `scan` cover related uses. Check callback order and allocation costs before adding shortcuts. |
-| `groupRuns`, `collapse`, `runLengths` | `group_runs(key)` groups equal adjacent keys; `collapse(predicate, merger)` supports pair predicates. These have different contracts. The unreleased Collector overload reduces runs without a raw run buffer. |
-| `collapse(predicate, collector)` | Existing `Rows.group_by_sorted(...).aggregate(...)` covers ascending supported keys. The unreleased `collapse` overload covers arbitrary adjacent predicates and async pipelines through the same Collector state program. Memory depends on the Collector's state; a run needs a boundary or source exhaustion to emit. |
+| `groupRuns`, `collapse`, `runLengths` | `group_runs(key)` groups equal adjacent keys; `collapse(predicate, merger)` supports pair predicates. These have different contracts. The 2.4.0 Collector overload reduces runs without a raw run buffer. |
+| `collapse(predicate, collector)` | Existing `Rows.group_by_sorted(...).aggregate(...)` covers ascending supported keys. The 2.4.0 `collapse` overload covers arbitrary adjacent predicates and async pipelines through the same Collector state program. Memory depends on the Collector's state; a run needs a boundary or source exhaustion to emit. |
 | `MoreCollectors.reducingWithZero` | Compare with the existing `Collector.done` protocol. An absorbing value requires an explicit user contract; ordinary reducers cannot safely infer early termination. |
 | `headTail` | Study iterator ownership, replay, and cleanup before exposing a live tail. Existing `unfold`, `map_accum`, and Gatherer already cover many stateful transformations. |
 
@@ -132,7 +132,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 Copying the Java name would obscure that difference.
 
 These are API comparisons, not a claim of semantic equivalence or measured
-performance. The [unreleased Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased)
+performance. The [2.4.0 Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased)
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.
@@ -151,7 +151,7 @@ led to a check of fpstreams prefix operations. The Python path rejected floats
 only during execution, while the async path accepted them: `take(2.5)` emitted
 three items and `take(float("nan"))` emitted the entire finite input.
 
-The unreleased fix normalizes `take`, `limit`, `drop`, and `skip` counts once
+The 2.4.0 fix normalizes `take`, `limit`, `drop`, and `skip` counts once
 through the [integer index protocol](https://docs.python.org/3.12/library/operator.html#operator.index)
 when constructing the operation. Both APIs accept integer-index objects and
 reject floats before opening a source. Integer behavior, zero-count boundaries,
@@ -191,7 +191,7 @@ integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.
 
-### October 18: completed review and adopted changes (unreleased)
+### October 18: completed review and adopted changes (2.4.0) {#october-18-completed-review-and-adopted-changes-unreleased}
 
 All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
@@ -218,8 +218,8 @@ The resulting changes reuse fpstreams' existing execution paths:
 
 The adopted changes passed the complete Python checks, existing performance
 gates, package checks, and installed-wheel checks on standard Linux CPython
-3.11–3.14. They remain unreleased; this review did not publish a new package or
-establish whole-application speedups.
+3.11–3.14. These changes are included in 2.4.0. The review did not establish
+whole-application speedups.
 
 A synchronous cross-node fusion prototype failed performance gates and was
 withdrawn. The existing `window_reduce()` uses Two-Stacks Lite; it was not

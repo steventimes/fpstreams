@@ -9,7 +9,7 @@ execution must create a fresh iterable. Besides ordinary iterables,
 `flow(source)` retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.
 
-## State-driven generation and mapping (unreleased)
+## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-unreleased}
 
 `unfold` builds a source from state, while `map_accum` transforms an existing
 source with state. They use different tuple orders:
@@ -57,7 +57,7 @@ mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.
 
-## Reuse sliding-window aggregates (unreleased)
+## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-unreleased}
 
 `window_reduce(size, combine, step=1)` combines each count-based window without
 building a tuple and folding every overlapping value again:
@@ -95,7 +95,7 @@ take linear work in `size`. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against `window(...).map(...)` for those workloads.
 
-## Reduce adjacent runs with a Collector (unreleased)
+## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-unreleased}
 
 `collapse(predicate, collector)` feeds each nonempty adjacent run into fresh
 [Collector](collecting.md) state. The predicate sees neighboring input items,

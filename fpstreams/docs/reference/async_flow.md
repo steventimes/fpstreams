@@ -11,7 +11,7 @@ Use `aflow(source)` with an iterable or async iterable.
 | --- | --- |
 | `aflow(source)` | Wrap a synchronous or asynchronous iterable |
 | `aflow.defer(factory)` | Call the source factory for each execution |
-| `aflow.unfold(seed, function)` (unreleased) | Resolve `(value, next_state)` transitions until `None` is returned |
+| `aflow.unfold(seed, function)` (2.4.0) | Resolve `(value, next_state)` transitions until `None` is returned |
 | `aflow.from_queue(queue, stop=...)` | Read a caller-owned `asyncio.Queue` once, optionally until an identity sentinel |
 | `aflow.from_file(path)` | Read text lines without blocking the event loop |
 | `aflow.interval(seconds)` | Emit increasing integers on a timer |
@@ -21,7 +21,7 @@ Queue sources do not call `task_done()` and do not own the producer or queue.
 Avoid `prefetch()` when `Queue.join()` or per-item acknowledgements must track
 each `get()` exactly.
 
-## Thread state through async callbacks (unreleased)
+## Thread state through async callbacks (2.4.0) {#thread-state-through-async-callbacks-unreleased}
 
 `AsyncFlow.unfold` and `aflow.unfold` accept synchronous, asynchronous, or mixed
 callbacks. Each call resolves before the next transition starts. Returning
@@ -58,7 +58,7 @@ chain. Each evaluation begins with the supplied seed by reference; use
 [synchronous state examples](flow.md#state-driven-generation-and-mapping-unreleased)
 for tuple ordering and empty-input behavior.
 
-## Reuse sliding-window aggregates (unreleased)
+## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-unreleased}
 
 `AsyncFlow.window_reduce(size, combine, step=1)` uses the same ordered aggregation
 strategies and [algebraic contract](flow.md#reuse-sliding-window-aggregates-unreleased)
@@ -82,7 +82,7 @@ waiting for the next source item propagates upstream and closes the iterator
 chain. A stack transfer runs synchronously and can take linear work in the
 window size; this operation adds no scheduling checkpoint inside a combine call.
 
-## Reduce adjacent runs with a Collector (unreleased)
+## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-unreleased}
 
 `AsyncFlow.collapse(predicate, collector)` follows the same
 [run and Collector rules](flow.md#reduce-adjacent-runs-with-a-collector-unreleased).

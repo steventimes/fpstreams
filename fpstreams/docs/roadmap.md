@@ -1,5 +1,15 @@
 # v2 status and roadmap
 
+[Version 2.4.0](https://github.com/steventimes/fpstreams/releases/tag/v2.4.0)
+adds stateful pipeline operations, composed collectors, shared execution limits,
+file recovery, and versioned report export. It also improves guarded Arrow
+execution and preserves conversion errors across optimized source paths. The
+[completed research follow-up](#completed-research-follow-up-on-october-18-unreleased)
+records the implementation scope and its local verification.
+
+Earlier release checkpoints and failed experiments below retain their original
+measurement dates, references, and limits.
+
 [Version 2.3.0](https://github.com/steventimes/fpstreams/releases/tag/v2.3.0)
 adds batch mapping and caller-owned mapping executors, and fixes async callback
 type inference. It builds on 2.2.1's editor and planning fixes and 2.2.0's sorted
@@ -371,7 +381,7 @@ cleanup, and the original-row evidence order. A cheap integer-reduce probe alone
 cannot establish a bottleneck in a Decimal-based worker.
 
 Current `run_with_report("reduce", function, initial)` already observes a reduce
-terminal. In unreleased code, the same report includes up to 64 events from
+terminal. In 2.4.0, the same report includes up to 64 events from
 existing plan and direct-route observation points, including child plans.
 The addition preserves the outer report and leaves ordinary execution free of
 per-row instrumentation and source replay. It does not provide a complete kernel
@@ -382,7 +392,7 @@ scope. No runtime speedup has been established by this reporting addition.
 
 ### Execution controls and file recovery after 2.3.0
 
-The unreleased work following the Kestra review also addresses data movement,
+The 2.4.0 work following the Kestra review also addresses data movement,
 shared executor pressure, and file-partition recovery. These are separate from
 execution reporting. [Kestra's storage guidance](https://kestra.io/docs/concepts/storage)
 and [partitioned processing examples](https://kestra.io/docs/best-practices/loop)
@@ -417,7 +427,7 @@ export-path measurements, not application speedups or a reviewed historical
 baseline. Zero-column Arrow and Polars output preserves row counts; Parquet
 writes reject nonempty rows without columns before publishing a destination.
 
-### Bounded ranking and Python collector dispatch (unreleased)
+### Bounded ranking and Python collector dispatch (2.4.0) {#bounded-ranking-and-python-collector-dispatch-unreleased}
 
 `agg.top(count, key=...)` and `agg.bottom(count, key=...)` retain at most K whole
 items per state, keep equal keys in input order, and compose with existing
@@ -453,7 +463,7 @@ supports explicit Parquet scan projection/filtering and parameterized database
 queries with bounded fetches. Arbitrary Python callbacks still run in Python;
 moving them into a connector can change types, errors, and side effects.
 
-The unreleased `agg.min_by` and `agg.max_by` select a whole record by a separate
+The 2.4.0 `agg.min_by` and `agg.max_by` select a whole record by a separate
 key. They cover batch latest-record selection and ranked records without
 collecting and sorting each group. [Trino's keyed aggregations](https://trino.io/docs/current/functions/aggregate.html#max_by)
 and [Hudi's record-merging model](https://hudi.apache.org/docs/record_merger/)
@@ -505,7 +515,7 @@ the select retained correct output but passed all 4,000 rows and 20 columns.
 An explicit source-filter control passed 10 rows and one column. These are
 observed scanner outputs, not physical read counts or latency measurements.
 
-Unreleased execution now carries the leading proven comparison through a longer
+Version 2.4.0 carries the leading proven comparison through a longer
 guarded filter/projection prefix while retaining the original residual operations.
 It does not combine later filters: a later false predicate could remove a null
 row before an earlier comparison raises its Python `TypeError`. Unsafe batches
@@ -644,7 +654,7 @@ recorded separately from the list.
 
 ## Next development steps
 
-### Completed research follow-up on October 18 (unreleased)
+### Completed research follow-up on October 18 (2.4.0) {#completed-research-follow-up-on-october-18-unreleased}
 
 The [reference review](research-references.md#october-18-completed-review-and-adopted-changes-unreleased)
 is complete for all 25 papers and the selected documentation and implementation
@@ -663,7 +673,7 @@ The final source passed 4,769 Python checks with 10 skips and 88.28% branch
 coverage, the existing engine and targeted performance gates, package builds,
 and installed-wheel checks on standard Linux CPython 3.11–3.14. These are local
 development results, not a new release or Windows/macOS acceptance. The stable
-package remains 2.3.0.
+package is 2.4.0; the checkpoint above was verified before the version bump.
 
 The synchronous cross-node fusion prototype was withdrawn after a performance
 regression; the direct `filter_map()` implementation keeps the original iterator
@@ -675,7 +685,7 @@ adopted. A completed reference review does not schedule those capabilities.
 Further optimization candidates remain below. Start from the verified source
 and profile a concrete workload before choosing another implementation change.
 
-### Functional-programming source follow-up (unreleased)
+### Functional-programming source follow-up (2.4.0) {#functional-programming-source-follow-up-unreleased}
 
 The [FP jargon glossary's unfold example](https://github.com/hemanth/functional-programming-jargon/blob/a362b3a6117eeaa6042fc21e032afa30bab8b5d6/readme.md#anamorphism)
 motivates `flow.unfold` and `aflow.unfold`: a callback returns `(value, next_state)`
@@ -700,7 +710,7 @@ retain the valid observations in each active group.
 
 Start each further candidate from the verified development source after the
 measured changes above. Use released `v2.2.1` for a separate comparison of the
-combined changes through 2.3.0. For subsequent work, use released `v2.3.0` as
+combined changes through 2.3.0. For work after 2.4.0, use released `v2.4.0` as
 the separate release reference. Build a release extension for each side and collect fresh
 reports with the same harness, interpreter, dependencies, runtime settings,
 input shapes, and invocation order. Reproduce any cost suggested by older
@@ -714,21 +724,21 @@ selecting the reference checkout.
 | 2 | Python `select()` setup, measured | Fields, aliases, and expressions at different widths | Keep a selector snapshot for each row, output field order, object lifetimes, and source cleanup |
 | 3 | Sorted single-key grouping, measured | Integer, string, bytes, and tuple-valued keys; repeated and skewed groups; early and full consumption | Keep key validation, live callbacks, lookahead bounds, and close order |
 | 4 | Caller-owned executor, implemented | Repeated thread and spawn-process queries, early exit, callback failures, and interrupted waits | Cancel and await only query-owned work; preserve pool ownership and source cleanup |
-| 5 | Multi-collector dispatch improved locally, unreleased | Six-metric totals and weighted metrics; dict/Mapping, generator input, unique-group controls, and selected SQLite consumer checks | Keep dynamic getters, collector step/finish functions, valid denominators, key identity and release order |
+| 5 | Multi-collector dispatch improved locally, 2.4.0 | Six-metric totals and weighted metrics; dict/Mapping, generator input, unique-group controls, and selected SQLite consumer checks | Keep dynamic getters, collector step/finish functions, valid denominators, key identity and release order |
 | 6 | Generic stateful reduce | File iterators with Decimal checks, deadlines and bounded evidence; cheap callback controls | Keep one pass, left-to-right callbacks, empty-input behavior, exception identity and source cleanup |
 | 7 | Existing single-collector path | Low and high key cardinality; dict, Mapping and callable selectors | Profile the existing implementation before changing its hash/equality calls or state lifetimes |
-| 8 | Bounded events integrated into execution reports, unreleased | Child plan choices and observed direct routes | Preserve the outer report, cap each report at 64 events, and avoid replay or default per-row instrumentation |
-| 9 | Shared executor budget, unreleased | Independent queries using one pool, completion, cancellation, shutdown, and interrupted admission | Bound unfinished submissions through one wrapper; keep per-query cleanup and borrowed-pool ownership |
-| 10 | File partition recovery, unreleased | Reopened stores, injected partial writes, process termination, input changes, and corrupt outputs | Reuse only verified completed outputs; retain explicit versions, file ownership, and callback errors |
-| 11 | Matching explicit Arrow schemas and safe prefixes, unreleased | Retained tables and batches; narrow, wide, nullable, per-batch schema changes, casts, metadata, and callback controls | Preserve schema and bounded batches; keep unsupported inputs on the existing converter |
+| 8 | Bounded events integrated into execution reports, 2.4.0 | Child plan choices and observed direct routes | Preserve the outer report, cap each report at 64 events, and avoid replay or default per-row instrumentation |
+| 9 | Shared executor budget, 2.4.0 | Independent queries using one pool, completion, cancellation, shutdown, and interrupted admission | Bound unfinished submissions through one wrapper; keep per-query cleanup and borrowed-pool ownership |
+| 10 | File partition recovery, 2.4.0 | Reopened stores, injected partial writes, process termination, input changes, and corrupt outputs | Reuse only verified completed outputs; retain explicit versions, file ownership, and callback errors |
+| 11 | Matching explicit Arrow schemas and safe prefixes, 2.4.0 | Retained tables and batches; narrow, wide, nullable, per-batch schema changes, casts, metadata, and callback controls | Preserve schema and bounded batches; keep unsupported inputs on the existing converter |
 | 12 | Further process submission and source reuse | One item versus explicit batches under the same spawn policy; prepared inputs versus repeated file scans | Keep bounded submission, ordering, callback errors, source ownership, and early-exit cleanup |
-| 13 | Whole-item keyed extrema, unreleased | Latest versions, equal keys, deletion markers, callback failures, sorted and spilled grouping | Select once per item, keep the first tie, preserve Python comparisons and source cleanup |
-| 14 | Bounded per-group ranking, unreleased | Stable ties, identity, zero count, callback failures, async and spill; allocation and latency compared separately | Retain at most K items per state and preserve input order for equal keys |
-| 15 | Longer guarded Arrow/Parquet prefixes and validation-column pruning, unreleased | Three sizes, narrow and wide/nullable inputs; paired profiles with single-filter, callback, and scanner-cast controls | Keep residual and conversion-error order, live selectors, and one source open; retain complete validation where casts cannot be ruled out |
+| 13 | Whole-item keyed extrema, 2.4.0 | Latest versions, equal keys, deletion markers, callback failures, sorted and spilled grouping | Select once per item, keep the first tie, preserve Python comparisons and source cleanup |
+| 14 | Bounded per-group ranking, 2.4.0 | Stable ties, identity, zero count, callback failures, async and spill; allocation and latency compared separately | Retain at most K items per state and preserve input order for equal keys |
+| 15 | Longer guarded Arrow/Parquet prefixes and validation-column pruning, 2.4.0 | Three sizes, narrow and wide/nullable inputs; paired profiles with single-filter, callback, and scanner-cast controls | Keep residual and conversion-error order, live selectors, and one source open; retain complete validation where casts cannot be ruled out |
 | 16 | Explicit batch-size tuning | Fixed sizes versus existing measured-size/count and async timeout bounds | Keep boundary-sensitive callback behavior explicit; distinguish pending calls, retained results, and payload bytes |
 | 17 | Cache contention profiled locally | Three processes, 144 combinations each, 21 samples per combination; separate lock and CPU observations | Next test mixed warm hits/cold compilation; retain bounds, fingerprints, same-key compilation, recursion and errors |
 | 18 | Arrow ranking prototype withdrawn | The original Python control timing gate failed; candidate and reports retained locally | Resolve control variability and native position-buffer costs before a renewed trial; preserve ties, conversion errors, hooks and source identity |
-| 19 | Exact percentile composition documented, unreleased | Finite observations with missing/zero values and small groups; installed-wheel checks on Python 3.11–3.14 | Normalize numeric inputs, keep inclusive interpolation explicit, and account for retained per-group observations |
+| 19 | Exact percentile composition documented, 2.4.0 | Finite observations with missing/zero values and small groups; installed-wheel checks on Python 3.11–3.14 | Normalize numeric inputs, keep inclusive interpolation explicit, and account for retained per-group observations |
 
 Start row comparisons at 1,000, 10,000, and 100,000 items with the existing
 `rows.with_columns*`, `rows.select*`, `rows.group_sum.python.*`, and `sorted.*`
@@ -775,7 +785,7 @@ produces one result per batch, and supports sync pool defaults or async map
 controls. Replay interfaces remain proposals; `reduce_by()` already covers
 per-key state reduction. Dependency updates also get their own
 lock, adapter, and platform validation; they are reviewed separately from
-performance changes. The stable release is 2.3.0. The local candidate results
+performance changes. The stable release is 2.4.0. The local candidate results
 above retain their original measurement dates and scope.
 
 The map-based projection, executor-forwarding removal, `Counter(map(...))`,

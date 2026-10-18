@@ -219,7 +219,7 @@ If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.
 
-## Share a submission budget (unreleased)
+## Share a submission budget (2.4.0) {#share-a-submission-budget-unreleased}
 
 Several queries can reuse one executor while keeping their own `buffer` limits.
 To cap their combined unfinished work, give them the same `BoundedExecutor`:
@@ -251,7 +251,7 @@ nested work that needs the slots occupied by its own parent callbacks.
 ## Preserve Arrow batches
 
 Use `Rows.arrow_batches()` to pass columnar data to a batch consumer. In
-unreleased code, a primitive Arrow table or record batch can keep its buffers
+2.4.0, a primitive Arrow table or record batch can keep its buffers
 when the supplied schema exactly matches the output, including field and
 schema metadata. Safe direct-field projections and primitive filters can run
 columnarly; filters may allocate output buffers. The output still respects
@@ -282,7 +282,7 @@ existing conversion path. Buffer reuse can keep the source allocation alive;
 make an explicit copy when independent storage is required. Measure the entire
 consumer pipeline before treating a cheaper export as an application speedup.
 
-Unreleased execution also supports multiple safe direct comparisons followed
+Version 2.4.0 also supports multiple safe direct comparisons followed
 by a direct projection. Parquet uses only the leading comparison as a scan
 hint and retains every filter in its original order. Automatic hints must not
 hide source conversion errors: visible UTF-8, temporal, and nested fields are
@@ -599,7 +599,7 @@ callbacks faster by itself.
 | A callback accepts a fixed number of items | `map_batches(function, size=...)` | Items per callback, with a shorter final batch |
 | Payload sizes vary | `batch_by_size(max_size, max_count=..., get_size=...).map(function)` | Sum of measured sizes and items per batch |
 | An async source may pause between items | `buffer_timeout(max_count, seconds).map(function)` | Item count or time from the first buffered item |
-| Several queries share a pool | `BoundedExecutor(pool, max_pending=...)` (unreleased) | Unfinished calls submitted through that wrapper |
+| Several queries share a pool | `BoundedExecutor(pool, max_pending=...)` (2.4.0) | Unfinished calls submitted through that wrapper |
 
 Set `max_count` alongside a size bound when individual items can have zero
 measured size. Choose `get_size` for the payload or service limit being enforced;
