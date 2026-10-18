@@ -321,6 +321,13 @@ includes up to 64 child plan and route observations in `report.events`. See the
 [execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
 for supported terminals and the limits of route reporting.
 
+Unreleased `report.to_dict()` exports versioned metadata with metric units,
+resource scope, and event limits. It excludes the terminal value and does not
+rerun the query. See the
+[metadata export guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/#metadata-export-unreleased)
+for JSON storage and caller-managed OpenLineage integration. This report export
+is not in PyPI 2.3.0.
+
 Unreleased code also includes `BoundedExecutor` for a shared submission limit
 across queries and `FileCheckpoint` for verified file-partition recovery. See
 the [resource controls](https://steventimes.github.io/fpstreams/user-guide/performance/#share-a-submission-budget-unreleased)

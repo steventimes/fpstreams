@@ -9,7 +9,7 @@ Titles, categories, and links below follow the supplied list. Inclusion does not
 mean that a source has been verified, reviewed, implemented, or benchmarked.
 **Extension** marks a proposed capability that requires new functionality. It
 does not mean that the capability is available or scheduled. Review notes below
-identify the limited work actually completed against these references.
+distinguish source review from implemented and verified changes.
 
 ## Papers, 1–25
 
@@ -140,9 +140,9 @@ event-time windows, or watermarks.
 ## Review notes
 
 The [roadmap](roadmap.md) records earlier comparisons and experiments separately.
-An existing related feature does not mean that every source in this catalog has
-been reviewed. The [six previously queued repositories](roadmap.md#references-queued-on-october-17)
-remain deferred.
+The October 18 follow-up below records the completed review scope. The
+[six previously queued repositories](roadmap.md#references-queued-on-october-17)
+received scoped, read-only analysis; experiments and implementation remain deferred.
 
 ### October 17: prefix counts and iterator boundaries
 
@@ -167,6 +167,9 @@ reached through the documentation index instead.
 
 ### Versioned paper follow-up
 
+These were the initial checks on October 17. Full-paper reading was completed
+in the October 18 follow-up below.
+
 Metadata and abstracts were checked for references
 [2](https://arxiv.org/abs/1612.06668v1),
 [3](https://arxiv.org/abs/2412.15768v2),
@@ -187,3 +190,41 @@ rejected the corresponding floating-point counterexample. This does not prove
 integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.
+
+### October 18: completed review and adopted changes (unreleased)
+
+All 25 papers in this catalog were read in full. The project, specification,
+and commercial references were reviewed through relevant architecture documents,
+public documentation, and selected core implementations. Earlier links in the
+roadmap received the same scoped review. This does not constitute an audit of
+every upstream repository or inspection of closed-source engine internals.
+
+The resulting changes reuse fpstreams' existing execution paths:
+
+- Query-wide task/file limits and task-scope limits normalize integer-index
+  values once and reject nonintegers before resource acquisition.
+- Synchronous `filter_map()` removes tuple adaptation while preserving iterator
+  boundaries. Async `filter_map()` uses the existing serial fusion stage. Both
+  call the mapper once per input and discard only `None`.
+- [Report metadata export](user-guide/execution-reports.md#metadata-export-unreleased)
+  adds a schema version, metric units, resource scope, and event limits. Plan
+  dictionaries also carry a schema version and execution mode. These are
+  fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.
+- [Guarded Arrow comparison chains](user-guide/performance.md#preserve-arrow-batches)
+  can share a selection mask, filter payload once, or count from the mask.
+  Existing conversion, type, and source-boundary checks remain in place.
+- Spill decoding releases encoded buffers after decoding and completed decoded
+  frames before reading the next frame.
+
+The adopted changes passed the complete Python checks, existing performance
+gates, package checks, and installed-wheel checks on standard Linux CPython
+3.11–3.14. They remain unreleased; this review did not publish a new package or
+establish whole-application speedups.
+
+A synchronous cross-node fusion prototype failed performance gates and was
+withdrawn. The existing `window_reduce()` uses Two-Stacks Lite; it was not
+replaced with DABA and does not promise worst-case constant work per operation.
+Event-time windows, distributed execution, approximate aggregations, and
+automatic reordering of arbitrary callbacks require separate contracts and
+were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
+the research dependencies and trial records are not product dependencies.

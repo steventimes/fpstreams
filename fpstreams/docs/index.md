@@ -23,6 +23,15 @@ See the [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGEL
 for shipped changes and the [roadmap](roadmap.md#next-development-steps) for
 upcoming candidates.
 
+The development branch also includes unreleased
+[state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-unreleased),
+[sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-unreleased),
+and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
+[Versioned report export](user-guide/execution-reports.md#metadata-export-unreleased)
+supports JSON storage and caller-managed metadata integration. These additions
+are not in the PyPI 2.3.0 package; the roadmap separates verified development
+changes from remaining candidates.
+
 ## Installation
 
 ~~~bash

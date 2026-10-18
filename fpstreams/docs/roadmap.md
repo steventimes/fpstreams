@@ -627,8 +627,9 @@ and decisions are retained in `artifacts/clickhouse-research-20261015/`.
 
 ### References queued on October 17
 
-These repositories are saved for later review. Analysis, experiments, and
-implementation are deferred until requested.
+These repositories were initially saved for later review. The October 18
+follow-up completed scoped, read-only analysis of their relevant architecture
+and public interfaces. Experiments and implementation remain deferred.
 
 - [ThingsBoard](https://github.com/thingsboard/thingsboard)
 - [StarRocks](https://github.com/StarRocks/starrocks)
@@ -642,6 +643,37 @@ paper and project list, proposed uses, and extension markers. Review status is
 recorded separately from the list.
 
 ## Next development steps
+
+### Completed research follow-up on October 18 (unreleased)
+
+The [reference review](research-references.md#october-18-completed-review-and-adopted-changes-unreleased)
+is complete for all 25 papers and the selected documentation and implementation
+scope of the non-paper references. The adopted changes are implemented and
+verified:
+
+- integer-index validation before acquiring task and file resources;
+- direct synchronous `filter_map()` execution and integration with async serial
+  fusion, preserving one mapper call per input and all results except `None`;
+- versioned plan dictionaries and [report export](user-guide/execution-reports.md#metadata-export-unreleased),
+  with reports recording metric units, resource scope, and event limits;
+- a shared selection mask for proven primitive Arrow comparison chains;
+- earlier release of encoded buffers and completed decoded frames during spilling.
+
+The final source passed 4,769 Python checks with 10 skips and 88.28% branch
+coverage, the existing engine and targeted performance gates, package builds,
+and installed-wheel checks on standard Linux CPython 3.11–3.14. These are local
+development results, not a new release or Windows/macOS acceptance. The stable
+package remains 2.3.0.
+
+The synchronous cross-node fusion prototype was withdrawn after a performance
+regression; the direct `filter_map()` implementation keeps the original iterator
+boundaries. The earlier Arrow ranking prototype also remains withdrawn. Neither
+prototype is part of the verified changes. DABA, event-time and distributed
+execution, approximate aggregates, and transparent callback reordering were not
+adopted. A completed reference review does not schedule those capabilities.
+
+Further optimization candidates remain below. Start from the verified source
+and profile a concrete workload before choosing another implementation change.
 
 ### Functional-programming source follow-up (unreleased)
 
@@ -692,7 +724,7 @@ selecting the reference checkout.
 | 12 | Further process submission and source reuse | One item versus explicit batches under the same spawn policy; prepared inputs versus repeated file scans | Keep bounded submission, ordering, callback errors, source ownership, and early-exit cleanup |
 | 13 | Whole-item keyed extrema, unreleased | Latest versions, equal keys, deletion markers, callback failures, sorted and spilled grouping | Select once per item, keep the first tie, preserve Python comparisons and source cleanup |
 | 14 | Bounded per-group ranking, unreleased | Stable ties, identity, zero count, callback failures, async and spill; allocation and latency compared separately | Retain at most K items per state and preserve input order for equal keys |
-| 15 | Longer guarded Arrow/Parquet prefixes, unreleased | Three sizes, narrow and wide/nullable inputs; 216 paired profiles, with single-filter and callback controls | Keep residual and conversion-error order, live selectors, and one source open; reduce validation reads next |
+| 15 | Longer guarded Arrow/Parquet prefixes and validation-column pruning, unreleased | Three sizes, narrow and wide/nullable inputs; paired profiles with single-filter, callback, and scanner-cast controls | Keep residual and conversion-error order, live selectors, and one source open; retain complete validation where casts cannot be ruled out |
 | 16 | Explicit batch-size tuning | Fixed sizes versus existing measured-size/count and async timeout bounds | Keep boundary-sensitive callback behavior explicit; distinguish pending calls, retained results, and payload bytes |
 | 17 | Cache contention profiled locally | Three processes, 144 combinations each, 21 samples per combination; separate lock and CPU observations | Next test mixed warm hits/cold compilation; retain bounds, fingerprints, same-key compilation, recursion and errors |
 | 18 | Arrow ranking prototype withdrawn | The original Python control timing gate failed; candidate and reports retained locally | Resolve control variability and native position-buffer costs before a renewed trial; preserve ties, conversion errors, hooks and source identity |
