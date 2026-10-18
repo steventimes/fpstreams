@@ -1264,23 +1264,22 @@ supported Arrow tables and dataframes. Use <code>aflow()</code> for async work:<
 </tbody>
 </table>
 <p>The current stable release is
-<a href="https://github.com/steventimes/fpstreams/releases/tag/v2.3.0">2.3.0</a>. It adds
-<code>map_batches()</code> to sync and async flows, caller-owned executors for parallel
-mapping, and async callback typing fixes. The examples use the <code>2.3</code> API,
-including explicit sorted operations, atomic file exports, and Pairs execution
-reports. Batch and executor examples are in the
+<a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.0">2.4.0</a>. It adds
+stateful pipeline operations, composed aggregation, shared execution limits,
+file recovery, and versioned execution metadata. It includes the batch mapping,
+caller-owned executors, and async typing fixes introduced in 2.3.0.
+Batch and executor examples are in the
 <a href="user-guide/performance/#process-mapping-and-explicit-batches">performance guide</a>.</p>
 <p>See the <a href="https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md">changelog</a>
 for shipped changes and the <a href="roadmap/#next-development-steps">roadmap</a> for
 upcoming candidates.</p>
-<p>The development branch also includes unreleased
+<p>Version 2.4.0 also includes
 <a href="reference/flow/#state-driven-generation-and-mapping-unreleased">state-driven generation and mapping</a>,
 <a href="reference/flow/#reuse-sliding-window-aggregates-unreleased">sliding-window aggregates</a>,
 and <a href="reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">adjacent-run Collector reduction</a>.
 <a href="user-guide/execution-reports/#metadata-export-unreleased">Versioned report export</a>
-supports JSON storage and caller-managed metadata integration. These additions
-are not in the PyPI 2.3.0 package; the roadmap separates verified development
-changes from remaining candidates.</p>
+supports JSON storage and caller-managed metadata integration. The roadmap
+separates these verified changes from remaining candidates.</p>
 <h2 id="installation">Installation</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fpstreams
 </code></pre></div>

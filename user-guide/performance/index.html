@@ -511,7 +511,7 @@
   <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Share a submission budget (unreleased)
+        Share a submission budget (2.4.0)
       
     </span>
   </a>
@@ -1320,7 +1320,7 @@
   <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Share a submission budget (unreleased)
+        Share a submission budget (2.4.0)
       
     </span>
   </a>
@@ -1654,7 +1654,7 @@ working set is not acceptable. Configure limits from an operational budget:</p>
 <p>If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.</p>
-<h2 id="share-a-submission-budget-unreleased">Share a submission budget (unreleased)</h2>
+<h2 id="share-a-submission-budget-unreleased">Share a submission budget (2.4.0)</h2>
 <p>Several queries can reuse one executor while keeping their own <code>buffer</code> limits.
 To cap their combined unfinished work, give them the same <code>BoundedExecutor</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
@@ -1679,7 +1679,7 @@ and batch sizes within the application's memory budget. Avoid waiting for
 nested work that needs the slots occupied by its own parent callbacks.</p>
 <h2 id="preserve-arrow-batches">Preserve Arrow batches</h2>
 <p>Use <code>Rows.arrow_batches()</code> to pass columnar data to a batch consumer. In
-unreleased code, a primitive Arrow table or record batch can keep its buffers
+2.4.0, a primitive Arrow table or record batch can keep its buffers
 when the supplied schema exactly matches the output, including field and
 schema metadata. Safe direct-field projections and primitive filters can run
 columnarly; filters may allocate output buffers. The output still respects
@@ -1706,7 +1706,7 @@ columnarly; filters may allocate output buffers. The output still respects
 existing conversion path. Buffer reuse can keep the source allocation alive;
 make an explicit copy when independent storage is required. Measure the entire
 consumer pipeline before treating a cheaper export as an application speedup.</p>
-<p>Unreleased execution also supports multiple safe direct comparisons followed
+<p>Version 2.4.0 also supports multiple safe direct comparisons followed
 by a direct projection. Parquet uses only the leading comparison as a scan
 hint and retains every filter in its original order. Automatic hints must not
 hide source conversion errors: visible UTF-8, temporal, and nested fields are
@@ -1994,7 +1994,7 @@ callbacks faster by itself.</p>
 </tr>
 <tr>
 <td>Several queries share a pool</td>
-<td><code>BoundedExecutor(pool, max_pending=...)</code> (unreleased)</td>
+<td><code>BoundedExecutor(pool, max_pending=...)</code> (2.4.0)</td>
 <td>Unfinished calls submitted through that wrapper</td>
 </tr>
 </tbody>

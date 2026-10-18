@@ -490,7 +490,7 @@
   <a href="#metadata-export-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Metadata export (unreleased)
+        Metadata export (2.4.0)
       
     </span>
   </a>
@@ -512,7 +512,7 @@
   <a href="#plan-and-route-events-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Plan and route events (unreleased)
+        Plan and route events (2.4.0)
       
     </span>
   </a>
@@ -1404,7 +1404,7 @@
   <a href="#metadata-export-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Metadata export (unreleased)
+        Metadata export (2.4.0)
       
     </span>
   </a>
@@ -1426,7 +1426,7 @@
   <a href="#plan-and-route-events-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Plan and route events (unreleased)
+        Plan and route events (2.4.0)
       
     </span>
   </a>
@@ -1808,7 +1808,7 @@ iteration are not terminals for this API.</p>
 </tr>
 <tr>
 <td><code>run_with_report(terminal, ...)</code></td>
-<td>Terminal value, observed route, resource counts, and bounded events in unreleased code</td>
+<td>Terminal value, observed route, resource counts, and bounded events (events added in 2.4.0)</td>
 <td>Yes, once</td>
 </tr>
 <tr>
@@ -1868,18 +1868,18 @@ its events does not call <code>explain()</code> or execute the query again.</p>
 </tr>
 <tr>
 <td><code>events</code></td>
-<td>Immutable tuple containing the first 64 plan and route observations; unreleased</td>
+<td>Immutable tuple containing the first 64 plan and route observations; 2.4.0</td>
 </tr>
 <tr>
 <td><code>events_truncated</code></td>
-<td>Whether further observations exceeded the 64-event limit; unreleased</td>
+<td>Whether further observations exceeded the 64-event limit; 2.4.0</td>
 </tr>
 </tbody>
 </table>
 <p>Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.</p>
-<h2 id="metadata-export-unreleased">Metadata export (unreleased)</h2>
+<h2 id="metadata-export-unreleased">Metadata export (2.4.0)</h2>
 <p>Use <code>report.to_dict()</code> to copy an execution report into plain metadata for
 JSON storage or a caller-managed integration:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
@@ -1930,7 +1930,7 @@ backend. A <code>planned:*</code> value alone cannot establish which backend han
 of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.</p>
-<h2 id="plan-and-route-events-unreleased">Plan and route events (unreleased)</h2>
+<h2 id="plan-and-route-events-unreleased">Plan and route events (2.4.0)</h2>
 <p><code>run_with_report()</code> collects bounded events from the existing plan and
 direct-route hooks. Read <code>report.events</code> when a compound query's outer report
 leaves a backend choice unclear. Child plans appear in encounter order while

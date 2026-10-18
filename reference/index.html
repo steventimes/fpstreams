@@ -1164,7 +1164,7 @@ The final table lists aliases alongside their canonical names.</p>
 <td>Infinite until bounded downstream</td>
 </tr>
 <tr>
-<td>State-driven generation, unreleased</td>
+<td>State-driven generation, 2.4.0</td>
 <td><code>flow.unfold(seed, function)</code> / <code>aflow.unfold(...)</code></td>
 <td>Emit <code>(value, next_state)</code> transitions until the callback returns <code>None</code></td>
 </tr>
@@ -1229,7 +1229,7 @@ The final table lists aliases alongside their canonical names.</p>
 </tr>
 <tr>
 <td>Adjacent-run reduction</td>
-<td><code>collapse(predicate, merger)</code>; the unreleased overload also accepts a Collector</td>
+<td><code>collapse(predicate, merger)</code>; the 2.4.0 overload also accepts a Collector</td>
 </tr>
 <tr>
 <td>Prefix/suffix bounds</td>
@@ -1240,7 +1240,7 @@ The final table lists aliases alongside their canonical names.</p>
 <td><code>scan</code>, <code>scan_right</code>, <code>fold_by</code>, <code>reduce_by</code>, <code>gather</code></td>
 </tr>
 <tr>
-<td>Stateful mapping, unreleased</td>
+<td>Stateful mapping, 2.4.0</td>
 <td><code>map_accum(initial, function)</code> emits outputs from <code>(next_state, output)</code> transitions</td>
 </tr>
 <tr>
@@ -1272,7 +1272,7 @@ The final table lists aliases alongside their canonical names.</p>
 <td><code>chunk</code>, <code>window</code>, <code>pairwise</code>, <code>batch</code></td>
 </tr>
 <tr>
-<td>Window aggregation (unreleased)</td>
+<td>Window aggregation (2.4.0)</td>
 <td><code>window_reduce(size, combine, step=1)</code></td>
 </tr>
 <tr>
@@ -1452,11 +1452,11 @@ multi-reduction programs.</p>
 </tr>
 <tr>
 <td>Item by key</td>
-<td><code>agg.min_by</code>, <code>agg.max_by</code> (unreleased)</td>
+<td><code>agg.min_by</code>, <code>agg.max_by</code> (2.4.0)</td>
 </tr>
 <tr>
 <td>Ranked items</td>
-<td><code>agg.top</code>, <code>agg.bottom</code> (unreleased)</td>
+<td><code>agg.top</code>, <code>agg.bottom</code> (2.4.0)</td>
 </tr>
 <tr>
 <td>Encounter order</td>
@@ -1615,18 +1615,18 @@ method on <a href="async_flow/">AsyncFlow</a>.</p>
 </tr>
 <tr>
 <td>Execution reports</td>
-<td><code>ExecutionResult</code>, <code>ExecutionReport</code>; unreleased <code>ExecutionEvent</code> and versioned report/event <code>to_dict()</code> export (<a href="../user-guide/execution-reports/#metadata-export-unreleased">guide</a>)</td>
+<td><code>ExecutionResult</code>, <code>ExecutionReport</code>; <code>ExecutionEvent</code> and versioned report/event <code>to_dict()</code> export added in 2.4.0 (<a href="../user-guide/execution-reports/#metadata-export-unreleased">guide</a>)</td>
 </tr>
 <tr>
 <td>Spill budgets</td>
 <td><code>SpillLimits</code></td>
 </tr>
 <tr>
-<td>Shared executor budget, unreleased</td>
+<td>Shared executor budget, 2.4.0</td>
 <td><code>BoundedExecutor</code></td>
 </tr>
 <tr>
-<td>File partition recovery, unreleased</td>
+<td>File partition recovery, 2.4.0</td>
 <td><code>FileCheckpoint</code></td>
 </tr>
 <tr>

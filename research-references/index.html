@@ -661,7 +661,7 @@
   <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        October 18: completed review and adopted changes (unreleased)
+        October 18: completed review and adopted changes (2.4.0)
       
     </span>
   </a>
@@ -1193,7 +1193,7 @@
   <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        October 18: completed review and adopted changes (unreleased)
+        October 18: completed review and adopted changes (2.4.0)
       
     </span>
   </a>
@@ -1665,11 +1665,11 @@ comparison below remains pinned to 0.8.4.</p>
 </tr>
 <tr>
 <td><code>groupRuns</code>, <code>collapse</code>, <code>runLengths</code></td>
-<td><code>group_runs(key)</code> groups equal adjacent keys; <code>collapse(predicate, merger)</code> supports pair predicates. These have different contracts. The unreleased Collector overload reduces runs without a raw run buffer.</td>
+<td><code>group_runs(key)</code> groups equal adjacent keys; <code>collapse(predicate, merger)</code> supports pair predicates. These have different contracts. The 2.4.0 Collector overload reduces runs without a raw run buffer.</td>
 </tr>
 <tr>
 <td><code>collapse(predicate, collector)</code></td>
-<td>Existing <code>Rows.group_by_sorted(...).aggregate(...)</code> covers ascending supported keys. The unreleased <code>collapse</code> overload covers arbitrary adjacent predicates and async pipelines through the same Collector state program. Memory depends on the Collector's state; a run needs a boundary or source exhaustion to emit.</td>
+<td>Existing <code>Rows.group_by_sorted(...).aggregate(...)</code> covers ascending supported keys. The 2.4.0 <code>collapse</code> overload covers arbitrary adjacent predicates and async pipelines through the same Collector state program. Memory depends on the Collector's state; a run needs a boundary or source exhaustion to emit.</td>
 </tr>
 <tr>
 <td><code>MoreCollectors.reducingWithZero</code></td>
@@ -1687,7 +1687,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 <code>scan(initial, function)</code> is lazy and emits only states produced from input items.
 Copying the Java name would obscure that difference.</p>
 <p>These are API comparisons, not a claim of semantic equivalence or measured
-performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">unreleased Collector overload</a>
+performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">2.4.0 Collector overload</a>
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.</p>
@@ -1701,7 +1701,7 @@ received scoped, read-only analysis; experiments and implementation remain defer
 led to a check of fpstreams prefix operations. The Python path rejected floats
 only during execution, while the async path accepted them: <code>take(2.5)</code> emitted
 three items and <code>take(float("nan"))</code> emitted the entire finite input.</p>
-<p>The unreleased fix normalizes <code>take</code>, <code>limit</code>, <code>drop</code>, and <code>skip</code> counts once
+<p>The 2.4.0 fix normalizes <code>take</code>, <code>limit</code>, <code>drop</code>, and <code>skip</code> counts once
 through the <a href="https://docs.python.org/3.12/library/operator.html#operator.index">integer index protocol</a>
 when constructing the operation. Both APIs accept integer-index objects and
 reject floats before opening a source. Integer behavior, zero-count boundaries,
@@ -1734,7 +1734,7 @@ rejected the corresponding floating-point counterexample. This does not prove
 integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.</p>
-<h3 id="october-18-completed-review-and-adopted-changes-unreleased">October 18: completed review and adopted changes (unreleased)</h3>
+<h3 id="october-18-completed-review-and-adopted-changes-unreleased">October 18: completed review and adopted changes (2.4.0)</h3>
 <p>All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
 public documentation, and selected core implementations. Earlier links in the
@@ -1759,8 +1759,8 @@ every upstream repository or inspection of closed-source engine internals.</p>
 </ul>
 <p>The adopted changes passed the complete Python checks, existing performance
 gates, package checks, and installed-wheel checks on standard Linux CPython
-3.11–3.14. They remain unreleased; this review did not publish a new package or
-establish whole-application speedups.</p>
+3.11–3.14. These changes are included in 2.4.0. The review did not establish
+whole-application speedups.</p>
 <p>A synchronous cross-node fusion prototype failed performance gates and was
 withdrawn. The existing <code>window_reduce()</code> uses Two-Stacks Lite; it was not
 replaced with DABA and does not promise worst-case constant work per operation.

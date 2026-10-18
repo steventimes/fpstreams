@@ -740,7 +740,7 @@
   <a href="#thread-state-through-async-callbacks-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Thread state through async callbacks (unreleased)
+        Thread state through async callbacks (2.4.0)
       
     </span>
   </a>
@@ -751,7 +751,7 @@
   <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reuse sliding-window aggregates (unreleased)
+        Reuse sliding-window aggregates (2.4.0)
       
     </span>
   </a>
@@ -762,7 +762,7 @@
   <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reduce adjacent runs with a Collector (unreleased)
+        Reduce adjacent runs with a Collector (2.4.0)
       
     </span>
   </a>
@@ -2195,7 +2195,7 @@
   <a href="#thread-state-through-async-callbacks-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Thread state through async callbacks (unreleased)
+        Thread state through async callbacks (2.4.0)
       
     </span>
   </a>
@@ -2206,7 +2206,7 @@
   <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reuse sliding-window aggregates (unreleased)
+        Reuse sliding-window aggregates (2.4.0)
       
     </span>
   </a>
@@ -2217,7 +2217,7 @@
   <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reduce adjacent runs with a Collector (unreleased)
+        Reduce adjacent runs with a Collector (2.4.0)
       
     </span>
   </a>
@@ -3383,7 +3383,7 @@ rate control, latest-request switching, timeouts, and buffer-by-time operations.
 <td>Call the source factory for each execution</td>
 </tr>
 <tr>
-<td><code>aflow.unfold(seed, function)</code> (unreleased)</td>
+<td><code>aflow.unfold(seed, function)</code> (2.4.0)</td>
 <td>Resolve <code>(value, next_state)</code> transitions until <code>None</code> is returned</td>
 </tr>
 <tr>
@@ -3407,7 +3407,7 @@ rate control, latest-request switching, timeouts, and buffer-by-time operations.
 <p>Queue sources do not call <code>task_done()</code> and do not own the producer or queue.
 Avoid <code>prefetch()</code> when <code>Queue.join()</code> or per-item acknowledgements must track
 each <code>get()</code> exactly.</p>
-<h2 id="thread-state-through-async-callbacks-unreleased">Thread state through async callbacks (unreleased)</h2>
+<h2 id="thread-state-through-async-callbacks-unreleased">Thread state through async callbacks (2.4.0)</h2>
 <p><code>AsyncFlow.unfold</code> and <code>aflow.unfold</code> accept synchronous, asynchronous, or mixed
 callbacks. Each call resolves before the next transition starts. Returning
 <code>(None, next_state)</code> emits <code>None</code>; returning <code>None</code> ends the source.</p>
@@ -3438,7 +3438,7 @@ chain. Each evaluation begins with the supplied seed by reference; use
 <code>aflow.defer</code> when mutable state needs a new instance. See the
 <a href="../flow/#state-driven-generation-and-mapping-unreleased">synchronous state examples</a>
 for tuple ordering and empty-input behavior.</p>
-<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (unreleased)</h2>
+<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (2.4.0)</h2>
 <p><code>AsyncFlow.window_reduce(size, combine, step=1)</code> uses the same ordered aggregation
 strategies and <a href="../flow/#reuse-sliding-window-aggregates-unreleased">algebraic contract</a>
 as the synchronous operation. The combine function is synchronous. It must be
@@ -3457,7 +3457,7 @@ The operation creates no background task or prefetch buffer. Cancellation while
 waiting for the next source item propagates upstream and closes the iterator
 chain. A stack transfer runs synchronously and can take linear work in the
 window size; this operation adds no scheduling checkpoint inside a combine call.</p>
-<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (unreleased)</h2>
+<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (2.4.0)</h2>
 <p><code>AsyncFlow.collapse(predicate, collector)</code> follows the same
 <a href="../flow/#reduce-adjacent-runs-with-a-collector-unreleased">run and Collector rules</a>.
 The adjacent predicate may be synchronous or awaitable:</p>

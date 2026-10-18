@@ -701,7 +701,7 @@
   <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        State-driven generation and mapping (unreleased)
+        State-driven generation and mapping (2.4.0)
       
     </span>
   </a>
@@ -712,7 +712,7 @@
   <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reuse sliding-window aggregates (unreleased)
+        Reuse sliding-window aggregates (2.4.0)
       
     </span>
   </a>
@@ -723,7 +723,7 @@
   <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reduce adjacent runs with a Collector (unreleased)
+        Reduce adjacent runs with a Collector (2.4.0)
       
     </span>
   </a>
@@ -2404,7 +2404,7 @@
   <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        State-driven generation and mapping (unreleased)
+        State-driven generation and mapping (2.4.0)
       
     </span>
   </a>
@@ -2415,7 +2415,7 @@
   <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reuse sliding-window aggregates (unreleased)
+        Reuse sliding-window aggregates (2.4.0)
       
     </span>
   </a>
@@ -2426,7 +2426,7 @@
   <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reduce adjacent runs with a Collector (unreleased)
+        Reduce adjacent runs with a Collector (2.4.0)
       
     </span>
   </a>
@@ -3809,7 +3809,7 @@ plan.</p>
 execution must create a fresh iterable. Besides ordinary iterables,
 <code>flow(source)</code> retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.</p>
-<h2 id="state-driven-generation-and-mapping-unreleased">State-driven generation and mapping (unreleased)</h2>
+<h2 id="state-driven-generation-and-mapping-unreleased">State-driven generation and mapping (2.4.0)</h2>
 <p><code>unfold</code> builds a source from state, while <code>map_accum</code> transforms an existing
 source with state. They use different tuple orders:</p>
 <table>
@@ -3865,7 +3865,7 @@ reused by reference, following <code>scan</code>. Use <code>flow.defer</code> to
 mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.</p>
-<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (unreleased)</h2>
+<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (2.4.0)</h2>
 <p><code>window_reduce(size, combine, step=1)</code> combines each count-based window without
 building a tuple and folding every overlapping value again:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
@@ -3896,7 +3896,7 @@ Combine calls are amortized constant per input item; transferring a stack can
 take linear work in <code>size</code>. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against <code>window(...).map(...)</code> for those workloads.</p>
-<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (unreleased)</h2>
+<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (2.4.0)</h2>
 <p><code>collapse(predicate, collector)</code> feeds each nonempty adjacent run into fresh
 <a href="../collecting/">Collector</a> state. The predicate sees neighboring input items,
 including when it is not transitive:</p>
