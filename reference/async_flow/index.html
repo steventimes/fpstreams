@@ -726,6 +726,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#statistics-and-rolling-windows-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Statistics and rolling windows (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#creating-an-async-flow" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1765,6 +1776,17 @@
     <span class="md-ellipsis">
       
         cross
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.rolling_statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rolling_statistics
       
     </span>
   </a>
@@ -2181,6 +2203,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#statistics-and-rolling-windows-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Statistics and rolling windows (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#creating-an-async-flow" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3227,6 +3260,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.rolling_statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rolling_statistics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.AsyncFlow.scan" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3365,6 +3409,29 @@
 <p><code>AsyncFlow[T]</code> combines async iteration with bounded concurrent mapping, merging,
 rate control, latest-request switching, timeouts, and buffer-by-time operations.</p>
 <p>Use <code>aflow(source)</code> with an iterable or async iterable.</p>
+<h2 id="statistics-and-rolling-windows-unreleased">Statistics and rolling windows (Unreleased)</h2>
+<p><code>rolling_statistics(size, selector=..., ddof=0)</code> returns an AsyncFlow of
+<code>(count, mean, variance)</code> tuples. The selector remains synchronous. Missing
+values, warmup output, configuration errors, and fresh-state rules match
+<a href="../flow/#statistical-pipelines-unreleased">Flow statistics</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">aflow</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">summarize</span><span class="p">():</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">summary</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">statistics</span><span class="p">())</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">windows</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">rolling_statistics</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="k">assert</span> <span class="n">summary</span><span class="p">[</span><span class="s2">&quot;mean&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">4.0</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="k">assert</span> <span class="n">windows</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">summarize</span><span class="p">())</span>
+</code></pre></div>
+<p>Collector state callbacks follow their synchronous contract; await the async
+terminal that consumes the flow. Cancellation closes the owned upstream
+iterator. The optional sketches use the same <code>collect()</code> entry point; see
+<a href="../collecting/#shared-and-approximate-statistics-unreleased">Collector statistics</a>.
+These additions require the source version.</p>
 <h2 id="creating-an-async-flow">Creating an async flow</h2>
 <table>
 <thead>
@@ -3413,24 +3480,24 @@ callbacks. Each call resolves before the next transition starts. Returning
 <code>(None, next_state)</code> emits <code>None</code>; returning <code>None</code> ends the source.</p>
 <p><code>map_accum(initial, function)</code> consumes an existing source in encounter order.
 The callback resolves to <code>(next_state, output)</code>, and only the output is emitted:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">countdown</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">return</span> <span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">state</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="k">if</span> <span class="n">state</span> <span class="k">else</span> <span class="kc">None</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">running</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">next_total</span> <span class="o">=</span> <span class="n">total</span> <span class="o">+</span> <span class="n">value</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="k">return</span> <span class="n">next_total</span><span class="p">,</span> <span class="n">next_total</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">query</span> <span class="o">=</span> <span class="n">aflow</span><span class="o">.</span><span class="n">unfold</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">countdown</span><span class="p">)</span><span class="o">.</span><span class="n">map_accum</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">running</span><span class="p">)</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="k">assert</span> <span class="k">await</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">countdown</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="k">return</span> <span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">state</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="k">if</span> <span class="n">state</span> <span class="k">else</span> <span class="kc">None</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">running</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="n">next_total</span> <span class="o">=</span> <span class="n">total</span> <span class="o">+</span> <span class="n">value</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="k">return</span> <span class="n">next_total</span><span class="p">,</span> <span class="n">next_total</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    <span class="n">query</span> <span class="o">=</span> <span class="n">aflow</span><span class="o">.</span><span class="n">unfold</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">countdown</span><span class="p">)</span><span class="o">.</span><span class="n">map_accum</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">running</span><span class="p">)</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>    <span class="k">assert</span> <span class="k">await</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">]</span>
 </code></pre></div>
 <p>Neither operation starts background work or prefetches the next transition.
 Cancellation propagates to the active callback and closes the owned iterator
@@ -3445,12 +3512,12 @@ as the synchronous operation. The combine function is synchronous. It must be
 associative and must not modify its arguments; source values and emitted
 aggregates must remain unchanged during iteration. Awaitable combine functions
 are not supported.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="k">assert</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">7</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">15</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">aflow</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="k">assert</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">7</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">15</span><span class="p">]</span>
 </code></pre></div>
 <p>Nonoverlapping windows use a running fold without a raw window buffer.
 The operation creates no background task or prefetch buffer. Cancellation while
@@ -3461,18 +3528,18 @@ window size; this operation adds no scheduling checkpoint inside a combine call.
 <p><code>AsyncFlow.collapse(predicate, collector)</code> follows the same
 <a href="../flow/#reduce-adjacent-runs-with-a-collector-unreleased">run and Collector rules</a>.
 The adjacent predicate may be synchronous or awaitable:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">aflow</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">adjacent</span><span class="p">(</span><span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">):</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="k">return</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">right</span> <span class="o">-</span> <span class="n">left</span> <span class="o">&lt;=</span> <span class="mi">2</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">11</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">collapse</span><span class="p">(</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="n">adjacent</span><span class="p">,</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[[</span><span class="mi">1</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">],</span> <span class="p">[</span><span class="mi">1</span><span class="p">]]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">aflow</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">adjacent</span><span class="p">(</span><span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">):</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="k">return</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">right</span> <span class="o">-</span> <span class="n">left</span> <span class="o">&lt;=</span> <span class="mi">2</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">11</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">collapse</span><span class="p">(</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>        <span class="n">adjacent</span><span class="p">,</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[[</span><span class="mi">1</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">],</span> <span class="p">[</span><span class="mi">1</span><span class="p">]]</span>
 </code></pre></div>
 <p>Collector hooks retain their synchronous protocol. An awaitable returned by
 the finisher is emitted as data, without an implicit await. No background task
@@ -3482,7 +3549,7 @@ for the predicate closes upstream without finishing the pending run.</p>
 <p><code>prefetch(capacity)</code> lets a producer pull ahead while retaining at most
 <code>capacity</code> accepted values. It preserves encounter order and cancels its owned
 producer task when downstream stops or fails.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">values</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="o">.</span><span class="n">prefetch</span><span class="p">(</span><span class="mi">32</span><span class="p">)</span><span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">transform</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">values</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="o">.</span><span class="n">prefetch</span><span class="p">(</span><span class="mi">32</span><span class="p">)</span><span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">transform</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
 </code></pre></div>
 <p>Prefetch is useful when upstream latency and downstream work overlap. It is not
 a concurrency setting for <code>map_async</code>, and increasing the capacity also
@@ -3496,12 +3563,12 @@ completion flushes the final non-empty session.</p>
 <p>Place <code>throttle</code> before concurrent work when an API accepts only a fixed number of requests per
 time window. The first window may start with a burst; later items wait without filling a background
 queue.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">aflow</span><span class="p">(</span><span class="n">requests</span><span class="p">)</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="o">.</span><span class="n">throttle</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="n">per</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>  <span class="c1"># Start at most five requests per second.</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">send_request</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>  <span class="c1"># Keep at most three requests in flight.</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">aflow</span><span class="p">(</span><span class="n">requests</span><span class="p">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="o">.</span><span class="n">throttle</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="n">per</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>  <span class="c1"># Start at most five requests per second.</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="o">.</span><span class="n">map_async</span><span class="p">(</span><span class="n">send_request</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>  <span class="c1"># Keep at most three requests in flight.</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
 </code></pre></div>
 <p>Use <code>spaceout(seconds)</code> when every pair of emissions needs a minimum gap. <code>delay(seconds)</code> waits
 once, before the first upstream item is requested.</p>
@@ -3509,11 +3576,11 @@ once, before the first upstream item is requested.</p>
 <p><code>switch_map</code> is useful for search boxes, live filters, and other inputs where a newer value makes
 older work irrelevant. When a new outer item arrives, fpstreams cancels and closes the previous
 inner source. The last inner source can finish after the outer source ends.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">matches</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">aflow</span><span class="p">(</span><span class="n">query_changes</span><span class="p">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="o">.</span><span class="n">switch_map</span><span class="p">(</span><span class="n">search_pages</span><span class="p">)</span>  <span class="c1"># Cancel the previous search when the query changes.</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">matches</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">aflow</span><span class="p">(</span><span class="n">query_changes</span><span class="p">)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="o">.</span><span class="n">switch_map</span><span class="p">(</span><span class="n">search_pages</span><span class="p">)</span>  <span class="c1"># Cancel the previous search when the query changes.</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="p">)</span>
 </code></pre></div>
 <p><code>search_pages</code> may return an iterable, an async iterable, or an awaitable containing either one.</p>
 <h2 id="reduce-without-materializing">Reduce without materializing</h2>
@@ -3524,8 +3591,8 @@ Python's built-in <code>sum</code>.</p>
 <p><code>min</code>, <code>max</code>, and <code>minmax</code> accept a callable, field name, integer index, dotted path, or row
 expression as <code>key</code>. A callable key may return a value directly or return an awaitable. Equal keys
 retain the first item encountered.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">lowest</span><span class="p">,</span> <span class="n">highest</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">events</span><span class="p">)</span><span class="o">.</span><span class="n">minmax</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="s2">&quot;metrics.latency_ms&quot;</span><span class="p">)</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">total</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">amounts</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">start</span><span class="o">=</span><span class="n">opening_balance</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">lowest</span><span class="p">,</span> <span class="n">highest</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">events</span><span class="p">)</span><span class="o">.</span><span class="n">minmax</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="s2">&quot;metrics.latency_ms&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">total</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">amounts</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">start</span><span class="o">=</span><span class="n">opening_balance</span><span class="p">)</span>
 </code></pre></div>
 <p>The extreme-value terminals raise <code>EmptyFlowError</code> on an empty source. <code>sum</code> returns <code>start</code> for an
 empty source. Exceptions and cancellation close the owned upstream iterator before propagating.</p>
@@ -11021,6 +11088,122 @@ with every buffered right item in order.</p>
             <td>
               <div class="doc-md-description">
                 <p>During consumption if <code>other</code> contains more than <code>max_right</code> items.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncFlow.rolling_statistics" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">rolling_statistics</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">rolling_statistics</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">size</span><span class="p">:</span> <span class="n">SupportsIndex</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ddof</span><span class="p">:</span> <span class="n">SupportsIndex</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncFlow</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Emit count, mean, and variance for each recent count-based window.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>size</code>
+            </td>
+            <td>
+                  <code><span title="typing.SupportsIndex">SupportsIndex</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Positive integer window width in source items, including missing values.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>selector</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.expressions.selectors.Selector">Selector</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Synchronous numeric selector; <code>None</code> selects each whole item. Selected
+<code>None</code> occupies a window slot but is excluded from the statistics.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>ddof</code>
+            </td>
+            <td>
+                  <code><span title="typing.SupportsIndex">SupportsIndex</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Nonnegative integer subtracted from valid count when computing variance.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="tuple">tuple</span>[<span title="int">int</span>, <span title="float">float</span> | None, <span title="float">float</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>An async flow of <code>(count, mean, variance)</code> tuples, including warmup windows.
+Undefined statistics are <code>None</code>. Each evaluation owns fresh state, retains
+at most size converted values, and uses the same shifted updates and periodic
+rebuilding as <a class="autorefs autorefs-internal" title="rolling_statistics" href="../flow/#fpstreams.Flow.rolling_statistics">Flow.rolling_statistics</a>.
+Selectors stay synchronous; nonfinite numeric input is rejected.</p>
               </div>
             </td>
           </tr>

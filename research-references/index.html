@@ -673,6 +673,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#cross-project-follow-up-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-project follow-up (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1202,6 +1213,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-project-follow-up-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-project follow-up (Unreleased)
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1768,6 +1790,37 @@ Event-time windows, distributed execution, approximate aggregations, and
 automatic reordering of arbitrary callbacks require separate contracts and
 were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
 the research dependencies and trial records are not product dependencies.</p>
+<h2 id="cross-project-follow-up-unreleased">Cross-project follow-up (Unreleased)</h2>
+<p>The next batch adds explicit shared statistics, optional sketches, rolling
+numerical statistics, and conservative field dependencies. These changes use
+the existing Collector, <code>map_accum</code>, and plan explanation interfaces. The
+following sources supplement the earlier numbered list:</p>
+<ul>
+<li><a href="https://www.vldb.org/pvldb/vol11/p1781-schelter.pdf">Deequ paper</a>
+  and <a href="https://github.com/awslabs/deequ">implementation</a>: scan sharing and metric state.</li>
+<li><a href="https://arxiv.org/abs/1603.05346v2">KLL paper</a> and
+  <a href="https://research.google/pubs/hyperloglog-in-practice-algorithmic-engineering-of-a-state-of-the-art-cardinality-estimation-algorithm/">HLL engineering paper</a>:
+  approximation contracts; the adapter uses existing Apache DataSketches kernels.</li>
+<li><a href="https://fanf2.user.srcf.net/hermes/doc/antiforgery/stats.pdf">Finch's numerical derivations</a>
+  and <a href="https://github.com/online-ml/river/tree/0.22.0/river/stats">River</a>:
+  online moments and explicit removal, with rebuilding for rolling numerical drift.</li>
+<li><a href="https://www.cs.ucdavis.edu/~green/papers/pods07.pdf">Provenance Semirings</a>,
+  <a href="https://doi.org/10.1007/3-540-44503-X_20">Why and Where</a>, and
+  <a href="https://www.cidrdb.org/cidr2017/papers/p111-hellerstein-cidr17.pdf">Ground</a>:
+  distinctions between value inputs, row selection, and retained provenance.</li>
+<li><a href="https://www.jmlr.org/papers/v11/cawley10a.html">Cawley and Talbot</a>:
+  separating parameter selection from final evaluation.</li>
+<li><a href="https://www.usenix.org/system/files/usenixsecurity23-staicu.pdf">Bilingual Problems</a>:
+  reviewing actual argument and ownership boundaries across native extensions.</li>
+<li><a href="https://doi.org/10.1137/1.9781611972771.42">ADWIN</a>: reviewed for its
+  assumptions and drift semantics; automatic drift handling remains deferred.</li>
+</ul>
+<p>The field metadata is a static dependency description, not a per-record
+provenance implementation. Sketch estimates preserve the exact APIs and add
+their own type, missing-value, approximation, and merge contracts. See
+<a href="../reference/collecting/">collectors</a>,
+<a href="../user-guide/analytics/#rolling-numerical-statistics-unreleased">rolling statistics</a>,
+and <a href="../user-guide/execution-reports/#static-field-dependencies-unreleased">field dependencies</a>.</p>
 
 
 

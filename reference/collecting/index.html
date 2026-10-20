@@ -868,6 +868,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-in collectors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#shared-and-approximate-statistics-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared and approximate statistics (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collector-composition-and-completion-240" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Collector composition and completion (2.4.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -881,6 +909,39 @@
   
     <nav class="md-nav" aria-label="Collectors">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        statistics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.approx_quantiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        approx_quantiles
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.approx_count_distinct" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        approx_count_distinct
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
@@ -1364,6 +1425,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-in collectors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#shared-and-approximate-statistics-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared and approximate statistics (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#collector-composition-and-completion-240" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Collector composition and completion (2.4.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1377,6 +1466,39 @@
   
     <nav class="md-nav" aria-label="Collectors">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        statistics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.approx_quantiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        approx_quantiles
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.approx_count_distinct" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        approx_count_distinct
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#fpstreams.Collectors.to_list" class="md-nav__link">
@@ -1670,7 +1792,7 @@
 <h1 id="collecting-and-aggregation">Collecting and aggregation</h1>
 <p>Collectors reduce a flow into a result. <code>agg</code> supplies factories for common
 named and grouped aggregations; each result is also a <code>Collector</code>.</p>
-<p>In the development version, named <code>aggregate()</code> and <code>Pairs.aggregate_values()</code>
+<p>Since 2.4.0, named <code>aggregate()</code> and <code>Pairs.aggregate_values()</code>
 accept any <code>Collector</code>. This includes compositions made with
 <code>Collectors.filtering</code>, <code>mapping</code>, <code>teeing</code>, and <code>collecting_and_then</code>. The same
 collector can run over a Flow, an AsyncFlow, or each row group, including sorted
@@ -1680,7 +1802,7 @@ and spill groups. Every group receives fresh state from its initializer.</p>
 when used with AsyncFlow. Composing a collector does not grant native execution
 or reducer laws; those still require their existing proofs and declarations.
 See the <a href="../../user-guide/analytics/#compose-a-weighted-collector-unreleased">weighted collector recipe</a>.</p>
-<p>In the development version, editor hints and type checkers retain the finished
+<p>Since 2.4.0, editor hints and type checkers retain the finished
 result type of a single streaming collector for both Flow and AsyncFlow.
 Named collector calls return <code>dict[str, Any]</code>. Calls that forward a possibly
 <code>None</code> collector together with named arguments keep the general result union.</p>
@@ -1746,13 +1868,56 @@ carries planner metadata without changing Python execution.</p>
     </div>
 
 </div><h2 id="built-in-collectors">Built-in collectors</h2>
-<p>In the development version, <code>head(count)</code> and <code>tail(count)</code> accept integers and
+<h3 id="shared-and-approximate-statistics-unreleased">Shared and approximate statistics (Unreleased)</h3>
+<p><code>Collectors.statistics("value", ddof=1)</code> returns <code>count</code>, <code>mean</code>, <code>variance</code>,
+and <code>std</code> in one dictionary. It selects and converts each nonmissing value once.
+Selected <code>None</code> values are skipped; an undefined mean, variance, or standard
+deviation is <code>None</code>. This explicit collector shares its statistical state without
+changing the callback behavior of existing collectors. It has no state combiner.</p>
+<p>These collectors are not included in PyPI 2.4.1. From a source checkout, install
+the <code>sketch</code> extra to use the optional Apache DataSketches C++ kernels:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">distribution</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_quantiles</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">k</span><span class="o">=</span><span class="mi">200</span><span class="p">),</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">cardinality</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_count_distinct</span><span class="p">(</span><span class="n">lg_k</span><span class="o">=</span><span class="mi">12</span><span class="p">),</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>approx_quantiles</code> preserves rank order in its result tuple. It skips <code>None</code>
+and converts real numeric inputs to finite double-precision values; conversion
+can round large integers. Empty input returns one <code>None</code> per requested rank.
+Complex values, including NumPy complex scalars with a zero imaginary part,
+are rejected before conversion. Rank parameters use the same real-number check.
+The KLL parameter <code>k</code> ranges from 8 to 65535. Estimates are stochastic and have
+rank error, which does not bound error in the returned numeric value. The
+<a href="https://apache.github.io/datasketches-python/main/quantiles/kll.html">DataSketches KLL documentation</a>
+describes its empirical error model. Do not infer a fixed byte limit from <code>k</code>.</p>
+<p><code>approx_count_distinct</code> returns a floating-point HLL estimate, including <code>0.0</code>
+for empty input. Its <code>lg_k</code> ranges from 7 to 21. It accepts exact builtin bool,
+int, finite float, str, and bytes values; <code>None</code> is skipped. Equal numeric values
+such as <code>True</code>, <code>1</code>, and <code>1.0</code> share an identity. Text and bytes have different
+identities, including empty values. Other objects and nonfinite floats are
+rejected. The adapter encodes scalars with type framing and exact integer ratios,
+then applies a versioned BLAKE2b digest before native hashing. This adds work per
+value and does not provide general Python object equality semantics.</p>
+<p>Both factories import the optional dependency only when called. Their states
+support compatible partial merges: the left state is updated and the right is
+preserved. Algorithm and precision must match, and states must be independent.
+State serialization is not a public persistence contract. Merge order can affect
+estimates, so byte equality and exact reducer laws are not promised. Existing
+grouping creates fresh state per group; many groups can still consume substantial
+memory. These sketches do not certify uniqueness or replace exact collectors.</p>
+<p>DataSketches 5.2.0 publishes wheels for CPython 3.11 through 3.13, but no 3.14
+wheel. Installing the sketch extra on 3.14 may require a source build and its
+toolchain. The base library has no DataSketches dependency.</p>
+<h3 id="collector-composition-and-completion-240">Collector composition and completion (2.4.0)</h3>
+<p><code>head(count)</code> and <code>tail(count)</code> accept integers and
 objects implementing <code>__index__</code>. Each factory normalizes the count once, so
 the same collector can be reused without consulting the count provider again.
 Negative integer counts raise <code>ValueError</code>; floats, NaN, infinity, and other non-index
 values raise <code>TypeError</code> at construction. A zero head still pulls no items,
 while a zero tail consumes the source and returns an empty list.</p>
-<p>The development version also keeps completed <code>first()</code> and <code>head(count)</code> states
+<p>Completed <code>first()</code> and <code>head(count)</code> states remain
 stable when a grouping adapter continues offering input. For example,
 <code>Collectors.grouping_by(key, Collectors.first())</code> retains the first item per key,
 and a downstream <code>head(0)</code> retains an empty list for each encountered group.
@@ -1760,7 +1925,7 @@ and a downstream <code>head(0)</code> retains an empty list for each encountered
 steps for every item without consulting its <code>done</code> hook. These built-in steps
 keep their completed result unchanged. Custom downstream callbacks continue
 receiving every input item.</p>
-<p>In the development version, <code>Collectors.teeing()</code> provides a state combiner
+<p><code>Collectors.teeing()</code> provides a state combiner
 when both downstream collectors declare one at construction. It combines the
 left states, then the right states. Downstream finishers and the result merger
 run only when the combined state is finished. Missing combiners leave
@@ -1818,6 +1983,427 @@ records their normalized Python integer values.</p>
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.statistics" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">statistics</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">statistics</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">ddof</span><span class="p">:</span> <span class="n">SupportsIndex</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Compute count, mean, variance, and standard deviation with one conversion per value.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>selector</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.expressions.selectors.Selector">Selector</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value selector; <code>None</code> selects the whole item. Selected <code>None</code> is skipped.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>ddof</code>
+            </td>
+            <td>
+                  <code><span title="typing.SupportsIndex">SupportsIndex</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Nonnegative integer subtracted from count for variance and standard deviation.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
+
+
+  
+      dataclass
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A collector returning count, mean, variance, and std. Undefined statistics are
+<code>None</code>. Numeric conversion and nonfinite behavior follow the exact statistics
+terminals. This collector does not declare a partial-state combiner.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.approx_quantiles" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">approx_quantiles</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">approx_quantiles</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">ranks</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">k</span><span class="p">:</span> <span class="n">SupportsIndex</span> <span class="o">=</span> <span class="mi">200</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span> <span class="o">...</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Estimate quantiles using the optional DataSketches double-precision KLL kernel.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>ranks</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Iterable">Iterable</span>[<span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Normalized ranks in [0, 1], frozen in supplied order at construction.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>selector</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.expressions.selectors.Selector">Selector</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value selector; selected <code>None</code> is skipped. Values must be finite real
+numbers and are converted to float, which can round large integers.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>k</code>
+            </td>
+            <td>
+                  <code><span title="typing.SupportsIndex">SupportsIndex</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Integer precision in [8, 65535]; larger values trade memory for rank accuracy.</p>
+              </div>
+            </td>
+            <td>
+                  <code>200</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
+
+
+  
+      dataclass
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="tuple">tuple</span>[<span title="float">float</span> | None, ...]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A mergeable collector returning a tuple of estimates, or one <code>None</code> per rank
+for empty input. Error concerns rank, not value; results are stochastic.
+Merging mutates only the left state and requires matching precision.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ImportError">ImportError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the optional <code>fpstreams[sketch]</code> dependency is unavailable.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If counts or numeric inputs have unsupported types.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If precision, ranks, or selected numbers are out of range or nonfinite.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.approx_count_distinct" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">approx_count_distinct</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">approx_count_distinct</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">lg_k</span><span class="p">:</span> <span class="n">SupportsIndex</span> <span class="o">=</span> <span class="mi">12</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Estimate distinct finite builtin scalars with an optional DataSketches HLL union.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>selector</code>
+            </td>
+            <td>
+                  <code><span title="fpstreams.expressions.selectors.Selector">Selector</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value selector; selected <code>None</code> is skipped. Supported values are exact
+builtin bool, int, finite float, str, and bytes. Equal numeric values share
+an identity; text and bytes remain distinct. Custom objects are rejected.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>lg_k</code>
+            </td>
+            <td>
+                  <code><span title="typing.SupportsIndex">SupportsIndex</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Integer precision in [7, 21], controlling the register count as <code>2**lg_k</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>12</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
+
+
+  
+      dataclass
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="typing.Any">Any</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A mergeable collector returning a floating-point estimate; empty input returns
+<code>0.0</code>. The stable, versioned scalar encoding precedes native hashing.
+Compatible merges mutate only the left state. State persistence is not an API.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ImportError">ImportError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the optional <code>fpstreams[sketch]</code> dependency is unavailable.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If precision or a selected value has an unsupported type.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If precision is out of range or a selected float is nonfinite.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
 
 <div class="doc doc-object doc-function">
 

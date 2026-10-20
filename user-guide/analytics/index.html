@@ -535,6 +535,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rolling-numerical-statistics-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rolling numerical statistics (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1217,6 +1228,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rolling-numerical-statistics-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rolling numerical statistics (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1562,6 +1584,26 @@ active jobs have stopped. Completed entries remain until you remove them.</p>
 callback side effects need their own idempotency. Arbitrary iterators are not
 replayed. Use a separate application transaction when multiple partition
 outputs must become visible together.</p>
+<h2 id="rolling-numerical-statistics-unreleased">Rolling numerical statistics (Unreleased)</h2>
+<p>Use <code>rolling_statistics</code> for a mean and variance over the most recent input
+items without rebuilding an entire window for every result:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">rolling_statistics</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">]</span>
+</code></pre></div>
+<p>Every source item emits <code>(count, mean, variance)</code>, including warmup windows.
+<code>None</code> occupies a window position but does not contribute to the statistics.
+The mean is <code>None</code> when no valid values remain; variance is <code>None</code> when
+<code>count &lt;= ddof</code>. Selectors stay synchronous in both Flow and AsyncFlow.</p>
+<p>The implementation retains at most <code>size</code> converted values, with a compensated
+mean, shifted Welford variance updates, explicit removal, and periodic rebuilding.
+A rebuild takes O(size) time and can also occur after severe cancellation, so individual updates
+do not have a worst-case constant-time guarantee. Floating-point rounding and
+overflow remain possible. Nonfinite inputs are rejected. This is a count-based
+window, with fresh state for every evaluation; it adds no event-time or
+watermark semantics. Existing <code>window</code> and <code>window_reduce</code> keep their contracts.</p>
 
 
 

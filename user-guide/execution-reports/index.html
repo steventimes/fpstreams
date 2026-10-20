@@ -465,6 +465,50 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#static-field-dependencies-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static field dependencies (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plan-dictionary-reference-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan dictionary reference (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpstreams.planning.explain.PlanExplanation.to_dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_dict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-observations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime observations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related-inspection-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1379,6 +1423,50 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#static-field-dependencies-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static field dependencies (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plan-dictionary-reference-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan dictionary reference (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpstreams.planning.explain.PlanExplanation.to_dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        to_dict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-observations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime observations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related-inspection-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1758,6 +1846,118 @@
 
 
 <h1 id="execution-reports">Execution reports</h1>
+<h2 id="static-field-dependencies-unreleased">Static field dependencies (Unreleased)</h2>
+<p><code>Rows.explain().to_dict(include_field_dependencies=True)["field_dependencies"]</code> describes logical input fields
+without reading a row or evaluating a selector. It exports its own schema version,
+source identifiers, explicit output fields, and any identity passthrough. A
+dependency is a source/field pair; <code>None</code> means unknown and an empty list means
+no declared field input. <code>complete_schema</code> distinguishes an explicit projection
+from a source whose full schema is unknown. <code>passthrough_excludes</code> records renamed
+fields that no longer pass through under their old names.</p>
+<p>The analysis follows direct top-level projections, RowExpr computed columns,
+renames, and closed RowExpr filters. It reports value dependencies separately
+from <code>row_dependencies</code>, which affect which rows reach the result. Distinct logical
+sources have separate identifiers. Join output fields are tracked when both input
+schemas are established by projections and join keys are direct strings; shared
+keys conservatively include both origins. Grouped keys and recognized aggregation
+inputs are tracked; unsupported collectors remain unknown.</p>
+<p>Opaque callbacks, unsupported transformations, and unrecognized join schemas
+stop value inference. Nested selectors and some expression projections also
+remain unknown. This metadata describes declared logical field inputs, rather
+than per-record evidence or a proof about side effects in custom value objects.
+It does not authorize optimization, establish purity, inspect records, or retain
+source values. Runtime <code>ExecutionReport</code> observations keep their existing scope.</p>
+<p>This analysis uses the shared synchronous explanation entry point. A Rows view
+and its underlying Flow therefore produce the same explanation dictionary.
+The default output keeps its existing fields and order; source analysis runs
+only when explicitly requested.</p>
+<p>Each export owns its expression-analysis cache, retaining only the most recent
+root. Field states share that cache within the export, including after an
+unknown transformation. Later exports analyze their current expressions again.</p>
+<h2 id="plan-dictionary-reference-unreleased">Plan dictionary reference (Unreleased)</h2>
+<p>The synchronous Flow and Rows explanation objects share this method.
+<code>AsyncFlow.explain().to_dict()</code> keeps its existing signature and does not accept
+the field-dependency flag.</p>
+
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="fpstreams.planning.explain.PlanExplanation.to_dict" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">fpstreams.planning.explain.PlanExplanation.to_dict</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">to_dict</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="p">,</span> <span class="n">include_field_dependencies</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents first">
+
+        <p>Analyze the plan and serialize engine choice, costs, stages, semantics, and boundaries.</p>
+<p>Native or hybrid decisions determine the initial stage layout. An eligible Arrow prefix
+supersedes that layout and records where materialized Python rows begin.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>include_field_dependencies</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Include static logical field inputs when the
+original logical plan is available. The default preserves the existing schema.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Plain plan metadata, with optional field dependencies computed without reading rows.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div><h2 id="runtime-observations">Runtime observations</h2>
 <p><code>explain()</code> describes a plan without running it. <code>run_with_report()</code> executes
 one eager terminal and returns its value, the recorded execution route, and
 measurements of resources owned by the query.</p>

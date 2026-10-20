@@ -754,6 +754,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#inspect-field-inputs-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect field inputs (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#entering-and-leaving-rows" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1802,6 +1813,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#inspect-field-inputs-unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect field inputs (Unreleased)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#entering-and-leaving-rows" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2609,6 +2631,24 @@ grouping, reshaping, and record I/O.</p>
 <p>Enter it with <code>flow(source).rows()</code>, construct it with <code>rows(source)</code>, or use one
 of the adapter factories. A Rows view shares its Flow's plan and source
 ownership; it does not inspect the source or make a one-shot input reusable.</p>
+<h2 id="inspect-field-inputs-unreleased">Inspect field inputs (Unreleased)</h2>
+<p>The source version supports static field dependencies through the existing
+explanation object. It inspects the logical plan without opening the source:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">query</span> <span class="o">=</span> <span class="n">rows</span><span class="p">([{</span><span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;tax&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}])</span><span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">total</span><span class="o">=</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;price&quot;</span><span class="p">)</span> <span class="o">+</span> <span class="n">col</span><span class="p">(</span><span class="s2">&quot;tax&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;total&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">metadata</span> <span class="o">=</span> <span class="n">query</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span><span class="o">.</span><span class="n">to_dict</span><span class="p">(</span><span class="n">include_field_dependencies</span><span class="o">=</span><span class="kc">True</span><span class="p">)[</span><span class="s2">&quot;field_dependencies&quot;</span><span class="p">]</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="k">assert</span> <span class="n">metadata</span><span class="p">[</span><span class="s2">&quot;fields&quot;</span><span class="p">][</span><span class="s2">&quot;total&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="p">{</span><span class="s2">&quot;source&quot;</span><span class="p">:</span> <span class="s2">&quot;source_0&quot;</span><span class="p">,</span> <span class="s2">&quot;field&quot;</span><span class="p">:</span> <span class="s2">&quot;price&quot;</span><span class="p">},</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="p">{</span><span class="s2">&quot;source&quot;</span><span class="p">:</span> <span class="s2">&quot;source_0&quot;</span><span class="p">,</span> <span class="s2">&quot;field&quot;</span><span class="p">:</span> <span class="s2">&quot;tax&quot;</span><span class="p">},</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">]</span>
+</code></pre></div>
+<p>Unknown dependencies are <code>None</code>; an empty list means no declared field input.
+This is logical field metadata. It does not trace individual records or permit
+operator reordering. See <a href="../../user-guide/execution-reports/#static-field-dependencies-unreleased">static field dependencies</a>
+and the <a href="../../user-guide/execution-reports/#plan-dictionary-reference-unreleased">plan dictionary reference</a>.</p>
 <h2 id="entering-and-leaving-rows">Entering and leaving Rows</h2>
 <p>Nonconflicting record methods can be called directly on Flow. <code>select()</code>,
 <code>with_columns()</code>, <code>rename()</code>, <code>cast()</code>, <code>fill_nulls()</code>, <code>drop_nulls()</code>,
@@ -2777,21 +2817,21 @@ evaluated first because their output has no equivalent linear source view.</p>
 <h2 id="safer-joins">Safer joins</h2>
 <p>A duplicate lookup key can multiply records without warning. Declare the
 relationship you expect when duplicates would indicate bad data:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">customers</span> <span class="o">=</span> <span class="p">[</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Ada&quot;</span><span class="p">},</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Lin&quot;</span><span class="p">},</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">]</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">enriched</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">rows</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">.</span><span class="n">join</span><span class="p">(</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">customers</span><span class="p">,</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">on</span><span class="o">=</span><span class="s2">&quot;customer_id&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="n">how</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="n">validate</span><span class="o">=</span><span class="s2">&quot;m:1&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="p">)</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">customers</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Ada&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Lin&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">]</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">enriched</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">rows</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="o">.</span><span class="n">join</span><span class="p">(</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="n">customers</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        <span class="n">on</span><span class="o">=</span><span class="s2">&quot;customer_id&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        <span class="n">how</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        <span class="n">validate</span><span class="o">=</span><span class="s2">&quot;m:1&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="p">)</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="p">)</span>
 </code></pre></div>
 <p>This many-to-one join permits several orders per customer and requires unique
 customer keys. Use <code>1:m</code> for a unique left side, <code>1:1</code> when both sides must
@@ -8848,14 +8888,14 @@ expected.</p>
 The input must already be ascending by exact builtin int, str, bytes, or nonempty
 flat tuple keys with a fixed type at each position. It checks consumed rows and
 one row of lookahead; an unordered or unsupported key raises during consumption.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">flow</span><span class="p">([{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}])</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">group_by_sorted</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">total</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;amount&quot;</span><span class="p">))</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">}]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">flow</span><span class="p">([{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}])</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">group_by_sorted</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">total</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;amount&quot;</span><span class="p">))</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">}]</span>
 </code></pre></div>
 <p>Added in 2.2.0. It buffers no
 complete group. Aggregators that collect values still grow their own state;

@@ -1276,6 +1276,10 @@ The final table lists aliases alongside their canonical names.</p>
 <td><code>window_reduce(size, combine, step=1)</code></td>
 </tr>
 <tr>
+<td>Rolling statistics (Unreleased)</td>
+<td><code>rolling_statistics(size, selector=..., ddof=0)</code>; <a href="../user-guide/analytics/#rolling-numerical-statistics-unreleased">recipe</a></td>
+</tr>
+<tr>
 <td>One callback per batch</td>
 <td><code>map_batches</code></td>
 </tr>
@@ -1375,6 +1379,9 @@ The final table lists aliases alongside their canonical names.</p>
 </table>
 <p>Terminals that require an element document their empty-input policy. Statistical
 terminals return <code>None</code> where the statistic is undefined.</p>
+<p>The source version can also include static field inputs with
+<code>query.explain().to_dict(include_field_dependencies=True)</code> on Flow and Rows.
+See the <a href="../user-guide/execution-reports/#plan-dictionary-reference-unreleased">plan dictionary reference</a>.</p>
 <h2 id="work-with-records">Work with records</h2>
 <table>
 <thead>
@@ -1476,6 +1483,11 @@ multi-reduction programs.</p>
 filtering, partitioning, grouping, joining, and downstream composition. Reducer
 objects describe associative laws when parallel or tree reduction needs explicit
 proof.</p>
+<p>The source version also provides <code>Collectors.statistics</code> for shared exact
+statistics and optional <code>Collectors.approx_quantiles</code> and
+<code>Collectors.approx_count_distinct</code> sketches. These factories are Unreleased;
+see <a href="collecting/#shared-and-approximate-statistics-unreleased">shared and approximate statistics</a>
+for input policies, installation, and error bounds.</p>
 <p>The <a href="../user-guide/analytics/#exact-grouped-percentiles-unreleased">exact percentile recipe</a>
 uses collector composition for grouped p50 and p90 values, with explicit
 missing-value and small-group policies.</p>
