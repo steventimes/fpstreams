@@ -36,7 +36,7 @@ from fpstreams import (
 )
 from fpstreams.planning.sync import FilterOp, MapOp, Operation, TapOp
 
-# --- Tests consolidated from test_primitives.py ---
+# --- Core values and source semantics ---
 
 
 def test_live_source_size_refresh_preserves_explicit_semantic_facts() -> None:
@@ -179,7 +179,7 @@ def test_theorem_stream_sum_homomorphism_under_concatenation() -> None:
     assert Stream(left + right).sum() == Stream(left).sum() + Stream(right).sum()
 
 
-# --- Tests consolidated from test_compatibility.py ---
+# --- Public compatibility ---
 
 """Legacy compatibility, integration behavior, coverage tracing, and package exports."""
 
@@ -391,7 +391,7 @@ def test_legacy_module_imports_remain_compatible() -> None:
     )
 
 
-# --- Tests consolidated from test_invariants.py ---
+# --- Finite-domain invariants ---
 
 """Randomized, property, finite-state, and operation-dispatch invariant tests."""
 

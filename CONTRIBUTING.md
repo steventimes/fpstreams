@@ -9,10 +9,14 @@ Python 3.11 or newer, Rust, and [uv](https://docs.astral.sh/uv/) are required fo
 the complete development environment.
 
 ```bash
-uv sync --extra arrow --extra data --extra polars \
+uv sync --extra arrow --extra data --extra polars --extra sketch \
   --group build --group test --group lint --group type --group docs
 uv run maturin develop --release
 ```
+
+The sketch extra needs Apache DataSketches. Its 5.2.0 release has no CPython
+3.14 wheel, so use 3.11–3.13 for sketch development or provide the source-build
+toolchain. The base library and other checks remain available without this extra.
 
 ## Make a change
 
@@ -47,11 +51,25 @@ owner through explicit protocols. Keep a binding live when callbacks can replace
 copying that binding into a helper module can silently bypass the replacement.
 Regression coverage belongs in the existing contract, engine, and flow tests.
 
+`execution/arrow.py` owns batch dispatch, safety proofs, and the live bindings
+used by optimized paths. `arrow_numeric.py` implements exact column reductions
+and borrowed-buffer means; `arrow_sort.py` implements retained-column sorting.
+Their hooks read the owner module at each boundary. Keep source claims,
+conversion callbacks, fallback, and buffer release in the same order when
+moving execution code.
+
 ## Run the checks
 
 Run the checks that cover your change; CI runs the complete matrix. Core Python
 or Rust execution changes should run their full language-specific checks before
 review.
+
+Tests live in nine domain modules. Keep statistics and sketches in
+`test_collecting.py`, rolling Flow behavior in `test_flow.py`, async cancellation
+in `test_async.py`, and field dependencies and Arrow projection in
+`test_tabular.py`. Add cases to the relevant group and reuse its helpers.
+Parameterize genuinely shared scenarios; keep checks for distinct failure,
+ownership, and backend contracts even when they use similar input.
 
 ```bash
 uv lock --check

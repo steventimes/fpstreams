@@ -373,3 +373,29 @@ This checkpoints the output file. Database writes, network calls, and other
 callback side effects need their own idempotency. Arbitrary iterators are not
 replayed. Use a separate application transaction when multiple partition
 outputs must become visible together.
+
+## Rolling numerical statistics (Unreleased)
+
+Use `rolling_statistics` for a mean and variance over the most recent input
+items without rebuilding an entire window for every result:
+
+```python
+from fpstreams import flow
+
+assert flow([2, None, 4, 6]).rolling_statistics(2).to_list() == [
+    (1, 2.0, 0.0), (1, 2.0, 0.0), (1, 4.0, 0.0), (2, 5.0, 1.0)
+]
+```
+
+Every source item emits `(count, mean, variance)`, including warmup windows.
+`None` occupies a window position but does not contribute to the statistics.
+The mean is `None` when no valid values remain; variance is `None` when
+`count <= ddof`. Selectors stay synchronous in both Flow and AsyncFlow.
+
+The implementation retains at most `size` converted values, with a compensated
+mean, shifted Welford variance updates, explicit removal, and periodic rebuilding.
+A rebuild takes O(size) time and can also occur after severe cancellation, so individual updates
+do not have a worst-case constant-time guarantee. Floating-point rounding and
+overflow remain possible. Nonfinite inputs are rejected. This is a count-based
+window, with fresh state for every evaluation; it adds no event-time or
+watermark semantics. Existing `window` and `window_reduce` keep their contracts.

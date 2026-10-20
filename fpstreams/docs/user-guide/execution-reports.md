@@ -1,5 +1,52 @@
 # Execution reports
 
+## Static field dependencies (Unreleased)
+
+`Rows.explain().to_dict(include_field_dependencies=True)["field_dependencies"]` describes logical input fields
+without reading a row or evaluating a selector. It exports its own schema version,
+source identifiers, explicit output fields, and any identity passthrough. A
+dependency is a source/field pair; `None` means unknown and an empty list means
+no declared field input. `complete_schema` distinguishes an explicit projection
+from a source whose full schema is unknown. `passthrough_excludes` records renamed
+fields that no longer pass through under their old names.
+
+The analysis follows direct top-level projections, RowExpr computed columns,
+renames, and closed RowExpr filters. It reports value dependencies separately
+from `row_dependencies`, which affect which rows reach the result. Distinct logical
+sources have separate identifiers. Join output fields are tracked when both input
+schemas are established by projections and join keys are direct strings; shared
+keys conservatively include both origins. Grouped keys and recognized aggregation
+inputs are tracked; unsupported collectors remain unknown.
+
+Opaque callbacks, unsupported transformations, and unrecognized join schemas
+stop value inference. Nested selectors and some expression projections also
+remain unknown. This metadata describes declared logical field inputs, rather
+than per-record evidence or a proof about side effects in custom value objects.
+It does not authorize optimization, establish purity, inspect records, or retain
+source values. Runtime `ExecutionReport` observations keep their existing scope.
+
+This analysis uses the shared synchronous explanation entry point. A Rows view
+and its underlying Flow therefore produce the same explanation dictionary.
+The default output keeps its existing fields and order; source analysis runs
+only when explicitly requested.
+
+Each export owns its expression-analysis cache, retaining only the most recent
+root. Field states share that cache within the export, including after an
+unknown transformation. Later exports analyze their current expressions again.
+
+## Plan dictionary reference (Unreleased)
+
+The synchronous Flow and Rows explanation objects share this method.
+`AsyncFlow.explain().to_dict()` keeps its existing signature and does not accept
+the field-dependency flag.
+
+::: fpstreams.planning.explain.PlanExplanation.to_dict
+    options:
+      show_root_heading: true
+      show_source: false
+
+## Runtime observations
+
 `explain()` describes a plan without running it. `run_with_report()` executes
 one eager terminal and returns its value, the recorded execution route, and
 measurements of resources owned by the query.

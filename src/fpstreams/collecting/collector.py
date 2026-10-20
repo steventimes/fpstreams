@@ -205,6 +205,97 @@ class Collectors(Generic[T]):
     """Build reusable collectors for containers, grouping, adaptation, and summaries."""
 
     @staticmethod
+    def statistics(
+        selector: Selector | None = None, *, ddof: SupportsIndex = 0
+    ) -> Collector[T, Any, dict[str, Any]]:
+        """Compute count, mean, variance, and standard deviation with one conversion per value.
+
+        Args:
+            selector: Value selector; `None` selects the whole item. Selected `None` is skipped.
+            ddof: Nonnegative integer subtracted from count for variance and standard deviation.
+
+        Returns:
+            A collector returning count, mean, variance, and std. Undefined statistics are
+                `None`. Numeric conversion and nonfinite behavior follow the exact statistics
+                terminals. This collector does not declare a partial-state combiner.
+        """
+        from .statistics import OnlineStatistics, mean_from, std_from, variance_from
+
+        degrees = operator.index(ddof)
+        if degrees < 0:
+            raise ValueError("ddof must be non-negative")
+        select = _selector(selector)
+
+        def step(state: OnlineStatistics, item: T) -> OnlineStatistics:
+            value = select(item)
+            if value is not None:
+                state.accept(value)
+            return state
+
+        def finish(state: OnlineStatistics) -> dict[str, Any]:
+            snapshot = state.snapshot()
+            return {
+                "count": snapshot[0],
+                "mean": mean_from(snapshot),
+                "variance": variance_from(snapshot, degrees),
+                "std": std_from(snapshot, degrees),
+            }
+
+        return Collector(OnlineStatistics, step, finish)
+
+    @staticmethod
+    def approx_quantiles(
+        ranks: Iterable[float], selector: Selector | None = None, *, k: SupportsIndex = 200
+    ) -> Collector[T, Any, tuple[float | None, ...]]:
+        """Estimate quantiles using the optional DataSketches double-precision KLL kernel.
+
+        Args:
+            ranks: Normalized ranks in [0, 1], frozen in supplied order at construction.
+            selector: Value selector; selected `None` is skipped. Values must be finite real
+                numbers and are converted to float, which can round large integers.
+            k: Integer precision in [8, 65535]; larger values trade memory for rank accuracy.
+
+        Returns:
+            A mergeable collector returning a tuple of estimates, or one `None` per rank
+                for empty input. Error concerns rank, not value; results are stochastic.
+                Merging mutates only the left state and requires matching precision.
+
+        Raises:
+            ImportError: If the optional `fpstreams[sketch]` dependency is unavailable.
+            TypeError: If counts or numeric inputs have unsupported types.
+            ValueError: If precision, ranks, or selected numbers are out of range or nonfinite.
+        """
+        from .sketches import quantiles
+
+        return quantiles(ranks, selector, k)
+
+    @staticmethod
+    def approx_count_distinct(
+        selector: Selector | None = None, *, lg_k: SupportsIndex = 12
+    ) -> Collector[T, Any, float]:
+        """Estimate distinct finite builtin scalars with an optional DataSketches HLL union.
+
+        Args:
+            selector: Value selector; selected `None` is skipped. Supported values are exact
+                builtin bool, int, finite float, str, and bytes. Equal numeric values share
+                an identity; text and bytes remain distinct. Custom objects are rejected.
+            lg_k: Integer precision in [7, 21], controlling the register count as `2**lg_k`.
+
+        Returns:
+            A mergeable collector returning a floating-point estimate; empty input returns
+                `0.0`. The stable, versioned scalar encoding precedes native hashing.
+                Compatible merges mutate only the left state. State persistence is not an API.
+
+        Raises:
+            ImportError: If the optional `fpstreams[sketch]` dependency is unavailable.
+            TypeError: If precision or a selected value has an unsupported type.
+            ValueError: If precision is out of range or a selected float is nonfinite.
+        """
+        from .sketches import distinct_count
+
+        return distinct_count(selector, lg_k)
+
+    @staticmethod
     def to_list() -> Collector[T, list[T], list[T]]:
         """Build an order-preserving, mergeable collector for all input items.
 

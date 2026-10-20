@@ -3,12 +3,142 @@
 from __future__ import annotations
 
 import math
+import operator
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from numbers import Number
-from typing import Any, TypeAlias, cast
+from numbers import Complex, Number, Real
+from typing import Any, SupportsIndex, TypeAlias, cast
+
+from ..expressions.selectors import Selector, compile_selector
 
 StatisticsSnapshot: TypeAlias = tuple[int, float, float]
+RollingSnapshot: TypeAlias = tuple[int, float | None, float | None]
+_CANONICAL_REAL_BINDINGS = (Number, complex, Complex, Real, isinstance)
+
+
+def finite_number(item: Any) -> float:
+    """Convert one real numeric input and reject nonfinite values before native calls."""
+    kind = type(item)
+    exact = (
+        (kind is int or kind is float or kind is bool)
+        and Number is _CANONICAL_REAL_BINDINGS[0]
+        and complex is _CANONICAL_REAL_BINDINGS[1]
+        and Complex is _CANONICAL_REAL_BINDINGS[2]
+        and Real is _CANONICAL_REAL_BINDINGS[3]
+        and isinstance is _CANONICAL_REAL_BINDINGS[4]
+    )
+    if not exact and (
+        not isinstance(item, Number)
+        or isinstance(item, complex)
+        or (isinstance(item, Complex) and not isinstance(item, Real))
+    ):
+        raise TypeError("statistics require real numeric values")
+    value = float(cast(Any, item))
+    if not math.isfinite(value):
+        raise ValueError("statistics require finite values")
+    return value
+
+
+class _RollingStatistics:
+    """Maintain shifted moments with explicit eviction and periodic drift repair."""
+
+    def __init__(self, size: int, ddof: int) -> None:
+        self.size, self.ddof = size, ddof
+        self.values: deque[float | None] = deque()
+        self._reset()
+        self.updates = 0
+
+    def _reset(self) -> None:
+        """Clear numeric accumulators without changing retained values or repair cadence."""
+        self.count = 0
+        self.origin = self.mean = self.m2 = 0.0
+        self.total = self.compensation = 0.0
+
+    def _sum(self, value: float) -> None:
+        """Maintain a compensated sum for mean output independently of variance updates."""
+        combined = self.total + value
+        if math.isfinite(self.total) and math.isfinite(value) and math.isfinite(combined):
+            self.compensation += (
+                (self.total - combined) + value
+                if abs(self.total) >= abs(value)
+                else (value - combined) + self.total
+            )
+        else:
+            self.compensation = 0.0
+        self.total = combined
+
+    def _add(self, value: float) -> None:
+        self._sum(value)
+        if not self.count:
+            self.origin = value
+        shifted = value - self.origin
+        self.count += 1
+        delta = shifted - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (shifted - self.mean)
+
+    def _rebuild(self) -> None:
+        """Recenter on retained data without repeating user selection or conversion."""
+        self._reset()
+        for value in self.values:
+            if value is not None:
+                self._add(value)
+        self.updates = 0
+
+    def _remove(self, value: float) -> bool:
+        """Remove one observation and report whether cancellation requires a rebuild."""
+        if self.count == 1:
+            self._reset()
+            return False
+        self._sum(-value)
+        shifted = value - self.origin
+        new_mean = self.mean + (self.mean - shifted) / (self.count - 1)
+        new_m2 = self.m2 - (shifted - self.mean) * (shifted - new_mean)
+        # Severe cancellation after an outlier expires warrants immediate repair.
+        repair = new_m2 < 0 or new_m2 < abs(self.m2) * 1e-12
+        self.count -= 1
+        self.mean, self.m2 = new_mean, new_m2
+        return repair
+
+    def accept(self, value: float | None) -> RollingSnapshot:
+        repair = False
+        if len(self.values) == self.size:
+            old = self.values.popleft()
+            if old is not None:
+                repair = self._remove(old)
+        self.values.append(value)
+        if value is not None:
+            self._add(value)
+        self.updates += 1
+        if repair or self.updates >= self.size or not math.isfinite(self.m2):
+            self._rebuild()
+        mean = (self.total + self.compensation) / self.count if self.count else None
+        variance = self.m2 / (self.count - self.ddof) if self.count > self.ddof else None
+        if variance is not None and variance < 0:
+            variance = 0.0
+        return self.count, mean, variance
+
+
+def rolling_statistics_step(
+    size: SupportsIndex, selector: Selector | None, ddof: SupportsIndex
+) -> Callable[[Any, Any], tuple[Any, RollingSnapshot]]:
+    """Freeze configuration for map_accum, creating window state on the first item."""
+    width, degrees = operator.index(size), operator.index(ddof)
+    if width <= 0:
+        raise ValueError("rolling statistics size must be positive")
+    if degrees < 0:
+        raise ValueError("ddof must be non-negative")
+    select = None if selector is None else compile_selector(selector)
+
+    def advance(state: _RollingStatistics | None, item: Any) -> tuple[Any, RollingSnapshot]:
+        value = item if select is None else select(item)
+        converted = None if value is None else finite_number(value)
+        if state is None:
+            state = _RollingStatistics(width, degrees)
+        return state, state.accept(converted)
+
+    return advance
 
 
 @dataclass(slots=True)
@@ -33,7 +163,20 @@ class OnlineStatistics:
         accepted, but reset sum compensation because compensated arithmetic is not meaningful
         for that update.
         """
-        if not isinstance(item, Number) or isinstance(item, complex):
+        kind = type(item)
+        exact = (
+            (kind is int or kind is float or kind is bool)
+            and Number is _CANONICAL_REAL_BINDINGS[0]
+            and complex is _CANONICAL_REAL_BINDINGS[1]
+            and Complex is _CANONICAL_REAL_BINDINGS[2]
+            and Real is _CANONICAL_REAL_BINDINGS[3]
+            and isinstance is _CANONICAL_REAL_BINDINGS[4]
+        )
+        if not exact and (
+            not isinstance(item, Number)
+            or isinstance(item, complex)
+            or (isinstance(item, Complex) and not isinstance(item, Real))
+        ):
             raise TypeError("statistics require real numeric values")
         value = float(cast(Any, item))
         self.count += 1
@@ -79,7 +222,11 @@ def compensated_mean(values: Iterable[Any]) -> float | None:
         if item_type is int or item_type is float or item_type is bool:
             value = float(item)
         else:
-            if not isinstance(item, Number) or isinstance(item, complex):
+            if (
+                not isinstance(item, Number)
+                or isinstance(item, complex)
+                or (isinstance(item, Complex) and not isinstance(item, Real))
+            ):
                 raise TypeError("statistics require real numeric values")
             value = float(cast(Any, item))
         count += 1
@@ -121,7 +268,11 @@ def _continue_compensated_mean(
         if item_type is int or item_type is float or item_type is bool:
             value = float(item)
         else:
-            if not isinstance(item, Number) or isinstance(item, complex):
+            if (
+                not isinstance(item, Number)
+                or isinstance(item, complex)
+                or (isinstance(item, Complex) and not isinstance(item, Real))
+            ):
                 raise TypeError("statistics require real numeric values")
             value = float(cast(Any, item))
         count += 1
@@ -142,7 +293,11 @@ def _continue_compensated_mean(
         if item_type is int or item_type is float or item_type is bool:
             value = float(item)
         else:
-            if not isinstance(item, Number) or isinstance(item, complex):
+            if (
+                not isinstance(item, Number)
+                or isinstance(item, complex)
+                or (isinstance(item, Complex) and not isinstance(item, Real))
+            ):
                 raise TypeError("statistics require real numeric values")
             value = float(cast(Any, item))
         count += 1

@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 from typing import Literal as TypeLiteral
 
 from ..expressions.row_ir import (
@@ -37,7 +37,14 @@ from ..planning.source import Source
 from ..planning.sync import FilterOp, MapOp
 from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
+from . import arrow_numeric as _arrow_numeric
+from . import arrow_sort as _arrow_sort
+from .arrow_numeric import ArrowNumericHooks
+from .arrow_sort import ArrowSortHooks
 from .sync import execute_operations
+
+_ARROW_NUMERIC_HOOKS = cast(ArrowNumericHooks, sys.modules[__name__])
+_ARROW_SORT_HOOKS = cast(ArrowSortHooks, sys.modules[__name__])
 
 _EXPECTED_ARROW_ERRORS = (ArithmeticError, NotImplementedError, TypeError, ValueError)
 _ARROW_PYTHON_EXTREME_MAX_ROWS = 128
@@ -109,130 +116,28 @@ def _nodes(root: Any) -> Iterator[Any]:
 
 
 def _has_primitive_builtin_schema(pa: Any, schema: Any) -> bool:
-    """Return whether every Arrow field converts to a primitive built-in Python value."""
-    checks = tuple(
-        predicate
-        for name in (
-            "is_null",
-            "is_boolean",
-            "is_integer",
-            "is_floating",
-            "is_string",
-            "is_large_string",
-            "is_binary",
-            "is_large_binary",
-            "is_fixed_size_binary",
-        )
-        if callable(predicate := getattr(pa.types, name, None))
-    )
-    return all(any(check(field.type) for check in checks) for field in schema)
+    """Return whether validated fields convert only to built-in scalars and lists."""
+    return arrow_schema_has_primitive_rows(pa, schema)
 
 
-def _retained_arrow_stable_sort_result(
-    plan: Any,
-) -> tuple[Any, ArrowBatchSource] | None:
+def _retained_arrow_stable_sort_result(plan: Any) -> tuple[Any, ArrowBatchSource] | None:
     """Return one guarded stable Arrow sort result before Python row conversion."""
-    from ..expressions.selectors import _direct_field
-    from ..physical.plan import SortPhysicalNode, SortStrategy
-    from ..runtime.failpoints import has_active_failpoints, hit
-
-    if (
-        plan.root is not None
-        or plan.engine != "auto"
-        or plan.parallel is not None
-        or len(plan.nodes) != 1
-        or not isinstance(node := plan.nodes[0], SortPhysicalNode)
-        or node.strategy is not SortStrategy.ARROW_STABLE
-        or node.operation.buffer_size is not None
-        or type(node.operation.reverse) is not bool
-        or (field := _direct_field(node.operation.key)) is None
-        or has_active_failpoints()
-        or not plan.source.capabilities.reiterable
-    ):
-        return None
-    descriptor = plan.source.native_data
-    if (
-        not isinstance(descriptor, ArrowBatchSource)
-        or descriptor.kind not in {"table", "record_batch"}
-        or descriptor.materialized_data is None
-    ):
-        return None
-
-    pa, pc = _arrow_modules()
-    retained = descriptor.materialized_data
-    if descriptor.kind == "table":
-        if not isinstance(retained, pa.Table):
-            return None
-    elif not isinstance(retained, pa.RecordBatch):
-        return None
-    schema = retained.schema
-    names = tuple(schema.names)
-    if names.count(field) != 1 or not _has_primitive_builtin_schema(pa, schema):
-        return None
-    field_index = names.index(field)
-    key_values = retained.column(field_index)
-    types = pa.types
-    if key_values.null_count or not (
-        types.is_boolean(key_values.type)
-        or types.is_integer(key_values.type)
-        or types.is_string(key_values.type)
-        or types.is_large_string(key_values.type)
-        or types.is_binary(key_values.type)
-        or types.is_large_binary(key_values.type)
-        or types.is_fixed_size_binary(key_values.type)
-    ):
-        return None
-
-    try:
-        retained.validate(full=True)
-    except _EXPECTED_ARROW_ERRORS:
-        return None
-
-    plan.source.open_native(ArrowBatchSource)
-    hit("source.open.after")
-    order = "descending" if node.operation.reverse else "ascending"
-    try:
-        indices = pc.sort_indices(retained, sort_keys=[(field, order)])
-        ordered = pc.take(retained, indices)
-    except _EXPECTED_ARROW_ERRORS:
-        return None
-    return ordered, descriptor
+    return _arrow_sort._retained_arrow_stable_sort_result(plan, hooks=_ARROW_SORT_HOOKS)
 
 
 def _retained_arrow_sorted_batches(ordered: Any, descriptor: ArrowBatchSource) -> Iterator[Any]:
     """Yield one ordered retained result in the adapter's canonical batch bounds."""
-    if descriptor.kind == "table":
-        yield from ordered.to_batches(max_chunksize=descriptor.batch_size)
-        return
-    for offset in range(0, ordered.num_rows, descriptor.batch_size):
-        yield ordered.slice(offset, descriptor.batch_size)
+    return _arrow_sort._retained_arrow_sorted_batches(ordered, descriptor, hooks=_ARROW_SORT_HOOKS)
 
 
 def materialize_retained_arrow_stable_sort(plan: Any) -> list[Any] | None:
     """Collect a guarded retained Arrow sort without per-row generator forwarding."""
-    result = _retained_arrow_stable_sort_result(plan)
-    if result is None:
-        return None
-    ordered, descriptor = result
-    rows: list[Any] = []
-    for batch in _retained_arrow_sorted_batches(ordered, descriptor):
-        rows.extend(batch_to_rows(batch))
-    return rows
+    return _arrow_sort.materialize_retained_arrow_stable_sort(plan, hooks=_ARROW_SORT_HOOKS)
 
 
 def try_retained_arrow_stable_sort(plan: Any) -> Iterator[Any] | None:
     """Sort one proven retained Arrow source without first constructing row dictionaries."""
-    result = _retained_arrow_stable_sort_result(plan)
-    if result is None:
-        return None
-    ordered, descriptor = result
-
-    def rows() -> Iterator[Any]:
-        """Convert the already ordered primitive Arrow values in canonical batch bounds."""
-        for batch in _retained_arrow_sorted_batches(ordered, descriptor):
-            yield from batch_to_rows(batch)
-
-    return rows()
+    return _arrow_sort.try_retained_arrow_stable_sort(plan, hooks=_ARROW_SORT_HOOKS)
 
 
 def _projection_safety(
@@ -871,13 +776,23 @@ def retained_table_rows_are_valid(table: Any) -> bool:
 
 
 def arrow_schema_has_primitive_rows(pa: Any, schema: Any) -> bool:
-    """Return whether validated Arrow scalars convert to non-nested Python built-ins."""
-    types = pa.types
+    """Prove scalar/list conversion without extension, struct, map, or temporal hooks.
 
-    def primitive(value_type: Any) -> bool:
-        if types.is_dictionary(value_type):
-            return primitive(value_type.value_type)
-        return bool(
+    The caller still validates all buffers before projecting away an unused field. A list
+    is safe only when its entire child type tree has the same closed built-in proof.
+    """
+    types = pa.types
+    pending = [field.type for field in schema]
+    while pending:
+        value_type = pending.pop()
+        if (
+            types.is_dictionary(value_type)
+            or types.is_list(value_type)
+            or types.is_large_list(value_type)
+            or types.is_fixed_size_list(value_type)
+        ):
+            pending.append(value_type.value_type)
+        elif not (
             types.is_null(value_type)
             or types.is_boolean(value_type)
             or types.is_integer(value_type)
@@ -887,9 +802,9 @@ def arrow_schema_has_primitive_rows(pa: Any, schema: Any) -> bool:
             or types.is_binary(value_type)
             or types.is_large_binary(value_type)
             or types.is_fixed_size_binary(value_type)
-        )
-
-    return all(primitive(field.type) for field in schema)
+        ):
+            return False
+    return True
 
 
 def arrow_batch_rows_are_valid(batch: Any) -> bool:
@@ -923,23 +838,12 @@ def observe_arrow_batch_rows(batch: Any) -> list[dict[str, Any]] | None:
 
 
 def arrow_i64_sum(
-    values: Any,
-    row_count: int,
-    pa: Any,
-    pc: Any,
-    *,
-    bounds: Any | None = None,
+    values: Any, row_count: int, pa: Any, pc: Any, *, bounds: Any | None = None
 ) -> int:
     """Return an exact Python integer sum for one nonempty int64 Arrow array."""
-    if values.null_count:
-        raise TypeError("unsupported operand type(s) for +: 'int' and 'NoneType'")
-    if bounds is None:
-        bounds = pc.min_max(values).as_py()
-    maximum_absolute = max(abs(bounds["min"]), abs(bounds["max"]))
-    if maximum_absolute * row_count > 2**63 - 1:
-        values = pc.cast(values, pa.decimal128(38, 0))
-    subtotal = pc.sum(values).as_py()
-    return 0 if subtotal is None else int(subtotal)
+    return _arrow_numeric.arrow_i64_sum(
+        values, row_count, pa, pc, bounds=bounds, hooks=_ARROW_NUMERIC_HOOKS
+    )
 
 
 def arrow_i64_extreme(
@@ -951,19 +855,9 @@ def arrow_i64_extreme(
     missing: object = _ARROW_REDUCTION_MISSING,
 ) -> Any:
     """Fold one Arrow array while retaining Python's ordered null comparisons."""
-    candidates = (
-        values.to_pylist()
-        if values.null_count or len(values) <= _ARROW_PYTHON_EXTREME_MAX_ROWS
-        else (pc.min_max(values).as_py()[kind],)
+    return _arrow_numeric.arrow_i64_extreme(
+        current, values, kind, pc, missing=missing, hooks=_ARROW_NUMERIC_HOOKS
     )
-    for candidate in candidates:
-        if (
-            current is missing
-            or (kind == "min" and candidate < current)
-            or (kind == "max" and candidate > current)
-        ):
-            current = candidate
-    return current
 
 
 def _reduce_arrow_i64_extreme_batches(
@@ -975,36 +869,13 @@ def _reduce_arrow_i64_extreme_batches(
     capture_source_value_error: bool,
 ) -> ArrowI64Reduction:
     """Reduce one exact int64 extreme while keeping source failures distinct."""
-    seen = False
-    current: Any = _ARROW_REDUCTION_MISSING
-    while True:
-        try:
-            batch = next(iterator)
-        except StopIteration:
-            break
-        except ValueError as error:
-            if capture_source_value_error:
-                value = None if current is _ARROW_REDUCTION_MISSING else current
-                return ArrowI64Reduction(seen, value, error)
-            raise
-        try:
-            observe_arrow_batch_rows(batch)
-        except ValueError as error:
-            if capture_source_value_error:
-                value = None if current is _ARROW_REDUCTION_MISSING else current
-                return ArrowI64Reduction(seen, value, error)
-            raise
-        if batch.num_rows:
-            seen = True
-            current = arrow_i64_extreme(
-                current,
-                batch.column(field_index),
-                kind,
-                pc,
-            )
-    return ArrowI64Reduction(
-        seen,
-        None if current is _ARROW_REDUCTION_MISSING else current,
+    return _arrow_numeric._reduce_arrow_i64_extreme_batches(
+        iterator,
+        field_index,
+        kind,
+        pc,
+        capture_source_value_error=capture_source_value_error,
+        hooks=_ARROW_NUMERIC_HOOKS,
     )
 
 
@@ -1018,196 +889,45 @@ def reduce_arrow_i64_batches(
     capture_source_value_error: bool = False,
 ) -> ArrowI64Reduction:
     """Reduce exact int64 columns without losing empty or ordered-null semantics."""
-    seen = False
-    try:
-        iterator = iter(batches)
-    except ValueError as error:
-        if capture_source_value_error:
-            identity = 0 if kind == "sum" else None
-            return ArrowI64Reduction(False, identity, error)
-        raise
-    if kind == "sum":
-        total = 0
-        while True:
-            try:
-                batch = next(iterator)
-            except StopIteration:
-                break
-            except ValueError as error:
-                if capture_source_value_error:
-                    return ArrowI64Reduction(seen, total, error)
-                raise
-            try:
-                observe_arrow_batch_rows(batch)
-            except ValueError as error:
-                if capture_source_value_error:
-                    return ArrowI64Reduction(seen, total, error)
-                raise
-            row_count = int(batch.num_rows)
-            if row_count:
-                seen = True
-                total += arrow_i64_sum(batch.column(field_index), row_count, pa, pc)
-        return ArrowI64Reduction(seen, total)
-
-    return _reduce_arrow_i64_extreme_batches(
-        iterator,
+    return _arrow_numeric.reduce_arrow_i64_batches(
+        batches,
         field_index,
         kind,
+        pa,
         pc,
         capture_source_value_error=capture_source_value_error,
+        hooks=_ARROW_NUMERIC_HOOKS,
     )
 
 
 def try_arrow_i64_field_reduction(
-    plan: Pipeline,
-    prefix: ArrowPrefixPlan,
-    kind: TypeLiteral["sum", "min", "max"],
+    plan: Pipeline, prefix: ArrowPrefixPlan, kind: TypeLiteral["sum", "min", "max"]
 ) -> ArrowI64Reduction | None:
     """Reduce one complete direct-field Arrow plan or decline before unsafe consumption."""
-    direct = _guarded_arrow_direct_field(plan, prefix)
-    if direct is None:
-        return None
-    descriptor, field_index, pa, pc = direct
-    schema = descriptor.schema_hint
-    assert schema is not None
-    if not pa.types.is_int64(schema.field(field_index).type):
-        return None
-
-    retained = descriptor.materialized_data
-    selected_has_nulls = bool(
-        descriptor.kind in {"table", "record_batch"}
-        and retained is not None
-        and retained.column(field_index).null_count
+    return _arrow_numeric.try_arrow_i64_field_reduction(
+        plan, prefix, kind, hooks=_ARROW_NUMERIC_HOOKS
     )
-    plan.source.open_native(ArrowBatchSource)
-    try:
-        batches = descriptor.open_batches()
-    except ValueError as error:
-        identity = 0 if kind == "sum" else None
-        return ArrowI64Reduction(False, identity, error)
-    with closing_iterators((batches,)):
-        if descriptor.kind == "reader" or selected_has_nulls:
-            return reduce_arrow_i64_batches(
-                batches,
-                field_index,
-                kind,
-                pa,
-                pc,
-                capture_source_value_error=True,
-            )
-        try:
-            return reduce_arrow_i64_batches(
-                batches,
-                field_index,
-                kind,
-                pa,
-                pc,
-                capture_source_value_error=True,
-            )
-        except _EXPECTED_ARROW_ERRORS:
-            return None
 
 
 def _guarded_arrow_direct_field(
-    plan: Pipeline,
-    prefix: ArrowPrefixPlan,
+    plan: Pipeline, prefix: ArrowPrefixPlan
 ) -> tuple[ArrowBatchSource, int, Any, Any] | None:
     """Resolve one closed direct field without claiming or opening its Arrow source."""
-    from ..runtime.failpoints import has_active_failpoints
-
-    if (
-        has_active_failpoints()
-        or plan.engine != "auto"
-        or plan.parallel is not None
-        or prefix.operation_count != len(plan.operations)
-        or len(prefix.operations) != 1
-        or not isinstance(operation := prefix.operations[0], MapOp)
-        or type(root := _expr_of(operation)) is not Field
-        or type(root.name) is not str
-        or "." in root.name
-    ):
-        return None
-    descriptor = plan.source.native_data
-    if not isinstance(descriptor, ArrowBatchSource) or descriptor.kind not in {
-        "table",
-        "record_batch",
-        "reader",
-    }:
-        return None
-    if descriptor.kind != "reader" and not plan.source.capabilities.reiterable:
-        return None
-    schema = descriptor.schema_hint
-    if schema is None:
-        return None
-    pa, pc = _arrow_modules()
-    names = tuple(schema.names)
-    if names.count(root.name) != 1 or not arrow_schema_has_primitive_rows(pa, schema):
-        return None
-    return descriptor, names.index(root.name), pa, pc
+    return _arrow_numeric._guarded_arrow_direct_field(plan, prefix, hooks=_ARROW_NUMERIC_HOOKS)
 
 
 def _arrow_numeric_buffer(
-    values: Any,
-    format_code: TypeLiteral["q", "d"],
+    values: Any, format_code: TypeLiteral["q", "d"]
 ) -> memoryview[int] | memoryview[float]:
     """Borrow one nonempty primitive Arrow value buffer at its logical array offset."""
-    data = values.buffers()[1]
-    if data is None:
-        raise TypeError("nonempty numeric Arrow array is missing its value buffer")
-    width = 8
-    sliced = data.slice(int(values.offset) * width, len(values) * width)
-    return memoryview(sliced).cast(format_code)
+    return _arrow_numeric._arrow_numeric_buffer(values, format_code, hooks=_ARROW_NUMERIC_HOOKS)
 
 
 def try_arrow_numeric_field_mean(
-    plan: Pipeline,
-    prefix: ArrowPrefixPlan,
+    plan: Pipeline, prefix: ArrowPrefixPlan
 ) -> tuple[bool, float | None]:
     """Compute a Python-compatible compensated mean over one direct Arrow field."""
-    if sys.byteorder != "little":
-        return False, None
-    direct = _guarded_arrow_direct_field(plan, prefix)
-    if direct is None:
-        return False, None
-    descriptor, field_index, pa, _pc = direct
-    schema = descriptor.schema_hint
-    assert schema is not None
-    field_type = schema.field(field_index).type
-    if pa.types.is_int64(field_type):
-        endpoint_name = "update_mean_i64_buffer_v1"
-        format_code: TypeLiteral["q", "d"] = "q"
-    elif pa.types.is_float64(field_type):
-        endpoint_name = "update_mean_f64_buffer_v1"
-        format_code = "d"
-    else:
-        return False, None
-
-    try:
-        from .. import _native
-    except ImportError:
-        return False, None
-    endpoint = getattr(_native, endpoint_name, None)
-    if not callable(endpoint):
-        return False, None
-
-    plan.source.open_native(ArrowBatchSource)
-    batches = descriptor.open_batches()
-    state: tuple[int, float, float] = (0, 0.0, 0.0)
-    with closing_iterators((batches,)):
-        for batch in batches:
-            observe_arrow_batch_rows(batch)
-            values = batch.column(field_index)
-            if values.null_count:
-                raise TypeError("statistics require real numeric values")
-            if not len(values):
-                continue
-            view = _arrow_numeric_buffer(values, format_code)
-            try:
-                state = endpoint(view, *state)
-            finally:
-                view.release()
-    count, total, compensation = state
-    return True, None if not count else (total + compensation) / count
+    return _arrow_numeric.try_arrow_numeric_field_mean(plan, prefix, hooks=_ARROW_NUMERIC_HOOKS)
 
 
 @dataclass(slots=True)

@@ -2264,6 +2264,47 @@
           ],
           "return": "AsyncFlow[T]"
         },
+        "rolling_statistics": {
+          "parameters": [
+            {
+              "name": "self",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "annotation": null
+            },
+            {
+              "name": "size",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "annotation": "SupportsIndex"
+            },
+            {
+              "name": "selector",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "annotation": "Selector | None"
+            },
+            {
+              "name": "ddof",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": 0
+              },
+              "annotation": "SupportsIndex"
+            }
+          ],
+          "return": "AsyncFlow[tuple[int, float | None, float | None]]"
+        },
         "run_with_report": {
           "parameters": [
             {
@@ -3198,6 +3239,61 @@
         "return": null
       },
       "callables": {
+        "approx_count_distinct": {
+          "parameters": [
+            {
+              "name": "selector",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "annotation": "Selector | None"
+            },
+            {
+              "name": "lg_k",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": 12
+              },
+              "annotation": "SupportsIndex"
+            }
+          ],
+          "return": "Collector[T, Any, float]"
+        },
+        "approx_quantiles": {
+          "parameters": [
+            {
+              "name": "ranks",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "annotation": "Iterable[float]"
+            },
+            {
+              "name": "selector",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "annotation": "Selector | None"
+            },
+            {
+              "name": "k",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": 200
+              },
+              "annotation": "SupportsIndex"
+            }
+          ],
+          "return": "Collector[T, Any, tuple[float | None, ...]]"
+        },
         "averaging": {
           "parameters": [
             {
@@ -3393,6 +3489,29 @@
             }
           ],
           "return": "Collector[T, dict[bool, Any], dict[bool, R | list[T]]]"
+        },
+        "statistics": {
+          "parameters": [
+            {
+              "name": "selector",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "annotation": "Selector | None"
+            },
+            {
+              "name": "ddof",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": 0
+              },
+              "annotation": "SupportsIndex"
+            }
+          ],
+          "return": "Collector[T, Any, dict[str, Any]]"
         },
         "summarizing": {
           "parameters": [
@@ -6858,6 +6977,47 @@
             }
           ],
           "return": "fpstreams.Rows[dict[str, Any]]"
+        },
+        "rolling_statistics": {
+          "parameters": [
+            {
+              "name": "self",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "annotation": null
+            },
+            {
+              "name": "size",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "annotation": "SupportsIndex"
+            },
+            {
+              "name": "selector",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "annotation": "Selector | None"
+            },
+            {
+              "name": "ddof",
+              "kind": "KEYWORD_ONLY",
+              "default": {
+                "required": false,
+                "value": 0
+              },
+              "annotation": "SupportsIndex"
+            }
+          ],
+          "return": "Flow[tuple[int, float | None, float | None]]"
         },
         "rows": {
           "parameters": [

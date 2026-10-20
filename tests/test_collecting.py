@@ -14,6 +14,215 @@ import pytest
 import fpstreams
 from fpstreams import flow
 
+# --- Shared statistics and numeric validation ---
+
+
+@pytest.mark.parametrize("terminal", ["mean", "variance", "std", "statistics", "rolling", "kll"])
+def test_statistics_reject_numpy_complex_before_conversion_and_close_source(terminal):
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    if terminal == "kll":
+        pytest.importorskip("datasketches")
+    pulled = []
+    closed = []
+
+    def source():
+        try:
+            for index, value in enumerate([1, np.complex64(2 + 3j), 99]):
+                pulled.append(index)
+                yield value
+        finally:
+            closed.append(True)
+
+    query = flow(source())
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        with pytest.raises(TypeError, match="real numeric values"):
+            if terminal == "statistics":
+                query.collect(fpstreams.Collectors.statistics())
+            elif terminal == "rolling":
+                query.rolling_statistics(2).to_list()
+            elif terminal == "kll":
+                query.collect(fpstreams.Collectors.approx_quantiles([0.5]))
+            else:
+                getattr(query, terminal)()
+    assert emitted == []
+    assert pulled == [0, 1] and closed == [True]
+
+
+@pytest.mark.parametrize("terminal", ["statistics", "rolling"])
+def test_numeric_fast_path_observes_live_classification(monkeypatch, terminal):
+    from fpstreams.collecting import statistics
+
+    calls = []
+
+    def reject(value, kind):
+        calls.append((value, kind))
+        return False
+
+    monkeypatch.setitem(statistics.__dict__, "isinstance", reject)
+    with pytest.raises(TypeError, match="real numeric values"):
+        if terminal == "statistics":
+            flow([1]).collect(fpstreams.Collectors.statistics())
+        else:
+            flow([1]).rolling_statistics(2).to_list()
+    assert calls == [(1, statistics.Number)]
+
+
+def test_shared_numeric_validation_retains_real_protocols_and_nonfinite_policies():
+    from decimal import Decimal
+    from fractions import Fraction
+
+    np = pytest.importorskip("numpy")
+    values = [Decimal("1.25"), Fraction(3, 4), np.int64(1), np.float32(1)]
+    assert flow(values).mean() == 1
+    assert flow(values).variance(ddof=0) == pytest.approx(0.03125)
+    assert flow(values).collect(fpstreams.Collectors.statistics()) == {
+        "count": 4,
+        "mean": 1.0,
+        "variance": 0.03125,
+        "std": pytest.approx(0.03125**0.5),
+    }
+    assert flow([float("inf")]).mean() == float("inf")
+    with pytest.raises(ValueError, match="finite"):
+        flow([float("inf")]).rolling_statistics(2).to_list()
+
+
+def test_shared_statistics_selects_and_converts_once_and_owns_fresh_state():
+    calls = []
+
+    class Observed(float):
+        def __float__(self):
+            calls.append("convert")
+            return super().__float__()
+
+    def select(row):
+        calls.append("select")
+        return row["value"]
+
+    collector = fpstreams.Collectors.statistics(select, ddof=1)
+    values = [{"value": Observed(2)}, {"value": None}, {"value": Observed(4)}]
+    expected = {"count": 2, "mean": 3, "variance": 2, "std": 2**0.5}
+    assert flow(values).collect(collector) == expected
+    assert calls == ["select", "convert", "select", "select", "convert"]
+    assert collector(values) == expected
+    assert collector([]) == {"count": 0, "mean": None, "variance": None, "std": None}
+
+
+# --- Optional sketches and grouped composition ---
+
+
+def test_sketch_optional_import_is_lazy_and_preserves_nested_import_failures(monkeypatch):
+    from fpstreams.collecting import sketches
+
+    def missing(name):
+        raise ModuleNotFoundError("absent", name="datasketches")
+
+    monkeypatch.setattr(sketches.importlib, "import_module", missing)
+    with pytest.raises(ImportError, match=r"fpstreams\[sketch\]"):
+        fpstreams.Collectors.approx_quantiles([0.5])
+    # Invalid configuration fails before loading an optional backend.
+    with pytest.raises(ValueError, match="lg_k"):
+        fpstreams.Collectors.approx_count_distinct(lg_k=256)
+    with pytest.raises(ValueError, match="finite"):
+        fpstreams.Collectors.approx_quantiles([float("nan")])
+
+    error = ModuleNotFoundError("broken nested dependency", name="numpy")
+
+    def broken(name):
+        raise error
+
+    monkeypatch.setattr(sketches.importlib, "import_module", broken)
+    with pytest.raises(ModuleNotFoundError) as caught:
+        fpstreams.Collectors.approx_count_distinct()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("imaginary", [0, 0.25])
+def test_kll_configuration_rejects_complex_ranks_before_optional_import(imaginary):
+    np = pytest.importorskip("numpy")
+    with pytest.raises(TypeError, match="real numeric values"):
+        fpstreams.Collectors.approx_quantiles([np.complex64(0.5 + imaginary * 1j)])
+
+
+@pytest.mark.parametrize("distribution", ["monotone", "duplicates", "tail"])
+def test_kll_collectors_bound_observed_rank_and_preserve_partial_states(distribution):
+    import bisect
+
+    pytest.importorskip("datasketches")
+    values = list(range(20_000))
+    if distribution == "duplicates":
+        values = [value // 1000 for value in values]
+    elif distribution == "tail":
+        values = [0] * 19_000 + [10**12 + value for value in range(1000)]
+    ranks = [0, 0.5, 0.9, 1]
+    collector = fpstreams.Collectors.approx_quantiles(ranks)
+    ranks[1] = 0.1  # the collector froze its original query
+    left, right = collector.initializer(), collector.initializer()
+    for index, value in enumerate(values):
+        collector.step(left if index % 3 else right, value)
+    right_before = right.kernel.serialize()
+    merged = collector.combine(left, right)
+    assert merged is left and right.kernel.serialize() == right_before
+    for rank, estimate in zip([0, 0.5, 0.9, 1], collector.finish(left), strict=True):
+        low = bisect.bisect_left(values, estimate) / len(values)
+        high = bisect.bisect_right(values, estimate) / len(values)
+        assert low <= rank + 0.06 and high >= rank - 0.06
+    assert collector([]) == (None,) * 4
+    assert collector([None, 7, 7]) == (7.0,) * 4
+    before = left.kernel.serialize()
+    incompatible = fpstreams.Collectors.approx_quantiles([0.5], k=100).initializer()
+    with pytest.raises(ValueError, match="precision"):
+        collector.combine(left, incompatible)
+    assert left.kernel.serialize() == before
+    with pytest.raises(ValueError, match="independent"):
+        collector.combine(left, left)
+
+
+def test_hll_scalar_identities_merge_and_reject_unsupported_values():
+    pytest.importorskip("datasketches")
+    collector = fpstreams.Collectors.approx_count_distinct()
+    values = [None, True, 1, 1.0, False, 0, -0.0, "", b"", "a\0b", b"a\0b", "\ud800", 1 << 1000]
+    assert collector(values) == pytest.approx(len(set(values) - {None}), rel=0.001)
+    assert collector([]) == 0.0
+    left, right = collector.initializer(), collector.initializer()
+    for value in range(20_000):
+        collector.step(left if value % 2 else right, value)
+    before = right.kernel.get_result().serialize_compact()
+    collector.combine(left, right)
+    assert right.kernel.get_result().serialize_compact() == before
+    assert collector.finish(left) == pytest.approx(20_000, rel=0.07)
+    for value in [object(), [1], float("nan"), float("inf")]:
+        before = left.kernel.get_result().serialize_compact()
+        with pytest.raises((TypeError, ValueError)):
+            collector.step(left, value)
+        assert left.kernel.get_result().serialize_compact() == before
+
+
+@pytest.mark.parametrize("mode", ["hash", "sorted", "spill"])
+def test_statistics_and_sketches_compose_in_grouped_pipelines(mode, tmp_path):
+    pytest.importorskip("datasketches")
+    records = [{"group": i // 100, "value": i % 100} for i in range(1000)]
+    grouped = (
+        fpstreams.rows(records).group_by_sorted("group")
+        if mode == "sorted"
+        else fpstreams.rows(records).group_by("group")
+    )
+    if mode == "spill":
+        grouped = grouped.spill(partitions=3, tempdir=tmp_path)
+    result = grouped.aggregate(
+        stats=fpstreams.Collectors.statistics("value"),
+        quantiles=fpstreams.Collectors.approx_quantiles([0, 1], "value"),
+        distinct=fpstreams.Collectors.approx_count_distinct("value"),
+    ).to_list()
+    assert [row["group"] for row in result] == list(range(10))
+    for row in result:
+        assert row["stats"]["mean"] == 49.5
+        assert row["quantiles"] == (0, 99)
+        assert row["distinct"] == pytest.approx(100, rel=0.01)
+    assert not list(tmp_path.iterdir())
+
 
 class _IndexBound:
     def __init__(self, value=2, error=None):
@@ -630,7 +839,7 @@ def _sequential_native_pairs() -> list[tuple[int, int]]:
     return [(index, index) for index in range(_NATIVE_PAIR_TEST_SIZE)]
 
 
-# --- Tests consolidated from test_collecting_api.py ---
+# --- Collector composition ---
 
 
 @pytest.mark.parametrize("collector_type", [fpstreams.Collector, fpstreams.Aggregator])
@@ -1379,7 +1588,7 @@ def test_native_multi_aggregation_matches_python_for_generated_values(
             )
 
 
-# --- Tests consolidated from test_pairs_api.py ---
+# --- Pair aggregation ---
 
 """Pairs transforms, per-key collection and aggregation, validation, and cleanup."""
 

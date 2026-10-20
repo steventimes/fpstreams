@@ -38,8 +38,10 @@ jobs:
         with:
           enable-cache: true
       - name: Install and build
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
-          uv sync --frozen --group build --group test
+          uv sync --frozen --group build --group test --extra sketch
           uv run maturin develop --release
       - name: Test
         run: uv run pytest -q
@@ -95,7 +97,7 @@ jobs:
           enable-cache: true
       - name: Install adapters, quality, and documentation dependencies
         run: |
-          uv sync --frozen --group build --group test --group lint --group type --group docs --extra arrow --extra data --extra polars
+          uv sync --frozen --group build --group test --group lint --group type --group docs --extra arrow --extra data --extra polars --extra sketch
           uv run maturin develop --release
       - name: Branch coverage
         run: |

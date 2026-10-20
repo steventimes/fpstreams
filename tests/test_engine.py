@@ -1,22 +1,85 @@
-# ruff: noqa: E402, F811
-"""Consolidated fpstreams test cases."""
+"""Planning, compiled execution, expressions, and backend contracts."""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
+from datetime import datetime
+from typing import Any
 
 import pytest
 
-# --- Consolidated from adaptive/test_plan_cache.py ---
-
-"""Structural plan templates are bounded and never own source objects."""
-
-
-from fpstreams import col, flow, item, lit
-from fpstreams.execution.physical import execute_physical
+import fpstreams
+from fpstreams import aflow, agg, coalesce, col, fitem, flow, item, lit
+from fpstreams.collecting import Collector, Collectors
+from fpstreams.collecting.aggregate_program import NativeAggregateField, compile_aggregations
+from fpstreams.collecting.aggregation import prepare_aggregations
+from fpstreams.collecting.program import compile_collectors, run_collector_program
+from fpstreams.execution import physical as physical_executor
+from fpstreams.execution.physical import (
+    PhysicalExecutionError,
+    execute_physical,
+    operations_from_physical_nodes,
+)
+from fpstreams.execution.sorting import SortRecord, sort_records
+from fpstreams.expressions import program as program_module
+from fpstreams.expressions.program import ExprEvaluator, ExprProgram, compile_expression
+from fpstreams.expressions.row_ir import (
+    Binary,
+    Call,
+    Cast,
+    Coalesce,
+    Field,
+    GetItem,
+    IfElse,
+    Literal,
+    PythonUDF,
+    Unary,
+)
+from fpstreams.expressions.typed_ir import (
+    Effect,
+    ExpressionSource,
+    TypedExpr,
+    ValueType,
+    lower_expression,
+)
+from fpstreams.physical.async_plan import compile_async_query
+from fpstreams.physical.compiled import ProgramFingerprint
+from fpstreams.physical.kernel_cache import KernelCache
+from fpstreams.physical.plan import (
+    CompiledExpressionPhysicalNode,
+    PhysicalNode,
+    PhysicalPlan,
+    SortPhysicalNode,
+    SortStrategy,
+)
+from fpstreams.physical.relational import (
+    GroupAggregatePhysicalNode,
+    JoinPhysicalNode,
+    JoinStrategy,
+    NativeGroupSumSpec,
+)
 from fpstreams.planning.compiler import compile_query
+from fpstreams.planning.logical import (
+    GlobalAggregateNode,
+    GroupAggregateNode,
+    JoinNode,
+    LogicalPlan,
+    Pipeline,
+    Query,
+    SourceNode,
+    TerminalSpec,
+    linear_pipeline,
+    unary_chain,
+)
 from fpstreams.planning.plan_cache import PhysicalPlanTemplate, PlanCache, PlanCacheKey
+from fpstreams.planning.source import Source, SourceCapabilities
+from fpstreams.planning.sync import DropOp, FilterOp, MapOp, TakeOp
+from fpstreams.runtime.failpoints import failpoint
+from fpstreams.tabular import rows
+
+# --- Plan caches, source ownership, and compiled execution ---
 
 
 @pytest.mark.parametrize("raises", [False, True])
@@ -2303,27 +2366,7 @@ def test_unique_selector_runs_once_per_source_item() -> None:
     assert seen == list(range(128))
 
 
-# --- Consolidated from expressions/test_expression_program.py ---
-
-"""Reusable, source-safe compiled row-expression program contracts."""
-
-
-from fpstreams import coalesce
-from fpstreams.expressions import program as program_module
-from fpstreams.expressions.program import ExprEvaluator, ExprProgram, compile_expression
-from fpstreams.expressions.row_ir import (
-    Binary,
-    Call,
-    Cast,
-    Coalesce,
-    Field,
-    GetItem,
-    IfElse,
-    Literal,
-    PythonUDF,
-    Unary,
-)
-from fpstreams.expressions.typed_ir import lower_expression
+# --- Expression programs and evaluation ---
 
 
 def test_program_reuses_precompiled_selector(monkeypatch) -> None:
@@ -2666,13 +2709,7 @@ def test_direct_row_evaluator_preserves_isin_argument_order() -> None:
     assert direct_events == reference_events == ["member", "choices"]
 
 
-# --- Consolidated from expressions/test_typed_ir.py ---
-
-"""Conservative typed-expression lowering contracts."""
-
-
-from fpstreams import fitem
-from fpstreams.expressions.typed_ir import Effect, ExpressionSource, TypedExpr, ValueType
+# --- Typed expression effects ---
 
 
 def test_lowering_classifies_public_expression_families() -> None:
@@ -2697,13 +2734,7 @@ def test_row_python_udf_propagates_callback_effect() -> None:
     assert lowered.backends == frozenset({"python"})
 
 
-# --- Consolidated from planning/test_async_physical.py ---
-
-"""Async physical planning remains lazy and exposes concurrency boundaries."""
-
-
-from fpstreams import aflow
-from fpstreams.physical.async_plan import compile_async_query
+# --- Async physical planning ---
 
 
 async def _identity(value: int) -> int:
@@ -2744,17 +2775,7 @@ def test_async_compile_does_not_open_source() -> None:
     assert opens == 0
 
 
-# --- Consolidated from planning/test_compiled_backends.py ---
-
-"""M9 backend-neutral program descriptors remain deterministic and source-safe."""
-
-
-import pytest
-
-from fpstreams.physical.compiled import ProgramFingerprint
-from fpstreams.physical.kernel_cache import KernelCache
-from fpstreams.physical.plan import CompiledExpressionPhysicalNode
-from fpstreams.planning.source import Source
+# --- Compiled backend selection and kernels ---
 
 
 def test_program_fingerprint_is_structural_and_address_free() -> None:
@@ -3244,26 +3265,7 @@ def test_compiler_reuses_a_structurally_equal_expression_program() -> None:
     assert first.nodes[0].program is second.nodes[0].program
 
 
-# --- Consolidated from planning/test_logical_plan.py ---
-
-"""Contracts for the synchronous immutable logical representation."""
-
-
-from fpstreams.planning.logical import (
-    LogicalPlan,
-    Pipeline,
-    Query,
-    SourceNode,
-    TerminalSpec,
-    linear_pipeline,
-    unary_chain,
-)
-from fpstreams.planning.sync import (
-    DropOp,
-    FilterOp,
-    MapOp,
-    TakeOp,
-)
+# --- Logical plans ---
 
 
 def test_linear_pipeline_preserves_source_operations_and_options() -> None:
@@ -3335,18 +3337,7 @@ def test_pipeline_append_preserves_immutable_operation_order() -> None:
     assert [type(operation) for operation in pipeline.operations] == [MapOp, DropOp, TakeOp]
 
 
-# --- Consolidated from planning/test_physical_plan.py ---
-
-"""Contracts for compiling logical queries to M2 physical plans."""
-
-
-from dataclasses import replace
-
-import pytest
-
-from fpstreams.execution import physical as physical_executor
-from fpstreams.execution.physical import PhysicalExecutionError, operations_from_physical_nodes
-from fpstreams.physical.plan import PhysicalNode, PhysicalPlan
+# --- Physical plan execution ---
 
 
 def test_compile_query_maps_each_unary_node_once_in_order() -> None:
@@ -3433,19 +3424,7 @@ def test_native_physical_execution_reuses_compiled_backend_decision(
     assert list(physical_executor.execute_physical(physical)) == list(range(1, 21))
 
 
-# --- Consolidated from planning/test_relational_logical.py ---
-
-"""M8 relational logical plans remain lazy and source-safe."""
-
-
-import fpstreams
-from fpstreams.physical.relational import JoinPhysicalNode
-from fpstreams.planning.logical import (
-    GlobalAggregateNode,
-    GroupAggregateNode,
-    JoinNode,
-)
-from fpstreams.tabular import rows
+# --- Relational plans ---
 
 
 def test_rows_join_is_a_binary_logical_node_without_opening_sources() -> None:
@@ -3751,21 +3730,7 @@ def test_relational_short_circuit_terminal_compiles_once_and_closes_sources(monk
     assert events.count("right:open") == events.count("right:close") == 1
 
 
-# --- Consolidated from execution/test_aggregate_program.py ---
-
-"""Compiled aggregation masks and merge-safety contracts."""
-
-
-import pytest
-
-from fpstreams import agg
-from fpstreams.collecting import Collector
-from fpstreams.collecting.aggregate_program import (
-    NativeAggregateField,
-    compile_aggregations,
-)
-from fpstreams.collecting.aggregation import prepare_aggregations
-from fpstreams.collecting.program import compile_collectors
+# --- Aggregation programs ---
 
 
 def test_native_mask_contains_only_requested_snapshot_fields() -> None:
@@ -3834,13 +3799,7 @@ def test_low_latency_terminal_reports_its_streaming_route(terminal) -> None:
     assert "row_mode: low_latency_terminal" in physical.decision.guards
 
 
-# --- Consolidated from execution/test_collector_program.py ---
-
-"""Indexed collector-program semantics and ordering contracts."""
-
-
-from fpstreams.collecting import Collectors
-from fpstreams.collecting.program import run_collector_program
+# --- Collector programs ---
 
 
 def test_single_collector_uses_specialized_state_without_name_lookup() -> None:
@@ -3986,16 +3945,7 @@ def test_source_stops_when_every_collector_is_done() -> None:
     assert pulls == [0]
 
 
-# --- Consolidated from execution/test_relational_operators.py ---
-
-"""Execution checks for M8 relational physical trees."""
-
-
-from fpstreams.physical.relational import (
-    GroupAggregatePhysicalNode,
-    JoinStrategy,
-    NativeGroupSumSpec,
-)
+# --- Relational execution and backend contracts ---
 
 
 def test_relational_nodes_preserve_join_and_aggregate_results() -> None:
@@ -14008,14 +13958,7 @@ def test_hash_join_index_keeps_singletons_and_promotes_only_duplicates() -> None
     ]
 
 
-# --- Consolidated from execution/test_sort_program.py ---
-
-"""Stable cached sort-record and deterministic numeric run-choice contracts."""
-
-
-from fpstreams.execution.sorting import SortRecord, sort_records
-from fpstreams.physical.plan import SortPhysicalNode, SortStrategy
-from fpstreams.runtime.failpoints import failpoint
+# --- Sort execution ---
 
 
 class _LessThanOnlySortKey:
@@ -15118,17 +15061,8 @@ def test_in_memory_direct_field_sort_keeps_old_wheel_and_opaque_selector_fallbac
     ).to_list() == [records[1], records[0]]
 
 
-# --- Consolidated from test_arrow_dictionary_group_sum.py ---
+# --- Arrow dictionary grouping ---
 
-"""Narrow contracts for dictionary-encoded Arrow group-sum execution."""
-
-
-from datetime import datetime
-from typing import Any
-
-import pytest
-
-import fpstreams
 
 pa = pytest.importorskip("pyarrow")
 
@@ -15286,15 +15220,7 @@ def test_arrow_dictionary_guard_decline_does_not_reopen_native_data(
     assert native_opens == 1
 
 
-# --- Consolidated from test_pairs_native.py ---
-
-"""Guarded native execution for direct ``Pairs.aggregate_values(sum)`` calls."""
-
-
-import pytest
-
-import fpstreams
-from fpstreams.planning.source import SourceCapabilities
+# --- Native pair execution ---
 
 
 @pytest.mark.parametrize("container", [list, tuple])

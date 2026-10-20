@@ -5,6 +5,37 @@ including changed defaults.
 
 ## Unreleased
 
+### Added
+
+- `Collectors.statistics(selector, ddof=0)` computes count, mean, variance, and
+  standard deviation with one selection and conversion per valid item.
+- Optional `fpstreams[sketch]` collectors provide KLL approximate quantiles and
+  HLL approximate distinct counts through the existing sync, async, and grouped
+  reduction interfaces. Exact collectors keep their existing behavior.
+- `Flow.rolling_statistics(size, selector=..., ddof=0)` and its async equivalent
+  emit count, mean, and variance for recent items, including warmup windows.
+  They reuse `map_accum`, with independent state for every evaluation.
+- `Rows.explain().to_dict(include_field_dependencies=True)` exports static field dependencies.
+  Direct projections, computed columns, renames, and supported relational
+  operations retain source identities; unsupported operations report unknown
+  dependencies. Value inputs and row selection inputs are reported separately.
+
+### Fixed
+
+- Reject non-real numeric scalars such as NumPy `complex64` before converting
+  statistical inputs or quantile ranks to floats. Decimal, Fraction, and real
+  NumPy scalar inputs keep their existing support.
+
+### Changed
+
+- Reuse expression analysis within each field-dependency export. Spill partition
+  writes consume their existing byte buffers without an intermediate copy.
+- Guarded Arrow projections can retain builtin scalar and list columns after
+  full buffer validation. Unsupported nested types retain row conversion.
+- Plan reasons distinguish representation selection from terminal execution.
+- Separate Arrow numeric reductions and retained sorting from batch dispatch,
+  preserving the existing execution entry points and live callback bindings.
+
 ## 2.4.1 - 2026-10-18
 
 ### Changed

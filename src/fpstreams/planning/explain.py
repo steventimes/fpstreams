@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .arrow import ArrowPrefixPlan, plan_arrow_prefix
 from .async_ import AsyncLogicalPlan
-from .logical import Pipeline, Query
+from .logical import LogicalNode, Pipeline, Query
 from .native import (
     EngineDecision,
     TerminalName,
@@ -242,12 +242,20 @@ class PlanExplanation:
     numpy_prefix: NumpyPrefixPlan | None = None
     relations: dict[str, Any] | None = None
     physical_nodes: tuple[Any, ...] = ()
+    _lineage_root: LogicalNode | None = field(default=None, repr=False, compare=False)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_field_dependencies: bool = False) -> dict[str, Any]:
         """Analyze the plan and serialize engine choice, costs, stages, semantics, and boundaries.
 
         Native or hybrid decisions determine the initial stage layout. An eligible Arrow prefix
         supersedes that layout and records where materialized Python rows begin.
+
+        Args:
+            include_field_dependencies: Include static logical field inputs when the
+                original logical plan is available. The default preserves the existing schema.
+
+        Returns:
+            Plain plan metadata, with optional field dependencies computed without reading rows.
         """
         semantics = analyze_sync_plan(self.plan, self.terminal)
         compiled_decision = self.decision
@@ -303,6 +311,10 @@ class PlanExplanation:
         }
         if self.relations is not None:
             result["relations"] = self.relations
+        if include_field_dependencies and self._lineage_root is not None:
+            from .lineage import describe_lineage
+
+            result["field_dependencies"] = describe_lineage(self._lineage_root)
         return result
 
 
@@ -448,7 +460,10 @@ def explain_query(query: Query) -> PlanExplanation:
     """Compile then explain a logical query through the single M2 planning path."""
     from .compiler import compile_query
 
-    return explain_physical(compile_query(query))
+    return replace(
+        explain_physical(compile_query(query)),
+        _lineage_root=query.logical.root,
+    )
 
 
 @dataclass(frozen=True, slots=True)

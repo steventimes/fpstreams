@@ -60,7 +60,207 @@ def _capture_rows_error(query: fpstreams.Rows[object]) -> BaseException:
     raise AssertionError("a missing selector unexpectedly succeeded")
 
 
-# --- Tests consolidated from test_rows_api.py ---
+# --- Static field dependencies ---
+
+
+def test_static_field_dependencies_track_values_separately_from_row_selection():
+    from fpstreams import col, rows
+
+    opened = []
+
+    def source():
+        opened.append(True)
+        yield {"price": 4, "tax": 2, "active": True}
+
+    query = (
+        rows(flow.defer(source))
+        .with_columns(total=col("price") + col("tax"))
+        .rename(total="amount")
+        .where(col("active"))
+        .select("amount")
+    )
+    dependency = query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert opened == []
+    assert dependency["fields"] == {
+        "amount": [{"source": "source_0", "field": "price"}, {"source": "source_0", "field": "tax"}]
+    }
+    assert dependency["row_dependencies"] == [{"source": "source_0", "field": "active"}]
+    assert dependency["complete_schema"] is True
+    assert query.to_list() == [{"amount": 6}]
+
+
+def test_static_dependencies_use_live_closures_and_mark_opaque_boundaries_unknown():
+    from fpstreams import col, rows
+
+    query = rows([{"x": 2}]).with_columns(y=col("x") * 2).select("y")
+    assert query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]["fields"][
+        "y"
+    ] == [{"source": "source_0", "field": "x"}]
+    opaque = rows([{"x": 2}]).with_columns(y=lambda record: record["x"]).select("y")
+    assert opaque.explain().to_dict(include_field_dependencies=True)["field_dependencies"][
+        "fields"
+    ] == {"y": None}
+    # Replacing a generated stage's executable code must invalidate its descriptor.
+    operation = query.to_flow()._pipeline.operations[-1]
+
+    original = operation.function.__code__
+
+    # The project projection has two closure cells, so use a compatible replacement.
+    def factory():
+        left, right = 1, 2
+
+        def altered(row):
+            return {"y": left + right}
+
+        return altered
+
+    try:
+        operation.function.__code__ = factory().__code__
+        assert (
+            query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]["fields"]
+            == {}
+        )
+    finally:
+        operation.function.__code__ = original
+
+
+def test_static_dependencies_keep_join_source_names_and_group_keys():
+    from fpstreams import agg, rows
+
+    left = rows([{"key": 1, "x": 2}]).select("key", "x")
+    right = rows([{"key": 1, "x": 3}]).select("key", "x")
+    joined = left.join(right, on="key")
+    dependencies = joined.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert dependencies["sources"] == ["source_0", "source_1"]
+    assert dependencies["fields"]["x"] == [{"source": "source_0", "field": "x"}]
+    assert dependencies["fields"]["x_right"] == [{"source": "source_1", "field": "x"}]
+    grouped = left.group_by("key").aggregate(total=agg.sum("x"))
+    dependency = grouped.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert dependency["fields"]["total"] == [{"source": "source_0", "field": "x"}]
+    assert dependency["row_dependencies"] == [{"source": "source_0", "field": "key"}]
+
+
+def test_static_dependencies_reject_rebound_expression_execution_without_calling_it():
+    from fpstreams import col, rows
+
+    predicate = col("flag")
+    query = rows([{"flag": True, "value": 1}]).where(predicate).select("value")
+    calls = []
+    object.__setattr__(predicate, "_evaluate", lambda row: calls.append(row) or True)
+    dependency = query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert calls == []
+    assert dependency["fields"] == {"value": None}
+    assert dependency["row_dependencies"] is None
+
+
+def test_static_dependencies_preserve_rename_schema_and_reintroduced_literal_fields():
+    from fpstreams import lit, rows
+
+    known = rows([{"x": 2}]).select("x").rename(missing="ghost")
+    assert known.explain().to_dict(include_field_dependencies=True)["field_dependencies"][
+        "fields"
+    ] == {"x": [{"source": "source_0", "field": "x"}]}
+    query = rows([{"x": 2}]).rename(x="y").with_columns(x=lit(3)).select("x", "y")
+    dependency = query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert dependency["fields"] == {"x": [], "y": [{"source": "source_0", "field": "x"}]}
+    assert query.to_list() == [{"x": 3, "y": 2}]
+
+
+def test_static_dependencies_visit_shared_expression_nodes_once_and_detach_exports(monkeypatch):
+    from fpstreams import RowExpr, col, rows
+    from fpstreams.expressions.row_ir import Binary
+    from fpstreams.planning import lineage
+
+    expression = col("x")
+    for _ in range(30):
+        # Bound display labels so this regression isolates traversal of the shared IR.
+        expression = RowExpr._from_node(Binary("+", expression._node, expression._node), "shared")
+    visits = []
+    children = lineage._children
+
+    def counted(node):
+        visits.append(id(node))
+        return children(node)
+
+    monkeypatch.setattr(lineage, "_children", counted)
+    explanation = rows([{"x": 1}]).with_columns(y=expression).explain()
+    assert "field_dependencies" not in explanation.to_dict()
+    assert visits == []
+    metadata = explanation.to_dict(include_field_dependencies=True)["field_dependencies"]
+    assert len(visits) == len(set(visits)) == 31
+    assert metadata["fields"]["y"] == [{"source": "source_0", "field": "x"}]
+    metadata["fields"]["y"].clear()
+    assert explanation.to_dict(include_field_dependencies=True)["field_dependencies"]["fields"][
+        "y"
+    ] == [{"source": "source_0", "field": "x"}]
+
+
+# --- Arrow projection conversion boundaries ---
+
+
+@pytest.mark.parametrize("layout", ["list", "large", "fixed", "nested"])
+def test_arrow_projection_handles_validated_builtin_lists_and_detaches_results(layout):
+    kind = {
+        "list": pa.list_(pa.int64()),
+        "large": pa.large_list(pa.int64()),
+        "fixed": pa.list_(pa.int64(), 2),
+        "nested": pa.list_(pa.list_(pa.int64())),
+    }[layout]
+    payload = [[[1, None]], [[2, 3]]] if layout == "nested" else [[1, None], [2, 3]]
+    table = pa.table({"id": [1, 2], "payload": pa.array(payload, type=kind)})
+    query = fpstreams.rows.from_arrow(table)
+    assert query.select("id").to_list() == [{"id": 1}, {"id": 2}]
+    selected = query.select(copy="payload").to_list()
+    assert selected == [{"copy": row} for row in payload]
+    selected[0]["copy"].append([] if layout == "nested" else 9)
+    assert query.select(copy="payload").to_list() == [{"copy": row} for row in payload]
+
+
+def test_arrow_projection_does_not_hide_invalid_utf8_in_an_unused_list():
+    import struct
+
+    invalid = pa.Array.from_buffers(
+        pa.string(),
+        1,
+        [None, pa.py_buffer(struct.pack("<ii", 0, 1)), pa.py_buffer(b"\xff")],
+    )
+    payload = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), invalid)
+    query = fpstreams.rows.from_arrow(pa.table({"id": [1], "payload": payload}))
+    with pytest.raises(UnicodeDecodeError):
+        query.select("id").to_list()
+
+
+def test_arrow_projection_observes_extension_conversion_inside_an_unused_list():
+    conversions = []
+
+    class ObservedScalar(pa.ExtensionScalar):
+        def as_py(self, **_kwargs):
+            value = self.value.as_py()
+            conversions.append(value)
+            return value
+
+    class ObservedType(pa.ExtensionType):
+        def __init__(self):
+            super().__init__(pa.int64(), "fpstreams.test.nested-projection")
+
+        def __arrow_ext_serialize__(self):
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, _storage, _metadata):
+            return cls()
+
+        def __arrow_ext_scalar_class__(self):
+            return ObservedScalar
+
+    children = pa.ExtensionArray.from_storage(ObservedType(), pa.array([3, 4]))
+    payload = pa.ListArray.from_arrays(pa.array([0, 2], type=pa.int32()), children)
+    query = fpstreams.rows.from_arrow(pa.table({"id": [1], "payload": payload}))
+    assert query.select("id").to_list() == [{"id": 1}]
+    assert conversions == [3, 4]
+
+
+# --- Rows API and shared fixtures ---
 
 
 @dataclass(frozen=True)
@@ -7971,7 +8171,7 @@ def test_spilled_join_guards_matches_and_total_output(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-# --- Tests consolidated from test_data_adapters.py ---
+# --- Data adapters and columnar execution ---
 
 """Dataframe protocols plus Arrow, Polars, Parquet, and SQL source and sink adapters."""
 
@@ -16879,7 +17079,7 @@ def test_arrow_batch_guard_names_each_fallback_reason() -> None:
         prove_batch_safe(item, (operation,)).reason.value for item, operation, _reason in operations
     ] == [reason for _item, _operation, reason in operations]
     projection = ArrowProjectionSpec((("value", "value"),), ("value",))
-    nested = pa.record_batch({"value": [[1], [2]]})
+    nested = pa.record_batch({"value": [{"x": 1}, {"x": 2}]})
     assert prove_batch_safe(nested, (), projection=projection).reason.value == "incompatible_type"
     assert prove_batch_safe(object(), ()).reason.value == "kernel_error"
 

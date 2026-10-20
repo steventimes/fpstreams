@@ -9,6 +9,32 @@ execution must create a fresh iterable. Besides ordinary iterables,
 `flow(source)` retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.
 
+## Statistical pipelines (Unreleased)
+
+Use `collect(Collectors.statistics(...))` for one summary over the whole input,
+or `rolling_statistics(size, selector=..., ddof=0)` for one result per input item:
+
+```python
+from fpstreams import Collectors, flow
+
+assert flow([2, None, 4, 6]).collect(Collectors.statistics())["mean"] == 4.0
+assert flow([2, None, 4, 6]).rolling_statistics(2).to_list() == [
+    (1, 2.0, 0.0), (1, 2.0, 0.0), (1, 4.0, 0.0), (2, 5.0, 1.0)
+]
+```
+
+Rolling results are `(count, mean, variance)` tuples, including warmup windows.
+Selected `None` occupies a window position and contributes no observation.
+Size and `ddof` use the integer index protocol: invalid types raise `TypeError`,
+and a nonpositive size or negative `ddof` raises `ValueError` at construction.
+Non-real inputs raise `TypeError` during consumption; nonfinite rolling inputs
+raise `ValueError`. Each evaluation starts with fresh window state.
+
+See [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-unreleased)
+for Collector input policies and optional sketches, and the
+[rolling recipe](../user-guide/analytics.md#rolling-numerical-statistics-unreleased)
+for state bounds and rebuilding costs. These additions require the source version.
+
 ## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-unreleased}
 
 `unfold` builds a source from state, while `map_accum` transforms an existing

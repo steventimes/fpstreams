@@ -290,6 +290,13 @@ validated before automatic filtering or projection. These fields can require
 reading columns that the query later discards. Explicit source `columns` and
 `filter` define the source boundary before this validation.
 
+Unreleased changes also recognize list, large-list, and fixed-size-list fields
+whose children contain only supported builtin scalars or lists. Full buffer
+validation still precedes automatic filtering or projection, including validation
+of unused list fields. Extension, temporal, struct, and map values retain the
+conversion path. A Python list result still owns independent row dictionaries
+and selected list values.
+
 For primitive batches, supported comparison chains can share a boolean
 selection mask and filter the payload once. A count can use the mask directly.
 This path requires the existing source-conversion and type guards; empty,

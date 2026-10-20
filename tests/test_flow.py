@@ -20,7 +20,52 @@ import benchmark
 import fpstreams
 from fpstreams import Downstream, Gatherer, NativeUnsupportedError, SelectionError, flow
 
-# --- Tests consolidated from test_flow_api.py ---
+# --- Rolling statistics and Flow API ---
+
+
+@pytest.mark.parametrize("size", [1, 7, 127, 1024])
+def test_rolling_statistics_match_independent_recomputation_with_outlier_eviction(size):
+    import statistics
+
+    values = [10**12 + (i % 13) / 8 for i in range(600)]
+    values[200] = 10**15
+    values[300:320] = [None] * 20
+    pipeline = flow(values).rolling_statistics(size, ddof=1)
+    first = pipeline.to_list()
+    assert pipeline.to_list() == first
+    for index, (count, mean, variance) in enumerate(first):
+        window = [v for v in values[max(0, index - size + 1) : index + 1] if v is not None]
+        assert count == len(window)
+        if not window:
+            assert mean is variance is None
+        else:
+            expected_mean = statistics.mean(window)
+            assert mean == pytest.approx(expected_mean, abs=max(0.001, 4 * math.ulp(expected_mean)))
+            if len(window) == 1:
+                assert variance is None
+            else:
+                assert variance == pytest.approx(statistics.variance(window), rel=2e-5, abs=1e-6)
+
+
+def test_rolling_statistics_is_lazy_reusable_and_closes_on_early_stop_and_error():
+    events = []
+
+    def source():
+        try:
+            for value in [2, None, 4, float("nan")]:
+                events.append(value)
+                yield {"value": value}
+        finally:
+            events.append("close")
+
+    pipeline = flow.defer(source).rolling_statistics(2, selector="value")
+    assert not events
+    assert pipeline.take(3).to_list() == [(1, 2, 0), (1, 2, 0), (1, 4, 0)]
+    assert events == [2, None, 4, "close"]
+    with pytest.raises(ValueError, match="finite"):
+        pipeline.to_list()
+    assert events[-1] == "close"
+    assert flow([]).rolling_statistics(2).to_list() == []
 
 
 def test_flow_collects_any_iterable() -> None:
@@ -4466,7 +4511,7 @@ def test_stream_is_a_thin_v2_compatibility_alias() -> None:
     ]
 
 
-# --- Tests consolidated from test_stream_extensions.py ---
+# --- Flow extension contracts ---
 
 """Gatherer contracts and synchronous, asynchronous, and native stream extensions."""
 
@@ -4861,7 +4906,7 @@ def test_native_inclusive_take_fuses_in_f64_pipelines() -> None:
     assert result == [0.0, 1.0, 2.0]
 
 
-# --- Tests consolidated from test_execution_engines.py ---
+# --- Execution engines ---
 
 """Parallel mapping, engine planning, fused terminals, source metadata, and external sorting."""
 
@@ -9446,7 +9491,7 @@ def test_external_sort_cleans_up_after_short_circuit_and_errors(tmp_path: Path) 
         fpstreams.flow([1]).external_sort(buffer_size=0)
 
 
-# --- Tests consolidated from test_benchmark.py ---
+# --- Benchmark helpers ---
 
 
 ROOT = Path(__file__).resolve().parents[1]

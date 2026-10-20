@@ -1,13 +1,9 @@
-# ruff: noqa: E402
-"""Consolidated fpstreams test cases."""
+"""Release artifacts, benchmark policy, failure injection, and resource gates."""
 
 from __future__ import annotations
 
-# --- Consolidated from release/test_benchmark_policy.py ---
-
-"""Regression policy for reproducible M12 benchmark baselines."""
-
-
+import ast
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -22,12 +18,31 @@ import textwrap
 import tomllib
 import zipfile
 from base64 import urlsafe_b64encode
+from collections.abc import AsyncIterator
 from datetime import datetime
 from email.parser import Parser
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+
+import fpstreams
+from fpstreams import aflow
+from fpstreams.execution.async_scheduler import execute_async_physical
+from fpstreams.physical.async_plan import compile_async_query
+from fpstreams.planning.source import Source
+from fpstreams.runtime.failpoints import failpoint, hit
+from fpstreams.runtime.limits import QueryLimits
+from fpstreams.runtime.metrics import QueryMetrics
+from fpstreams.runtime.query import QueryRuntime
+from fpstreams.runtime.resources import ResourceRegistry
+from fpstreams.runtime.tasks import TaskRole, TaskRuntime
+from fpstreams.storage.spill_store import SpillStore
+from fpstreams.streams.flow import flow
+
+# --- Benchmark regression policy ---
+
 
 ROOT = Path(__file__).parents[1]
 COMPARE = ROOT / "benchmarks" / "regression.py"
@@ -3834,13 +3849,8 @@ def test_every_emitted_benchmark_scenario_has_one_statistical_group() -> None:
         assert len(memberships) == 1, (result["name"], memberships)
 
 
-# --- Consolidated from release/test_failpoint_matrix.py ---
+# --- Failpoint matrix ---
 
-"""The M12 failure-injection surface remains connected to real transition sites."""
-
-
-import ast
-from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 REQUIRED_FAILPOINTS = frozenset(
@@ -3903,23 +3913,7 @@ def test_every_planned_failpoint_is_reachable_from_production_code() -> None:
     assert _production_failpoints() >= REQUIRED_FAILPOINTS
 
 
-# --- Consolidated from release/test_failpoints.py ---
-
-"""Test-only failpoints are nested, local, and off unless explicitly scoped."""
-
-
-import asyncio
-
-import fpstreams
-from fpstreams.planning.source import Source
-from fpstreams.runtime.failpoints import failpoint, hit
-from fpstreams.runtime.limits import QueryLimits
-from fpstreams.runtime.metrics import QueryMetrics
-from fpstreams.runtime.query import QueryRuntime
-from fpstreams.runtime.resources import ResourceRegistry
-from fpstreams.runtime.tasks import TaskRole, TaskRuntime
-from fpstreams.storage.spill_store import SpillStore
-from fpstreams.streams.flow import flow
+# --- Failure injection and cleanup ---
 
 
 def test_failpoint_is_scoped_nested_and_disabled_by_default() -> None:
@@ -4296,12 +4290,8 @@ def test_async_production_tree_has_no_legacy_executor_or_private_plan_names() ->
         assert symbol not in source
 
 
-# --- Consolidated from release/test_optional_backends.py ---
+# --- Optional backend compatibility ---
 
-"""Subprocess checks for supported configurations without optional backends."""
-
-
-from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 
@@ -4523,17 +4513,7 @@ raise ImportError('blocked optional dependency: fpstreams._native')
     assert "blocked optional dependency: fpstreams._native" in result.stdout
 
 
-# --- Consolidated from release/test_resource_high_water.py ---
-
-"""End-to-end bounds for query-owned async physical scheduler resources."""
-
-
-from collections.abc import AsyncIterator
-from typing import Any, cast
-
-from fpstreams import aflow
-from fpstreams.execution.async_scheduler import execute_async_physical
-from fpstreams.physical.async_plan import compile_async_query
+# --- Resource high-water accounting ---
 
 
 @pytest.mark.asyncio

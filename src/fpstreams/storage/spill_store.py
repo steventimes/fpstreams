@@ -111,12 +111,13 @@ class SpillWriter:
         self._bytes += written
         self._store._runtime.spills.record_write(written)
 
-    def write_encoded(self, frame: bytes, *, rows: int = 1) -> None:
+    def write_encoded(self, frame: bytes | bytearray, *, rows: int = 1) -> None:
         """Append already validated framed bytes from a bounded partition buffer.
 
         Encoding happens when the source row is accepted, so a bad pickle cannot
         be delayed past later user callbacks. This method only performs the later
-        I/O flush and updates the same logical-row/physical-byte accounting.
+        I/O flush and updates the same logical-row/physical-byte accounting. Mutable buffers
+        are consumed synchronously; the caller may reuse them after this method returns.
         """
         from ..runtime.failpoints import hit
 

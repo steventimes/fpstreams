@@ -228,3 +228,36 @@ Event-time windows, distributed execution, approximate aggregations, and
 automatic reordering of arbitrary callbacks require separate contracts and
 were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
 the research dependencies and trial records are not product dependencies.
+
+## Cross-project follow-up (Unreleased)
+
+The next batch adds explicit shared statistics, optional sketches, rolling
+numerical statistics, and conservative field dependencies. These changes use
+the existing Collector, `map_accum`, and plan explanation interfaces. The
+following sources supplement the earlier numbered list:
+
+- [Deequ paper](https://www.vldb.org/pvldb/vol11/p1781-schelter.pdf)
+  and [implementation](https://github.com/awslabs/deequ): scan sharing and metric state.
+- [KLL paper](https://arxiv.org/abs/1603.05346v2) and
+  [HLL engineering paper](https://research.google/pubs/hyperloglog-in-practice-algorithmic-engineering-of-a-state-of-the-art-cardinality-estimation-algorithm/):
+  approximation contracts; the adapter uses existing Apache DataSketches kernels.
+- [Finch's numerical derivations](https://fanf2.user.srcf.net/hermes/doc/antiforgery/stats.pdf)
+  and [River](https://github.com/online-ml/river/tree/0.22.0/river/stats):
+  online moments and explicit removal, with rebuilding for rolling numerical drift.
+- [Provenance Semirings](https://www.cs.ucdavis.edu/~green/papers/pods07.pdf),
+  [Why and Where](https://doi.org/10.1007/3-540-44503-X_20), and
+  [Ground](https://www.cidrdb.org/cidr2017/papers/p111-hellerstein-cidr17.pdf):
+  distinctions between value inputs, row selection, and retained provenance.
+- [Cawley and Talbot](https://www.jmlr.org/papers/v11/cawley10a.html):
+  separating parameter selection from final evaluation.
+- [Bilingual Problems](https://www.usenix.org/system/files/usenixsecurity23-staicu.pdf):
+  reviewing actual argument and ownership boundaries across native extensions.
+- [ADWIN](https://doi.org/10.1137/1.9781611972771.42): reviewed for its
+  assumptions and drift semantics; automatic drift handling remains deferred.
+
+The field metadata is a static dependency description, not a per-record
+provenance implementation. Sketch estimates preserve the exact APIs and add
+their own type, missing-value, approximation, and merge contracts. See
+[collectors](reference/collecting.md),
+[rolling statistics](user-guide/analytics.md#rolling-numerical-statistics-unreleased),
+and [field dependencies](user-guide/execution-reports.md#static-field-dependencies-unreleased).

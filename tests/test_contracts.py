@@ -1,18 +1,34 @@
-# ruff: noqa: E402
 """Versioned synchronous, asynchronous, planning, and public API contracts."""
 
 from __future__ import annotations
 
-# --- Consolidated from contracts/test_sync_semantics.py ---
+import asyncio
+import inspect
+import json
+import random
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Literal
+from enum import Enum
+from pathlib import Path
+from typing import Any, Literal, cast, get_args
 
 import pytest
 
-from fpstreams import FlowConsumedError, flow
+import fpstreams
+from fpstreams import FlowConsumedError, aflow, agg, flow, item, rows
+from fpstreams.execution.async_map import execute_async_map
+from fpstreams.execution.async_scheduler import execute_async_physical
 from fpstreams.execution.physical import execute_physical
+from fpstreams.physical.async_plan import AsyncMapNode, compile_async_query
+from fpstreams.planning.async_ import AsyncOperation
 from fpstreams.planning.compiler import compile_query
+from fpstreams.planning.explain import explain_physical
+from fpstreams.planning.logical import Query
+from fpstreams.planning.semantic_rules import ASYNC_OPERATOR_RULES, SYNC_OPERATOR_RULES
+from fpstreams.planning.sync import Operation
+from fpstreams.runtime import QueryRuntime
+
+# --- Synchronous semantics ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,11 +293,7 @@ async def test_source_metadata_does_not_compare_metaclasses(
         assert events == ["pull:1", "pull:2", "pull:3", "close"]
 
 
-# --- Consolidated from contracts/test_async_semantics.py ---
-
-import asyncio
-
-from fpstreams import aflow
+# --- Asynchronous semantics ---
 
 
 @pytest.mark.asyncio
@@ -409,15 +421,7 @@ async def test_async_early_stop_cancels_and_awaits_every_in_flight_mapper() -> N
     assert cancelled == {1, 2, 3}
 
 
-# --- Consolidated from contracts/test_plan_contract.py ---
-
-from typing import get_args
-
-import pytest
-
-from fpstreams.planning.async_ import AsyncOperation
-from fpstreams.planning.semantic_rules import ASYNC_OPERATOR_RULES, SYNC_OPERATOR_RULES
-from fpstreams.planning.sync import Operation
+# --- Plan contracts ---
 
 
 def test_sync_python_path_executes_the_logical_pipeline() -> None:
@@ -569,14 +573,7 @@ def test_async_explain_does_not_open_or_pull_a_deferred_source() -> None:
     assert events == []
 
 
-# --- Consolidated from contracts/test_m1_query_parity.py ---
-
-"""M1 contracts proving terminal execution is described by one Query first."""
-
-
-import pytest
-
-from fpstreams.planning.logical import Query
+# --- Query parity ---
 
 
 @pytest.mark.parametrize(
@@ -608,15 +605,7 @@ def test_terminal_constructs_one_query(monkeypatch, build, invoke) -> None:
     assert seen[0].terminal.name
 
 
-# --- Consolidated from contracts/test_m2_physical_parity.py ---
-
-"""M2 physical-plan routing and source-safety contracts."""
-
-
-import pytest
-
-import fpstreams
-from fpstreams.planning.explain import explain_physical
+# --- Physical execution parity ---
 
 
 @pytest.mark.parametrize(
@@ -661,16 +650,7 @@ def test_iterate_selects_the_low_latency_python_row_plan() -> None:
     assert explained["selected_engine"] == physical.decision.selected_engine
 
 
-# --- Consolidated from contracts/test_m3_resource_parity.py ---
-
-"""M3 resource and task-retirement parity contracts."""
-
-
-import pytest
-
-from fpstreams.execution.async_scheduler import execute_async_physical
-from fpstreams.physical.async_plan import compile_async_query
-from fpstreams.runtime import QueryRuntime
+# --- Resource cleanup parity ---
 
 
 @pytest.mark.asyncio
@@ -724,12 +704,7 @@ async def test_map_task_limit_rejection_closes_unscheduled_coroutine() -> None:
     assert runtime.resources.closed
 
 
-# --- Consolidated from contracts/test_m4_expression_parity.py ---
-
-"""M4 physical compiled-expression compatibility contracts."""
-
-
-from fpstreams import item
+# --- Expression parity ---
 
 
 def test_analyzable_map_and_filter_compile_once(monkeypatch) -> None:
@@ -810,17 +785,7 @@ def test_opaque_callback_remains_row_physical_node() -> None:
     assert type(physical.nodes[0]).__name__ == "RowPhysicalNode"
 
 
-# --- Consolidated from contracts/test_m10_async_parity.py ---
-
-"""Physical async scheduling preserves the established public map semantics."""
-
-
-from typing import cast
-
-import pytest
-
-from fpstreams.execution.async_map import execute_async_map
-from fpstreams.physical.async_plan import AsyncMapNode
+# --- Async execution parity ---
 
 
 @pytest.mark.asyncio
@@ -1273,12 +1238,7 @@ async def test_async_scheduler_explicit_close_owns_nested_cleanup_failures() -> 
     ]
 
 
-# --- Consolidated from contracts/test_m11_adaptive_parity.py ---
-
-"""Public semantic parity for exact operators backed by adaptive state."""
-
-
-import pytest
+# --- Adaptive planning parity ---
 
 
 def test_adaptive_unique_preserves_first_seen_values_and_selector_calls() -> None:
@@ -1319,11 +1279,7 @@ def test_adaptive_unique_right_join_preserves_validation_and_left_order() -> Non
         left.join(fpstreams.rows([{"id": 1}, {"id": 1}]), on="id", validate="m:1").to_list()
 
 
-# --- Consolidated from contracts/test_differential_corpus.py ---
-
-import random
-
-from fpstreams import agg, rows
+# --- Differential corpus ---
 
 
 def test_fixed_seed_linear_plans_match_the_explicit_reference() -> None:
@@ -1395,12 +1351,8 @@ def test_tabular_join_and_group_golden_contracts() -> None:
     ]
 
 
-# --- Consolidated from contracts/test_public_api_contract.py ---
+# --- Public API snapshots ---
 
-import inspect
-import json
-from enum import Enum
-from pathlib import Path
 
 SNAPSHOT = Path(__file__).with_name("public_api_v2.json")
 _API_SCALARS = (type(None), bool, int, float, str)

@@ -10,6 +10,84 @@ import pytest
 
 import fpstreams
 
+# --- Statistics, sketches, and cancellation ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["statistics", "rolling"])
+async def test_async_statistics_reject_complex_scalars_and_close_upstream(mode):
+    np = pytest.importorskip("numpy")
+    closed = []
+
+    async def source():
+        try:
+            yield 1
+            yield np.complex64(2 + 3j)
+            raise AssertionError("read past invalid data")
+        finally:
+            closed.append(True)
+
+    query = fpstreams.aflow(source())
+    with pytest.raises(TypeError, match="real numeric values"):
+        if mode == "rolling":
+            await query.rolling_statistics(2).to_list()
+        else:
+            await query.collect(fpstreams.Collectors.statistics())
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_async_statistics_match_sync_with_fresh_state_and_cancellation():
+    from fpstreams import Collectors, aflow, flow
+
+    values = [None, 10**12, 10**12 + 1, 10**12 + 2, None, 0]
+    expected = flow(values).rolling_statistics(3, ddof=1).to_list()
+    pipeline = aflow(values).rolling_statistics(3, ddof=1)
+    assert await pipeline.to_list() == expected
+    assert await pipeline.to_list() == expected
+    assert await aflow(values).collect(Collectors.statistics()) == Collectors.statistics()(values)
+
+    closed = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def source():
+        try:
+            yield 1
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    task = asyncio.create_task(aflow(source()).rolling_statistics(2).to_list())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_optional_sketch_collectors_stream_async_without_materializing():
+    pytest.importorskip("datasketches")
+    from fpstreams import Collectors, aflow
+
+    closed = []
+
+    async def source():
+        try:
+            for i in range(10_000):
+                yield {"value": i % 100}
+        finally:
+            closed.append(True)
+
+    result = await aflow(source()).collect(
+        quantiles=Collectors.approx_quantiles([0, 1], "value"),
+        distinct=Collectors.approx_count_distinct("value"),
+    )
+    assert result["quantiles"] == (0, 99)
+    assert result["distinct"] == pytest.approx(100, rel=0.01)
+    assert closed == [True]
+
 
 @pytest.mark.parametrize("method", ["take", "limit", "drop", "skip"])
 @pytest.mark.parametrize("count", [float("nan"), float("inf"), 2.5, 2.0])
@@ -428,7 +506,7 @@ def test_async_map_batches_validates_bounds_without_opening_the_source() -> None
     assert seen == []
 
 
-# --- Tests consolidated from test_async_api.py ---
+# --- AsyncFlow API and concurrency ---
 
 
 @pytest.mark.asyncio

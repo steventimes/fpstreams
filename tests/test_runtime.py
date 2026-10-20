@@ -1,22 +1,50 @@
-# ruff: noqa: E402
 """Query runtime, task scheduling, resource ownership, and spill contracts."""
 
 from __future__ import annotations
 
-# --- Consolidated from runtime/test_async_scheduler.py ---
-
-"""Contracts for bounded async scheduler primitives."""
-
-
 import asyncio
+from collections.abc import Iterator
+from dataclasses import replace
+from typing import Any
 
 import pytest
 
+from fpstreams import flow
 from fpstreams.execution.async_queue import Completion, CompletionQueue, OrderedResultRing
 from fpstreams.execution.async_timers import TimerHandle
-from fpstreams.runtime import QueryLimits
+from fpstreams.execution.physical import PhysicalExecutionError, execute_physical
+from fpstreams.execution.sorting import (
+    PositionRecord,
+    SortRecord,
+    _collapse_sort_runs,
+    _merge_position_runs,
+    _merge_sort_runs,
+    _sort_merge_fan_in,
+)
+from fpstreams.physical.plan import PhysicalNode
+from fpstreams.planning.compiler import compile_query
+from fpstreams.planning.sync import SortOp
+from fpstreams.runtime import (
+    FileLimitError,
+    QueryLimits,
+    QueryRuntime,
+    ResourceRegistry,
+    SpillFileRegistry,
+)
+from fpstreams.runtime.failpoints import failpoint
 from fpstreams.runtime.metrics import QueryMetrics
 from fpstreams.runtime.tasks import TaskRole, TaskRuntime
+from fpstreams.storage import SpillFormatError, SpillGeneration, SpillStore
+from fpstreams.tabular.spill_io import (
+    PartitionFile,
+    SpillLazyWriter,
+    SpillPartitionWriters,
+    merge_ordered,
+    read,
+    repartition,
+)
+
+# --- Async scheduler primitives ---
 
 
 def test_free_threaded_flow_smoke() -> None:
@@ -107,17 +135,7 @@ async def test_timer_handle_replaces_and_owns_only_one_timer() -> None:
     await runtime.aclose()
 
 
-# --- Consolidated from runtime/test_task_runtime.py ---
-
-"""Task and spill ownership contracts for one query runtime."""
-
-
-import pytest
-
-from fpstreams.runtime import (
-    ResourceRegistry,
-    SpillFileRegistry,
-)
+# --- Task runtime and cancellation ---
 
 
 @pytest.mark.asyncio
@@ -544,27 +562,7 @@ def test_spill_registry_removes_registered_directory(tmp_path) -> None:
     assert not directory.exists()
 
 
-# --- Consolidated from runtime/test_query_runtime.py ---
-
-"""Unit contracts for query-scoped resource ownership."""
-
-
-from collections.abc import Iterator
-from dataclasses import replace
-from typing import Any
-
-import pytest
-
-from fpstreams import flow
-from fpstreams.execution.physical import PhysicalExecutionError, execute_physical
-from fpstreams.physical.plan import PhysicalNode
-from fpstreams.planning.compiler import compile_query
-from fpstreams.runtime import (
-    FileLimitError,
-    QueryRuntime,
-)
-from fpstreams.runtime.failpoints import failpoint
-from fpstreams.storage import SpillStore
+# --- Query runtime ownership ---
 
 
 def test_file_manager_enforces_budget_and_releases_capacity(tmp_path) -> None:
@@ -869,31 +867,7 @@ def test_execute_physical_invalid_backend_payload_closes_runtime() -> None:
     assert cleanup_calls == ["runtime"]
 
 
-# --- Consolidated from runtime/test_spill_store.py ---
-
-"""Versioned query-scoped SpillStore format and lifecycle contracts."""
-
-
-import pytest
-
-from fpstreams.execution.sorting import (
-    PositionRecord,
-    SortRecord,
-    _collapse_sort_runs,
-    _merge_position_runs,
-    _merge_sort_runs,
-    _sort_merge_fan_in,
-)
-from fpstreams.planning.sync import SortOp
-from fpstreams.storage import SpillFormatError, SpillGeneration
-from fpstreams.tabular.spill_io import (
-    PartitionFile,
-    SpillLazyWriter,
-    SpillPartitionWriters,
-    merge_ordered,
-    read,
-    repartition,
-)
+# --- Spill storage lifecycle ---
 
 
 def test_spilled_count_preaggregation_planner_accepts_only_the_closed_count_shape() -> None:

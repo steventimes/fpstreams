@@ -7,6 +7,29 @@ Enter it with `flow(source).rows()`, construct it with `rows(source)`, or use on
 of the adapter factories. A Rows view shares its Flow's plan and source
 ownership; it does not inspect the source or make a one-shot input reusable.
 
+## Inspect field inputs (Unreleased)
+
+The source version supports static field dependencies through the existing
+explanation object. It inspects the logical plan without opening the source:
+
+```python
+from fpstreams import col, rows
+
+query = rows([{"price": 4, "tax": 2}]).with_columns(
+    total=col("price") + col("tax")
+).select("total")
+metadata = query.explain().to_dict(include_field_dependencies=True)["field_dependencies"]
+assert metadata["fields"]["total"] == [
+    {"source": "source_0", "field": "price"},
+    {"source": "source_0", "field": "tax"},
+]
+```
+
+Unknown dependencies are `None`; an empty list means no declared field input.
+This is logical field metadata. It does not trace individual records or permit
+operator reordering. See [static field dependencies](../user-guide/execution-reports.md#static-field-dependencies-unreleased)
+and the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-unreleased).
+
 ## Entering and leaving Rows
 
 Nonconflicting record methods can be called directly on Flow. `select()`,

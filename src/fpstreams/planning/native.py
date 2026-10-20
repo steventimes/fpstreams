@@ -699,12 +699,12 @@ def _identity_program(
     if _is_exact_i64(first):
         return (
             NativeProgram(source, (), "i64"),
-            "identity terminal selects the first i64 value without a source scan",
+            "planning inspects the first i64 value; execution validates consumed values",
         )
     if type(first) is float:
         return (
             NativeProgram(source, (), "f64"),
-            "identity terminal selects the first float value without a source scan",
+            "planning inspects the first float value; execution validates consumed values",
         )
     return None, "identity native terminals require i64 integers or floats"
 

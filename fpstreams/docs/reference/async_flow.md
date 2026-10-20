@@ -5,6 +5,34 @@ rate control, latest-request switching, timeouts, and buffer-by-time operations.
 
 Use `aflow(source)` with an iterable or async iterable.
 
+## Statistics and rolling windows (Unreleased)
+
+`rolling_statistics(size, selector=..., ddof=0)` returns an AsyncFlow of
+`(count, mean, variance)` tuples. The selector remains synchronous. Missing
+values, warmup output, configuration errors, and fresh-state rules match
+[Flow statistics](flow.md#statistical-pipelines-unreleased).
+
+```python
+import asyncio
+from fpstreams import Collectors, aflow
+
+
+async def summarize():
+    summary = await aflow([2, None, 4, 6]).collect(Collectors.statistics())
+    windows = await aflow([2, None, 4, 6]).rolling_statistics(2).to_list()
+    assert summary["mean"] == 4.0
+    assert windows[-1] == (2, 5.0, 1.0)
+
+
+asyncio.run(summarize())
+```
+
+Collector state callbacks follow their synchronous contract; await the async
+terminal that consumes the flow. Cancellation closes the owned upstream
+iterator. The optional sketches use the same `collect()` entry point; see
+[Collector statistics](collecting.md#shared-and-approximate-statistics-unreleased).
+These additions require the source version.
+
 ## Creating an async flow
 
 | Call | Behavior |

@@ -76,6 +76,9 @@ result = query.to_list()
 
    从 `compile_query()` 开始，不要立刻钻进所有辅助函数。先看它怎样区分线性查询和关系查询，再看 `_compile_node()` 怎样把表达式、排序和普通 Python 操作变成 physical node。计划缓存也在这一层，实现在 `planning/plan_cache.py`。
 
+   关系树的递归编译在 `planning/relational.py`，候选策略识别在
+   `planning/relational_specs.py`。它们复用 compiler 的单阶段编译，不另建一套线性编译规则。
+
 7. `src/fpstreams/physical/plan.py`
 
    这里的类是编译结果。`RowPhysicalNode` 表示普通 Python 行操作，`CompiledExpressionPhysicalNode` 带着编译好的表达式，`SortPhysicalNode` 保存排序策略。`PhysicalPlan` 还保存后端选择理由，供执行器和 `explain()` 使用。
@@ -91,6 +94,10 @@ result = query.to_list()
 10. `src/fpstreams/streams/flow_terminals.py`
 
     最后看 `to_list()`、`count()`、`sum()`、`first()` 等终端。终端会把“这次到底要算什么”交给 compiler。线性计划可以走精确长度或 native 快路，关系计划必须执行完整 physical root，不能退化成只读左侧 source。
+
+    数值、频次和物化辅助逻辑分别放在 `streams/_flow_numeric.py`、
+    `_flow_frequencies.py` 和 `_flow_materialize.py`。公开方法与规范绑定检查仍在
+    `flow_terminals.py`；辅助模块通过 live owner 读取可能被回调替换的函数。
 
 走完这十步，再回头看 `query.explain(terminal="list").to_dict()`。此时输出里的 selected engine、复杂度、数据搬运和拒绝原因会和代码对应起来。
 
@@ -163,7 +170,9 @@ paid = (
   字典子类和被替换的 tuple 构造器仍走原路径。记录快照及其释放时机不变。
 - `tabular/grouped.py`：`group_by(...).aggregate(...)` 怎样建立关系节点。
 - `physical/relational.py`：join/group 的物理策略值。
-- `execution/relational/`：`__init__.py` 负责关系树和通用 group state，`join.py` 负责
+- `execution/relational/`：`__init__.py` 负责分派、来源证明和实时绑定，
+  `collector_group.py` 管理通用分组状态与清理，`native_group.py` 管理可选原生分组 ABI。
+  `join.py` 负责
   内存 hash join、Arrow join 和窄整数键 native join 的 ABI 适配；`arrow_group.py` 与
   `arrow_global.py` 处理列式聚合。Python 单键聚合循环和
   Rust tuple/record 快路也从这个包分派；记录太宽、字段形状复杂或类型混杂时会回到 Python。
@@ -219,7 +228,7 @@ NumPy 无 key 的频次计数由 `flow_terminals._try_numpy_frequency_iterator()
 快捷路径成功后写入 `rust_direct`，保留 Arrow 列的直接 join 写入 `arrow_direct`，Python
 join 执行器写入 `python_join`。外层的 `compiler_engine` 仍可能是 Python。子计划不会覆盖
 外层路线，所以复合查询仍需结合具体调用路径分析。`Pairs.run_with_report()` 也已接入原有
-recorder，支持四个 pair 终端，不额外读取 source；这些更新尚未包含在已发布的 2.1.0 中。
+recorder，支持四个 pair 终端，不额外读取 source。这些路径记录自 2.2.0 起可用。
 
 Arrow 也采用同样的保守边界。`Rows.from_dataframe()` 和 `Rows.from_polars()` 会同时保留
 规范 row opener 与惰性 `ArrowBatchSource`；普通迭代和强制 Python 仍走前者，自动物化终端
@@ -227,6 +236,11 @@ Arrow 也采用同样的保守边界。`Rows.from_dataframe()` 和 `Rows.from_po
 比较 → 直接 select”，可以在 `planning/arrow.py` 得到批计划，由 `execution/arrow.py` 先过滤、
 裁列，再转成 Python 记录。算术、null、literal 子类、路径 selector、Mapping 或用户回调仍在
 打开 source 前回到规范路径。重点读这里的“证明与拒绝条件”；Arrow compute 调用本身很短。
+
+`execution/arrow.py` 保留批处理分派、安全证明和原有入口。数值归约及借用缓冲区的均值
+计算放在 `execution/arrow_numeric.py`，保留列排序放在 `execution/arrow_sort.py`。
+两个内部模块通过明确的 hooks 读取原入口模块的实时绑定，不能把源打开函数、转换器或
+回退函数提前复制下来。阅读数值路径时同时检查 source claim、异常归属和 `memoryview.release()`。
 
 投影的字段元数据不是永久有效的。`tabular/rows.py` 中的
 `_materialized_select_spec()` 会检查实际 accessor 的代码和闭包绑定；生成的 Python
@@ -309,13 +323,28 @@ native 也有转换成本。把 Python list 转成 Rust `Vec` 需要时间，小
 1. `collecting/collector.py`：通用 Collector 接口。
 2. `collecting/aggregation.py`：`agg.sum()`、`agg.mean()` 等公开聚合器。
 3. `collecting/program.py` 与 `aggregate_program.py`：多个 collector 共用一次遍历，以及 native mask 怎样只计算需要的槽位。
-4. `collecting/statistics.py`：在线均值、方差和数值稳定性。
+4. `collecting/statistics.py`：在线均值、方差、滚动窗口的移除与重建，以及实数输入校验。
+5. `collecting/sketches.py`：可选 DataSketches 内核的 KLL/HLL 适配、标量编码与部分状态合并。
+
+未发布的 `Collectors.statistics()` 共用一份统计状态，选择器和数值转换对每个非空值各执行一次。
+`rolling_statistics()` 复用现有 `map_accum`，每次求值创建独立窗口状态。
+`sketches.py` 只在调用对应工厂时导入可选依赖，不影响基础安装。
 
 `aggregate(count=..., total=..., mean=...)` 不是执行三遍。compiler 先得到 collector program，执行时每个输入只推进一次。
 
+## 字段依赖与执行报告
+
+`planning/explain.py` 负责计划说明。未发布的 `include_field_dependencies=True`
+把字段来源分析交给 `planning/lineage.py`：`_Fields` 保存字段信息，单次导出拥有
+表达式分析缓存，只保留最近一个表达式根节点。未知操作仍保留未知结果，分析不打开数据源。
+
+这份静态元数据描述逻辑字段依赖，不是逐行血缘证明。实际执行路径与资源计数由
+`run_with_report()` 记录，两者的范围见执行报告指南。
+
 ## 测试应该按什么顺序读
 
-测试按职责收在 9 个顶层文件里。不要从 `test_release.py` 开始。
+测试按职责收在 9 个顶层文件里。公共导入集中在文件开头，分组标题描述行为，不再指向
+已经移除的旧测试文件。没有整文件 E402/F811 豁免。不要从 `test_release.py` 开始。
 
 1. `tests/test_core.py`：Option、Result、基础函数式工具。
 2. `tests/test_flow.py`：同步 API、终端、表达式和 Python/native 语义。

@@ -47,6 +47,7 @@ See [Flow](flow.md) for complete signatures.
 | --- | --- |
 | Fixed grouping | `chunk`, `window`, `pairwise`, `batch` |
 | Window aggregation (2.4.0) | `window_reduce(size, combine, step=1)` |
+| Rolling statistics (Unreleased) | `rolling_statistics(size, selector=..., ddof=0)`; [recipe](../user-guide/analytics.md#rolling-numerical-statistics-unreleased) |
 | One callback per batch | `map_batches` |
 | Conditional grouping | `chunk_by`, `batch_by_size`, `constrained_batches`, `group_runs`, `collapse` |
 | Stable order | `sort_by`, `sorted`, `external_sort_by`, `top`, `bottom` |
@@ -81,6 +82,10 @@ AsyncFlow adds `merge`, `combine_latest`, `flat_map_merge`, `merge_map`, and
 
 Terminals that require an element document their empty-input policy. Statistical
 terminals return `None` where the statistic is undefined.
+
+The source version can also include static field inputs with
+`query.explain().to_dict(include_field_dependencies=True)` on Flow and Rows.
+See the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-unreleased).
 
 ## Work with records
 
@@ -119,6 +124,12 @@ Collector factories in `Collectors` cover general iterable reduction, mapping,
 filtering, partitioning, grouping, joining, and downstream composition. Reducer
 objects describe associative laws when parallel or tree reduction needs explicit
 proof.
+
+The source version also provides `Collectors.statistics` for shared exact
+statistics and optional `Collectors.approx_quantiles` and
+`Collectors.approx_count_distinct` sketches. These factories are Unreleased;
+see [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-unreleased)
+for input policies, installation, and error bounds.
 
 The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-unreleased)
 uses collector composition for grouped p50 and p90 values, with explicit

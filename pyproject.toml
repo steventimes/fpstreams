@@ -41,6 +41,9 @@ keywords = [
 # --- Optional Dependencies ---
 # Users can install these with: pip install fpstreams[test] or fpstreams[async]
 [project.optional-dependencies]
+sketch = [
+    "datasketches>=5.2,<6"
+]
 test = [
     "hypothesis>=6.138,<7",
     "pytest>=9.0.3,<10",
@@ -67,6 +70,7 @@ polars = [
     "pyarrow>=16"
 ]
 all = [
+    "datasketches>=5.2,<6",
     "hypothesis>=6.138,<7",
     "pytest>=9.0.3,<10",
     "pytest-cov>=7,<8",

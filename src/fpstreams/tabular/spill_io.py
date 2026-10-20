@@ -186,7 +186,7 @@ class SpillPartitionWriters:
             )
             active_error: BaseException | None = None
             try:
-                writer.write_encoded(bytes(buffered), rows=self._buffer_rows[position])
+                writer.write_encoded(buffered, rows=self._buffer_rows[position])
             except BaseException as error:
                 active_error = error
                 raise

@@ -1261,6 +1261,28 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
     cartesian = cross
 
+    def rolling_statistics(
+        self, size: SupportsIndex, *, selector: Selector | None = None, ddof: SupportsIndex = 0
+    ) -> AsyncFlow[tuple[int, float | None, float | None]]:
+        """Emit count, mean, and variance for each recent count-based window.
+
+        Args:
+            size: Positive integer window width in source items, including missing values.
+            selector: Synchronous numeric selector; `None` selects each whole item. Selected
+                `None` occupies a window slot but is excluded from the statistics.
+            ddof: Nonnegative integer subtracted from valid count when computing variance.
+
+        Returns:
+            An async flow of `(count, mean, variance)` tuples, including warmup windows.
+                Undefined statistics are `None`. Each evaluation owns fresh state, retains
+                at most size converted values, and uses the same shifted updates and periodic
+                rebuilding as [Flow.rolling_statistics][fpstreams.Flow.rolling_statistics].
+                Selectors stay synchronous; nonfinite numeric input is rejected.
+        """
+        from ..collecting.statistics import rolling_statistics_step
+
+        return self.map_accum(None, rolling_statistics_step(size, selector, ddof))
+
     def scan(
         self,
         initial: R,

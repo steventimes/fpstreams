@@ -1055,6 +1055,30 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
 
     cartesian = cross
 
+    def rolling_statistics(
+        self, size: SupportsIndex, *, selector: Selector | None = None, ddof: SupportsIndex = 0
+    ) -> Flow[tuple[int, float | None, float | None]]:
+        """Emit count, mean, and variance for the most recent input items.
+
+        Args:
+            size: Positive integer window width, counted in source items.
+            selector: Synchronous numeric selector; `None` selects each whole item. A selected
+                `None` occupies a window slot but does not contribute to the statistics.
+            ddof: Nonnegative integer subtracted from the valid count for variance.
+
+        Returns:
+            A flow of `(count, mean, variance)` tuples, including warmup windows. Undefined
+                statistics are `None`. Each evaluation owns fresh state and retains at most
+                size converted values. Selected numbers must be finite; a compensated mean
+                and shifted Welford variance updates are periodically rebuilt to limit drift.
+                Floating-point overflow and rounding remain possible. Rebuilds take O(size)
+                time; regular updates
+                take O(1), with additional rebuilds after severe cancellation.
+        """
+        from ..collecting.statistics import rolling_statistics_step
+
+        return self.map_accum(None, rolling_statistics_step(size, selector, ddof))
+
     def scan(self, initial: R, function: Callable[[R, T], R]) -> Flow[R]:
         """Emit each left-to-right accumulator state after consuming one item.
 
