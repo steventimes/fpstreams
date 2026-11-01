@@ -838,6 +838,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#collector-type-inference-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Collector type inference (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#collector" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -872,10 +883,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#shared-and-approximate-statistics-unreleased" class="md-nav__link">
+  <a href="#shared-and-approximate-statistics-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared and approximate statistics (Unreleased)
+        Shared and approximate statistics (2.5.0)
       
     </span>
   </a>
@@ -887,6 +898,17 @@
     <span class="md-ellipsis">
       
         Collector composition and completion (2.4.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#explicit-averaging-operations-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Explicit averaging operations (2.5.0)
       
     </span>
   </a>
@@ -1076,6 +1098,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.frequencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        frequencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Collectors.summing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1091,6 +1135,17 @@
     <span class="md-ellipsis">
       
         averaging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.averaging_with" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        averaging_with
       
     </span>
   </a>
@@ -1395,6 +1450,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#collector-type-inference-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Collector type inference (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#collector" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1429,10 +1495,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#shared-and-approximate-statistics-unreleased" class="md-nav__link">
+  <a href="#shared-and-approximate-statistics-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared and approximate statistics (Unreleased)
+        Shared and approximate statistics (2.5.0)
       
     </span>
   </a>
@@ -1444,6 +1510,17 @@
     <span class="md-ellipsis">
       
         Collector composition and completion (2.4.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#explicit-averaging-operations-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Explicit averaging operations (2.5.0)
       
     </span>
   </a>
@@ -1633,6 +1710,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.frequencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        frequencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fpstreams.Collectors.summing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1648,6 +1747,17 @@
     <span class="md-ellipsis">
       
         averaging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.Collectors.averaging_with" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        averaging_with
       
     </span>
   </a>
@@ -1801,7 +1911,89 @@ and spill groups. Every group receives fresh state from its initializer.</p>
 <code>collect(collector)</code>. Collector callbacks keep their usual synchronous contract
 when used with AsyncFlow. Composing a collector does not grant native execution
 or reducer laws; those still require their existing proofs and declarations.
-See the <a href="../../user-guide/analytics/#compose-a-weighted-collector-unreleased">weighted collector recipe</a>.</p>
+See the <a href="../../user-guide/analytics/#compose-a-weighted-collector-250">weighted collector recipe</a>.</p>
+<p><code>grouping_by</code> groups all matching keys, even when they are not adjacent;
+<code>group_runs</code> instead emits consecutive runs. The grouping classifier receives
+each item, including <code>None</code>, and <code>None</code> itself can also be a group key. A group's
+initializer runs when its key first appears; a state of <code>None</code> is a valid state,
+not a request to initialize it again. <code>partitioning_by</code> initializes and finishes
+both Boolean partitions, including for empty input.</p>
+<p><code>reduce_by</code> also initializes once per encountered key, even when the
+initializer and subsequent steps return <code>None</code>. If a callback needs to tell
+the first item apart from a legitimate <code>None</code> state, use a distinct marker:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">items</span> <span class="o">=</span> <span class="p">[(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="mi">7</span><span class="p">)]</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">initialized</span> <span class="o">=</span> <span class="p">[]</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">def</span><span class="w"> </span><span class="nf">initial_none</span><span class="p">():</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">initialized</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="k">return</span> <span class="kc">None</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">(</span><span class="n">items</span><span class="p">)</span><span class="o">.</span><span class="n">reduce_by</span><span class="p">(</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="k">lambda</span> <span class="n">pair</span><span class="p">:</span> <span class="n">pair</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="k">lambda</span> <span class="n">state</span><span class="p">,</span> <span class="n">pair</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span> <span class="n">initializer</span><span class="o">=</span><span class="n">initial_none</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span> <span class="o">==</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="k">assert</span> <span class="n">initialized</span> <span class="o">==</span> <span class="p">[</span><span class="kc">True</span><span class="p">]</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="n">unseen</span> <span class="o">=</span> <span class="nb">object</span><span class="p">()</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">(</span><span class="n">items</span><span class="p">)</span><span class="o">.</span><span class="n">reduce_by</span><span class="p">(</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="k">lambda</span> <span class="n">pair</span><span class="p">:</span> <span class="n">pair</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="k">lambda</span> <span class="n">state</span><span class="p">,</span> <span class="n">pair</span><span class="p">:</span> <span class="n">pair</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">if</span> <span class="n">state</span> <span class="ow">is</span> <span class="n">unseen</span> <span class="k">else</span> <span class="n">state</span><span class="p">,</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="n">initializer</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">unseen</span><span class="p">,</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="p">)</span> <span class="o">==</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+</code></pre></div>
+<p>The same per-key rule applies to <code>await aflow(items).reduce_by(...)</code>; its
+selector, initializer, and step can also return awaitables.</p>
+<p><code>grouping_by</code> and <code>partitioning_by</code> offer every selected item to their downstream
+collector even if its <code>done</code> predicate is true. <code>teeing</code> stops stepping a finished
+downstream but stops the source only when both downstream collectors are done.
+Choose downstream callbacks that support the lifecycle of the chosen adapter.
+For AsyncFlow, collector callbacks remain synchronous: a classifier's returned
+Future is a key, whereas <code>AsyncFlow.reduce_by</code> resolves an awaitable selector result.</p>
+<p><code>chunk</code> and <code>group_runs</code> return tuples containing the original item references;
+they do not deep-copy mutable items. Arrow batch slices may share the source value
+buffer. Retaining a slice can therefore retain that buffer, and a row-count limit
+alone is not a byte-memory limit.</p>
+<p><code>Collectors.frequencies()</code> (2.5.0) returns a dictionary counting each
+hashable input, in first-encounter order. It uses one entry per distinct value
+and can be combined with <code>mapping</code> for grouped field counts:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="s2">&quot;left&quot;</span><span class="p">,</span> <span class="s2">&quot;right&quot;</span><span class="p">,</span> <span class="s2">&quot;left&quot;</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">frequencies</span><span class="p">())</span> <span class="o">==</span> <span class="p">{</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="s2">&quot;left&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;right&quot;</span><span class="p">:</span> <span class="mi">1</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>For example, count positions separately for each team:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">mapping</span><span class="p">(</span><span class="s2">&quot;position&quot;</span><span class="p">,</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">frequencies</span><span class="p">())</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rows</span><span class="p">([</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;left&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;right&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;left&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;right&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;left&quot;</span><span class="p">},</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="p">])</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">counts</span><span class="o">=</span><span class="n">positions</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">assert</span> <span class="p">[</span><span class="n">group</span><span class="p">[</span><span class="s2">&quot;team&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">group</span> <span class="ow">in</span> <span class="n">result</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">]</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="k">assert</span> <span class="nb">list</span><span class="p">(</span><span class="n">result</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;counts&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">items</span><span class="p">())</span> <span class="o">==</span> <span class="p">[(</span><span class="s2">&quot;left&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;right&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)]</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="k">assert</span> <span class="nb">list</span><span class="p">(</span><span class="n">result</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="s2">&quot;counts&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">items</span><span class="p">())</span> <span class="o">==</span> <span class="p">[(</span><span class="s2">&quot;right&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;left&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)]</span>
+</code></pre></div>
+<p><code>Collectors.mode()</code> (2.5.0) returns the most frequent hashable value; ties
+go to the value first encountered. Empty input returns <code>None</code>, which is also a
+valid input value. The collector retains one entry per distinct value and does
+not provide a partial-state combiner. Compose it with <code>mapping</code> and <code>filtering</code>
+to select a field or exclude missing values:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">positions</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">mapping</span><span class="p">(</span><span class="s2">&quot;position&quot;</span><span class="p">,</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">mode</span><span class="p">())</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">result</span> <span class="o">=</span> <span class="n">rows</span><span class="p">([</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;left&quot;</span><span class="p">},</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;right&quot;</span><span class="p">},</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="p">{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;right&quot;</span><span class="p">},</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">])</span><span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;team&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">position</span><span class="o">=</span><span class="n">positions</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;team&quot;</span><span class="p">:</span> <span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;position&quot;</span><span class="p">:</span> <span class="s2">&quot;right&quot;</span><span class="p">}]</span>
+</code></pre></div>
 <p>Since 2.4.0, editor hints and type checkers retain the finished
 result type of a single streaming collector for both Flow and AsyncFlow.
 Named collector calls return <code>dict[str, Any]</code>. Calls that forward a possibly
@@ -1810,6 +2002,37 @@ Named collector calls return <code>dict[str, Any]</code>. Calls that forward a p
 An awaitable returned by its finisher remains a result value for the caller
 to await. For a non-Collector callable, AsyncFlow awaits an awaitable result
 before returning it. These runtime rules are unchanged by the type declarations.</p>
+<h3 id="collector-type-inference-250">Collector type inference (2.5.0)</h3>
+<p>Container factories infer their element type from the consuming pipeline or an
+explicit annotation. <code>Collectors[int]</code> remains available when constructing a
+collector separately:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">assert_type</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collector</span><span class="p">,</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">assert_type</span><span class="p">(</span><span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">to_list</span><span class="p">()),</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">])</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">assert_type</span><span class="p">(</span><span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">to_tuple</span><span class="p">()),</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">])</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">integers</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="n">Collectors</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+</code></pre></div>
+<p>Unannotated standalone factories and some inline <code>Collectors[Any]</code> calls remain
+checker dependent. Use a concrete <code>Collectors[T]</code> namespace or store the result
+with an explicit <code>Collector</code> annotation before consuming it.</p>
+<p>The same result inference applies to <code>AsyncFlow.collect()</code> and
+<code>Pairs.collect_values()</code>. A collector consumes its input type; its mutable state
+and result types remain invariant. In particular, an integer list collector does
+not become a string list collector. An awaitable finisher remains a value in
+both the synchronous and asynchronous Collector contracts described above.</p>
+<p>A separately annotated <code>Collector[Any, list[Any], list[Any]]</code> retains its
+<code>list[Any]</code> result in both Flow and AsyncFlow. Forwarding a possibly <code>None</code>
+collector still retains the result union with <code>dict[str, Any]</code> for named
+collection.</p>
+<p>For an async Collector with an awaitable finisher, use a concrete input type;
+<code>object</code> is suitable if its step accepts arbitrary objects. Combining <code>Any</code>
+with the callable overloads can still erase this result type. The runtime
+continues to preserve the finisher's awaitable as a value.</p>
+<p>Source installations use <code>typing-extensions&gt;=4.12</code> on Python 3.11 and 3.12 for
+type parameter defaults; Python 3.13 and newer use the standard library.
+This typing change is not included in the published 2.4.1 release.</p>
 <h2 id="collector">Collector</h2>
 
 
@@ -1868,7 +2091,7 @@ carries planner metadata without changing Python execution.</p>
     </div>
 
 </div><h2 id="built-in-collectors">Built-in collectors</h2>
-<h3 id="shared-and-approximate-statistics-unreleased">Shared and approximate statistics (Unreleased)</h3>
+<h3 id="shared-and-approximate-statistics-250">Shared and approximate statistics (2.5.0)</h3>
 <p><code>Collectors.statistics("value", ddof=1)</code> returns <code>count</code>, <code>mean</code>, <code>variance</code>,
 and <code>std</code> in one dictionary. It selects and converts each nonmissing value once.
 Selected <code>None</code> values are skipped; an undefined mean, variance, or standard
@@ -1876,12 +2099,12 @@ deviation is <code>None</code>. This explicit collector shares its statistical s
 changing the callback behavior of existing collectors. It has no state combiner.</p>
 <p>These collectors are not included in PyPI 2.4.1. From a source checkout, install
 the <code>sketch</code> extra to use the optional Apache DataSketches C++ kernels:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">distribution</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_quantiles</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">k</span><span class="o">=</span><span class="mi">200</span><span class="p">),</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">cardinality</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_count_distinct</span><span class="p">(</span><span class="n">lg_k</span><span class="o">=</span><span class="mi">12</span><span class="p">),</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">distribution</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_quantiles</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">k</span><span class="o">=</span><span class="mi">200</span><span class="p">),</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">cardinality</span><span class="o">=</span><span class="n">Collectors</span><span class="o">.</span><span class="n">approx_count_distinct</span><span class="p">(</span><span class="n">lg_k</span><span class="o">=</span><span class="mi">12</span><span class="p">),</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
 </code></pre></div>
 <p><code>approx_quantiles</code> preserves rank order in its result tuple. It skips <code>None</code>
 and converts real numeric inputs to finite double-precision values; conversion
@@ -1908,7 +2131,7 @@ estimates, so byte equality and exact reducer laws are not promised. Existing
 grouping creates fresh state per group; many groups can still consume substantial
 memory. These sketches do not certify uniqueness or replace exact collectors.</p>
 <p>DataSketches 5.2.0 publishes wheels for CPython 3.11 through 3.13, but no 3.14
-wheel. Installing the sketch extra on 3.14 may require a source build and its
+or 3.15 wheel. Installing the sketch extra on these versions requires a source build and its
 toolchain. The base library has no DataSketches dependency.</p>
 <h3 id="collector-composition-and-completion-240">Collector composition and completion (2.4.0)</h3>
 <p><code>head(count)</code> and <code>tail(count)</code> accept integers and
@@ -1937,11 +2160,130 @@ rolled back if a later callback fails.</p>
 <p>For custom reducers, <code>fpstreams.testing.check_reducer_laws()</code> samples identity,
 associativity, and partition equivalence. It closes the input before replaying
 examples and initializes independent states for the two associativity trees.
+Identity is sampled on both sides using separate states. Each sampled partition
+stops stepping when <code>done</code> is true. This differs from <code>run_partitioned_reducer</code>,
+which consumes and steps every input. A passing partition sample therefore does
+not establish that this execution function can run the reducer successfully.
+<code>associativity_checked</code> is false for fewer
+than three inputs; <code>partition_equivalence_checked</code> is false without layouts.
+The corresponding boolean results remain true when no example was checked for
+backward compatibility, and are not evidence that the property holds. The new
+checked flags do not participate in <code>ReducerLawReport</code> equality, preserving the
+previous comparison contract; inspect the flags explicitly when coverage matters.
 Its <code>equivalent</code> callback compares raw states for associativity and finished
-outputs for the other checks. Passing sampled examples does not prove the laws
+outputs for the other checks, so a finisher that hides state differences can
+also hide an identity failure. Passing sampled examples does not prove the laws
 for every input or permit reordering arbitrary callbacks.
+For example, floating-point addition may pass one associativity sample but
+produce a different result under another partition layout due to rounding.
 Partition layouts also accept integer-index objects; <code>checked_partitions</code>
 records their normalized Python integer values.</p>
+<p><code>Flow.mean()</code> returns <code>None</code> on an empty flow and uses compensated floating-point
+summation. <code>Collectors.averaging()</code> returns <code>0.0</code> on empty input and uses ordinary
+addition followed by division; rounding and result types depend on the operands.
+In 2.5.0, its result annotation is <code>object</code>: nonempty Decimal and Fraction inputs preserve
+those division result types, complex inputs return complex, and custom division
+can return any type. This annotation replaces the inaccurate <code>float</code> declaration;
+the runtime arithmetic and empty <code>0.0</code> are unchanged. Existing typed callers must
+narrow that result or migrate to the explicit interface below.
+For example, <code>[1e16, 1.0, -1e16]</code> yields <code>1/3</code> from <code>mean()</code> but <code>0.0</code> from
+<code>averaging()</code> in the Python paths. These operations do not automatically skip
+<code>None</code>. A collector's merge order can also affect floating-point rounding.</p>
+<h3 id="explicit-averaging-operations-250">Explicit averaging operations (2.5.0)</h3>
+<p><code>Collectors.averaging_with()</code> requires a callable selector and explicit <code>zero</code>,
+<code>add</code>, <code>divide</code>, and <code>empty</code> callbacks. The selector determines the input and
+selected-value types; accumulator and result types can differ. No result is
+converted to float. <code>zero()</code> creates fresh accumulator state per collection,
+<code>divide(total, count)</code> runs only for nonempty input, and <code>empty()</code> supplies the
+empty result. Both finish callbacks must return the declared result type,
+which can include <code>None</code> or another explicit alternative.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">decimal</span><span class="w"> </span><span class="kn">import</span> <span class="n">Decimal</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">value</span><span class="p">(</span><span class="n">item</span><span class="p">:</span> <span class="n">Decimal</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Decimal</span><span class="p">:</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="k">return</span> <span class="n">item</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="n">Decimal</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="n">Decimal</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Decimal</span><span class="p">:</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    <span class="k">return</span> <span class="n">total</span> <span class="o">+</span> <span class="n">item</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">divide</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="n">Decimal</span><span class="p">,</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Decimal</span><span class="p">:</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    <span class="k">return</span> <span class="n">total</span> <span class="o">/</span> <span class="n">count</span>
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="n">average</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">averaging_with</span><span class="p">(</span>
+<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>    <span class="n">value</span><span class="p">,</span> <span class="n">zero</span><span class="o">=</span><span class="n">Decimal</span><span class="p">,</span> <span class="n">add</span><span class="o">=</span><span class="n">add</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="n">divide</span><span class="p">,</span> <span class="n">empty</span><span class="o">=</span><span class="n">Decimal</span><span class="p">,</span>
+<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="p">)</span>
+<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a><span class="k">assert</span> <span class="n">average</span><span class="p">([</span><span class="n">Decimal</span><span class="p">(</span><span class="s2">&quot;1.1&quot;</span><span class="p">),</span> <span class="n">Decimal</span><span class="p">(</span><span class="s2">&quot;2.2&quot;</span><span class="p">)])</span> <span class="o">==</span> <span class="n">Decimal</span><span class="p">(</span><span class="s2">&quot;1.65&quot;</span><span class="p">)</span>
+<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a><span class="k">assert</span> <span class="n">average</span><span class="p">([])</span> <span class="o">==</span> <span class="n">Decimal</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="n">Decimal</span><span class="p">(</span><span class="s2">&quot;2&quot;</span><span class="p">)])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">average</span><span class="p">)</span> <span class="o">==</span> <span class="n">Decimal</span><span class="p">(</span><span class="s2">&quot;2&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>For records, supply an annotated selector such as
+<code>def value(row: dict[str, Decimal]) -&gt; Decimal: return row["amount"]</code>.
+String and integer selectors remain available on legacy <code>averaging()</code>; the
+explicit interface uses callables so its selected-value type is known.
+A custom division result can also have a different type from its accumulator:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Number</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">value</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__add__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">:</span> <span class="s2">&quot;Number&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Number&quot;</span><span class="p">:</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>        <span class="k">return</span> <span class="n">Number</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">+</span> <span class="n">other</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__truediv__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">count</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="k">def</span><span class="w"> </span><span class="nf">number</span><span class="p">(</span><span class="n">item</span><span class="p">:</span> <span class="n">Number</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Number</span><span class="p">:</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    <span class="k">return</span> <span class="n">item</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="k">def</span><span class="w"> </span><span class="nf">add_number</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="n">Number</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="n">Number</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Number</span><span class="p">:</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    <span class="k">return</span> <span class="n">total</span> <span class="o">+</span> <span class="n">item</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="k">def</span><span class="w"> </span><span class="nf">divide_number</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="n">Number</span><span class="p">,</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>    <span class="k">return</span> <span class="n">total</span> <span class="o">/</span> <span class="n">count</span>
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a><span class="n">text_average</span> <span class="o">=</span> <span class="n">Collectors</span><span class="o">.</span><span class="n">averaging_with</span><span class="p">(</span>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>    <span class="n">number</span><span class="p">,</span> <span class="n">zero</span><span class="o">=</span><span class="n">Number</span><span class="p">,</span> <span class="n">add</span><span class="o">=</span><span class="n">add_number</span><span class="p">,</span> <span class="n">divide</span><span class="o">=</span><span class="n">divide_number</span><span class="p">,</span> <span class="n">empty</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a><span class="p">)</span>
+<a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a><span class="k">assert</span> <span class="n">text_average</span><span class="p">([</span><span class="n">Number</span><span class="p">(</span><span class="mi">3</span><span class="p">),</span> <span class="n">Number</span><span class="p">(</span><span class="mi">4</span><span class="p">)])</span> <span class="o">==</span> <span class="s2">&quot;7/2&quot;</span>
+<a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a><span class="k">assert</span> <span class="n">text_average</span><span class="p">([])</span> <span class="o">==</span> <span class="s2">&quot;&quot;</span>
+</code></pre></div>
+<p>The resulting Collector supports direct calls, <code>Flow.collect</code>, <code>AsyncFlow.collect</code>,
+and existing Collector composition. <code>collecting_and_then</code> preserves its result
+type; the existing <code>grouping_by</code> annotation still includes its default list
+alternative in the result values. Partial-state merging is disabled unless
+<code>combine(total_left, total_right)</code> is supplied; counts are then added separately.
+The caller owns the callbacks' arithmetic, errors, precision, and merge laws.
+This interface provides an explicit typed migration; it does not infer the
+legacy factory's arbitrary operator results.</p>
+<p>In the Python <code>summarizing()</code> path, an empty summary reports zero for its extrema.
+A summary containing only NaN has count 1 and NaN sum, while its minimum and
+maximum remain positive and negative infinity. With <code>[NaN, 2.0]</code>, its extrema
+are both <code>2.0</code>, while <code>Flow.min()</code> and <code>Flow.max()</code> return NaN for that order.
+With <code>[2.0, NaN]</code>, the summary extrema and both Flow methods return <code>2.0</code>.
+These are implementation-specific examples, not a guarantee for every backend
+or numeric type.
+For the Python paths tested with <code>[float('inf'), float('-inf')]</code>, <code>Flow.mean()</code>
+and <code>Collectors.averaging()</code> return NaN; Python's <code>statistics.fmean()</code> raises
+<code>ValueError</code> for the same input. Select the contract your application requires.</p>
+<p>In a tested Arrow int64 row aggregation, an empty sum is <code>0</code>, a <code>None</code> value
+raises <code>TypeError</code>, and <code>[2**63 - 1, 1]</code> sums to the Python integer <code>2**63</code>.
+For the same Arrow arrays, <code>pyarrow.compute.sum</code> returns null for empty input,
+skips nulls, and wraps that integer sum to <code>-2**63</code>. A tested NumPy int64
+group sum also returns <code>2**63</code>, including on the <code>numpy_direct</code> route, while
+<code>numpy.sum</code> wraps the fixed-width values. These examples do not guarantee the
+same behavior for every source, dtype, aggregation, or backend.</p>
+<p>For the tested float64 Rows minimum, <code>[NaN, 1.0]</code> returns NaN and <code>[1.0, NaN]</code>
+returns <code>1.0</code>; equal signed zeros retain the first input's sign. In the same
+samples, <code>numpy.min</code> returns NaN for either NaN order and the last zero's sign.
+Both <code>python</code> and <code>auto</code> reported <code>planned:python</code> for those examples; they do
+not demonstrate a NumPy-native extrema kernel.</p>
 
 
 <div class="doc doc-object doc-class">
@@ -1956,8 +2298,6 @@ records their normalized Python integer values.</p>
 
 
     <div class="doc doc-contents first">
-            <p class="doc doc-class-bases">
-              Bases: <code><span title="typing.Generic">Generic</span>[<span title="fpstreams.collecting.collector.T">T</span>]</code></p>
 
 
 
@@ -1992,7 +2332,7 @@ records their normalized Python integer values.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2097,7 +2437,7 @@ terminals. This collector does not declare a partial-state combiner.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2263,7 +2603,7 @@ Merging mutates only the left state and requires matching precision.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2413,7 +2753,7 @@ Compatible merges mutate only the left state. State persistence is not an API.</
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2465,7 +2805,7 @@ Compatible merges mutate only the left state. State persistence is not an API.</
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2517,7 +2857,7 @@ Compatible merges mutate only the left state. State persistence is not an API.</
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2655,7 +2995,7 @@ Compatible merges mutate only the left state. State persistence is not an API.</
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2768,7 +3108,7 @@ for each group; omitting it collects group members into lists.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2881,7 +3221,7 @@ partition members into lists.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -2991,7 +3331,7 @@ completion, but does not carry downstream native metadata or reducer-law type.</
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3101,7 +3441,7 @@ and early completion are preserved; native metadata and reducer-law type are not
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3213,7 +3553,7 @@ type are not.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3346,7 +3686,7 @@ type are not.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3505,7 +3845,7 @@ and carries neither reducer laws nor native metadata.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3552,12 +3892,62 @@ and carries neither reducer laws nor native metadata.</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="fpstreams.Collectors.frequencies" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">frequencies</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">frequencies</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">dict</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Count hashable inputs in first-encounter order, retaining one entry per value.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.mode" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">mode</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">mode</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">T</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Collect the most frequent hashable value, breaking ties by first appearance.</p>
+<p>Empty input returns <code>None</code>; <code>None</code> is otherwise counted like any other value.
+State retains one entry per distinct value and has no partial-state combiner.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="fpstreams.Collectors.summing" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">summing</span>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3642,20 +4032,22 @@ and carries neither reducer laws nor native metadata.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">averaging</span><span class="p">(</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">float</span><span class="p">]</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">object</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build a collector that tracks selected-value sum and count for a mean.</p>
 <p>Empty input returns <code>0.0</code>. Nonempty input divides the accumulated sum by count during
-finishing, and partial <code>(sum, count)</code> states can be combined component-wise.</p>
+finishing, and partial <code>(sum, count)</code> states can be combined component-wise.
+The result type is <code>object</code> because operands can define arbitrary division results.
+Use <code>averaging_with</code> to specify typed operations and an explicit empty result.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3705,11 +4097,184 @@ finishing, and partial <code>(sum, count)</code> states can be combined componen
 
   
       dataclass
-   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, <span title="int">int</span>], <span title="float">float</span>]</code>
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="tuple">tuple</span>[<span title="typing.Any">Any</span>, <span title="int">int</span>], <span title="object">object</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>A collector returning the arithmetic mean or <code>0.0</code> for no values.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.Collectors.averaging_with" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">averaging_with</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">averaging_with</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">selector</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">V</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">zero</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">S</span><span class="p">],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">add</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">S</span><span class="p">,</span> <span class="n">V</span><span class="p">],</span> <span class="n">S</span><span class="p">],</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">divide</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">S</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">R</span><span class="p">],</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">empty</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">R</span><span class="p">],</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">combine</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">S</span><span class="p">,</span> <span class="n">S</span><span class="p">],</span> <span class="n">S</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">S</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">R</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build a mean collector with explicit accumulator and result contracts.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>selector</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="fpstreams.collecting.collector.T">T</span>], <span title="fpstreams.collecting.collector.V">V</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Typed value selector, including identity for whole input items.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>zero</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[], <span title="fpstreams.collecting.collector.S">S</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Create an independent initial accumulator for each collection.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>add</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="fpstreams.collecting.collector.S">S</span>, <span title="fpstreams.collecting.collector.V">V</span>], <span title="fpstreams.collecting.collector.S">S</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Add a selected value to the accumulator.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>divide</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="fpstreams.collecting.collector.S">S</span>, <span title="int">int</span>], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Produce the nonempty result from the accumulator and count.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>empty</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Produce the result for empty input, without calling <code>divide</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>combine</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Callable">Callable</span>[[<span title="fpstreams.collecting.collector.S">S</span>, <span title="fpstreams.collecting.collector.S">S</span>], <span title="fpstreams.collecting.collector.S">S</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional accumulator merger for partial states.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Collector
+
+
+  
+      dataclass
+   (fpstreams.collecting._collector_base.Collector)" href="#fpstreams.Collector">Collector</a>[<span title="fpstreams.collecting.collector.T">T</span>, <span title="tuple">tuple</span>[<span title="fpstreams.collecting.collector.S">S</span>, <span title="int">int</span>], <span title="fpstreams.collecting.collector.R">R</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A collector preserving the supplied result type without numeric conversion.
+Its combiner is absent unless <code>combine</code> is supplied. Callers own the
+arithmetic and merge laws of their callbacks.</p>
               </div>
             </td>
           </tr>
@@ -3729,7 +4294,7 @@ finishing, and partial <code>(sum, count)</code> states can be combined componen
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3837,7 +4402,7 @@ count, and derived average are already zero. The returned object is the final mu
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3891,7 +4456,7 @@ as a completed result. Later items offered by an adapter leave that result uncha
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -3944,7 +4509,7 @@ as a completed result. Later items offered by an adapter leave that result uncha
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -4063,7 +4628,7 @@ as a completed result. Later items offered by an adapter leave that result uncha
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -4183,7 +4748,7 @@ oldest; a zero count retains nothing.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -4260,7 +4825,7 @@ collection early so finishing can raise without pulling a third.</p>
 
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
 </h3>
@@ -4535,6 +5100,13 @@ entry per input row.</p>
 </table>
 <p>Omit <code>selector</code> to aggregate the items themselves. A string selector reads a
 record field; expression and callable selectors are also accepted.</p>
+<p>In the 2.5.0 Python path, <code>agg.count_distinct</code> checks equality across
+hashable and unhashable values. It retains distinct values, may call equality
+across categories, and can take O(H × U) cross-category comparisons for H
+hashable and U unhashable values, with O(H + U) retained references. The Python
+path compares previously accepted values to the incoming value using list
+membership semantics. A hash <code>TypeError</code> takes the unhashable path; other hash
+errors and comparison errors propagate.</p>
 <p><code>min_by</code> and <code>max_by</code> require a selector and return the original winning item.
 They select a key once per item, keep the first item on ties, and return <code>None</code>
 for empty input. Each state retains one key and one item. Keys use Python's
@@ -4543,7 +5115,7 @@ normalization yourself when missing or incomparable values need a policy.</p>
 <p>These factories work with <code>Flow.aggregate</code>, <code>AsyncFlow.aggregate</code>, and global,
 grouped, sorted, or spilled row aggregation. Spill restores serialized records
 under its existing contract. The factories do not declare merge laws for
-arbitrary Python keys. See the <a href="../../user-guide/analytics/#select-records-by-version-unreleased">latest-record recipe</a>.</p>
+arbitrary Python keys. See the <a href="../../user-guide/analytics/#select-records-by-version-250">latest-record recipe</a>.</p>
 <p><code>top</code> and <code>bottom</code> return lists, retain at most <code>count</code> items per state, and
 keep input order for equal keys. The key runs once per item; payloads are never
 compared. Count must be a non-negative integer. Empty input and zero count
@@ -4551,7 +5123,7 @@ return <code>[]</code>; zero count skips key calls and does not pull an independ
 Grouped aggregation still reads the source to discover groups. Use consistently
 ordered keys: Python heap and sorting comparisons determine the result and
 propagate comparison errors. These aggregators declare no merge laws. See the
-<a href="../../user-guide/analytics/#rank-records-within-each-group-unreleased">per-group ranking recipe</a>.</p>
+<a href="../../user-guide/analytics/#rank-records-within-each-group-250">per-group ranking recipe</a>.</p>
 
 
 <div class="doc doc-object doc-class">

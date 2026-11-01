@@ -437,7 +437,7 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#select-records-by-version-unreleased" class="md-nav__link">
+  <a href="#select-records-by-version-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Select records by version (2.4.0)
@@ -448,7 +448,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rank-records-within-each-group-unreleased" class="md-nav__link">
+  <a href="#rank-records-within-each-group-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Rank records within each group (2.4.0)
@@ -470,7 +470,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#compose-a-weighted-collector-unreleased" class="md-nav__link">
+  <a href="#compose-a-weighted-collector-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Compose a weighted collector (2.4.0)
@@ -492,7 +492,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#exact-grouped-percentiles-unreleased" class="md-nav__link">
+  <a href="#exact-grouped-percentiles-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Exact grouped percentiles (2.4.0)
@@ -525,7 +525,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#resume-file-partitions-unreleased" class="md-nav__link">
+  <a href="#resume-file-partitions-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Resume file partitions (2.4.0)
@@ -536,10 +536,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rolling-numerical-statistics-unreleased" class="md-nav__link">
+  <a href="#rolling-numerical-statistics-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rolling numerical statistics (Unreleased)
+        Rolling numerical statistics (2.5.0)
       
     </span>
   </a>
@@ -1130,7 +1130,7 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#select-records-by-version-unreleased" class="md-nav__link">
+  <a href="#select-records-by-version-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Select records by version (2.4.0)
@@ -1141,7 +1141,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rank-records-within-each-group-unreleased" class="md-nav__link">
+  <a href="#rank-records-within-each-group-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Rank records within each group (2.4.0)
@@ -1163,7 +1163,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#compose-a-weighted-collector-unreleased" class="md-nav__link">
+  <a href="#compose-a-weighted-collector-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Compose a weighted collector (2.4.0)
@@ -1185,7 +1185,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#exact-grouped-percentiles-unreleased" class="md-nav__link">
+  <a href="#exact-grouped-percentiles-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Exact grouped percentiles (2.4.0)
@@ -1218,7 +1218,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#resume-file-partitions-unreleased" class="md-nav__link">
+  <a href="#resume-file-partitions-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Resume file partitions (2.4.0)
@@ -1229,10 +1229,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#rolling-numerical-statistics-unreleased" class="md-nav__link">
+  <a href="#rolling-numerical-statistics-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rolling numerical statistics (Unreleased)
+        Rolling numerical statistics (2.5.0)
       
     </span>
   </a>
@@ -1264,7 +1264,7 @@
 Normalize identifiers, dates, units, and
 duplicate-record policy before aggregation. Keep the record grain explicit:
 a player-match row and a player-season row answer different questions.</p>
-<h2 id="select-records-by-version-unreleased">Select records by version (2.4.0)</h2>
+<h2 id="select-records-by-version-250">Select records by version (2.4.0)</h2>
 <p><code>agg.max_by</code> retains the whole record with the largest selected key. This lets
 you resolve a finite batch of out-of-order updates without collecting and
 sorting each group. <code>agg.min_by</code> selects the smallest key instead.</p>
@@ -1294,7 +1294,7 @@ normalization policy. Hash grouping retains one key and one candidate per group,
 along with its group index; sorted grouping retains the current group plus
 lookahead. This computes a batch result. Persisting a change log and reconciling
 partial updates require application-specific storage and merge rules.</p>
-<h2 id="rank-records-within-each-group-unreleased">Rank records within each group (2.4.0)</h2>
+<h2 id="rank-records-within-each-group-250">Rank records within each group (2.4.0)</h2>
 <p>Use <code>agg.top</code> or <code>agg.bottom</code> when each group needs several ranked records.
 The aggregator retains up to the requested number instead of collecting the
 whole group. Equal keys keep input order.</p>
@@ -1368,7 +1368,7 @@ faster. Measure the full query when choosing between those approaches.</p>
 deduplication dictionary, or sorting step still has its own cost. Hash grouping
 keeps state for every distinct team. A retained dict list may qualify for a
 native route that a generator does not; measure both shapes before choosing.</p>
-<h2 id="compose-a-weighted-collector-unreleased">Compose a weighted collector (2.4.0)</h2>
+<h2 id="compose-a-weighted-collector-250">Compose a weighted collector (2.4.0)</h2>
 <p>Use the existing collector combinators when a metric needs its own filter and
 finisher. Named aggregation now accepts these collectors directly, so the same
 definition works for global totals and individual groups:</p>
@@ -1443,7 +1443,7 @@ Choose weights for the metric: action coordinates use valid action counts,
 speed observations use observed time, and rates per 90 minutes use the minutes
 for which the event count is known. Repeated matches contribute at their stated
 grain. A weighted mean of match-level percentiles is not a pooled percentile.</p>
-<h2 id="exact-grouped-percentiles-unreleased">Exact grouped percentiles (2.4.0)</h2>
+<h2 id="exact-grouped-percentiles-250">Exact grouped percentiles (2.4.0)</h2>
 <p>Compose a collector when a finite set of speed observations needs several
 percentiles. This example computes unweighted p50 and p90 values using the
 standard library's <a href="https://docs.python.org/3/library/statistics.html#statistics.quantiles">inclusive quantiles</a>.
@@ -1528,7 +1528,7 @@ policies for your application's keys. If independent import tasks need separate
 recovery checkpoints, manage those task boundaries in the application. Retrying
 a failed atomic write and retrying an already committed append have different
 duplicate-record consequences.</p>
-<h2 id="resume-file-partitions-unreleased">Resume file partitions (2.4.0)</h2>
+<h2 id="resume-file-partitions-250">Resume file partitions (2.4.0)</h2>
 <p>For a collection of stable JSONL files, checkpoint each partition separately.
 The callback writes one result file; later stages receive its path instead of
 the full result payload.</p>
@@ -1584,7 +1584,7 @@ active jobs have stopped. Completed entries remain until you remove them.</p>
 callback side effects need their own idempotency. Arbitrary iterators are not
 replayed. Use a separate application transaction when multiple partition
 outputs must become visible together.</p>
-<h2 id="rolling-numerical-statistics-unreleased">Rolling numerical statistics (Unreleased)</h2>
+<h2 id="rolling-numerical-statistics-250">Rolling numerical statistics (2.5.0)</h2>
 <p>Use <code>rolling_statistics</code> for a mean and variance over the most recent input
 items without rebuilding an entire window for every result:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>

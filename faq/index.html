@@ -1221,9 +1221,11 @@ every internal kernel or fallback.</p>
 <code>NativeUnsupportedError</code> when the complete requested plan is unsupported.</p>
 <h2 id="why-are-from_csv-and-scan_csv-separate">Why are <code>from_csv()</code> and <code>scan_csv()</code> separate?</h2>
 <p><code>rows.from_csv()</code> follows Python's <code>csv.DictReader</code> behavior and produces string
-cells. <code>rows.scan_csv()</code> uses PyArrow for typed, incremental reading and can push
-selected columns into conversion. Keeping two names makes their parsing and
-error contracts explicit.</p>
+cells. <code>rows.scan_csv()</code> reads typed batches with PyArrow. To restrict the
+reader's columns, pass <code>pyarrow.csv.ConvertOptions(include_columns=...)</code> as
+<code>convert_options</code>. Query <code>.select()</code> follows conversion of every reader column
+in each batch, so errors in unselected columns still propagate. Keeping two
+names makes their parsing and error contracts explicit.</p>
 <h2 id="can-i-run-a-pipeline-more-than-once">Can I run a pipeline more than once?</h2>
 <p>Lists, tuples, paths, and deferred factories are normally replayable. Iterators,
 open handles, async iterators, Arrow readers, and imported Arrow C streams are
@@ -1236,9 +1238,9 @@ when you need that execution model.</p>
 <h2 id="how-should-i-report-a-performance-problem">How should I report a performance problem?</h2>
 <p>Include the fpstreams and Python versions, CPU and operating system, input size,
 data types, key cardinality where relevant, the complete pipeline, and the
-terminal. A result across several sizes is more useful than one timing. The
-repository's <code>run_benchmark.sh</code> exposes the standard comparison matrix without
-requiring CLI arguments.</p>
+terminal. A result across several sizes is more useful than one timing.
+Performance tools and raw reports are maintained locally and are not included
+in the public source distribution or GitHub Actions.</p>
 
 
 

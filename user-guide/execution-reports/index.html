@@ -465,10 +465,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#static-field-dependencies-unreleased" class="md-nav__link">
+  <a href="#static-field-dependencies-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Static field dependencies (Unreleased)
+        Static field dependencies (2.5.0)
       
     </span>
   </a>
@@ -476,10 +476,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#plan-dictionary-reference-unreleased" class="md-nav__link">
+  <a href="#plan-dictionary-reference-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Plan dictionary reference (Unreleased)
+        Plan dictionary reference (2.5.0)
       
     </span>
   </a>
@@ -531,7 +531,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#metadata-export-unreleased" class="md-nav__link">
+  <a href="#metadata-export-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Metadata export (2.4.0)
@@ -553,7 +553,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#plan-and-route-events-unreleased" class="md-nav__link">
+  <a href="#plan-and-route-events-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Plan and route events (2.4.0)
@@ -1423,10 +1423,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#static-field-dependencies-unreleased" class="md-nav__link">
+  <a href="#static-field-dependencies-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Static field dependencies (Unreleased)
+        Static field dependencies (2.5.0)
       
     </span>
   </a>
@@ -1434,10 +1434,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#plan-dictionary-reference-unreleased" class="md-nav__link">
+  <a href="#plan-dictionary-reference-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Plan dictionary reference (Unreleased)
+        Plan dictionary reference (2.5.0)
       
     </span>
   </a>
@@ -1489,7 +1489,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#metadata-export-unreleased" class="md-nav__link">
+  <a href="#metadata-export-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Metadata export (2.4.0)
@@ -1511,7 +1511,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#plan-and-route-events-unreleased" class="md-nav__link">
+  <a href="#plan-and-route-events-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Plan and route events (2.4.0)
@@ -1846,7 +1846,7 @@
 
 
 <h1 id="execution-reports">Execution reports</h1>
-<h2 id="static-field-dependencies-unreleased">Static field dependencies (Unreleased)</h2>
+<h2 id="static-field-dependencies-250">Static field dependencies (2.5.0)</h2>
 <p><code>Rows.explain().to_dict(include_field_dependencies=True)["field_dependencies"]</code> describes logical input fields
 without reading a row or evaluating a selector. It exports its own schema version,
 source identifiers, explicit output fields, and any identity passthrough. A
@@ -1874,7 +1874,7 @@ only when explicitly requested.</p>
 <p>Each export owns its expression-analysis cache, retaining only the most recent
 root. Field states share that cache within the export, including after an
 unknown transformation. Later exports analyze their current expressions again.</p>
-<h2 id="plan-dictionary-reference-unreleased">Plan dictionary reference (Unreleased)</h2>
+<h2 id="plan-dictionary-reference-250">Plan dictionary reference (2.5.0)</h2>
 <p>The synchronous Flow and Rows explanation objects share this method.
 <code>AsyncFlow.explain().to_dict()</code> keeps its existing signature and does not accept
 the field-dependency flag.</p>
@@ -2076,10 +2076,18 @@ its events does not call <code>explain()</code> or execute the query again.</p>
 </tr>
 </tbody>
 </table>
+<p>When comparing execution routes, check values, encounter order, source reads,
+and observable callback or error behavior. A pushed-down filter must retain
+fields it needs even if a later projection omits them; applying a limit before
+a residual filter can change which rows are returned. A report of
+<code>planned:python</code> does not establish Arrow execution. For example, a nullable
+Boolean expression over an Arrow source may use that strategy, while a supported
+NumPy integer group sum can report <code>numpy_direct</code>. Route selection depends on
+the actual source, expression, data, and terminal.</p>
 <p>Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.</p>
-<h2 id="metadata-export-unreleased">Metadata export (2.4.0)</h2>
+<h2 id="metadata-export-250">Metadata export (2.4.0)</h2>
 <p>Use <code>report.to_dict()</code> to copy an execution report into plain metadata for
 JSON storage or a caller-managed integration:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
@@ -2130,7 +2138,7 @@ backend. A <code>planned:*</code> value alone cannot establish which backend han
 of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.</p>
-<h2 id="plan-and-route-events-unreleased">Plan and route events (2.4.0)</h2>
+<h2 id="plan-and-route-events-250">Plan and route events (2.4.0)</h2>
 <p><code>run_with_report()</code> collects bounded events from the existing plan and
 direct-route hooks. Read <code>report.events</code> when a compound query's outer report
 leaves a backend choice unclear. Child plans appear in encounter order while

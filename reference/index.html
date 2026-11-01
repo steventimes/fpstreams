@@ -1237,7 +1237,7 @@ The final table lists aliases alongside their canonical names.</p>
 </tr>
 <tr>
 <td>Stateful transform</td>
-<td><code>scan</code>, <code>scan_right</code>, <code>fold_by</code>, <code>reduce_by</code>, <code>gather</code></td>
+<td><code>fold</code>, <code>scan</code>, <code>scan_right</code>, <code>fold_by</code>, <code>reduce_by</code>, <code>gather</code></td>
 </tr>
 <tr>
 <td>Stateful mapping, 2.4.0</td>
@@ -1258,6 +1258,16 @@ The final table lists aliases alongside their canonical names.</p>
 </tbody>
 </table>
 <p>See <a href="flow/">Flow</a> for complete signatures.</p>
+<p>In Flow and AsyncFlow, <code>fold(initializer, function)</code> lazily emits one accumulated
+value. The initializer is a factory; consume the returned flow to run it.
+<code>reduce</code> and <code>fold_right</code> (an alias of <code>reduce_right</code>) are terminals.
+The 2.5.0 <a href="async_flow/#explicit-asynchronous-accumulator-contract-250"><code>AsyncFlow.fold_async</code></a>
+adds explicitly awaitable hooks and a declared resolved accumulator type.</p>
+<p><code>filter_none()</code> drops only <code>None</code> in both Flow and AsyncFlow. In v2,
+<code>compact()</code> drops only <code>None</code> in Flow but all falsey values in AsyncFlow;
+the same distinction applies to a supplied selector. See
+<a href="../user-guide/concepts/#moving-between-synchronous-and-asynchronous-flows">moving between execution domains</a>
+before porting a pipeline.</p>
 <h2 id="batch-window-and-order">Batch, window, and order</h2>
 <table>
 <thead>
@@ -1276,8 +1286,8 @@ The final table lists aliases alongside their canonical names.</p>
 <td><code>window_reduce(size, combine, step=1)</code></td>
 </tr>
 <tr>
-<td>Rolling statistics (Unreleased)</td>
-<td><code>rolling_statistics(size, selector=..., ddof=0)</code>; <a href="../user-guide/analytics/#rolling-numerical-statistics-unreleased">recipe</a></td>
+<td>Rolling statistics (2.5.0)</td>
+<td><code>rolling_statistics(size, selector=..., ddof=0)</code>; <a href="../user-guide/analytics/#rolling-numerical-statistics-250">recipe</a></td>
 </tr>
 <tr>
 <td>One callback per batch</td>
@@ -1353,7 +1363,7 @@ The final table lists aliases alongside their canonical names.</p>
 </tr>
 <tr>
 <td>General reduction</td>
-<td><code>fold</code>, <code>fold_right</code>, <code>reduce</code>, <code>reduce_right</code>, <code>aggregate</code>, <code>summarize</code>, <code>collect</code></td>
+<td><code>fold_right</code>, <code>reduce</code>, <code>reduce_right</code>, <code>aggregate</code>, <code>summarize</code>, <code>collect</code></td>
 </tr>
 <tr>
 <td>Distribution</td>
@@ -1381,7 +1391,7 @@ The final table lists aliases alongside their canonical names.</p>
 terminals return <code>None</code> where the statistic is undefined.</p>
 <p>The source version can also include static field inputs with
 <code>query.explain().to_dict(include_field_dependencies=True)</code> on Flow and Rows.
-See the <a href="../user-guide/execution-reports/#plan-dictionary-reference-unreleased">plan dictionary reference</a>.</p>
+See the <a href="../user-guide/execution-reports/#plan-dictionary-reference-250">plan dictionary reference</a>.</p>
 <h2 id="work-with-records">Work with records</h2>
 <table>
 <thead>
@@ -1485,10 +1495,10 @@ objects describe associative laws when parallel or tree reduction needs explicit
 proof.</p>
 <p>The source version also provides <code>Collectors.statistics</code> for shared exact
 statistics and optional <code>Collectors.approx_quantiles</code> and
-<code>Collectors.approx_count_distinct</code> sketches. These factories are Unreleased;
-see <a href="collecting/#shared-and-approximate-statistics-unreleased">shared and approximate statistics</a>
+<code>Collectors.approx_count_distinct</code> sketches. These factories are 2.5.0;
+see <a href="collecting/#shared-and-approximate-statistics-250">shared and approximate statistics</a>
 for input policies, installation, and error bounds.</p>
-<p>The <a href="../user-guide/analytics/#exact-grouped-percentiles-unreleased">exact percentile recipe</a>
+<p>The <a href="../user-guide/analytics/#exact-grouped-percentiles-250">exact percentile recipe</a>
 uses collector composition for grouped p50 and p90 values, with explicit
 missing-value and small-group policies.</p>
 <h2 id="transform-pairs">Transform pairs</h2>
@@ -1533,7 +1543,7 @@ missing-value and small-group policies.</p>
 <p>See <a href="pairs/">Pairs</a>.</p>
 <h2 id="async-operations">Async operations</h2>
 <p>AsyncFlow shares most synchronous transformations and the count, truth,
-lookup, fold, frequency, sum, extreme-value, mean, variance, and
+lookup, reduction, frequency, sum, extreme-value, mean, variance, and
 standard-deviation terminals. It does not currently expose <code>describe</code>. Its
 async-only groups are:</p>
 <table>
@@ -1544,6 +1554,10 @@ async-only groups are:</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>Explicit async state (2.5.0)</td>
+<td><code>fold_async(initializer, function)</code></td>
+</tr>
 <tr>
 <td>Concurrent callbacks</td>
 <td><code>map_async</code>, <code>flat_map_merge</code>, <code>merge_map</code>, <code>switch_map</code></td>
@@ -1572,6 +1586,10 @@ async-only groups are:</p>
 </table>
 <p>Concurrency, ordering, cancellation, and buffer bounds are documented with each
 method on <a href="async_flow/">AsyncFlow</a>.</p>
+<p>The 2.5.0 <a href="collecting/#explicit-averaging-operations-250"><code>Collectors.averaging_with</code></a>
+keeps accumulator and result types explicit. For record filtering,
+<a href="rows/#null-filtering-and-lookup-failures-250"><code>Rows.drop_nulls(missing="raise")</code></a>
+propagates selected lookup failures; its compatibility default remains <code>"legacy"</code>.</p>
 <h2 id="expressions">Expressions</h2>
 <table>
 <thead>
@@ -1627,7 +1645,7 @@ method on <a href="async_flow/">AsyncFlow</a>.</p>
 </tr>
 <tr>
 <td>Execution reports</td>
-<td><code>ExecutionResult</code>, <code>ExecutionReport</code>; <code>ExecutionEvent</code> and versioned report/event <code>to_dict()</code> export added in 2.4.0 (<a href="../user-guide/execution-reports/#metadata-export-unreleased">guide</a>)</td>
+<td><code>ExecutionResult</code>, <code>ExecutionReport</code>; <code>ExecutionEvent</code> and versioned report/event <code>to_dict()</code> export added in 2.4.0 (<a href="../user-guide/execution-reports/#metadata-export-250">guide</a>)</td>
 </tr>
 <tr>
 <td>Spill budgets</td>

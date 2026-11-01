@@ -1,9 +1,9 @@
 {
   "build": "development",
-  "commit": "ee4bbdbbb9596bce7297c9dfcf898f493585a60a",
+  "commit": "d1748db219285e65119ada7bdffe17a68e7b306f",
   "dirty": false,
   "engine": "python",
   "ref": "master",
-  "version": "2.4.1",
-  "wheel": "fpstreams-2.4.1-py3-none-any.whl"
+  "version": "2.5.0",
+  "wheel": "fpstreams-2.5.0-py3-none-any.whl"
 }

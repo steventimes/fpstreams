@@ -698,10 +698,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#statistical-pipelines-unreleased" class="md-nav__link">
+  <a href="#consumption-batching-and-cleanup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Statistical pipelines (Unreleased)
+        Consumption, batching, and cleanup
       
     </span>
   </a>
@@ -709,7 +709,51 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
+  <a href="#flattening-mapped-iterables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flattening mapped iterables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scan-state-and-gatherer-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scan state and Gatherer completion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reduce-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reduce values and check their types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#statistical-pipelines-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Statistical pipelines (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-driven-generation-and-mapping-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         State-driven generation and mapping (2.4.0)
@@ -720,7 +764,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -731,7 +775,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -2423,10 +2467,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#statistical-pipelines-unreleased" class="md-nav__link">
+  <a href="#consumption-batching-and-cleanup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Statistical pipelines (Unreleased)
+        Consumption, batching, and cleanup
       
     </span>
   </a>
@@ -2434,7 +2478,51 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
+  <a href="#flattening-mapped-iterables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flattening mapped iterables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scan-state-and-gatherer-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scan state and Gatherer completion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reduce-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reduce values and check their types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#statistical-pipelines-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Statistical pipelines (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-driven-generation-and-mapping-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         State-driven generation and mapping (2.4.0)
@@ -2445,7 +2533,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -2456,7 +2544,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -3853,15 +3941,215 @@ plan.</p>
 execution must create a fresh iterable. Besides ordinary iterables,
 <code>flow(source)</code> retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.</p>
-<h2 id="statistical-pipelines-unreleased">Statistical pipelines (Unreleased)</h2>
+<p><code>chunk(size, strict=True)</code> (2.5.0) rejects an incomplete final batch when
+the flow reaches it. The default continues to emit a shorter final batch.
+<code>batch</code> is an alias; <code>AsyncFlow.chunk</code> provides the same option.
+In strict mode, the short tail has already been read when <code>ValueError</code> is
+raised; it is not emitted. To inspect a short tail yourself, use the default
+mode and check the tuple length. Stopping before that tail does not validate it.</p>
+<p>In the 2.5.0 source, <code>map_parallel</code> and <code>parallel</code> normalize non-<code>None</code>
+<code>workers</code> and <code>buffer</code> values
+with the integer <code>__index__</code> protocol when configuring the flow, before opening
+its source. Values must be positive. Floating-point values, including NaN and
+infinity, raise <code>TypeError</code>.</p>
+<h2 id="consumption-batching-and-cleanup">Consumption, batching, and cleanup</h2>
+<p>In the 2.5.0 Python uniqueness path, <code>distinct</code> and <code>distinct_by</code> also
+compare hashable keys with previously seen unhashable keys, and vice versa.
+The first accepted equal key wins. Mixed categories can invoke additional
+equality callbacks and propagate their errors. State retains distinct keys;
+with H hashable and U unhashable keys, cross-category comparisons may take
+O(H × U) time and state uses O(H + U) references. Existing same-category
+comparison rules remain unchanged. For a new hashable key, each previously
+accepted unhashable key is compared as <code>seen == key</code>; for a new unhashable key,
+accepted hashable keys are compared as <code>key == seen</code> in encounter order.</p>
+<p><code>group_runs</code> emits each contiguous group as a complete tuple. To detect a
+group boundary, it reads the first item of the next group and computes its key
+before emitting the previous group. If that key computation fails, the previous
+group has not yet been emitted. It holds the whole current group in memory;
+the tuple contains the original item references, without deep copies. An
+infinite run with no key change cannot produce a completed group.</p>
+<p>In the 2.5.0 source, <code>concat</code> opens each additional source only when it
+reaches it and closes an opened iterator on completion or early exit. Passing
+the same one-shot iterator as the input and as an additional source does not
+give the additional source a second ownership of that iterator.</p>
+<p>In the 2.5.0 Python grouping path, <code>reduce_by</code> and <code>frequencies</code>
+propagate errors raised by a key's custom hash or equality operation unchanged.
+An unhashable key raises <code>TypeError</code>.</p>
+<p><code>zip</code> pulls the left input before the right input. If the right input ends
+first, a left item can already have been consumed without appearing in a pair.
+This also matters when the inputs have side effects. <code>strict=True</code> checks for
+unequal lengths during consumption, so a downstream <code>take</code> cannot validate an
+unconsumed tail. <code>zip_longest</code> uses <code>None</code> for padding by default, which is
+indistinguishable from an input <code>None</code>. Pass a unique sentinel when the
+distinction matters. A mutable <code>fillvalue</code> is reused, not copied.</p>
+<p><code>intersperse</code> reads the next input item before emitting its separator.
+Consequently, <code>intersperse(...).take(2)</code> can consume two source items even
+though only the first item and a separator are returned. A successful <code>first</code>
+or <code>find</code> only checks the consumed prefix; consume the entire source if all
+items and source errors must be checked.</p>
+<p><code>batch_by_size</code> checks the next item's size before emitting a pending batch,
+including when <code>max_count</code> has already been reached. An oversized next item
+in strict mode or an error from the source or size function can therefore stop
+the flow before that pending batch is emitted. Normal exhaustion emits the
+remaining nonempty batch. The operation does not copy the items in its tuples.</p>
+<p>With <code>map_parallel(..., ordered=False)</code>, results arrive in completion order;
+following it with <code>take(n)</code> does not select the first <code>n</code> inputs. Work already
+submitted can have started even when its result is never returned.</p>
+<p>Terminal operations own their iteration and close it when they stop. When
+iterating directly, keep and explicitly close the iterator if you stop early;
+<code>break</code> alone does not close a retained iterator. In the Python path, direct
+iteration of <code>take(1)</code> can yield its last item while the source remains open;
+cleanup occurs when iteration resumes or the iterator is explicitly closed.
+For an iterator with a
+<code>close</code> method, <code>contextlib.closing</code> can express this ownership:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">closing</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">with</span> <span class="n">closing</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">flow</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">))))</span> <span class="k">as</span> <span class="n">values</span><span class="p">:</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">values</span><span class="p">:</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="k">if</span> <span class="n">value</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>            <span class="k">break</span>
+</code></pre></div>
+<p>For a direct <code>flow.defer(factory)</code> source, <code>take(0).to_list()</code> opens and closes
+the factory's iterator without pulling an item, while
+<code>collect(Collectors.head(0))</code> does not call the factory. Factory errors in the
+first case still propagate. Custom iterators need not implement <code>close</code>.</p>
+<h2 id="flattening-mapped-iterables">Flattening mapped iterables</h2>
+<p><code>flat_map()</code> expands one iterable level in order. A string is iterable and
+therefore yields its characters; a dictionary yields its keys. Wrap either in
+another iterable to keep it as one value.</p>
+<p>In the synchronous Python path, a mapped iterator is delegated with
+<code>yield from</code>. It is not explicitly closed when it is exhausted normally or when its
+own <code>__next__</code> raises. Closing an active delegated iterator after downstream
+early termination calls its <code>close()</code> if available. A generator may also run its
+own cleanup as it finishes; these details do not imply that every iterable
+provides a close hook.</p>
+<h2 id="scan-state-and-gatherer-completion">Scan state and Gatherer completion</h2>
+<p><code>scan(initial, function)</code> emits one state per input and emits nothing for an
+empty input. It does not copy the initial state or results. If a callback
+mutates and returns one object, previously emitted references can observe
+later mutations; the supplied seed is also reused on another evaluation. Return
+fresh values for snapshots, and create a fresh pipeline and seed with <code>defer</code>
+when each execution needs independent state:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">add_key</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="o">**</span><span class="n">counts</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="n">counts</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">}</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">counts</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">defer</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">flow</span><span class="p">([</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;a&quot;</span><span class="p">])</span><span class="o">.</span><span class="n">scan</span><span class="p">({},</span> <span class="n">add_key</span><span class="p">))</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">expected</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}]</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">assert</span> <span class="n">counts</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="n">expected</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">assert</span> <span class="n">counts</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="n">expected</span>
+</code></pre></div>
+<p><code>scan_right</code> buffers the full source and computes the right fold before its
+first output; it emits nothing for an empty source. With <code>max_items</code>, it must
+read the next item to detect an exceeded limit, so the limit bounds buffered
+items rather than all source reads.</p>
+<p>For the synchronous <code>Gatherer</code>, the finisher runs on normal exhaustion and
+when the gatherer stops input. Downstream early close can also run it with a
+rejecting output channel. It must not infer that the source was exhausted from
+the number of items seen. Source or integration failures do not turn the
+finisher into a <code>finally</code> hook; manage separately owned resources explicitly.
+In a composed gatherer, an initializer or finisher failure can prevent later
+hooks from running.</p>
+<h2 id="reduce-types">Reduce values and check their types</h2>
+<p><code>reduce(function, initial=...)</code> combines values from left to right. Without an
+initial value, the first element is the accumulator; an empty flow raises
+<code>EmptyFlowError</code>. With an initial value, an empty flow returns that exact object.
+The callback must accept its own previous result as the next accumulator.</p>
+<p>The current declaration accepts <code>Callable[[Any, T], Any]</code> and returns <code>Any</code>,
+with or without an initial value. Runtime results can be more specific, but
+neither an ordinary lambda nor a named, annotated callback refines that public
+return type:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">assert_type</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">assert_type</span><span class="p">(</span><span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="k">lambda</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="p">),</span> <span class="n">Any</span><span class="p">)</span>  <span class="c1"># runtime: 3</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">assert_type</span><span class="p">(</span><span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="k">lambda</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">a</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">b</span><span class="p">),</span> <span class="s2">&quot;&quot;</span><span class="p">),</span> <span class="n">Any</span><span class="p">)</span>  <span class="c1"># runtime: &quot;12&quot;</span>
+</code></pre></div>
+<p><code>Any</code> can also let an invalid callback pass static checking. For example,
+<code>def step(a: int, b: int) -&gt; str: return str(a + b)</code> works for <code>[1, 2]</code>
+without an initial value, but fails with <code>TypeError</code> for <code>[1, 2, 3]</code>: its next
+accumulator is a string, which the callback cannot add to an integer.</p>
+<p>For an explicit accumulator contract, use the existing lazy <code>fold</code> operation and
+annotate its result. This gives ordinary lambdas concrete parameter types in both
+mypy and Pyright. The initializer creates state, and <code>.first()</code> returns the one
+emitted result:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Flow</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">initial_text</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="k">return</span> <span class="s2">&quot;&quot;</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">query</span><span class="p">:</span> <span class="n">Flow</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">fold</span><span class="p">(</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">initial_text</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">state</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="n">state</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="p">)</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="k">assert</span> <span class="n">query</span><span class="o">.</span><span class="n">first</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;12&quot;</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="k">assert</span> <span class="n">Flow</span><span class="p">[</span><span class="nb">int</span><span class="p">]([])</span><span class="o">.</span><span class="n">fold</span><span class="p">(</span><span class="n">initial_text</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">state</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="n">state</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;&quot;</span>
+</code></pre></div>
+<p>This is a migration from <code>reduce</code>, whose return declaration remains <code>Any</code>.
+<code>fold</code> requires an initializer and calls the step for every input item, including
+the first. It emits the initializer's exact result on empty input and never
+awaits state values. To migrate an unseeded reduction, choose an explicit seed
+that suits the operation; a singleton now also runs the step. The initializer
+runs once per evaluation, so use a factory when each evaluation needs fresh
+mutable state. A callback or seed containing <code>Any</code> can bypass the declared
+contract. These annotations add no runtime state checks and do not turn
+<code>list[Any]</code> into <code>list[int]</code>. For untrusted dynamic results, keep the runtime
+check described below.</p>
+<p>For a concrete result, receive it as <code>object</code> and check it before use:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">result</span><span class="p">:</span> <span class="nb">object</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="k">lambda</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;expected an integer accumulator&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="mi">3</span>  <span class="c1"># narrowed to int</span>
+</code></pre></div>
+<p>When several calls share a specific accumulator contract, a local boundary can
+check the callback signature and the returned value:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Flow</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">text_step</span><span class="p">(</span><span class="n">accumulator</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="k">return</span> <span class="n">accumulator</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">reduce_text</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">Flow</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">step</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">str</span><span class="p">],</span> <span class="n">initial</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="n">result</span><span class="p">:</span> <span class="nb">object</span> <span class="o">=</span> <span class="n">values</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="n">initial</span><span class="p">)</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;text reducer returned a non-string&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    <span class="k">return</span> <span class="n">result</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="n">callback</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">text_step</span>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="k">assert</span> <span class="n">reduce_text</span><span class="p">(</span><span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">]),</span> <span class="n">callback</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;12&quot;</span>
+</code></pre></div>
+<p>This is a caller-owned string example, not an additional fpstreams API or a
+promise of arbitrary generic safety. A callback returning <code>Any</code> can still bypass
+static signature checks; the explicit result check above catches a non-string
+result if the reduction returns. It does not validate every intermediate value.
+A nullable accumulator must accept <code>None</code>; nested <code>Any</code>, such as <code>list[Any]</code>,
+still carries unknown element types. Neither should be relabelled as a more
+precise type without evidence.</p>
+<p>In a source checkout, <code>tests/typing/reduce_examples.py</code> contains the runnable
+examples, nullable and nested-<code>Any</code> cases, identity checks, and a runtime witness
+for the invalid callback. <code>tests/typing/reduce_invalid.py</code> contains marked expected
+static errors and must not be executed. From the checkout root, the unified
+<code>uv run python scripts/check_typing.py</code> command checks both example pairs with
+mypy and Pyright, one invocation per checker. See the repository's CONTRIBUTING
+"Run the checks" section for setup and target selection. No optional data backend
+is needed to run the reduce examples.</p>
+<h2 id="statistical-pipelines-250">Statistical pipelines (2.5.0)</h2>
 <p>Use <code>collect(Collectors.statistics(...))</code> for one summary over the whole input,
 or <code>rolling_statistics(size, selector=..., ddof=0)</code> for one result per input item:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">statistics</span><span class="p">())[</span><span class="s2">&quot;mean&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">4.0</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">rolling_statistics</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="o">.</span><span class="n">statistics</span><span class="p">())[</span><span class="s2">&quot;mean&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">4.0</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">6</span><span class="p">])</span><span class="o">.</span><span class="n">rolling_statistics</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="p">]</span>
 </code></pre></div>
 <p>Rolling results are <code>(count, mean, variance)</code> tuples, including warmup windows.
 Selected <code>None</code> occupies a window position and contributes no observation.
@@ -3869,11 +4157,11 @@ Size and <code>ddof</code> use the integer index protocol: invalid types raise <
 and a nonpositive size or negative <code>ddof</code> raises <code>ValueError</code> at construction.
 Non-real inputs raise <code>TypeError</code> during consumption; nonfinite rolling inputs
 raise <code>ValueError</code>. Each evaluation starts with fresh window state.</p>
-<p>See <a href="../collecting/#shared-and-approximate-statistics-unreleased">shared and approximate statistics</a>
+<p>See <a href="../collecting/#shared-and-approximate-statistics-250">shared and approximate statistics</a>
 for Collector input policies and optional sketches, and the
-<a href="../../user-guide/analytics/#rolling-numerical-statistics-unreleased">rolling recipe</a>
+<a href="../../user-guide/analytics/#rolling-numerical-statistics-250">rolling recipe</a>
 for state bounds and rebuilding costs. These additions require the source version.</p>
-<h2 id="state-driven-generation-and-mapping-unreleased">State-driven generation and mapping (2.4.0)</h2>
+<h2 id="state-driven-generation-and-mapping-250">State-driven generation and mapping (2.4.0)</h2>
 <p><code>unfold</code> builds a source from state, while <code>map_accum</code> transforms an existing
 source with state. They use different tuple orders:</p>
 <table>
@@ -3897,30 +4185,30 @@ source with state. They use different tuple orders:</p>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">countdown</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">unfold</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">n</span><span class="p">:</span> <span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="k">if</span> <span class="n">n</span> <span class="k">else</span> <span class="kc">None</span><span class="p">)</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">assert</span> <span class="n">countdown</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">assert</span> <span class="n">countdown</span><span class="o">.</span><span class="n">take</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">countdown</span> <span class="o">=</span> <span class="n">flow</span><span class="o">.</span><span class="n">unfold</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">n</span><span class="p">:</span> <span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">n</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="k">if</span> <span class="n">n</span> <span class="k">else</span> <span class="kc">None</span><span class="p">)</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">assert</span> <span class="n">countdown</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">assert</span> <span class="n">countdown</span><span class="o">.</span><span class="n">take</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">]</span>
 </code></pre></div>
 <p>The unfold seed is not emitted by itself. Returning <code>(None, next_state)</code> emits
 an actual <code>None</code>; only returning <code>None</code> ends generation. The callback controls
 termination, so bound an infinite transition with <code>take</code> or another stopping
 operation. Construction and <code>take(0)</code> do not run the callback.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">running_total</span><span class="p">(</span><span class="n">total</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">next_total</span> <span class="o">=</span> <span class="n">total</span> <span class="o">+</span> <span class="n">value</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="k">return</span> <span class="n">next_total</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="n">value</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="n">next_total</span><span class="p">}</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span><span class="o">.</span><span class="n">map_accum</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">running_total</span><span class="p">)</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="k">assert</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">},</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">running_total</span><span class="p">(</span><span class="n">total</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">next_total</span> <span class="o">=</span> <span class="n">total</span> <span class="o">+</span> <span class="n">value</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="k">return</span> <span class="n">next_total</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="n">value</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="n">next_total</span><span class="p">}</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span><span class="o">.</span><span class="n">map_accum</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">running_total</span><span class="p">)</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="k">assert</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">},</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="p">]</span>
 </code></pre></div>
 <p><code>map_accum</code> calls the function once per consumed item in encounter order. It
 emits nothing for an empty source and does not emit its final state. Each
@@ -3929,14 +4217,14 @@ reused by reference, following <code>scan</code>. Use <code>flow.defer</code> to
 mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.</p>
-<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (2.4.0)</h2>
+<h2 id="reuse-sliding-window-aggregates-250">Reuse sliding-window aggregates (2.4.0)</h2>
 <p><code>window_reduce(size, combine, step=1)</code> combines each count-based window without
 building a tuple and folding every overlapping value again:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">7</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">15</span><span class="p">]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">5</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">7</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">15</span><span class="p">]</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">window_reduce</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">add</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">5</span><span class="p">]</span>
 </code></pre></div>
 <p><code>combine</code> must be associative and must not modify either argument. Source values
 and returned aggregates must remain unchanged during iteration because later
@@ -3960,17 +4248,17 @@ Combine calls are amortized constant per input item; transferring a stack can
 take linear work in <code>size</code>. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against <code>window(...).map(...)</code> for those workloads.</p>
-<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (2.4.0)</h2>
+<h2 id="reduce-adjacent-runs-with-a-collector-250">Reduce adjacent runs with a Collector (2.4.0)</h2>
 <p><code>collapse(predicate, collector)</code> feeds each nonempty adjacent run into fresh
 <a href="../collecting/">Collector</a> state. The predicate sees neighboring input items,
 including when it is not transitive:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">11</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">collapse</span><span class="p">(</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="k">lambda</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">:</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">right</span> <span class="o">-</span> <span class="n">left</span> <span class="o">&lt;=</span> <span class="mi">2</span><span class="p">,</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">Collectors</span><span class="o">.</span><span class="n">counting</span><span class="p">(),</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="k">assert</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">query</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">11</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">collapse</span><span class="p">(</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="k">lambda</span> <span class="n">left</span><span class="p">,</span> <span class="n">right</span><span class="p">:</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">right</span> <span class="o">-</span> <span class="n">left</span> <span class="o">&lt;=</span> <span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">Collectors</span><span class="o">.</span><span class="n">counting</span><span class="p">(),</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="p">)</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="k">assert</span> <span class="n">query</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
 </code></pre></div>
 <p>Each run has its own initializer, steps, completion state, and finisher. Empty
 input emits nothing and initializes no collector. A completed collector stops
@@ -4076,20 +4364,28 @@ factory.</p>
 to inspect <code>to_list()</code>, <code>count()</code>, <code>sum()</code>, statistics, aggregation, or a
 short-circuiting terminal. The same planner is used by the explanation and the
 terminal itself.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">explanation</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">terminal</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;selected_engine&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;python&quot;</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;complexity&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;O(1)&quot;</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;semantics&quot;</span><span class="p">][</span><span class="s2">&quot;output&quot;</span><span class="p">][</span><span class="s2">&quot;cardinality&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">{</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;exact&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="p">}</span>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;diagnostics&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[]</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;arrow_prefix&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;boundaries&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">explanation</span> <span class="o">=</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">terminal</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;selected_engine&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;python&quot;</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;complexity&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;O(1)&quot;</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;semantics&quot;</span><span class="p">][</span><span class="s2">&quot;output&quot;</span><span class="p">][</span><span class="s2">&quot;cardinality&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">{</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;exact&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="p">}</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;diagnostics&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[]</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;arrow_prefix&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="k">assert</span> <span class="n">explanation</span><span class="p">[</span><span class="s2">&quot;boundaries&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">[]</span>
 </code></pre></div>
+<p>An <code>exact</code> cardinality describes the number of outputs on normal, complete
+consumption under the source facts available when <code>explain()</code> runs. It does not
+guarantee that callbacks succeed or finish, and a referenced mutable source can
+change before execution. <code>upper_bound</code> limits the outputs under the same source
+facts; it does not guarantee normal completion. When a strict zip or chunk is
+known to fail on a length mismatch, the planner reports a conservative upper
+bound rather than an exact count. A downstream <code>take</code> may stop before that
+failure is reached.</p>
 <p>An Arrow-capable plan reports its retained prefix and any guarded transition to
 Python rows in <code>arrow_prefix</code> and <code>boundaries</code>. Relational plans additionally
 report their selected tree and strategy in <code>relations</code>.</p>
@@ -4150,7 +4446,7 @@ Bounded reads remain lazy, and an identity <code>count()</code> returns the exac
 </tr>
 <tr>
 <td><code>flow.scan_csv(path)</code></td>
-<td>Scan typed Arrow CSV batches with query column pruning</td>
+<td>Scan typed Arrow CSV batches; reader column selection requires explicit conversion options</td>
 </tr>
 <tr>
 <td><code>flow.from_parquet(source)</code></td>
@@ -5081,20 +5377,21 @@ two or more numeric items add sample standard deviation as <code>std</code>.</p>
 
 </h3>
           <div class="doc-overloads">
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span><span class="n">collector</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">S</span><span class="p">,</span> <span class="n">C</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">C</span>
-</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span><span class="n">collector</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Iterable</span><span class="p">[</span><span class="n">T</span><span class="p">]],</span> <span class="n">C</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">C</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">collector</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">S</span><span class="p">,</span> <span class="n">C</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">/</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">**</span><span class="n">collectors</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">C</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">collector</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Iterable</span><span class="p">[</span><span class="n">T</span><span class="p">]],</span> <span class="n">C</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">/</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">**</span><span class="n">collectors</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">C</span>
 </code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">collector</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">/</span><span class="p">,</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">**</span><span class="n">collectors</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
-</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">collector</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Iterable</span><span class="p">[</span><span class="n">T</span><span class="p">]],</span> <span class="n">C</span><span class="p">]</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">|</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">C</span><span class="p">]</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="o">/</span><span class="p">,</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">**</span><span class="n">collectors</span><span class="p">:</span> <span class="n">Collector</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">C</span> <span class="o">|</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
 </code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">collect</span><span class="p">(</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">collector</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Iterable</span><span class="p">[</span><span class="n">T</span><span class="p">]],</span> <span class="n">C</span><span class="p">]</span>
@@ -5483,7 +5780,7 @@ relational join.</p>
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">to_async</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">to_async</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">fpstreams</span><span class="o">.</span><span class="n">AsyncFlow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5502,7 +5799,7 @@ relational join.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="typing.Any">Any</span></code>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow" href="../async_flow/#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.flow_terminals.T">T</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -5526,6 +5823,10 @@ relational join.</p>
 
 
 </h3>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">first</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">T</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">first</span><span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">R</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">R</span>
+</code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">first</span><span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">_MISSING</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">Any</span>
 </code></pre></div>
 
@@ -5623,6 +5924,10 @@ relational join.</p>
 
 
 </h3>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">last</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">T</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">last</span><span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">R</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">R</span>
+</code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">last</span><span class="p">(</span><span class="n">default</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">_MISSING</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">Any</span>
 </code></pre></div>
 
@@ -5720,6 +6025,10 @@ relational join.</p>
 
 
 </h3>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">find</span><span class="p">(</span><span class="n">predicate</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">T</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">find</span><span class="p">(</span><span class="n">predicate</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span> <span class="n">default</span><span class="p">:</span> <span class="n">R</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">R</span>
+</code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">find</span><span class="p">(</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">predicate</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">T</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span> <span class="n">default</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">_MISSING</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">Any</span>
@@ -5983,6 +6292,10 @@ relational join.</p>
 
 
 </h3>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">nth</span><span class="p">(</span><span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">nth</span><span class="p">(</span><span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="p">:</span> <span class="n">R</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">R</span>
+</code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">nth</span><span class="p">(</span><span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">_MISSING</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span> <span class="o">|</span> <span class="n">Any</span>
 </code></pre></div>
 
@@ -8423,7 +8736,8 @@ workers and executor are both provided.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If executor is not a <code>concurrent.futures.Executor</code>.</p>
+                <p>If workers or buffer is not an integer, or executor is not
+a <code>concurrent.futures.Executor</code>.</p>
               </div>
             </td>
           </tr>
@@ -9835,7 +10149,9 @@ items bounded.</p>
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">chunk</span><span class="p">(</span><span class="n">size</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="o">...</span><span class="p">]]</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">chunk</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">strict</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">T</span><span class="p">,</span> <span class="o">...</span><span class="p">]]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -9870,6 +10186,22 @@ items bounded.</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>strict</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Raise during consumption if the final chunk is shorter than size.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -9889,7 +10221,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A flow of non-overlapping tuples, including a final shorter tuple when needed.</p>
+                <p>A flow of non-overlapping tuples. By default, a final shorter tuple is emitted.</p>
               </div>
             </td>
           </tr>
@@ -9922,7 +10254,7 @@ items bounded.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If size is less than one.</p>
+                <p>If size is less than one, or a final chunk is incomplete in strict mode.</p>
               </div>
             </td>
           </tr>
@@ -11147,6 +11479,8 @@ Each input has at most one lookahead row; inputs are never sorted here.</p>
     <div class="doc doc-contents ">
 
         <p>Emit this flow followed by each supplied iterable.</p>
+<p>Reused cursors are closed once per execution. Cursors that do not support
+weak references can remain reachable until that execution finishes.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -11953,6 +12287,14 @@ for concurrent or repeated evaluations, as with <code>scan</code>.</p>
     </table>
 
 
+<details class="notes" open>
+  <summary>Notes</summary>
+  <p>Annotate the resulting <code>Flow[R]</code> to declare the accumulator type and give a
+lambda step its parameter context. Every source item invokes the step, including
+the first item. Neither state nor callback results are awaited. <code>Any</code> can bypass
+the static contract; state values are not validated at runtime.</p>
+</details>
+
     </div>
 
 </div>
@@ -12614,7 +12956,11 @@ A finisher returning an awaitable emits that object without awaiting it.</p>
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">pairs</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">pairs</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">fpstreams</span><span class="o">.</span><span class="n">Pairs</span><span class="p">[</span><span class="n">K</span><span class="p">,</span> <span class="n">V</span><span class="p">]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">pairs</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">fpstreams</span><span class="o">.</span><span class="n">Pairs</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">pairs</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">fpstreams</span><span class="o">.</span><span class="n">Pairs</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -12633,7 +12979,7 @@ A finisher returning an awaitable emits that object without awaiting it.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="typing.Any">Any</span></code>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Pairs" href="../pairs/#fpstreams.Pairs">Pairs</a>[<span title="typing.Any">Any</span>, <span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -13540,9 +13886,9 @@ Remaining items pass through without further predicate calls.</p>
 Keys must be exact int, str, bytes, or nonempty flat tuples with one fixed type
 per position across both inputs. Equal keys from the left come first; output
 objects are the original inputs. Each side has one lookahead row.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">merge_sorted</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">flow</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="k">assert</span> <span class="n">flow</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">merge_sorted</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
 </code></pre></div>
 <p>Added in 2.2.0. It uses Python in <code>auto</code> mode;
 forcing native is unsupported. Iterator aliasing is rejected before the first

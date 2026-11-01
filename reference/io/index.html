@@ -1627,8 +1627,11 @@ Arrow's typed batch reader.</p>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">paid</span> <span class="o">=</span> <span class="n">rows</span><span class="o">.</span><span class="n">scan_csv</span><span class="p">(</span><span class="s2">&quot;orders.csv&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;paid&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">)</span>
 </code></pre></div>
-<p>Arrow owns CSV type inference and parsing rules. Projection can avoid materializing
-unused columns. Install with <code>pip install "fpstreams[arrow]"</code>.</p>
+<p>Arrow owns CSV type inference and parsing rules. A query's <code>select()</code> runs after
+conversion of all caller-visible columns, so errors in unselected columns still
+propagate. To restrict the reader's columns, pass
+<code>convert_options=pyarrow.csv.ConvertOptions(include_columns=[...])</code> explicitly.
+Install with <code>pip install "fpstreams[arrow]"</code>.</p>
 <h2 id="json-lines">JSON Lines</h2>
 <p><code>rows.from_jsonl</code> reads one JSON value per physical line and requires each value
 to be an object. The default maximum record size protects against a single
@@ -1640,6 +1643,17 @@ unbounded line; tune it explicitly for trusted larger records.</p>
 </code></pre></div>
 <p>Duplicate object keys are rejected rather than silently choosing one value.
 <code>max_record_bytes=None</code> disables the byte limit for trusted input.</p>
+<p>Paths and binary handles use the <a href="https://jsonlines.org/">JSON Lines line terminator</a>:
+LF (<code>\n</code>), with CRLF (<code>\r\n</code>) also accepted. A bare CR (<code>\r</code>) does not separate
+records. Borrowed text handles retain the caller's newline handling.</p>
+<p>When decoding a path or binary handle with <code>encoding="utf-8-sig"</code>, only a
+signature at the start of the input is consumed. A BOM before a later record causes
+a JSON decoding error. BOM characters inside JSON strings are preserved.
+The byte limit counts the initial signature as part of the first record.</p>
+<p>For nonempty UTF-16 or UTF-32 input, the generic <code>utf-16</code> and <code>utf-32</code> codecs
+require an initial BOM to identify the byte order. For data without a BOM,
+specify <code>utf-16-le</code>, <code>utf-16-be</code>, <code>utf-32-le</code>, or <code>utf-32-be</code> explicitly.
+This rule applies to paths and binary handles with or without a record byte limit.</p>
 <p>Paths, handles, and openers follow the same ownership contract as <code>from_csv</code>. JSONL handles may
 yield <code>bytes</code> or <code>str</code>. <code>encoding</code> decodes paths and binary handles; it also defines encoded-byte
 accounting for a text handle when <code>max_record_bytes</code> is active.</p>

@@ -754,10 +754,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#inspect-field-inputs-unreleased" class="md-nav__link">
+  <a href="#inspect-field-inputs-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Inspect field inputs (Unreleased)
+        Inspect field inputs (2.5.0)
       
     </span>
   </a>
@@ -798,6 +798,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#custom-row-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column collection and custom iteration (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#arrow-and-dataframe-output" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -809,10 +820,43 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#record-transformations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record transformations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nulls-missing-fields-and-nan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nulls, missing fields, and NaN
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safer-joins" class="md-nav__link">
     <span class="md-ellipsis">
       
         Safer joins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#null-filtering-and-lookup-failures-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Null filtering and lookup failures (2.5.0)
       
     </span>
   </a>
@@ -1813,10 +1857,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#inspect-field-inputs-unreleased" class="md-nav__link">
+  <a href="#inspect-field-inputs-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Inspect field inputs (Unreleased)
+        Inspect field inputs (2.5.0)
       
     </span>
   </a>
@@ -1857,6 +1901,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#custom-row-iteration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column collection and custom iteration (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#arrow-and-dataframe-output" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1868,10 +1923,43 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#record-transformations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record transformations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nulls-missing-fields-and-nan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nulls, missing fields, and NaN
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safer-joins" class="md-nav__link">
     <span class="md-ellipsis">
       
         Safer joins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#null-filtering-and-lookup-failures-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Null filtering and lookup failures (2.5.0)
       
     </span>
   </a>
@@ -2631,7 +2719,7 @@ grouping, reshaping, and record I/O.</p>
 <p>Enter it with <code>flow(source).rows()</code>, construct it with <code>rows(source)</code>, or use one
 of the adapter factories. A Rows view shares its Flow's plan and source
 ownership; it does not inspect the source or make a one-shot input reusable.</p>
-<h2 id="inspect-field-inputs-unreleased">Inspect field inputs (Unreleased)</h2>
+<h2 id="inspect-field-inputs-250">Inspect field inputs (2.5.0)</h2>
 <p>The source version supports static field dependencies through the existing
 explanation object. It inspects the logical plan without opening the source:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">rows</span>
@@ -2647,8 +2735,8 @@ explanation object. It inspects the logical plan without opening the source:</p>
 </code></pre></div>
 <p>Unknown dependencies are <code>None</code>; an empty list means no declared field input.
 This is logical field metadata. It does not trace individual records or permit
-operator reordering. See <a href="../../user-guide/execution-reports/#static-field-dependencies-unreleased">static field dependencies</a>
-and the <a href="../../user-guide/execution-reports/#plan-dictionary-reference-unreleased">plan dictionary reference</a>.</p>
+operator reordering. See <a href="../../user-guide/execution-reports/#static-field-dependencies-250">static field dependencies</a>
+and the <a href="../../user-guide/execution-reports/#plan-dictionary-reference-250">plan dictionary reference</a>.</p>
 <h2 id="entering-and-leaving-rows">Entering and leaving Rows</h2>
 <p>Nonconflicting record methods can be called directly on Flow. <code>select()</code>,
 <code>with_columns()</code>, <code>rename()</code>, <code>cast()</code>, <code>fill_nulls()</code>, <code>drop_nulls()</code>,
@@ -2723,7 +2811,7 @@ fill missing columns, or infer a common dtype.</p>
 </tr>
 <tr>
 <td><code>rows.scan_csv(path)</code></td>
-<td>Typed, streaming Arrow CSV batches with query column pruning</td>
+<td>Typed, streaming Arrow CSV batches</td>
 </tr>
 <tr>
 <td><code>rows.from_jsonl(path)</code></td>
@@ -2772,11 +2860,12 @@ once at construction and treated as one-shot. Adapter docstrings list the exact
 options and return types.</p>
 <p>Use <code>from_csv()</code> when Python <code>csv.DictReader</code> compatibility and string-valued
 cells matter. Use <code>scan_csv()</code> for typed inference and wide analytical scans.
-With a plain local path and default reader options, direct <code>select()</code> queries
-can prune columns during Arrow CSV conversion. Arrow's
-incremental reader is single-threaded and freezes inferred types after its first
-byte block, so pass <code>ReadOptions</code> or <code>ConvertOptions.column_types</code> when the
-default inference is not appropriate.</p>
+Query projection follows conversion of every caller-visible CSV column. A
+<code>select()</code> query still reports conversion errors in columns it does not return.
+Pass <code>ConvertOptions(include_columns=[...])</code> explicitly to restrict which columns
+the CSV reader converts. Arrow's incremental reader is single-threaded and
+freezes inferred types after its first byte block, so pass <code>ReadOptions</code> or
+<code>ConvertOptions.column_types</code> when the default inference is not appropriate.</p>
 <p>The primary <code>flow(source)</code> entry automatically recognizes PyArrow, pandas, and
 Polars objects and standard <code>__arrow_c_stream__</code> or <code>__dataframe__</code> providers.
 <code>rows(source)</code> uses the same dispatch path, including Arrow priority for an
@@ -2802,6 +2891,22 @@ can serialize dates or other custom values. These additions were introduced in 2
 <p>Rows <code>to_csv()</code> is the record writer and exposes <code>fieldnames</code>, <code>include_header</code>,
 and <code>extrasaction</code>. Flow <code>to_csv()</code> instead writes arbitrary items and accepts an
 optional <code>header</code>.</p>
+<h2 id="custom-row-iteration">Column collection and custom iteration (2.5.0)</h2>
+<p><code>to_columns()</code> collects fields in encounter order and fills missing cells with
+<code>None</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">rows</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">assert</span> <span class="n">rows</span><span class="p">([{</span><span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}])</span><span class="o">.</span><span class="n">to_columns</span><span class="p">()</span> <span class="o">==</span> <span class="p">{</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">}</span>
+</code></pre></div>
+<p>In the current source checkout, custom Rows or Flow iteration remains
+authoritative. <code>to_columns()</code> closes the iterator it opens on normal completion
+or conversion failure. A conversion error remains primary if closing also
+fails; the cleanup error is attached as a note. A close failure without a
+conversion error is propagated. This custom-iterator close fix is included in 2.5.0
+and is not included in the 2.4.1 package.</p>
 <h2 id="arrow-and-dataframe-output">Arrow and dataframe output</h2>
 <p>Rows accepts Arrow inputs and can also produce Arrow and dataframe outputs:</p>
 <ul>
@@ -2814,29 +2919,111 @@ optional <code>header</code>.</p>
 </ul>
 <p>Direct retained Arrow sources can reuse native batches. Joins and aggregates are
 evaluated first because their output has no equivalent linear source view.</p>
+<p>In the 2.5.0 source, <code>arrow_batches(schema=None)</code> and explicit-schema calls
+both respect custom Rows/Flow iteration. The native-path decision is made when
+consumption starts, so an iteration method changed after construction but before
+consumption is observed. Unmodified native inputs can still reuse buffers;
+custom iteration uses the existing bounded row-to-batch conversion. Without a
+schema, the first output batch determines the schema for later batches.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">closing</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Rows</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">class</span><span class="w"> </span><span class="nc">AdjustedRows</span><span class="p">(</span><span class="n">Rows</span><span class="p">):</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__iter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>        <span class="k">with</span> <span class="n">closing</span><span class="p">(</span><span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__iter__</span><span class="p">())</span> <span class="k">as</span> <span class="n">values</span><span class="p">:</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>            <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">values</span><span class="p">:</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>                <span class="k">yield</span> <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="s2">&quot;value&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="mi">10</span><span class="p">}</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">table</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">table</span><span class="p">({</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]})</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">source</span> <span class="o">=</span> <span class="n">AdjustedRows</span><span class="p">(</span><span class="n">rows</span><span class="o">.</span><span class="n">from_arrow</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="o">.</span><span class="n">to_flow</span><span class="p">())</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="k">for</span> <span class="n">schema</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="n">table</span><span class="o">.</span><span class="n">schema</span><span class="p">):</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="n">batches</span> <span class="o">=</span> <span class="n">source</span><span class="o">.</span><span class="n">arrow_batches</span><span class="p">(</span><span class="n">batch_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="n">schema</span><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>    <span class="k">assert</span> <span class="p">[</span><span class="n">batch</span><span class="o">.</span><span class="n">num_rows</span> <span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">batches</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>    <span class="k">assert</span> <span class="n">pa</span><span class="o">.</span><span class="n">Table</span><span class="o">.</span><span class="n">from_batches</span><span class="p">(</span><span class="n">batches</span><span class="p">)</span><span class="o">.</span><span class="n">to_pylist</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>        <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">11</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">12</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;value&quot;</span><span class="p">:</span> <span class="mi">13</span><span class="p">},</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>    <span class="p">]</span>
+</code></pre></div>
+<p>Terminal consumption closes owned iterators on exhaustion, failure, or short
+circuit. When manually iterating batches, close the returned iterator on early
+exit. A custom iterator must also close any iterator it opens itself, as in the
+<code>closing</code> block above. The default-schema iteration fix is included in 2.5.0.</p>
+<h2 id="record-transformations">Record transformations</h2>
+<p><code>rename(a="x", b="y")</code> renames both top-level fields; names absent from a
+record are ignored. A destination that duplicates another output field raises
+<code>ValueError</code> when that record is consumed.</p>
+<p>For ordinary Python dictionary rows, <code>with_columns()</code> makes a shallow top-level
+copy: existing nested values retain their identities. For dataclass rows it
+uses <code>dataclasses.asdict()</code>, which recursively copies values and can propagate
+copy errors. Computed selectors read the original row, not earlier additions in
+the same call. Other row types and columnar adapters may have different
+conversion behavior.</p>
+<p>Dotted string selectors split at each dot. Use expression indexing for a list
+index or a literal key containing a dot:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">rows</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">record</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;items&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">42</span><span class="p">}],</span> <span class="s2">&quot;a&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;d.e&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">}}</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">assert</span> <span class="n">rows</span><span class="p">([</span><span class="n">record</span><span class="p">])</span><span class="o">.</span><span class="n">select</span><span class="p">(</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">first</span><span class="o">=</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;items&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;id&quot;</span><span class="p">],</span> <span class="n">dotted</span><span class="o">=</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">)[</span><span class="s2">&quot;d.e&quot;</span><span class="p">]</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span><span class="o">.</span><span class="n">to_list</span><span class="p">()</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;first&quot;</span><span class="p">:</span> <span class="mi">42</span><span class="p">,</span> <span class="s2">&quot;dotted&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">}]</span>
+</code></pre></div>
+<h2 id="nulls-missing-fields-and-nan">Nulls, missing fields, and NaN</h2>
+<p>In ordinary Python row comparisons, <code>col("x") == None</code> matches a present
+<code>None</code>, and <code>col("x").isin([1, 2, None])</code> includes <code>None</code>. This differs from
+SQL's three-valued null comparisons. A missing <code>x</code> raises <code>SelectionError</code> in
+these expressions. Explicit dataset filters supplied to an adapter follow that
+adapter's semantics; do not assume a Python expression and an external filter
+use the same null rules.</p>
+<p><code>Rows.fill_nulls(x=value)</code> fills both a missing <code>x</code> and a present <code>None</code>;
+<code>col("x").fill_null(value)</code> first selects <code>x</code>, so a missing field raises
+<code>SelectionError</code>. <code>fillna</code> and <code>dropna</code> are aliases of <code>fill_nulls</code> and
+<code>drop_nulls</code>: for ordinary Python rows they handle <code>None</code>, not floating-point
+NaN. Unlike pandas' similarly named methods, these aliases do not treat NaN as
+missing.</p>
+<p>In ordinary in-memory joins, <code>None</code> keys match one another. In a left join, a
+right-hand field whose value is <code>None</code> cannot by itself distinguish a matching
+row containing <code>None</code> from an unmatched row padded with <code>None</code>; retain a known
+non-null right-side marker when that distinction matters.</p>
+<p>For ordinary Python dictionary rows, grouping and joining NaN keys can depend on
+object identity: repeated use of one NaN object can match, while distinct NaN
+objects do not. Arrow and Polars adapters can materialize separate Python NaN
+objects, so grouping after conversion may differ. These examples describe
+Python row behavior and conversions, not a guarantee for every source, backend,
+or NaN type.</p>
 <h2 id="safer-joins">Safer joins</h2>
 <p>A duplicate lookup key can multiply records without warning. Declare the
 relationship you expect when duplicates would indicate bad data:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">customers</span> <span class="o">=</span> <span class="p">[</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Ada&quot;</span><span class="p">},</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Lin&quot;</span><span class="p">},</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">]</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">enriched</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">rows</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="o">.</span><span class="n">join</span><span class="p">(</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="n">customers</span><span class="p">,</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        <span class="n">on</span><span class="o">=</span><span class="s2">&quot;customer_id&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        <span class="n">how</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        <span class="n">validate</span><span class="o">=</span><span class="s2">&quot;m:1&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="p">)</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="p">)</span>
+<p>In the 2.5.0 in-memory Python join path, errors from a key's custom hash or equality operation
+propagate unchanged. Unhashable keys raise <code>TypeError</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">customers</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Ada&quot;</span><span class="p">},</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="p">{</span><span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Lin&quot;</span><span class="p">},</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="p">]</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">enriched</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">rows</span><span class="p">(</span><span class="n">orders</span><span class="p">)</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="o">.</span><span class="n">join</span><span class="p">(</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        <span class="n">customers</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>        <span class="n">on</span><span class="o">=</span><span class="s2">&quot;customer_id&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>        <span class="n">how</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        <span class="n">validate</span><span class="o">=</span><span class="s2">&quot;m:1&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    <span class="p">)</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="p">)</span>
 </code></pre></div>
 <p>This many-to-one join permits several orders per customer and requires unique
 customer keys. Use <code>1:m</code> for a unique left side, <code>1:1</code> when both sides must
 be unique, or <code>m:m</code> to permit duplicates on both sides. Partitioned joins use
 the same checks, and errors name the duplicate side and key.</p>
+<p>In the ordinary in-memory path, inner, left, semi, and anti joins index the
+entire right input before reading the left; even an empty left input or a
+downstream <code>take(1)</code> does not avoid that right-side read. The right input must
+therefore be finite for these operations to produce output. Semi and anti joins
+retain qualifying left records, including duplicates. Ordinary right and full
+joins materialize both sides. Spill and other execution paths have their own
+resource behavior.</p>
 <p>Partitioning is governed by <code>SpillLimits</code>. Its defaults are:</p>
 <table>
 <thead>
@@ -2875,6 +3062,43 @@ unbounded bucket. Temporary files are removed. Pass a custom <code>SpillLimits</
 <code>join(..., partitions=..., limits=...)</code> or <code>group_by(...).spill(limits=...)</code>.</p>
 <p>Highly skewed or many-to-many input may exceed these limits even with spill
 enabled.</p>
+<h2 id="null-filtering-and-lookup-failures-250">Null filtering and lookup failures (2.5.0)</h2>
+<p>The <code>missing</code> argument is a source-candidate addition and is not in 2.4.1.
+For <code>drop_nulls()</code>, the default <code>missing="legacy"</code> treats missing selected fields
+as <code>None</code>. A custom callable selector's <code>SelectionError</code> propagates unchanged. For a <code>RowExpr</code>,
+errors raised by <code>map()</code> callbacks and directly supplied evaluators also
+propagate, while missing generated fields are treated as <code>None</code>. Attribute
+lookup <code>TypeError</code> is preserved as a <code>SelectionError</code> with its original cause;
+an attribute getter's own <code>SelectionError</code> propagates unchanged. This applies
+to string field and path lookups as well. A <code>RowExpr</code> subclass that overrides
+<code>__call__</code> is treated as a user callback. Errors from overloaded operators
+propagate, including nested expression failures. Attribute <code>AttributeError</code> and
+<code>KeyError</code> raised inside a mapping lookup may remain indistinguishable from a
+missing field. This compatibility policy cannot validate arbitrary row protocols.</p>
+<p>Use <code>missing="raise"</code> to propagate every selected lookup failure. <code>None</code> remains
+null and <code>how="any"</code> / <code>how="all"</code> retain their left-to-right short circuiting,
+so a later selector may never run. String and generated <code>RowExpr</code> lookups keep
+their usual <code>SelectionError</code> and original exception in <code>__cause__</code>; explicit
+callables propagate the exception object they raise. This policy disables the
+direct-field optimization that treats missing keys as null. With no selectors,
+both policies inspect the record's values as before.</p>
+<p>To migrate a custom protocol, supply a callable that returns <code>None</code> for its
+explicit absence signal and lets other failures propagate. For example, assume
+<code>record.lookup("value")</code> raises the protocol's <code>AbsentField</code> only for absence.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">optional_value</span><span class="p">(</span><span class="n">record</span><span class="p">):</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="k">return</span> <span class="n">record</span><span class="o">.</span><span class="n">lookup</span><span class="p">(</span><span class="s2">&quot;value&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="k">except</span> <span class="n">AbsentField</span><span class="p">:</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="k">return</span> <span class="kc">None</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">clean</span> <span class="o">=</span> <span class="n">rows</span><span class="p">(</span><span class="n">records</span><span class="p">)</span><span class="o">.</span><span class="n">drop_nulls</span><span class="p">(</span><span class="n">optional_value</span><span class="p">,</span> <span class="n">missing</span><span class="o">=</span><span class="s2">&quot;raise&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>An internal <code>AttributeError</code> or <code>KeyError</code> then propagates unchanged. If the
+protocol uses the same exception for absence and internal failure, the callable
+must use another reliable signal supplied by that protocol. <code>missing="raise"</code>
+does not infer the difference. Existing calls keep <code>missing="legacy"</code> behavior;
+migration is opt-in. Each reached selector is called once per row.</p>
 <h2 id="methods">Methods</h2>
 
 
@@ -4090,7 +4314,7 @@ iterator, cursor, and connection.</p>
                 <code>connect</code>
             </td>
             <td>
-                  <code><span title="fpstreams.tabular.sql.ConnectionFactory">ConnectionFactory</span></code>
+                  <code><span title="fpstreams.tabular.io.database.ConnectionFactory">ConnectionFactory</span></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -4548,7 +4772,7 @@ paths and opener functions can be read again.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Lazily scan typed CSV batches with optional query-level column pruning.</p>
+        <p>Lazily scan typed CSV batches using Arrow conversion.</p>
 <p>Unlike <a class="autorefs autorefs-internal" title="from_csv
 
 
@@ -4558,8 +4782,9 @@ paths and opener functions can be read again.</p>
 PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
 The incremental Arrow reader is single-threaded and freezes inferred types after its
 first byte block; use <code>read_options</code> or <code>convert_options</code> to control those choices.
-Query column pruning intentionally avoids conversion work, including conversion errors,
-in columns the query does not read.</p>
+Query projection runs after conversion of every caller-visible column. Selecting fewer
+columns does not suppress conversion errors in other columns. Use <code>convert_options</code>
+to restrict the reader's columns explicitly when that behavior is intended.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5520,7 +5745,7 @@ other array-like inputs follow <code>numpy.asarray</code> conversion semantics.<
                 <code>connect</code>
             </td>
             <td>
-                  <code><span title="fpstreams.tabular.sql.ConnectionFactory">ConnectionFactory</span></code>
+                  <code><span title="fpstreams.tabular.io.database.ConnectionFactory">ConnectionFactory</span></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -5552,7 +5777,7 @@ other array-like inputs follow <code>numpy.asarray</code> conversion semantics.<
                 <code>parameters</code>
             </td>
             <td>
-                  <code><span title="fpstreams.tabular.sql.DBParameters">DBParameters</span></code>
+                  <code><span title="fpstreams.tabular.io.database.DBParameters">DBParameters</span></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -5686,7 +5911,7 @@ other array-like inputs follow <code>numpy.asarray</code> conversion semantics.<
                 <code>parameters</code>
             </td>
             <td>
-                  <code><span title="fpstreams.tabular.sql.DBParameters">DBParameters</span></code>
+                  <code><span title="fpstreams.tabular.io.database.DBParameters">DBParameters</span></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7129,8 +7354,10 @@ unchanged.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">drop_nulls</span><span class="p">(</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="n">selectors</span><span class="p">:</span> <span class="n">Selector</span><span class="p">,</span> <span class="n">how</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;any&quot;</span><span class="p">,</span> <span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;any&quot;</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="n">selectors</span><span class="p">:</span> <span class="n">Selector</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">how</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;any&quot;</span><span class="p">,</span> <span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;any&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">missing</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;legacy&quot;</span><span class="p">,</span> <span class="s2">&quot;raise&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;legacy&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Rows</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7181,6 +7408,24 @@ unchanged.</p>
                   <code>&#39;any&#39;</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>missing</code>
+            </td>
+            <td>
+                  <code><span title="typing.Literal">Literal</span>[&#39;legacy&#39;, &#39;raise&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>"legacy" retains historical missing-field handling. "raise"
+propagates lookup failures; use a callable returning None to define
+actual absence for custom row protocols. None values remain null.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;legacy&#39;</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7200,7 +7445,7 @@ unchanged.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Lazy Rows; a missing selected field is treated as None.</p>
+                <p>Lazy Rows using the selected null and lookup-failure policies.</p>
               </div>
             </td>
           </tr>
@@ -8629,6 +8874,12 @@ unique right keys, 1:1 requires both, and m:m permits duplicates on both sides.<
 </div><h2 id="groupedrows">GroupedRows</h2>
 <p><code>group_by()</code> returns a grouped plan. Call <code>aggregate()</code> directly, or call
 <code>spill()</code> first to use partitioned temporary storage.</p>
+<p>Ordinary Python grouping is global, not adjacent: keys in separated rows can
+belong to the same group. In ordinary dictionary-row samples a <code>None</code> key is
+kept, while a missing selected key raises <code>SelectionError</code>. <code>group_by_sorted()</code>
+instead groups adjacent ascending keys and applies the constraints below.</p>
+<p>In the 2.5.0 in-memory Python grouping path, errors from a key's custom hash or equality
+operation propagate unchanged. Unhashable keys raise <code>TypeError</code>.</p>
 <p>Since 2.2.0, Python grouping uses the current selector if a source
 or callback changes its code or closure. The previous field shortcut could keep
 using an old field and merge distinct groups.</p>
@@ -8888,14 +9139,14 @@ expected.</p>
 The input must already be ascending by exact builtin int, str, bytes, or nonempty
 flat tuple keys with a fixed type at each position. It checks consumed rows and
 one row of lookahead; an unordered or unsupported key raises during consumption.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">flow</span><span class="p">([{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}])</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">group_by_sorted</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">total</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;amount&quot;</span><span class="p">))</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">}]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">agg</span><span class="p">,</span> <span class="n">flow</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">result</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">flow</span><span class="p">([{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span> <span class="p">{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;amount&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}])</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="o">.</span><span class="n">rows</span><span class="p">()</span><span class="o">.</span><span class="n">group_by_sorted</span><span class="p">(</span><span class="s2">&quot;region&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">aggregate</span><span class="p">(</span><span class="n">total</span><span class="o">=</span><span class="n">agg</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="s2">&quot;amount&quot;</span><span class="p">))</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="o">.</span><span class="n">to_list</span><span class="p">()</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">assert</span> <span class="n">result</span> <span class="o">==</span> <span class="p">[{</span><span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;eu&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">}]</span>
 </code></pre></div>
 <p>Added in 2.2.0. It buffers no
 complete group. Aggregators that collect values still grow their own state;
@@ -8919,7 +9170,10 @@ m:1, 1:m, and 1:1, and checks the consumed prefix. Neither method infers sorting
 or changes ordinary <code>join()</code> execution. This API was added in 2.2.0.</p>
 <p>Like <code>merge_sorted()</code>, a sorted join acquires source iterators in its composed
 branches before pulling rows. It rejects iterator aliases and closes acquired
-iterators once; source-opening callbacks therefore run before key callbacks.</p>
+iterators once; source-opening callbacks therefore run before key callbacks.
+Before emitting a match, it buffers the matching right key group and may read
+the first row of the next group. A short-circuited consumer only checks ordering
+and cardinality for the rows actually consumed, including any lookahead.</p>
 
 
 

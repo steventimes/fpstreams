@@ -72,7 +72,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#v2-status-and-roadmap" class="md-skip">
+        <a href="#status-and-roadmap" class="md-skip">
           Skip to content
         </a>
       
@@ -747,7 +747,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bounded-ranking-and-python-collector-dispatch-unreleased" class="md-nav__link">
+  <a href="#bounded-ranking-and-python-collector-dispatch-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Bounded ranking and Python collector dispatch (2.4.0)
@@ -819,7 +819,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
+  <a href="#current-maintenance-priorities-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current maintenance priorities (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#completed-research-follow-up-on-october-18-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Completed research follow-up on October 18 (2.4.0)
@@ -830,7 +841,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
+  <a href="#functional-programming-source-follow-up-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Functional-programming source follow-up (2.4.0)
@@ -1527,7 +1538,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bounded-ranking-and-python-collector-dispatch-unreleased" class="md-nav__link">
+  <a href="#bounded-ranking-and-python-collector-dispatch-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Bounded ranking and Python collector dispatch (2.4.0)
@@ -1599,7 +1610,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
+  <a href="#current-maintenance-priorities-250" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current maintenance priorities (2.5.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#completed-research-follow-up-on-october-18-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Completed research follow-up on October 18 (2.4.0)
@@ -1610,7 +1632,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
+  <a href="#functional-programming-source-follow-up-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         Functional-programming source follow-up (2.4.0)
@@ -1667,7 +1689,12 @@
   
 
 
-<h1 id="v2-status-and-roadmap">v2 status and roadmap</h1>
+<h1 id="status-and-roadmap">Status and roadmap</h1>
+<p>This page describes 2.5.0. It includes the static
+averaging type correction; runtime arithmetic is unchanged.
+Use the explicit averaging and async fold migration examples in the reference
+pages. This version assignment does not establish publication or completion of
+the remote release qualification matrix.</p>
 <p><a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.1">Version 2.4.1</a>
 separates relational planning, grouping, and synchronous terminal helpers into
 dedicated modules. It preserves the public API, live callback bindings, source
@@ -1677,7 +1704,7 @@ ownership, and fallback rules. The internal module map is in
 adds stateful pipeline operations, composed collectors, shared execution limits,
 file recovery, and versioned report export. It also improves guarded Arrow
 execution and preserves conversion errors across optimized source paths. The
-<a href="#completed-research-follow-up-on-october-18-unreleased">completed research follow-up</a>
+<a href="#completed-research-follow-up-on-october-18-250">completed research follow-up</a>
 records the implementation scope and its local verification.</p>
 <p>Earlier release checkpoints and failed experiments below retain their original
 measurement dates, references, and limits.</p>
@@ -1786,7 +1813,7 @@ Candidate validation does not publish the package or establish remote CI results
 <li>Spreadsheet-safe CSV as an opt-in mode and bounded JSONL records by default.</li>
 <li>Patched development dependencies, SHA-pinned Actions, automated dependency updates,
   clean-install smoke tests for built wheels and the sdist, and SHA-256 manifests.</li>
-<li>Machine-readable release benchmarks and branch-coverage gates for high-risk modules.</li>
+<li>Local machine-readable release measurements and branch-coverage gates for high-risk modules.</li>
 </ul>
 <h2 id="included-in-21">Included in 2.1</h2>
 <ul>
@@ -1799,7 +1826,7 @@ Candidate validation does not publish the package or establish remote CI results
 <li>Async queue sources, bounded prefetch, session windows, and numeric terminals.</li>
 <li>Wider guarded Rust and NumPy execution for scalar, pair, record, join, group,
   reshape, and global aggregation plans.</li>
-<li>Cross-library benchmark output with Python, NumPy, and pandas comparisons.</li>
+<li>Local cross-library benchmark output with Python, NumPy, and pandas comparisons.</li>
 </ul>
 <h2 id="stability-commitments">Stability commitments</h2>
 <h3 id="freeze-public-behavior">Freeze public behavior</h3>
@@ -1808,6 +1835,11 @@ rules, and engine fallback behavior remain compatible within the v2 release
 line. A documented safety limit may be tightened only with a changelog entry
 and an explicit opt-out. Other breaking changes belong in a future major
 release. v2 does not add an alias for every v1 method.</p>
+<p>A future deprecation should identify the affected interface, its replacement,
+the migration steps, and the intended removal release or decision point in the
+documentation and changelog. Whether to issue a runtime warning, and which
+warning category to use, must be stated for that deprecation. This guidance does
+not deprecate existing aliases or announce warnings or removal dates.</p>
 <h3 id="add-native-operations-only-with-parity-tests">Add native operations only with parity tests</h3>
 <p>Add native operations only when they preserve Python ordering, equality,
 overflow, error, and cleanup semantics. Every new kernel needs Python/native
@@ -1820,6 +1852,15 @@ remain obvious in API documentation and plan explanations.</p>
 <p>Keep Arrow as the preferred columnar interchange path and validate adapter
 behavior across supported pandas, PyArrow, and Polars releases. Third-party data
 packages remain optional dependencies.</p>
+<p>The CI configuration now adds Python 3.11 adapter jobs using <code>lowest-direct</code> and
+<code>highest</code> resolutions of the declared dependencies alongside the existing
+frozen-lock checks. Release qualification reuses CI before distribution builds.
+Windows and macOS smoke selections include cancellation, native execution,
+spawned workers, and borrowed executor paths.</p>
+<p>As of 2026-10-20, these new lanes have no established historical baseline.
+Local workflow review and static checks do not establish that the hosted jobs
+passed; remote run results and resolved dependency versions must be recorded
+separately.</p>
 <h2 id="included-in-22">Included in 2.2</h2>
 <p>These changes require version 2.2.0 or newer. See the
 <a href="https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md">changelog</a>
@@ -1849,7 +1890,7 @@ for the full list.</p>
 <li><strong>Reports:</strong> Pairs adds <code>run_with_report()</code> for its four eager terminals.
   Top-level record joins distinguish Rust, Arrow, and Python routes. Reports
   describe the outer query; they do not trace every stage.</li>
-<li><strong>Benchmark evidence:</strong> schema 6 records provenance, allocator settings, warmed
+<li><strong>Benchmark evidence:</strong> versioned reports record provenance, allocator settings, warmed
   blocks, and separate Python allocation measurements. Comparisons reject
   missing or mismatched evidence. CLI listing does not execute benchmark tasks.</li>
 <li><strong>Batch bounds:</strong> sync and async batching normalize integer bounds before
@@ -2091,7 +2132,7 @@ reviewed CI historical baselines.</p>
 <h2 id="analytics-feedback-and-the-next-feature-scope">Analytics feedback and the next feature scope</h2>
 <p>The soccer analytics usage report supplied prepared-list team aggregation,
 generator-fed cohort counts, and weighted player metrics as concrete workloads.
-The benchmark now includes those input shapes, and Mapping projection controls
+The local benchmark includes those input shapes, and Mapping projection controls
 use the same prepared Mapping rows on both sides. Small first-query costs and
 warmed throughput are recorded separately; normalization, deduplication, sorting,
 and database reads retain their own costs.</p>
@@ -2189,12 +2230,12 @@ Python allocation peaks exclude prepared data and native heaps. These are local
 export-path measurements, not application speedups or a reviewed historical
 baseline. Zero-column Arrow and Polars output preserves row counts; Parquet
 writes reject nonempty rows without columns before publishing a destination.</p>
-<h3 id="bounded-ranking-and-python-collector-dispatch-unreleased">Bounded ranking and Python collector dispatch (2.4.0)</h3>
+<h3 id="bounded-ranking-and-python-collector-dispatch-250">Bounded ranking and Python collector dispatch (2.4.0)</h3>
 <p><code>agg.top(count, key=...)</code> and <code>agg.bottom(count, key=...)</code> retain at most K whole
 items per state, keep equal keys in input order, and compose with existing
 global, async, hash, sorted, and spill aggregation. A heap entry is allocated
 only for a retained candidate. Keys run once per item, and payloads are never
-compared. The <a href="../user-guide/analytics/#rank-records-within-each-group-unreleased">ranking recipe</a>
+compared. The <a href="../user-guide/analytics/#rank-records-within-each-group-250">ranking recipe</a>
 shows their use alongside a count.</p>
 <p>Three alternating local rounds at K=5 measured 92%–99% lower Python allocation
 peaks than collect-then-rank on 100,000 input records split into one or 60
@@ -2224,7 +2265,7 @@ collecting and sorting each group. <a href="https://trino.io/docs/current/functi
 and <a href="https://hudi.apache.org/docs/record_merger/">Hudi's record-merging model</a>
 supplied comparisons. fpstreams uses Python comparisons and keeps the first
 item on ties. It provides no persistent table, partial-update reconciliation,
-or event-time watermark. The <a href="../user-guide/analytics/#select-records-by-version-unreleased">versioned-record recipe</a>
+or event-time watermark. The <a href="../user-guide/analytics/#select-records-by-version-250">versioned-record recipe</a>
 applies deletion markers after selecting the winning version.</p>
 <p><a href="https://beam.apache.org/documentation/programming-guide/">Beam's accumulator lifecycle</a>
 maps to existing collectors and reducers. Further partial aggregation needs
@@ -2384,8 +2425,37 @@ and public interfaces. Experiments and implementation remain deferred.</p>
 paper and project list, proposed uses, and extension markers. Review status is
 recorded separately from the list.</p>
 <h2 id="next-development-steps">Next development steps</h2>
-<h3 id="completed-research-follow-up-on-october-18-unreleased">Completed research follow-up on October 18 (2.4.0)</h3>
-<p>The <a href="../research-references/#october-18-completed-review-and-adopted-changes-unreleased">reference review</a>
+<h3 id="current-maintenance-priorities-250">Current maintenance priorities (2.5.0)</h3>
+<p>The source tree includes resource-ownership and error-preservation repairs,
+integer validation for cache and parallel-work limits, NaN duration rejection,
+and public consumer type-contract checks. These changes are included in 2.5.0.
+Local checks cover recorded source identities; a new release still needs
+qualification of its final source and distributions on the supported platforms.</p>
+<p>The next implementation work follows this order:</p>
+<ol>
+<li>Reconcile the final candidate with the complete correctness, coverage, type,
+   and packaging checks. Recent focused checks supplement the full baseline;
+   they do not replace it.</li>
+<li>Evaluate serial async dispatch using complete map/filter and mixed-operation
+   pipelines. An experimental dispatch prototype is outside the active source
+   until it passes compatibility checks and a fixed-budget performance comparison.</li>
+<li>Investigate async file cancellation overhead while preserving handle ownership,
+   no extra reads, error diagnostics, and completion of in-flight work.</li>
+<li>Improve reduction typing only when both type checkers retain lambda inference,
+   heterogeneous accumulators, nullable inputs, and awaitable initial values.</li>
+<li>Measure cache hits, compilation waits, contention, and memory retention
+   separately. Compare cold, warm, and eviction workloads under concurrent use.</li>
+<li>Qualify the selected changes, installed wheels, browser wheel, and source
+   distribution before choosing a release. Hosted CI must identify the source
+   revision it tested.</li>
+</ol>
+<p>Earlier attempts to bypass the owned-root iterator, change the sync adapter's
+local state access, and skip repeated iterator-initialization calls remain
+excluded: the first changed lifecycle behavior, and the others did not meet
+their declared performance thresholds. Keep those results when choosing a
+new experiment. The goals above do not promise throughput or memory gains.</p>
+<h3 id="completed-research-follow-up-on-october-18-250">Completed research follow-up on October 18 (2.4.0)</h3>
+<p>The <a href="../research-references/#october-18-completed-review-and-adopted-changes-250">reference review</a>
 is complete for all 25 papers and the selected documentation and implementation
 scope of the non-paper references. The adopted changes are implemented and
 verified:</p>
@@ -2393,7 +2463,7 @@ verified:</p>
 <li>integer-index validation before acquiring task and file resources;</li>
 <li>direct synchronous <code>filter_map()</code> execution and integration with async serial
   fusion, preserving one mapper call per input and all results except <code>None</code>;</li>
-<li>versioned plan dictionaries and <a href="../user-guide/execution-reports/#metadata-export-unreleased">report export</a>,
+<li>versioned plan dictionaries and <a href="../user-guide/execution-reports/#metadata-export-250">report export</a>,
   with reports recording metric units, resource scope, and event limits;</li>
 <li>a shared selection mask for proven primitive Arrow comparison chains;</li>
 <li>earlier release of encoded buffers and completed decoded frames during spilling.</li>
@@ -2402,16 +2472,18 @@ verified:</p>
 coverage, the existing engine and targeted performance gates, package builds,
 and installed-wheel checks on standard Linux CPython 3.11–3.14. These are local
 development results, not a new release or Windows/macOS acceptance. The stable
-package is 2.4.0; the checkpoint above was verified before the version bump.</p>
+package at that checkpoint was 2.4.0; it was verified before the version bump.</p>
 <p>The synchronous cross-node fusion prototype was withdrawn after a performance
 regression; the direct <code>filter_map()</code> implementation keeps the original iterator
 boundaries. The earlier Arrow ranking prototype also remains withdrawn. Neither
-prototype is part of the verified changes. DABA, event-time and distributed
+prototype is part of that checkpoint. DABA, event-time and distributed
 execution, approximate aggregates, and transparent callback reordering were not
-adopted. A completed reference review does not schedule those capabilities.</p>
+adopted in that review. Later 2.5.0 sketch collectors are documented in the
+<a href="../reference/collecting/#shared-and-approximate-statistics-250">Collector reference</a>.
+A completed reference review does not schedule other capabilities.</p>
 <p>Further optimization candidates remain below. Start from the verified source
 and profile a concrete workload before choosing another implementation change.</p>
-<h3 id="functional-programming-source-follow-up-unreleased">Functional-programming source follow-up (2.4.0)</h3>
+<h3 id="functional-programming-source-follow-up-250">Functional-programming source follow-up (2.4.0)</h3>
 <p>The <a href="https://github.com/hemanth/functional-programming-jargon/blob/a362b3a6117eeaa6042fc21e032afa30bab8b5d6/readme.md#anamorphism">FP jargon glossary's unfold example</a>
 motivates <code>flow.unfold</code> and <code>aflow.unfold</code>: a callback returns <code>(value, next_state)</code>
 or <code>None</code> to stop. fpstreams uses a lazy iterative source, permits <code>None</code> values
@@ -2426,7 +2498,7 @@ namespace is required. State starts from the supplied object on each execution;
 mutable objects are not cloned. These APIs add capability, with no speedup claim.</p>
 <p>FunctionalPlus's <a href="https://github.com/Dobiasd/FunctionalPlus/blob/462d2a2508360e982f08cda7b37a90617189d636/include/fplus/container_properties.hpp#L433">median implementation</a>
 and the consumer report's speed-percentile use case motivate the
-<a href="../user-guide/analytics/#exact-grouped-percentiles-unreleased">exact grouped-percentile recipe</a>.
+<a href="../user-guide/analytics/#exact-grouped-percentiles-250">exact grouped-percentile recipe</a>.
 It composes existing collectors with the standard library, calculates p50 and
 p90 together, and defines missing-value and small-group policies. Exact results
 retain the valid observations in each active group.</p>
@@ -2437,8 +2509,8 @@ the separate release reference. Build a release extension for each side and coll
 reports with the same harness, interpreter, dependencies, runtime settings,
 input shapes, and invocation order. Reproduce any cost suggested by older
 profiles on the chosen reference before changing code.
-Verify <code>FPSTREAMS_BENCHMARK_SOURCE</code> and the imported source fingerprint when
-selecting the reference checkout.</p>
+Verify the imported source fingerprint when selecting the reference checkout
+for local measurements.</p>
 <table>
 <thead>
 <tr>
@@ -2590,13 +2662,14 @@ first-result latency, and final cleanup. Begin with the existing explicit
 unit of buffering and can change callback/error timing; compare those semantics
 when evaluating a new batching option or executor reuse. Deferred sources keep
 their reopening behavior, and the process backend keeps <code>spawn</code>.</p>
-<p>There is no reviewed <code>benchmarks/baselines/engine-v2.json</code> in this checkout.
-The scheduled workflow's median of three same-checkout runs checks consistency
-within a revision. A historical baseline needs review in its target CI runner;
-local reports cannot establish that result.</p>
+<p>Performance tools, baselines, and raw reports are retained locally and excluded
+from the public source distribution. GitHub Actions does not run benchmarks.
+Historical same-checkout comparisons checked consistency within a revision,
+not regression against an independently reviewed previous commit.</p>
 <p>Additional diagnostics, bounded statistics, and extension hooks remain candidates
 without a release date. Free-threaded CPython 3.14t stays experimental and
-non-blocking; standard CPython 3.11–3.14 is the supported release matrix.</p>
+non-blocking. The source CI matrix targets standard CPython 3.11–3.15;
+the Python 3.15 compatibility update is included in 2.5.0.</p>
 <p>Compatible fixes and internal performance changes are maintenance candidates.
 The caller-owned executor and explicit <code>map_batches()</code> additions ship in
 2.3.0. Batch mapping uses the existing chunk and map paths,
@@ -2604,7 +2677,7 @@ produces one result per batch, and supports sync pool defaults or async map
 controls. Replay interfaces remain proposals; <code>reduce_by()</code> already covers
 per-key state reduction. Dependency updates also get their own
 lock, adapter, and platform validation; they are reviewed separately from
-performance changes. The stable release is 2.4.1. The local candidate results
+performance changes. Version 2.4.1 packages the subsequent internal refactor. The local candidate results
 above retain their original measurement dates and scope.</p>
 <p>The map-based projection, executor-forwarding removal, <code>Counter(map(...))</code>,
 frozen-field inlining, and shared Mapping-check shortcuts remain rejected.
@@ -2623,7 +2696,7 @@ Python and Rust test suites on Linux. Together, the repository workflows provide
 <li>tests, lint, strict typing, Rust formatting, clippy, and package builds;</li>
 <li>contract tests for one-shot sources, cancellation, spilling, and fallbacks;</li>
 <li>clean-install and native/Python smoke tests for every wheel and the sdist;</li>
-<li>source tests on standard CPython 3.11 through 3.14, with the separate CPython
+<li>source tests on standard CPython 3.11 through 3.15, with the separate CPython
   3.14t job remaining experimental and non-blocking;</li>
 <li>repository and focus-module branch-coverage thresholds;</li>
 <li>SHA-pinned CI actions, OIDC-based PyPI publishing, and SHA-256 artifact manifests;</li>

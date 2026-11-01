@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#fpstreams-v2" class="md-skip">
+        <a href="#fpstreams" class="md-skip">
           Skip to content
         </a>
       
@@ -1233,7 +1233,7 @@
   
 
 
-<h1 id="fpstreams-v2">fpstreams v2</h1>
+<h1 id="fpstreams">fpstreams</h1>
 <p>fpstreams lets you filter, transform, and aggregate data in lazy Python
 pipelines. Start with <code>flow()</code> for synchronous values and records, including
 supported Arrow tables and dataframes. Use <code>aflow()</code> for async work:</p>
@@ -1263,9 +1263,8 @@ supported Arrow tables and dataframes. Use <code>aflow()</code> for async work:<
 </tr>
 </tbody>
 </table>
-<p>The current stable release is
-<a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.1">2.4.1</a>. This maintenance
-release reorganizes planner and execution internals with no public API changes.
+<p>Version 2.5.0 includes the static averaging type correction and explicit migration
+APIs, Python 3.15 compatibility, and resource ownership fixes.
 Version 2.4.0 adds
 stateful pipeline operations, composed aggregation, shared execution limits,
 file recovery, and versioned execution metadata. It includes the batch mapping,
@@ -1276,18 +1275,28 @@ Batch and executor examples are in the
 for shipped changes and the <a href="roadmap/#next-development-steps">roadmap</a> for
 upcoming candidates.</p>
 <p>Version 2.4.0 also includes
-<a href="reference/flow/#state-driven-generation-and-mapping-unreleased">state-driven generation and mapping</a>,
-<a href="reference/flow/#reuse-sliding-window-aggregates-unreleased">sliding-window aggregates</a>,
-and <a href="reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">adjacent-run Collector reduction</a>.
-<a href="user-guide/execution-reports/#metadata-export-unreleased">Versioned report export</a>
+<a href="reference/flow/#state-driven-generation-and-mapping-250">state-driven generation and mapping</a>,
+<a href="reference/flow/#reuse-sliding-window-aggregates-250">sliding-window aggregates</a>,
+and <a href="reference/flow/#reduce-adjacent-runs-with-a-collector-250">adjacent-run Collector reduction</a>.
+<a href="user-guide/execution-reports/#metadata-export-250">Versioned report export</a>
 supports JSON storage and caller-managed metadata integration. The roadmap
 separates these verified changes from remaining candidates.</p>
+<p>This site documents 2.5.0. The static averaging result-type correction has an
+explicit migration path. The references cover
+<a href="reference/async_flow/#explicit-asynchronous-accumulator-contract-250">typed async folds</a>,
+<a href="reference/collecting/#explicit-averaging-operations-250">explicit averaging</a>,
+and <a href="reference/rows/#null-filtering-and-lookup-failures-250">null-filter lookup policies</a>.
+The <a href="https://github.com/steventimes/fpstreams/blob/v2.4.1/README.md">2.4.1 tagged README</a>
+provides a release-specific starting point.</p>
 <h2 id="installation">Installation</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fpstreams
 </code></pre></div>
-<p>Python 3.11 or newer is required. Release testing covers standard CPython 3.11
-through 3.14. Free-threaded 3.14t support is experimental and has no release
-wheels. Install optional integrations as needed:</p>
+<p>Python 3.11 or newer is required. The source CI matrix targets standard CPython
+3.11 through 3.15; Python 3.15 compatibility is included in 2.5.0.
+The 2.4.1 release matrix covered 3.11 through 3.14.
+Free-threaded 3.14t and 3.15t have an experimental core-concurrency CI matrix,
+not release wheels or optional-adapter qualification. Install optional
+integrations as needed:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[async]&quot;</span><span class="w">   </span><span class="c1"># aiofiles for async file adapters</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[arrow]&quot;</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;fpstreams[data]&quot;</span>

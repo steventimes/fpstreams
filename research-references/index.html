@@ -580,6 +580,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#current-adoption-status-october-29-2026" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current adoption status (October 29, 2026)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#papers-125" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -658,7 +669,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
+  <a href="#october-18-completed-review-and-adopted-changes-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         October 18: completed review and adopted changes (2.4.0)
@@ -674,10 +685,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cross-project-follow-up-unreleased" class="md-nav__link">
+  <a href="#cross-project-follow-up-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cross-project follow-up (Unreleased)
+        Cross-project follow-up (2.5.0)
       
     </span>
   </a>
@@ -1123,6 +1134,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#current-adoption-status-october-29-2026" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current adoption status (October 29, 2026)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#papers-125" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1201,7 +1223,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
+  <a href="#october-18-completed-review-and-adopted-changes-250" class="md-nav__link">
     <span class="md-ellipsis">
       
         October 18: completed review and adopted changes (2.4.0)
@@ -1217,10 +1239,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cross-project-follow-up-unreleased" class="md-nav__link">
+  <a href="#cross-project-follow-up-250" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cross-project follow-up (Unreleased)
+        Cross-project follow-up (2.5.0)
       
     </span>
   </a>
@@ -1257,6 +1279,60 @@ mean that a source has been verified, reviewed, implemented, or benchmarked.
 <strong>Extension</strong> marks a proposed capability that requires new functionality. It
 does not mean that the capability is available or scheduled. Review notes below
 distinguish source review from implemented and verified changes.</p>
+<h2 id="current-adoption-status-october-29-2026">Current adoption status (October 29, 2026)</h2>
+<p>The numbered list remains the original 73-entry catalog. It is not an inventory
+of every later research batch. The status below describes the current source
+candidate; historical review notes retain their original dates and scope.</p>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Current status</th>
+<th>Remaining condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hash, sorted, and spill grouping</td>
+<td>Implemented; count-only hot-key compaction and resource limits already exist.</td>
+<td>None of these is a new algorithm proposal.</td>
+</tr>
+<tr>
+<td>Spill strategy guidance for ETL/OLAP</td>
+<td>Worth validating; not implemented as new guidance or automatic selection.</td>
+<td>Small-input peaks include a fixed 4 MiB encoding buffer. Compare realistic cardinality, skew, row width, ordering, and memory/disk costs before drawing a strategy boundary. Higher small-input memory is not a general rejection of spill.</td>
+</tr>
+<tr>
+<td>Ordered window aggregation</td>
+<td>Two-Stacks Lite and an explicit associative, non-mutating <code>window_reduce</code> contract already exist.</td>
+<td>The contract does not prove arbitrary callbacks lawful or promise worst-case constant latency.</td>
+</tr>
+<tr>
+<td>DABA / DABA Lite</td>
+<td>Deferred; not implemented, rather than theoretically inapplicable.</td>
+<td>A real tail-latency requirement and compatible partial-window, error, and cleanup behavior are still needed before a separate experiment.</td>
+</tr>
+<tr>
+<td>KLL/HLL collectors</td>
+<td>Implemented through existing DataSketches kernels.</td>
+<td>KLL vector-update registration alone does not establish a safe batch contract. The vector helper and callback/error timing need further evidence; batch optimization remains deferred.</td>
+</tr>
+<tr>
+<td>Static field dependencies and Arrow list materialization</td>
+<td>Implemented within their documented guards.</td>
+<td>Static dependencies are not per-record provenance; Arrow optimization is not a guarantee for arbitrary schemas or iterators.</td>
+</tr>
+<tr>
+<td>SSD buffer and workload methods</td>
+<td>Method reference only; no storage-engine integration.</td>
+<td>Separate actual resource budgets, stage costs, and effective configuration. RocksDB memtable/MVCC/page-layout mechanisms are not direct replacements for Python group states.</td>
+</tr>
+</tbody>
+</table>
+<p>The SSD comparison used specific Tectonic main and Tectonic-Plus files and the
+LSMMemoryProfiling <code>fn-breakdown/lsmbuffer</code> branch, alongside the preserved
+four-repository review. It did not independently audit all 22 branches or their
+submodules. No new timing or implementation follows from this status update.</p>
 <h2 id="papers-125">Papers, 1–25</h2>
 <table>
 <thead>
@@ -1709,7 +1785,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 <code>scan(initial, function)</code> is lazy and emits only states produced from input items.
 Copying the Java name would obscure that difference.</p>
 <p>These are API comparisons, not a claim of semantic equivalence or measured
-performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">2.4.0 Collector overload</a>
+performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-250">2.4.0 Collector overload</a>
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.</p>
@@ -1756,7 +1832,7 @@ rejected the corresponding floating-point counterexample. This does not prove
 integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.</p>
-<h3 id="october-18-completed-review-and-adopted-changes-unreleased">October 18: completed review and adopted changes (2.4.0)</h3>
+<h3 id="october-18-completed-review-and-adopted-changes-250">October 18: completed review and adopted changes (2.4.0)</h3>
 <p>All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
 public documentation, and selected core implementations. Earlier links in the
@@ -1769,7 +1845,7 @@ every upstream repository or inspection of closed-source engine internals.</p>
 <li>Synchronous <code>filter_map()</code> removes tuple adaptation while preserving iterator
   boundaries. Async <code>filter_map()</code> uses the existing serial fusion stage. Both
   call the mapper once per input and discard only <code>None</code>.</li>
-<li><a href="../user-guide/execution-reports/#metadata-export-unreleased">Report metadata export</a>
+<li><a href="../user-guide/execution-reports/#metadata-export-250">Report metadata export</a>
   adds a schema version, metric units, resource scope, and event limits. Plan
   dictionaries also carry a schema version and execution mode. These are
   fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.</li>
@@ -1790,9 +1866,9 @@ Event-time windows, distributed execution, approximate aggregations, and
 automatic reordering of arbitrary callbacks require separate contracts and
 were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
 the research dependencies and trial records are not product dependencies.</p>
-<h2 id="cross-project-follow-up-unreleased">Cross-project follow-up (Unreleased)</h2>
-<p>The next batch adds explicit shared statistics, optional sketches, rolling
-numerical statistics, and conservative field dependencies. These changes use
+<h2 id="cross-project-follow-up-250">Cross-project follow-up (2.5.0)</h2>
+<p>The current 2.5.0 source includes shared statistics, optional sketches,
+rolling numerical statistics, and conservative field dependencies. These changes use
 the existing Collector, <code>map_accum</code>, and plan explanation interfaces. The
 following sources supplement the earlier numbered list:</p>
 <ul>
@@ -1819,8 +1895,8 @@ following sources supplement the earlier numbered list:</p>
 provenance implementation. Sketch estimates preserve the exact APIs and add
 their own type, missing-value, approximation, and merge contracts. See
 <a href="../reference/collecting/">collectors</a>,
-<a href="../user-guide/analytics/#rolling-numerical-statistics-unreleased">rolling statistics</a>,
-and <a href="../user-guide/execution-reports/#static-field-dependencies-unreleased">field dependencies</a>.</p>
+<a href="../user-guide/analytics/#rolling-numerical-statistics-250">rolling statistics</a>,
+and <a href="../user-guide/execution-reports/#static-field-dependencies-250">field dependencies</a>.</p>
 
 
 
