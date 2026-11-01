@@ -240,8 +240,8 @@ jobs:
       - name: Rust quality
         run: |
           cargo fmt --manifest-path rust/Cargo.toml -- --check
-          cargo test --manifest-path rust/Cargo.toml
-          cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+          uv run --no-sync cargo test --manifest-path rust/Cargo.toml
+          uv run --no-sync cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - name: Minimum supported Rust
         run: |
           release_rust_minimum="$(python - <<'PY'

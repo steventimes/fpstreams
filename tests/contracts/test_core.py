@@ -500,7 +500,7 @@ def test_curry_accepts_callables_without_code_objects() -> None:
     assert curry(pow)(2)(3) == 8
 
 
-def test_retry_recovers_transient_failure() -> None:
+async def test_retry_recovers_transient_failure() -> None:
     state = {"attempt": 0}
 
     @retry(attempts=3, backoff=1.0, jitter=False)
@@ -510,9 +510,7 @@ def test_retry_recovers_transient_failure() -> None:
             raise RuntimeError("transient")
         return 42
 
-    import asyncio
-
-    assert asyncio.run(flaky()) == 42
+    assert await flaky() == 42
     assert state["attempt"] == 2
 
 
@@ -573,11 +571,11 @@ def test_smoke_imports_and_basic_pipeline() -> None:
     assert Result.success(1).map(lambda x: x + 1).get_or_else(0) == 2
 
 
-def test_smoke_async_stream_runs() -> None:
+async def test_smoke_async_stream_runs() -> None:
     async def scenario() -> list[int]:
         return await AsyncStream.of(1, 2, 3).map(lambda x: x + 10).to_list()
 
-    assert asyncio.run(scenario()) == [11, 12, 13]
+    assert await scenario() == [11, 12, 13]
 
 
 _double = _times_two
@@ -668,7 +666,7 @@ def test_integration_result_partition_and_unwrap() -> None:
     assert len(errors) == 1
 
 
-def test_integration_async_bridge() -> None:
+async def test_integration_async_bridge() -> None:
     async def scenario() -> list[int]:
         return (
             await Stream([1, 2, 3])
@@ -678,7 +676,7 @@ def test_integration_async_bridge() -> None:
             .to_list()
         )
 
-    assert asyncio.run(scenario()) == [20, 30, 40]
+    assert await scenario() == [20, 30, 40]
 
 
 def test_coverage_threshold_if_enabled() -> None:
