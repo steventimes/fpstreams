@@ -249,7 +249,7 @@ If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.
 
-## Share a submission budget (2.4.0) {#share-a-submission-budget-250}
+## Share a submission budget (2.4.0) {#share-a-submission-budget-unreleased}
 
 Several queries can reuse one executor while keeping their own `buffer` limits.
 To cap their combined unfinished work, give them the same `BoundedExecutor`:

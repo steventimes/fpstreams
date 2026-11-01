@@ -25,10 +25,10 @@ for shipped changes and the [roadmap](roadmap.md#next-development-steps) for
 upcoming candidates.
 
 Version 2.4.0 also includes
-[state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-250),
-[sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-250),
-and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-250).
-[Versioned report export](user-guide/execution-reports.md#metadata-export-250)
+[state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-unreleased),
+[sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-unreleased),
+and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
+[Versioned report export](user-guide/execution-reports.md#metadata-export-unreleased)
 supports JSON storage and caller-managed metadata integration. The roadmap
 separates these verified changes from remaining candidates.
 

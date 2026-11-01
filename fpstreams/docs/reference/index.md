@@ -143,7 +143,7 @@ statistics and optional `Collectors.approx_quantiles` and
 see [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-250)
 for input policies, installation, and error bounds.
 
-The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-250)
+The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-unreleased)
 uses collector composition for grouped p50 and p90 values, with explicit
 missing-value and small-group policies.
 
@@ -205,7 +205,7 @@ See the full operator and precedence notes under [expressions](expressions.md).
 | --- | --- |
 | Optional/result values | `Option`, `Result`, `Ok`, `Err` |
 | Statistics | `SummaryStatistics` |
-| Execution reports | `ExecutionResult`, `ExecutionReport`; `ExecutionEvent` and versioned report/event `to_dict()` export added in 2.4.0 ([guide](../user-guide/execution-reports.md#metadata-export-250)) |
+| Execution reports | `ExecutionResult`, `ExecutionReport`; `ExecutionEvent` and versioned report/event `to_dict()` export added in 2.4.0 ([guide](../user-guide/execution-reports.md#metadata-export-unreleased)) |
 | Spill budgets | `SpillLimits` |
 | Shared executor budget, 2.4.0 | `BoundedExecutor` |
 | File partition recovery, 2.4.0 | `FileCheckpoint` |

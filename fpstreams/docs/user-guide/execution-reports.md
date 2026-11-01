@@ -132,7 +132,7 @@ Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.
 
-## Metadata export (2.4.0) {#metadata-export-250}
+## Metadata export (2.4.0) {#metadata-export-unreleased}
 
 Use `report.to_dict()` to copy an execution report into plain metadata for
 JSON storage or a caller-managed integration:
@@ -195,7 +195,7 @@ of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.
 
-## Plan and route events (2.4.0) {#plan-and-route-events-250}
+## Plan and route events (2.4.0) {#plan-and-route-events-unreleased}
 
 `run_with_report()` collects bounded events from the existing plan and
 direct-route hooks. Read `report.events` when a compound query's outer report

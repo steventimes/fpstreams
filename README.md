@@ -452,8 +452,8 @@ iterable element types when optional data adapters are absent. For example,
 ## Coding-agent guidance
 
 The [Flow](fpstreams/docs/reference/flow.md#reduce-types),
-[async Flow](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-unreleased),
-and [Collector](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-unreleased)
+[async Flow](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
+and [Collector](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250)
 references describe entry points, typed reductions, and migration contracts.
 An independently supplied fpstreams usage skill must match the installed library
 version and its API documentation. The local 2.5.0 candidate skill is separate

@@ -153,7 +153,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 Copying the Java name would obscure that difference.
 
 These are API comparisons, not a claim of semantic equivalence or measured
-performance. The [2.4.0 Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-250)
+performance. The [2.4.0 Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased)
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.
@@ -212,7 +212,7 @@ integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.
 
-### October 18: completed review and adopted changes (2.4.0) {#october-18-completed-review-and-adopted-changes-250}
+### October 18: completed review and adopted changes (2.4.0) {#october-18-completed-review-and-adopted-changes-unreleased}
 
 All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
@@ -227,7 +227,7 @@ The resulting changes reuse fpstreams' existing execution paths:
 - Synchronous `filter_map()` removes tuple adaptation while preserving iterator
   boundaries. Async `filter_map()` uses the existing serial fusion stage. Both
   call the mapper once per input and discard only `None`.
-- [Report metadata export](user-guide/execution-reports.md#metadata-export-250)
+- [Report metadata export](user-guide/execution-reports.md#metadata-export-unreleased)
   adds a schema version, metric units, resource scope, and event limits. Plan
   dictionaries also carry a schema version and execution mode. These are
   fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.

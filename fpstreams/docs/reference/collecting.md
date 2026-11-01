@@ -13,7 +13,7 @@ and spill groups. Every group receives fresh state from its initializer.
 `collect(collector)`. Collector callbacks keep their usual synchronous contract
 when used with AsyncFlow. Composing a collector does not grant native execution
 or reducer laws; those still require their existing proofs and declarations.
-See the [weighted collector recipe](../user-guide/analytics.md#compose-a-weighted-collector-250).
+See the [weighted collector recipe](../user-guide/analytics.md#compose-a-weighted-collector-unreleased).
 
 `grouping_by` groups all matching keys, even when they are not adjacent;
 `group_runs` instead emits consecutive runs. The grouping classifier receives
@@ -440,7 +440,7 @@ normalization yourself when missing or incomparable values need a policy.
 These factories work with `Flow.aggregate`, `AsyncFlow.aggregate`, and global,
 grouped, sorted, or spilled row aggregation. Spill restores serialized records
 under its existing contract. The factories do not declare merge laws for
-arbitrary Python keys. See the [latest-record recipe](../user-guide/analytics.md#select-records-by-version-250).
+arbitrary Python keys. See the [latest-record recipe](../user-guide/analytics.md#select-records-by-version-unreleased).
 
 `top` and `bottom` return lists, retain at most `count` items per state, and
 keep input order for equal keys. The key runs once per item; payloads are never
@@ -449,7 +449,7 @@ return `[]`; zero count skips key calls and does not pull an independent input.
 Grouped aggregation still reads the source to discover groups. Use consistently
 ordered keys: Python heap and sorting comparisons determine the result and
 propagate comparison errors. These aggregators declare no merge laws. See the
-[per-group ranking recipe](../user-guide/analytics.md#rank-records-within-each-group-250).
+[per-group ranking recipe](../user-guide/analytics.md#rank-records-within-each-group-unreleased).
 
 ::: fpstreams.Aggregator
     options:

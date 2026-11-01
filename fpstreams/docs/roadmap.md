@@ -16,7 +16,7 @@ ownership, and fallback rules. The internal module map is in
 adds stateful pipeline operations, composed collectors, shared execution limits,
 file recovery, and versioned report export. It also improves guarded Arrow
 execution and preserves conversion errors across optimized source paths. The
-[completed research follow-up](#completed-research-follow-up-on-october-18-250)
+[completed research follow-up](#completed-research-follow-up-on-october-18-unreleased)
 records the implementation scope and its local verification.
 
 Earlier release checkpoints and failed experiments below retain their original
@@ -456,13 +456,13 @@ export-path measurements, not application speedups or a reviewed historical
 baseline. Zero-column Arrow and Polars output preserves row counts; Parquet
 writes reject nonempty rows without columns before publishing a destination.
 
-### Bounded ranking and Python collector dispatch (2.4.0) {#bounded-ranking-and-python-collector-dispatch-250}
+### Bounded ranking and Python collector dispatch (2.4.0) {#bounded-ranking-and-python-collector-dispatch-unreleased}
 
 `agg.top(count, key=...)` and `agg.bottom(count, key=...)` retain at most K whole
 items per state, keep equal keys in input order, and compose with existing
 global, async, hash, sorted, and spill aggregation. A heap entry is allocated
 only for a retained candidate. Keys run once per item, and payloads are never
-compared. The [ranking recipe](user-guide/analytics.md#rank-records-within-each-group-250)
+compared. The [ranking recipe](user-guide/analytics.md#rank-records-within-each-group-unreleased)
 shows their use alongside a count.
 
 Three alternating local rounds at K=5 measured 92%–99% lower Python allocation
@@ -498,7 +498,7 @@ collecting and sorting each group. [Trino's keyed aggregations](https://trino.io
 and [Hudi's record-merging model](https://hudi.apache.org/docs/record_merger/)
 supplied comparisons. fpstreams uses Python comparisons and keeps the first
 item on ties. It provides no persistent table, partial-update reconciliation,
-or event-time watermark. The [versioned-record recipe](user-guide/analytics.md#select-records-by-version-250)
+or event-time watermark. The [versioned-record recipe](user-guide/analytics.md#select-records-by-version-unreleased)
 applies deletion markers after selecting the winning version.
 
 [Beam's accumulator lifecycle](https://beam.apache.org/documentation/programming-guide/)
@@ -715,9 +715,9 @@ excluded: the first changed lifecycle behavior, and the others did not meet
 their declared performance thresholds. Keep those results when choosing a
 new experiment. The goals above do not promise throughput or memory gains.
 
-### Completed research follow-up on October 18 (2.4.0) {#completed-research-follow-up-on-october-18-250}
+### Completed research follow-up on October 18 (2.4.0) {#completed-research-follow-up-on-october-18-unreleased}
 
-The [reference review](research-references.md#october-18-completed-review-and-adopted-changes-250)
+The [reference review](research-references.md#october-18-completed-review-and-adopted-changes-unreleased)
 is complete for all 25 papers and the selected documentation and implementation
 scope of the non-paper references. The adopted changes are implemented and
 verified:
@@ -725,7 +725,7 @@ verified:
 - integer-index validation before acquiring task and file resources;
 - direct synchronous `filter_map()` execution and integration with async serial
   fusion, preserving one mapper call per input and all results except `None`;
-- versioned plan dictionaries and [report export](user-guide/execution-reports.md#metadata-export-250),
+- versioned plan dictionaries and [report export](user-guide/execution-reports.md#metadata-export-unreleased),
   with reports recording metric units, resource scope, and event limits;
 - a shared selection mask for proven primitive Arrow comparison chains;
 - earlier release of encoded buffers and completed decoded frames during spilling.
@@ -748,7 +748,7 @@ A completed reference review does not schedule other capabilities.
 Further optimization candidates remain below. Start from the verified source
 and profile a concrete workload before choosing another implementation change.
 
-### Functional-programming source follow-up (2.4.0) {#functional-programming-source-follow-up-250}
+### Functional-programming source follow-up (2.4.0) {#functional-programming-source-follow-up-unreleased}
 
 The [FP jargon glossary's unfold example](https://github.com/hemanth/functional-programming-jargon/blob/a362b3a6117eeaa6042fc21e032afa30bab8b5d6/readme.md#anamorphism)
 motivates `flow.unfold` and `aflow.unfold`: a callback returns `(value, next_state)`
@@ -766,7 +766,7 @@ mutable objects are not cloned. These APIs add capability, with no speedup claim
 
 FunctionalPlus's [median implementation](https://github.com/Dobiasd/FunctionalPlus/blob/462d2a2508360e982f08cda7b37a90617189d636/include/fplus/container_properties.hpp#L433)
 and the consumer report's speed-percentile use case motivate the
-[exact grouped-percentile recipe](user-guide/analytics.md#exact-grouped-percentiles-250).
+[exact grouped-percentile recipe](user-guide/analytics.md#exact-grouped-percentiles-unreleased).
 It composes existing collectors with the standard library, calculates p50 and
 p90 together, and defines missing-value and small-group policies. Exact results
 retain the valid observations in each active group.

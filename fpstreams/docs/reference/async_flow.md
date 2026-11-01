@@ -231,7 +231,7 @@ Execution reuses `fold`; it does not add runtime checks for hook awaitability
 or state types, and nested `Any` remains unknown. Use a
 caller-owned runtime check when accepting untrusted dynamic callback results.
 
-## Thread state through async callbacks (2.4.0) {#thread-state-through-async-callbacks-250}
+## Thread state through async callbacks (2.4.0) {#thread-state-through-async-callbacks-unreleased}
 
 `AsyncFlow.unfold` and `aflow.unfold` accept synchronous, asynchronous, or mixed
 callbacks. Each call resolves before the next transition starts. Returning
@@ -271,13 +271,13 @@ Neither operation starts background work or prefetches the next transition.
 Cancellation propagates to the active callback and closes the owned iterator
 chain. Each evaluation begins with the supplied seed by reference; use
 `aflow.defer` when mutable state needs a new instance. See the
-[synchronous state examples](flow.md#state-driven-generation-and-mapping-250)
+[synchronous state examples](flow.md#state-driven-generation-and-mapping-unreleased)
 for tuple ordering and empty-input behavior.
 
-## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-250}
+## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-unreleased}
 
 `AsyncFlow.window_reduce(size, combine, step=1)` uses the same ordered aggregation
-strategies and [algebraic contract](flow.md#reuse-sliding-window-aggregates-250)
+strategies and [algebraic contract](flow.md#reuse-sliding-window-aggregates-unreleased)
 as the synchronous operation. The combine function is synchronous. It must be
 associative and must not modify its arguments; source values and emitted
 aggregates must remain unchanged during iteration. Awaitable combine functions
@@ -298,10 +298,10 @@ waiting for the next source item propagates upstream and closes the iterator
 chain. A stack transfer runs synchronously and can take linear work in the
 window size; this operation adds no scheduling checkpoint inside a combine call.
 
-## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-250}
+## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-unreleased}
 
 `AsyncFlow.collapse(predicate, collector)` follows the same
-[run and Collector rules](flow.md#reduce-adjacent-runs-with-a-collector-250).
+[run and Collector rules](flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
 The adjacent predicate may be synchronous or awaitable:
 
 ```python

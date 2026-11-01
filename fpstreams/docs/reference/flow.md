@@ -277,7 +277,7 @@ for Collector input policies and optional sketches, and the
 [rolling recipe](../user-guide/analytics.md#rolling-numerical-statistics-250)
 for state bounds and rebuilding costs. These additions require the source version.
 
-## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-250}
+## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-unreleased}
 
 `unfold` builds a source from state, while `map_accum` transforms an existing
 source with state. They use different tuple orders:
@@ -325,7 +325,7 @@ mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.
 
-## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-250}
+## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-unreleased}
 
 `window_reduce(size, combine, step=1)` combines each count-based window without
 building a tuple and folding every overlapping value again:
@@ -363,7 +363,7 @@ take linear work in `size`. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against `window(...).map(...)` for those workloads.
 
-## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-250}
+## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-unreleased}
 
 `collapse(predicate, collector)` feeds each nonempty adjacent run into fresh
 [Collector](collecting.md) state. The predicate sees neighboring input items,
