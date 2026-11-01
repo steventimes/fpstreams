@@ -23,6 +23,7 @@ from .row_ir import (
     PythonUDF,
     Unary,
 )
+from .selectors import _call_row_selector
 
 _MAX_DEPTH = 128
 _MAX_OCCURRENCES = 512
@@ -163,7 +164,11 @@ class _ExpressionBuilder:
         if isinstance(node, Literal):
             return self._slot(node.value)
         if isinstance(node, (Field, Path, Index)):
-            return ast.Call(self._slot(self._selectors[id(node)]), [self._row()], [])
+            return ast.Call(
+                self._slot(_call_row_selector),
+                [self._slot(self._selectors[id(node)]), self._row()],
+                [],
+            )
         if isinstance(node, GetItem):
             return ast.Subscript(self.build(node.value), self.build(node.key), ast.Load())
         if isinstance(node, Unary):

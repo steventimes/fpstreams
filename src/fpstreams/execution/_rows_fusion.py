@@ -9,7 +9,7 @@ from types import FunctionType
 from typing import Any, cast
 
 from ..errors import SelectionError
-from ..expressions._codegen import locate_generated_ast
+from ..expressions._codegen import generated_function, locate_generated_ast
 from ..expressions.row import RowExpr
 from ..expressions.row_ir import (
     Binary,
@@ -537,9 +537,9 @@ class _RowsLoopBuilder:
             )
             for index in range(len(self._slots))
         ]
-        function = ast.FunctionDef(
+        function = generated_function(
             name=name,
-            args=ast.arguments(
+            arguments=ast.arguments(
                 posonlyargs=[],
                 args=[*(ast.arg(arg=argument) for argument in arguments), *slot_arguments],
                 vararg=None,
@@ -548,10 +548,6 @@ class _RowsLoopBuilder:
                 defaults=slot_defaults,
             ),
             body=body,
-            decorator_list=[],
-            returns=None,
-            type_comment=None,
-            type_params=[],
         )
         namespace: dict[str, Any] = {
             "__builtins__": {},

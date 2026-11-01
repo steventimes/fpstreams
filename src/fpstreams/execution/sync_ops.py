@@ -7,6 +7,10 @@ up those local resources themselves.
 
 from __future__ import annotations
 
+import itertools
+import sys
+from builtins import filter as _FILTER_ITERATOR_TYPE
+from builtins import map as _MAP_ITERATOR_TYPE
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import (
@@ -19,14 +23,15 @@ from concurrent.futures import (
 )
 from itertools import dropwhile, islice, pairwise, takewhile, zip_longest
 from multiprocessing import get_context
+from types import GeneratorType
 from typing import Any, cast
 
 from ..collecting._collector_base import Collector, _never_done
 from ..collecting.program import compile_collectors
 from ..errors import BufferLimitError, SelectionError
 from ..expressions.selectors import _direct_field
-from ..planning._pair_stages import PAIR_KEY_SELECTOR, PairFlatMapDescriptor
 from ..planning.gather import Downstream
+from ..planning.pairs import PAIR_KEY_SELECTOR, PairFlatMapDescriptor
 from ..planning.sync import (
     AppendOp,
     ChunkOp,
@@ -63,11 +68,13 @@ from ..planning.sync import (
     ZipOp,
 )
 from ..runtime._distinct import DistinctKey, HashFailure
+from ..runtime.iterators import _IteratorIdentities, closing_iterators
 from ..runtime.iterators import close_iterators as close_iterators
-from ..runtime.iterators import closing_iterators
 from ..runtime.query import QueryRuntime
 from .sorting import external_sort
 from .window_reduce import WindowReducer, reduce_disjoint_windows
+
+_BATCHED = getattr(itertools, "batched", None)
 
 
 def _map(iterator: Iterator[Any], operation: MapOp) -> Iterator[Any]:
@@ -212,35 +219,37 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
     """Yield the first item for each key while preserving source order.
 
     The item itself is the key when no key function is configured. Hashable keys
-    use a set; unhashable keys fall back to equality against a linear list.
+    use a set; unhashable keys use a linear list. Cross-category equality is
+    checked against keys retained in encounter order.
     """
     hashable: set[Any] = set()
+    hashable_order: list[Any] = []
     unhashable: list[Any] = []
-    if operation.key is PAIR_KEY_SELECTOR:
-        for item in iterator:
-            key = item[0]
-            wrapped = key if type(key) is int or type(key) is str else _UniqueKey(key)
-            try:
-                if wrapped in hashable:
-                    continue
-                hashable.add(wrapped)
-            except _UniqueHashFailure:
-                if any(key == seen for seen in unhashable):
-                    continue
-                unhashable.append(key)
-            yield item
-        return
-
     key_function = operation.key
+    pair_key = key_function is PAIR_KEY_SELECTOR
     for item in iterator:
-        key = key_function(item) if key_function is not None else item
+        key = item[0] if pair_key else key_function(item) if key_function is not None else item
         wrapped = key if type(key) is int or type(key) is str else _UniqueKey(key)
         try:
             if wrapped in hashable:
                 continue
-            hashable.add(wrapped)
         except _UniqueHashFailure:
-            if any(key == seen for seen in unhashable):
+            is_hashable = False
+        else:
+            if unhashable and any(seen == key for seen in unhashable):
+                continue
+            try:
+                hashable.add(wrapped)
+            except _UniqueHashFailure:
+                is_hashable = False
+            else:
+                is_hashable = True
+        if is_hashable:
+            hashable_order.append(key)
+        else:
+            if any(key == seen for seen in unhashable) or (
+                hashable_order and any(key == seen for seen in hashable_order)
+            ):
                 continue
             unhashable.append(key)
         yield item
@@ -248,7 +257,26 @@ def _unique(iterator: Iterator[Any], operation: UniqueOp) -> Iterator[Any]:
 
 def _chunk(iterator: Iterator[Any], operation: ChunkOp) -> Iterator[tuple[Any, ...]]:
     """Group consecutive items into tuples, including a final short chunk."""
+    # These exact built-in cursors cannot override __iter__. Custom cursors retain the
+    # canonical islice protocol and Python 3.11 retains the same fallback.
+    iterator_type = type(iterator)
+    if (
+        _BATCHED is not None
+        and operation.size <= sys.maxsize
+        and (
+            iterator_type is GeneratorType
+            or iterator_type is _MAP_ITERATOR_TYPE
+            or iterator_type is _FILTER_ITERATOR_TYPE
+        )
+    ):
+        for chunk in _BATCHED(iterator, operation.size):
+            if operation.strict and len(chunk) < operation.size:
+                raise ValueError("chunk(): incomplete final chunk")
+            yield chunk
+        return
     while chunk := tuple(islice(iterator, operation.size)):
+        if operation.strict and len(chunk) < operation.size:
+            raise ValueError("chunk(): incomplete final chunk")
         yield chunk
 
 
@@ -336,16 +364,34 @@ def _intersperse(iterator: Iterator[Any], operation: IntersperseOp) -> Iterator[
         yield item
 
 
-def _concat(iterator: Iterator[Any], operation: ConcatOp) -> Iterator[Any]:
+def _concat(
+    iterator: Iterator[Any],
+    operation: ConcatOp,
+    *,
+    owned_iterators: Iterable[Iterator[Any]] = (),
+    owned_cursors: _IteratorIdentities | None = None,
+) -> Iterator[Any]:
     """Drain upstream, then lazily open and drain each additional source in order.
 
     Every additional iterator is closed before advancing to the next source.
     """
-    yield from iterator
+    for item in iterator:
+        yield item
+    if owned_cursors is None:
+        owned_cursors = _IteratorIdentities()
     for source in operation.sources:
         other = source.open()
-        with closing_iterators((other,)):
-            yield from other
+        already_owned = (
+            other is iterator
+            or any(other is owner for owner in owned_iterators)
+            or owned_cursors.contains(other)
+        )
+        with closing_iterators(() if already_owned else (other,)):
+            # Register before yielding while the cursor is protected by cleanup.
+            if not already_owned:
+                owned_cursors.add(other)
+            for item in other:
+                yield item
 
 
 def _scan(iterator: Iterator[Any], operation: ScanOp) -> Iterator[Any]:
@@ -584,7 +630,7 @@ def _sort(
         return external_sort(iterator, operation, runtime=runtime)
     field = _direct_field(operation.key)
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         exact_dict_rows = None
         direct_dict_field_key = None
@@ -644,6 +690,8 @@ def apply_operation(
     operation: Operation,
     *,
     runtime: QueryRuntime | None = None,
+    owned_iterators: Iterable[Iterator[Any]] = (),
+    owned_cursors: _IteratorIdentities | None = None,
 ) -> Iterator[Any]:
     """Construct the iterator layer registered for the operation's exact type.
 
@@ -654,4 +702,11 @@ def apply_operation(
         raise TypeError(f"unsupported synchronous operation: {type(operation).__name__}")
     if type(operation) is SortOp:
         return _sort(iterator, operation, runtime=runtime)
+    if handler is _concat:
+        return _concat(
+            iterator,
+            cast(ConcatOp, operation),
+            owned_iterators=owned_iterators,
+            owned_cursors=owned_cursors,
+        )
     return handler(iterator, operation)

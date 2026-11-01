@@ -45,6 +45,7 @@ _CANONICAL_ONLINE_TOTAL_DESCRIPTOR = OnlineStatistics.__dict__["total"]
 _CANONICAL_ONLINE_COMPENSATION_DESCRIPTOR = OnlineStatistics.__dict__["compensation"]
 _CANONICAL_ONLINE_ROLLING_MEAN_DESCRIPTOR = OnlineStatistics.__dict__["rolling_mean"]
 _CANONICAL_ONLINE_SQUARED_DEVIATIONS_DESCRIPTOR = OnlineStatistics.__dict__["squared_deviations"]
+_CANONICAL_ONLINE_ORIGIN_DESCRIPTOR = OnlineStatistics.__dict__["_origin"]
 _CANONICAL_MEAN_FROM = mean_from
 _CANONICAL_MEAN_FROM_CODE = mean_from.__code__
 _CANONICAL_STD_FROM = std_from
@@ -361,6 +362,7 @@ def _native_support_is_canonical(native: NativeAggregation) -> bool:
         is _CANONICAL_ONLINE_ROLLING_MEAN_DESCRIPTOR
         and OnlineStatistics.__dict__.get("squared_deviations")
         is _CANONICAL_ONLINE_SQUARED_DEVIATIONS_DESCRIPTOR
+        and OnlineStatistics.__dict__.get("_origin") is _CANONICAL_ONLINE_ORIGIN_DESCRIPTOR
         and OnlineStatistics.__dict__.get("accept") is _CANONICAL_ONLINE_ACCEPT
         and _CANONICAL_ONLINE_ACCEPT.__code__ is _CANONICAL_ONLINE_ACCEPT_CODE
         and _matches_function_provenance(
@@ -693,22 +695,37 @@ def native_aggregation_is_live(aggregation: Collector[Any, Any, Any]) -> bool:
 class _DistinctState:
     """Track distinct hashable values in a set and unhashable values in a list."""
 
-    __slots__ = ("hashable", "unhashable")
+    __slots__ = ("hashable", "hashable_order", "unhashable")
 
     def __init__(self) -> None:
         """Initialize empty storage for both hashability categories."""
         self.hashable: set[Any] = set()
+        self.hashable_order: list[Any] = []
         self.unhashable: list[Any] = []
 
     def add(self, value: Any) -> None:
         """Add a value once, falling back to equality-based list membership if unhashable."""
+        wrapped = value if type(value) is int or type(value) is str else DistinctKey(value)
+        if self.unhashable:
+            if isinstance(wrapped, DistinctKey):
+                try:
+                    hash_value = wrapped.__hash__()
+                except HashFailure:
+                    if value not in self.unhashable and value not in self.hashable_order:
+                        self.unhashable.append(value)
+                    return
+                wrapped = DistinctKey(value, hash_value)
+            if value in self.unhashable:
+                return
+        previous_count = len(self.hashable)
         try:
-            self.hashable.add(
-                value if type(value) is int or type(value) is str else DistinctKey(value)
-            )
+            self.hashable.add(wrapped)
         except HashFailure:
-            if value not in self.unhashable:
+            if value not in self.unhashable and value not in self.hashable_order:
                 self.unhashable.append(value)
+        else:
+            if len(self.hashable) != previous_count:
+                self.hashable_order.append(value)
 
     def count(self) -> int:
         """Return the combined number of hashable and unhashable distinct values."""
@@ -1065,8 +1082,8 @@ class _AggFactory:
     def count_distinct(self, selector: Selector | None = None) -> Aggregator:
         """Build an aggregator that counts distinct selected values.
 
-        Hashable values use set semantics. Unhashable values are retained once according to
-        equality-based list membership. Empty input returns zero.
+        Hashable values use set semantics. Unhashable values use equality-based list
+        membership, including comparisons across hashability categories. Empty input returns zero.
 
         Args:
             selector: Value selector; `None` compares each whole input item.

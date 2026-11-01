@@ -133,6 +133,7 @@ class ChunkOp:
     """Group consecutive items into non-overlapping tuples of at most ``size`` values."""
 
     size: int
+    strict: bool = False
     name: str = "chunk"
 
 
@@ -263,6 +264,7 @@ class GatherOp:
 
     gatherer: Gatherer[Any, Any, Any]
     name: str = "gather"
+    python_gatherer: Gatherer[Any, Any, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,3 +342,14 @@ Operation = (
     | MapLastOp
     | CollapseOp
 )
+
+
+def operation_for_engine(operation: Operation, engine: Engine) -> Operation:
+    """Bind optional numerical helpers to the final query policy before execution."""
+    if (
+        engine == "python"
+        and isinstance(operation, GatherOp)
+        and operation.python_gatherer is not None
+    ):
+        return GatherOp(operation.python_gatherer)
+    return operation

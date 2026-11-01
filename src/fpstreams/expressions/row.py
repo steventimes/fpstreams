@@ -7,6 +7,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..errors import (
+    SelectionError,
+    _record_user_selection_error,
+    _SelectionTracking,
+    _user_selection_error,
+)
 from .row_eval import LazyRowEvaluator
 from .row_ir import (
     Binary,
@@ -64,7 +70,19 @@ class RowExpr:
         Selector failures, operator errors, and exceptions from user callables propagate from
         the underlying evaluator.
         """
-        return self._evaluate(row)
+        evaluator = self._evaluate
+        tracking = _user_selection_error.get()
+        if isinstance(tracking, _SelectionTracking):
+            tracking.depth += 1
+        try:
+            return evaluator(row)
+        except SelectionError as error:
+            if type(evaluator) is not LazyRowEvaluator:
+                _record_user_selection_error(error)
+            raise
+        finally:
+            if isinstance(tracking, _SelectionTracking):
+                tracking.depth -= 1
 
     def inspect(self) -> Any:
         """Analyze field use and execution properties without evaluating the expression."""

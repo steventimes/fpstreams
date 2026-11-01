@@ -17,8 +17,9 @@ from ...physical.relational import (
     SourcePhysicalNode,
 )
 from ...planning.arrow import ArrowPrefixPlan, plan_arrow_table_prefix
-from ...planning.arrow_source import ArrowBatchSource, batch_to_rows
+from ...planning.arrow.source import ArrowBatchSource, batch_to_rows
 from ...planning.logical import Pipeline
+from ...runtime._distinct import reraise_key_type_error
 from ...runtime.iterators import close_iterators
 from .arrow_global import _source_arrow_field
 from .arrow_group_rows import _arrow_group_lane_columns
@@ -373,7 +374,7 @@ def _consume_arrow_group_multi_batch_as_scalars(
             hash(key)
             state = groups.get(key)
         except TypeError:
-            raise TypeError("group_by keys must be hashable") from None
+            reraise_key_type_error(key, "group_by keys must be hashable")
         if state is None:
             state = _new_arrow_group_multi_state(spec)
             groups[key] = state

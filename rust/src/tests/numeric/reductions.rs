@@ -2,6 +2,67 @@
 
 use super::*;
 
+#[test]
+fn interruptible_range_blocks_preserve_signed_boundaries_and_overflow() {
+    use crate::integer::{I64Range, run_interruptible_range};
+
+    let mut cases = Vec::new();
+    for count in [0_i64, 1, 4095, 4096, 4097, 8192, 8193] {
+        for sign in [-1_i64, 1] {
+            for start in [123, i64::MIN + count * 7 + 1, i64::MAX - count * 7 - 1] {
+                // Keep near-limit starts on the side that admits the requested count.
+                if (sign > 0 && start > i64::MAX - count * 7)
+                    || (sign < 0 && start < i64::MIN + count * 7)
+                {
+                    continue;
+                }
+                for uneven in [0, 3].into_iter().filter(|&gap| count > 0 || gap == 0) {
+                    cases.push((start, start + sign * (count * 7 - uneven), sign * 7));
+                }
+            }
+        }
+        if count > 0 {
+            cases.push((i64::MAX - (count - 1) * 7 - 1, i64::MAX, 7));
+            cases.push((i64::MIN + (count - 1) * 7 + 1, i64::MIN, -7));
+        }
+    }
+    cases.extend([
+        (i64::MIN, i64::MAX, i64::MAX),
+        (i64::MAX, i64::MIN, i64::MIN),
+        (i64::MAX - 1, i64::MAX, 7),
+        (i64::MIN + 1, i64::MIN, -7),
+        (5, -5, 7),
+        (-5, 5, -7),
+    ]);
+
+    Python::initialize();
+    Python::attach(|py| {
+        for (start, stop, step) in cases {
+            let mut expected = Vec::new();
+            let mut current = i128::from(start);
+            while if step > 0 {
+                current < i128::from(stop)
+            } else {
+                current > i128::from(stop)
+            } {
+                expected.push(i64::try_from(current).unwrap());
+                current += i128::from(step);
+            }
+            let actual = run_interruptible_range(
+                py,
+                I64Range {
+                    current: start,
+                    stop,
+                    step,
+                },
+                |values| Ok(values.collect::<Vec<_>>()),
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "range({start}, {stop}, {step})");
+        }
+    });
+}
+
 pub(super) fn legacy_compensated_total(values: &[f64], compensate: bool) -> f64 {
     let mut total: f64 = 0.0;
     let mut compensation = 0.0;
@@ -92,7 +153,13 @@ fn compensated_finite_check_preserves_legacy_numeric_edges_and_sum_opcodes() {
         let actual_statistics = statistics.snapshot();
         assert_eq!(actual_statistics.0, expected_statistics.0);
         assert_same_f64(actual_statistics.1, expected_statistics.1);
-        assert_same_f64(actual_statistics.2, expected_statistics.2);
+        if values == [1e16, 1.0, -1e16] {
+            // Exact M2 is 2 * 10^32 + 2/3. Its nearest f64 is 2e32; the old
+            // unshifted update rounded one ULP below that independent oracle.
+            assert_same_f64(actual_statistics.2, 2e32);
+        } else {
+            assert_same_f64(actual_statistics.2, expected_statistics.2);
+        }
 
         for (terminal, expected) in [(1, expected_compensated), (8, expected_sequential)] {
             let actual_identity = run_f64_identity_terminal(values.clone(), terminal).unwrap();
@@ -358,7 +425,8 @@ fn f64_buffer_aggregate_keeps_sequential_total_and_compensated_statistics() {
         assert_eq!(snapshot.0, 3);
         assert_eq!(snapshot.1, 0.0);
         assert_eq!(snapshot.6, 1.0 / 3.0);
-        assert_eq!(snapshot.7, 1.9999999999999997e32);
+        // Exact M2 is 2 * 10^32 + 2/3, rounded to the nearest f64.
+        assert_eq!(snapshot.7, 2e32);
 
         let empty = f64_array(py, Vec::new());
         assert_eq!(mean_f64_buffer_v1(py, &empty, Vec::new()).unwrap(), None);

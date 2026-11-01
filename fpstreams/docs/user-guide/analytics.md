@@ -5,7 +5,7 @@ Normalize identifiers, dates, units, and
 duplicate-record policy before aggregation. Keep the record grain explicit:
 a player-match row and a player-season row answer different questions.
 
-## Select records by version (2.4.0) {#select-records-by-version-unreleased}
+## Select records by version (2.4.0) {#select-records-by-version-250}
 
 `agg.max_by` retains the whole record with the largest selected key. This lets
 you resolve a finite batch of out-of-order updates without collecting and
@@ -40,7 +40,7 @@ along with its group index; sorted grouping retains the current group plus
 lookahead. This computes a batch result. Persisting a change log and reconciling
 partial updates require application-specific storage and merge rules.
 
-## Rank records within each group (2.4.0) {#rank-records-within-each-group-unreleased}
+## Rank records within each group (2.4.0) {#rank-records-within-each-group-250}
 
 Use `agg.top` or `agg.bottom` when each group needs several ranked records.
 The aggregator retains up to the requested number instead of collecting the
@@ -125,7 +125,7 @@ deduplication dictionary, or sorting step still has its own cost. Hash grouping
 keeps state for every distinct team. A retained dict list may qualify for a
 native route that a generator does not; measure both shapes before choosing.
 
-## Compose a weighted collector (2.4.0) {#compose-a-weighted-collector-unreleased}
+## Compose a weighted collector (2.4.0) {#compose-a-weighted-collector-250}
 
 Use the existing collector combinators when a metric needs its own filter and
 finisher. Named aggregation now accepts these collectors directly, so the same
@@ -210,7 +210,7 @@ speed observations use observed time, and rates per 90 minutes use the minutes
 for which the event count is known. Repeated matches contribute at their stated
 grain. A weighted mean of match-level percentiles is not a pooled percentile.
 
-## Exact grouped percentiles (2.4.0) {#exact-grouped-percentiles-unreleased}
+## Exact grouped percentiles (2.4.0) {#exact-grouped-percentiles-250}
 
 Compose a collector when a finite set of speed observations needs several
 percentiles. This example computes unweighted p50 and p90 values using the
@@ -309,7 +309,7 @@ recovery checkpoints, manage those task boundaries in the application. Retrying
 a failed atomic write and retrying an already committed append have different
 duplicate-record consequences.
 
-## Resume file partitions (2.4.0) {#resume-file-partitions-unreleased}
+## Resume file partitions (2.4.0) {#resume-file-partitions-250}
 
 For a collection of stable JSONL files, checkpoint each partition separately.
 The callback writes one result file; later stages receive its path instead of
@@ -374,7 +374,7 @@ callback side effects need their own idempotency. Arbitrary iterators are not
 replayed. Use a separate application transaction when multiple partition
 outputs must become visible together.
 
-## Rolling numerical statistics (Unreleased)
+## Rolling numerical statistics (2.5.0)
 
 Use `rolling_statistics` for a mean and variance over the most recent input
 items without rebuilding an entire window for every result:

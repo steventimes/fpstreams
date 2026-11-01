@@ -26,7 +26,10 @@ def _partition_lock(path: Path) -> Iterator[None]:
     """Use an OS lock that is released on process exit; keep the lock inode stable."""
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError("checkpoint lock must be a regular file")
-    with path.open("a+b") as handle:
+    handle = path.open("a+b")
+    locked = False
+    active_error: BaseException | None = None
+    try:
         try:
             if sys.platform == "win32":
                 import msvcrt
@@ -41,14 +44,14 @@ def _partition_lock(path: Path) -> Iterator[None]:
             if error.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                 raise BlockingIOError(errno.EWOULDBLOCK, "checkpoint partition is busy") from error
             raise
-        active_error: BaseException | None = None
-        try:
-            yield
-        except BaseException as error:
-            active_error = error
-            raise
-        finally:
-            # Closing the descriptor also releases the OS lock after exceptions.
+        locked = True
+        yield
+    except BaseException as error:
+        active_error = error
+        raise
+    finally:
+        errors: list[BaseException] = []
+        if locked:
             try:
                 if sys.platform == "win32":
                     handle.seek(0)
@@ -56,7 +59,12 @@ def _partition_lock(path: Path) -> Iterator[None]:
                 else:
                     fcntl.flock(handle, fcntl.LOCK_UN)
             except BaseException as error:
-                _add_cleanup_failure(active_error, [error])
+                errors.append(error)
+        try:
+            handle.close()
+        except BaseException as error:
+            errors.append(error)
+        _add_cleanup_failure(active_error, errors)
 
 
 class FileCheckpoint:
@@ -65,8 +73,10 @@ class FileCheckpoint:
     A callback receives the input path and a temporary output path. It must close
     one regular output file before returning. A successful run publishes that file
     and JSON metadata together by renaming their directory on the same filesystem.
-    Failed runs publish nothing. Publication guarantees atomic visibility, not
-    durability after power loss. The directory must be trusted local storage.
+    Callback and validation failures publish nothing. Cleanup errors can occur after
+    publication; a retry verifies and reuses the completed entry. Publication guarantees
+    atomic visibility, not durability after power loss. The directory must be trusted
+    local storage.
 
     Inputs must remain stable during execution. Use a new version whenever code,
     options, or external dependencies can change the result. Only the callback's
@@ -149,8 +159,10 @@ class FileCheckpoint:
         with _partition_lock(self._directory / f"{key}.lock"):
             if entry.exists() or entry.is_symlink():
                 return self._completed(entry, expected)
-            with TemporaryDirectory(prefix=".stage-", dir=self._directory) as name:
-                staging = Path(name)
+            temporary = TemporaryDirectory(prefix=".stage-", dir=self._directory)
+            active_error: BaseException | None = None
+            try:
+                staging = Path(temporary.name)
                 output = staging / "output"
                 function(input_path, output)
                 if output.is_symlink() or not output.is_file():
@@ -162,4 +174,12 @@ class FileCheckpoint:
                     json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
                 )
                 staging.rename(entry)
+            except BaseException as error:
+                active_error = error
+                raise
+            finally:
+                try:
+                    temporary.cleanup()
+                except BaseException as error:
+                    _add_cleanup_failure(active_error, [error])
         return entry / "output"

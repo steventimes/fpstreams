@@ -23,9 +23,7 @@ from ..expressions.row_ir import (
     PythonUDF,
     Unary,
 )
-from ..expressions.row_ir import (
-    Literal as RowLiteral,
-)
+from ..expressions.row_ir import Literal as RowLiteral
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.typed_ir import Effect
 

@@ -7,7 +7,7 @@ Enter it with `flow(source).rows()`, construct it with `rows(source)`, or use on
 of the adapter factories. A Rows view shares its Flow's plan and source
 ownership; it does not inspect the source or make a one-shot input reusable.
 
-## Inspect field inputs (Unreleased)
+## Inspect field inputs (2.5.0)
 
 The source version supports static field dependencies through the existing
 explanation object. It inspects the logical plan without opening the source:
@@ -27,8 +27,8 @@ assert metadata["fields"]["total"] == [
 
 Unknown dependencies are `None`; an empty list means no declared field input.
 This is logical field metadata. It does not trace individual records or permit
-operator reordering. See [static field dependencies](../user-guide/execution-reports.md#static-field-dependencies-unreleased)
-and the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-unreleased).
+operator reordering. See [static field dependencies](../user-guide/execution-reports.md#static-field-dependencies-250)
+and the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-250).
 
 ## Entering and leaving Rows
 
@@ -69,7 +69,7 @@ fill missing columns, or infer a common dtype.
 | --- | --- |
 | `rows(source)` | Records, a `Flow`, supported tabular objects, or standard tabular-protocol providers |
 | `rows.from_csv(path)` | Compatible CSV rows from a path, text handle, or opener |
-| `rows.scan_csv(path)` | Typed, streaming Arrow CSV batches with query column pruning |
+| `rows.scan_csv(path)` | Typed, streaming Arrow CSV batches |
 | `rows.from_jsonl(path)` | JSON objects from a path, text/binary handle, or opener |
 | `rows.from_arrow(source)` | An Arrow `Table`, `RecordBatch`, `RecordBatchReader`, or `__arrow_c_stream__` provider |
 | `rows.from_columns(columns)` | Equal-length named columns retained as an Arrow table |
@@ -90,11 +90,12 @@ options and return types.
 
 Use `from_csv()` when Python `csv.DictReader` compatibility and string-valued
 cells matter. Use `scan_csv()` for typed inference and wide analytical scans.
-With a plain local path and default reader options, direct `select()` queries
-can prune columns during Arrow CSV conversion. Arrow's
-incremental reader is single-threaded and freezes inferred types after its first
-byte block, so pass `ReadOptions` or `ConvertOptions.column_types` when the
-default inference is not appropriate.
+Query projection follows conversion of every caller-visible CSV column. A
+`select()` query still reports conversion errors in columns it does not return.
+Pass `ConvertOptions(include_columns=[...])` explicitly to restrict which columns
+the CSV reader converts. Arrow's incremental reader is single-threaded and
+freezes inferred types after its first byte block, so pass `ReadOptions` or
+`ConvertOptions.column_types` when the default inference is not appropriate.
 
 The primary `flow(source)` entry automatically recognizes PyArrow, pandas, and
 Polars objects and standard `__arrow_c_stream__` or `__dataframe__` providers.
@@ -127,6 +128,27 @@ Rows `to_csv()` is the record writer and exposes `fieldnames`, `include_header`,
 and `extrasaction`. Flow `to_csv()` instead writes arbitrary items and accepts an
 optional `header`.
 
+## Column collection and custom iteration (2.5.0) {#custom-row-iteration}
+
+`to_columns()` collects fields in encounter order and fills missing cells with
+`None`:
+
+```python
+from fpstreams import rows
+
+assert rows([{"b": 1}, {"a": 2}]).to_columns() == {
+    "b": [1, None],
+    "a": [None, 2],
+}
+```
+
+In the current source checkout, custom Rows or Flow iteration remains
+authoritative. `to_columns()` closes the iterator it opens on normal completion
+or conversion failure. A conversion error remains primary if closing also
+fails; the cleanup error is attached as a note. A close failure without a
+conversion error is propagated. This custom-iterator close fix is included in 2.5.0
+and is not included in the 2.4.1 package.
+
 ## Arrow and dataframe output
 
 Rows accepts Arrow inputs and can also produce Arrow and dataframe outputs:
@@ -141,10 +163,101 @@ Rows accepts Arrow inputs and can also produce Arrow and dataframe outputs:
 Direct retained Arrow sources can reuse native batches. Joins and aggregates are
 evaluated first because their output has no equivalent linear source view.
 
+In the 2.5.0 source, `arrow_batches(schema=None)` and explicit-schema calls
+both respect custom Rows/Flow iteration. The native-path decision is made when
+consumption starts, so an iteration method changed after construction but before
+consumption is observed. Unmodified native inputs can still reuse buffers;
+custom iteration uses the existing bounded row-to-batch conversion. Without a
+schema, the first output batch determines the schema for later batches.
+
+```python
+from contextlib import closing
+import pyarrow as pa
+from fpstreams import Rows, rows
+
+
+class AdjustedRows(Rows):
+    def __iter__(self):
+        with closing(super().__iter__()) as values:
+            for row in values:
+                yield {"value": row["value"] + 10}
+
+
+table = pa.table({"value": [1, 2, 3]})
+source = AdjustedRows(rows.from_arrow(table).to_flow())
+for schema in (None, table.schema):
+    batches = source.arrow_batches(batch_size=2, schema=schema).to_list()
+    assert [batch.num_rows for batch in batches] == [2, 1]
+    assert pa.Table.from_batches(batches).to_pylist() == [
+        {"value": 11}, {"value": 12}, {"value": 13},
+    ]
+```
+
+Terminal consumption closes owned iterators on exhaustion, failure, or short
+circuit. When manually iterating batches, close the returned iterator on early
+exit. A custom iterator must also close any iterator it opens itself, as in the
+`closing` block above. The default-schema iteration fix is included in 2.5.0.
+
+## Record transformations
+
+`rename(a="x", b="y")` renames both top-level fields; names absent from a
+record are ignored. A destination that duplicates another output field raises
+`ValueError` when that record is consumed.
+
+For ordinary Python dictionary rows, `with_columns()` makes a shallow top-level
+copy: existing nested values retain their identities. For dataclass rows it
+uses `dataclasses.asdict()`, which recursively copies values and can propagate
+copy errors. Computed selectors read the original row, not earlier additions in
+the same call. Other row types and columnar adapters may have different
+conversion behavior.
+
+Dotted string selectors split at each dot. Use expression indexing for a list
+index or a literal key containing a dot:
+
+```python
+from fpstreams import col, rows
+
+record = {"items": [{"id": 42}], "a": {"d.e": 7}}
+assert rows([record]).select(
+    first=col("items")[0]["id"], dotted=col("a")["d.e"]
+).to_list() == [{"first": 42, "dotted": 7}]
+```
+
+## Nulls, missing fields, and NaN
+
+In ordinary Python row comparisons, `col("x") == None` matches a present
+`None`, and `col("x").isin([1, 2, None])` includes `None`. This differs from
+SQL's three-valued null comparisons. A missing `x` raises `SelectionError` in
+these expressions. Explicit dataset filters supplied to an adapter follow that
+adapter's semantics; do not assume a Python expression and an external filter
+use the same null rules.
+
+`Rows.fill_nulls(x=value)` fills both a missing `x` and a present `None`;
+`col("x").fill_null(value)` first selects `x`, so a missing field raises
+`SelectionError`. `fillna` and `dropna` are aliases of `fill_nulls` and
+`drop_nulls`: for ordinary Python rows they handle `None`, not floating-point
+NaN. Unlike pandas' similarly named methods, these aliases do not treat NaN as
+missing.
+
+In ordinary in-memory joins, `None` keys match one another. In a left join, a
+right-hand field whose value is `None` cannot by itself distinguish a matching
+row containing `None` from an unmatched row padded with `None`; retain a known
+non-null right-side marker when that distinction matters.
+
+For ordinary Python dictionary rows, grouping and joining NaN keys can depend on
+object identity: repeated use of one NaN object can match, while distinct NaN
+objects do not. Arrow and Polars adapters can materialize separate Python NaN
+objects, so grouping after conversion may differ. These examples describe
+Python row behavior and conversions, not a guarantee for every source, backend,
+or NaN type.
+
 ## Safer joins
 
 A duplicate lookup key can multiply records without warning. Declare the
 relationship you expect when duplicates would indicate bad data:
+
+In the 2.5.0 in-memory Python join path, errors from a key's custom hash or equality operation
+propagate unchanged. Unhashable keys raise `TypeError`.
 
 ```python
 customers = [
@@ -169,6 +282,14 @@ customer keys. Use `1:m` for a unique left side, `1:1` when both sides must
 be unique, or `m:m` to permit duplicates on both sides. Partitioned joins use
 the same checks, and errors name the duplicate side and key.
 
+In the ordinary in-memory path, inner, left, semi, and anti joins index the
+entire right input before reading the left; even an empty left input or a
+downstream `take(1)` does not avoid that right-side read. The right input must
+therefore be finite for these operations to produce output. Semi and anti joins
+retain qualifying left records, including duplicates. Ordinary right and full
+joins materialize both sides. Spill and other execution paths have their own
+resource behavior.
+
 Partitioning is governed by `SpillLimits`. Its defaults are:
 
 | Limit | Default |
@@ -188,6 +309,50 @@ unbounded bucket. Temporary files are removed. Pass a custom `SpillLimits` to
 Highly skewed or many-to-many input may exceed these limits even with spill
 enabled.
 
+## Null filtering and lookup failures (2.5.0)
+
+The `missing` argument is a source-candidate addition and is not in 2.4.1.
+For `drop_nulls()`, the default `missing="legacy"` treats missing selected fields
+as `None`. A custom callable selector's `SelectionError` propagates unchanged. For a `RowExpr`,
+errors raised by `map()` callbacks and directly supplied evaluators also
+propagate, while missing generated fields are treated as `None`. Attribute
+lookup `TypeError` is preserved as a `SelectionError` with its original cause;
+an attribute getter's own `SelectionError` propagates unchanged. This applies
+to string field and path lookups as well. A `RowExpr` subclass that overrides
+`__call__` is treated as a user callback. Errors from overloaded operators
+propagate, including nested expression failures. Attribute `AttributeError` and
+`KeyError` raised inside a mapping lookup may remain indistinguishable from a
+missing field. This compatibility policy cannot validate arbitrary row protocols.
+
+Use `missing="raise"` to propagate every selected lookup failure. `None` remains
+null and `how="any"` / `how="all"` retain their left-to-right short circuiting,
+so a later selector may never run. String and generated `RowExpr` lookups keep
+their usual `SelectionError` and original exception in `__cause__`; explicit
+callables propagate the exception object they raise. This policy disables the
+direct-field optimization that treats missing keys as null. With no selectors,
+both policies inspect the record's values as before.
+
+To migrate a custom protocol, supply a callable that returns `None` for its
+explicit absence signal and lets other failures propagate. For example, assume
+`record.lookup("value")` raises the protocol's `AbsentField` only for absence.
+
+```python
+def optional_value(record):
+    try:
+        return record.lookup("value")
+    except AbsentField:
+        return None
+
+
+clean = rows(records).drop_nulls(optional_value, missing="raise")
+```
+
+An internal `AttributeError` or `KeyError` then propagates unchanged. If the
+protocol uses the same exception for absence and internal failure, the callable
+must use another reliable signal supplied by that protocol. `missing="raise"`
+does not infer the difference. Existing calls keep `missing="legacy"` behavior;
+migration is opt-in. Each reached selector is called once per row.
+
 ## Methods
 
 ::: fpstreams.Rows
@@ -200,6 +365,14 @@ enabled.
 
 `group_by()` returns a grouped plan. Call `aggregate()` directly, or call
 `spill()` first to use partitioned temporary storage.
+
+Ordinary Python grouping is global, not adjacent: keys in separated rows can
+belong to the same group. In ordinary dictionary-row samples a `None` key is
+kept, while a missing selected key raises `SelectionError`. `group_by_sorted()`
+instead groups adjacent ascending keys and applies the constraints below.
+
+In the 2.5.0 in-memory Python grouping path, errors from a key's custom hash or equality
+operation propagate unchanged. Unhashable keys raise `TypeError`.
 
 Since 2.2.0, Python grouping uses the current selector if a source
 or callback changes its code or closure. The previous field shortcut could keep
@@ -263,3 +436,6 @@ or changes ordinary `join()` execution. This API was added in 2.2.0.
 Like `merge_sorted()`, a sorted join acquires source iterators in its composed
 branches before pulling rows. It rejects iterator aliases and closes acquired
 iterators once; source-opening callbacks therefore run before key callbacks.
+Before emitting a match, it buffers the matching right key group and may read
+the first row of the next group. A short-circuited consumer only checks ordering
+and cardinality for the rows actually consumed, including any lookahead.

@@ -630,6 +630,7 @@ pub(crate) struct OnlineStatistics {
     compensation: f64,
     rolling_mean: f64,
     squared_deviations: f64,
+    origin: f64,
 }
 
 impl OnlineStatistics {
@@ -648,9 +649,15 @@ impl OnlineStatistics {
         }
         self.total = combined;
 
-        let delta = value - self.rolling_mean;
+        // Center variance updates near zero while retaining the compensated mean above.
+        // Nonfinite first values keep the original NaN/Inf propagation.
+        if self.count == 1 && value.is_finite() {
+            self.origin = value;
+        }
+        let shifted = value - self.origin;
+        let delta = shifted - self.rolling_mean;
         self.rolling_mean += delta / (self.count as f64);
-        self.squared_deviations += delta * (value - self.rolling_mean);
+        self.squared_deviations += delta * (shifted - self.rolling_mean);
         Ok(())
     }
 
@@ -698,6 +705,9 @@ pub(crate) fn materialize_values<'py, T>(
 where
     T: IntoPyObject<'py>,
 {
+    // Return unused vector capacity before Python objects overlap the numeric output.
+    // The boxed iterator retains exact length and encounter order for all three targets.
+    let values = values.into_boxed_slice();
     match target {
         MaterializeTarget::List => Ok(PyList::new(py, values)?.into_any().unbind()),
         MaterializeTarget::Tuple => Ok(PyTuple::new(py, values)?.into_any().unbind()),

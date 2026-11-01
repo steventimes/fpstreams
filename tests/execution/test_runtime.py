@@ -1,0 +1,4118 @@
+"""Query runtime, task scheduling, resource ownership, and spill contracts."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterator
+from dataclasses import replace
+from typing import Any
+
+import pytest
+
+from fpstreams import flow
+from fpstreams.execution.asynchronous.concurrent import (
+    Completion,
+    CompletionQueue,
+    OrderedResultRing,
+)
+from fpstreams.execution.asynchronous.timers import TimerHandle
+from fpstreams.execution.physical import PhysicalExecutionError, execute_physical
+from fpstreams.execution.sorting import (
+    PositionRecord,
+    SortRecord,
+    _collapse_sort_runs,
+    _merge_position_runs,
+    _merge_sort_runs,
+    _sort_merge_fan_in,
+)
+from fpstreams.physical.plan import PhysicalNode
+from fpstreams.planning.compiler import compile_query
+from fpstreams.planning.sync import SortOp
+from fpstreams.runtime import (
+    FileLimitError,
+    QueryLimits,
+    QueryRuntime,
+    ResourceRegistry,
+    SpillFileRegistry,
+)
+from fpstreams.runtime.failpoints import failpoint
+from fpstreams.runtime.metrics import QueryMetrics
+from fpstreams.runtime.tasks import TaskRole, TaskRuntime
+from fpstreams.storage import SpillFormatError, SpillGeneration, SpillStore
+from fpstreams.tabular.spill_io import (
+    PartitionFile,
+    SpillLazyWriter,
+    SpillPartitionWriters,
+    merge_ordered,
+    read,
+    repartition,
+)
+
+# --- Async scheduler primitives ---
+
+
+@pytest.mark.parametrize("shared_plan", [False, True])
+def test_free_threaded_flow_smoke(shared_plan: bool) -> None:
+    """Exercise independent and concurrently reused plans with the GIL disabled."""
+    import os
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    import fpstreams
+
+    if getattr(sys, "_is_gil_enabled", lambda: True)():
+        pytest.skip("requires a free-threaded interpreter")
+
+    thread_count = int(os.environ.get("FPSTREAMS_FT_SMOKE_THREADS", "16"))
+    iterations = int(os.environ.get("FPSTREAMS_FT_SMOKE_ITERATIONS", "200"))
+    values = list(range(100))
+    expected = sum(value * 2 for value in values if value % 3 == 0)
+
+    def make_plan():
+        return (
+            fpstreams.Flow.of(*values)
+            .map(lambda value: value * 2)
+            .filter(lambda value: value % 3 == 0)
+        )
+
+    shared = make_plan()
+
+    def work(_worker: int) -> int:
+        result = 0
+        for _ in range(iterations):
+            plan = shared if shared_plan else make_plan()
+            result += plan.sum()
+        return result
+
+    with ThreadPoolExecutor(max_workers=thread_count) as executor:
+        results = list(executor.map(work, range(thread_count)))
+
+    assert results == [expected * iterations] * thread_count
+    assert asyncio.run(fpstreams.AsyncFlow.of(1, 2, 3).count()) == 3
+
+
+@pytest.mark.asyncio
+async def test_ordered_ring_releases_only_next_sequence() -> None:
+    ring = OrderedResultRing(capacity=3)
+    ring.put(1, Completion.value_of(1, "one"))
+    assert ring.pop_next() is None
+    ring.put(0, Completion.value_of(0, "zero"))
+    assert ring.pop_next().result() == "zero"  # type: ignore[union-attr]
+    assert ring.pop_next().result() == "one"  # type: ignore[union-attr]
+
+
+def test_ordered_ring_rejects_slot_overwrite() -> None:
+    ring = OrderedResultRing(capacity=2)
+    ring.put(0, Completion.value_of(0, 0))
+    with pytest.raises(RuntimeError, match="occupied"):
+        ring.put(2, Completion.value_of(2, 2))
+
+
+@pytest.mark.asyncio
+async def test_completion_queue_publishes_done_task_outcome() -> None:
+    queue = CompletionQueue()
+    task = asyncio.create_task(asyncio.sleep(0, result=3))
+    queue.watch(task, sequence=7)
+    assert (await queue.get()).result() == 3
+
+
+@pytest.mark.asyncio
+async def test_task_scope_cancel_does_not_cancel_sibling_scope() -> None:
+    runtime = TaskRuntime(QueryLimits(max_tasks=10), QueryMetrics())
+    left = runtime.scope("left", max_tasks=2)
+    right = runtime.scope("right", max_tasks=2)
+    left_task = left.create_task(asyncio.sleep(10), role=TaskRole.USER_CALL)
+    right_task = right.create_task(asyncio.sleep(0, result=3), role=TaskRole.USER_CALL)
+
+    await left.aclose()
+
+    assert left_task.cancelled()
+    assert await right.take_result(right_task) == 3
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_timer_handle_replaces_and_owns_only_one_timer() -> None:
+    runtime = TaskRuntime(QueryLimits(max_tasks=3), QueryMetrics())
+    scope = runtime.scope("timer", max_tasks=1)
+    timer = TimerHandle(scope)
+    await timer.arm(10)
+    assert timer.armed
+    await timer.arm(0)
+    assert scope.live_count == 1
+    await timer.take()
+    assert not timer.armed
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_timer_handle_rejects_nan_without_canceling_armed_timer() -> None:
+    runtime = TaskRuntime(QueryLimits(max_tasks=1), QueryMetrics())
+    scope = runtime.scope("timer", max_tasks=1)
+    timer = TimerHandle(scope)
+    try:
+        await timer.arm(60)
+        original = timer.task
+        assert original is not None
+
+        with pytest.raises(ValueError):
+            await timer.arm(float("nan"))
+
+        assert timer.task is original
+        assert not original.done()
+        assert scope.live_count == 1
+    finally:
+        await runtime.aclose()
+
+    assert original.cancelled()
+    assert scope.live_count == 0
+
+
+# --- Task runtime and cancellation ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(asyncio, "capture_call_graph"),
+    reason="call graph introspection requires Python 3.14",
+)
+@pytest.mark.parametrize("operation_kind", ["future", "task"])
+@pytest.mark.parametrize("ending", ["result", "failure", "cancel"])
+@pytest.mark.parametrize("cancel_waiter", [False, True], ids=["ordinary", "repeated-cancel"])
+async def test_owned_task_preserves_call_graph(operation_kind, ending, cancel_waiter) -> None:
+    """An owned operation remains linked to its waiter until the drain finishes."""
+    from fpstreams.runtime.tasks import _await_owned_task
+
+    release = asyncio.Event()
+    value = object()
+    failure = OSError("owned operation failed")
+
+    async def work():
+        await release.wait()
+        if ending == "failure":
+            raise failure
+        return value
+
+    operation = (
+        asyncio.get_running_loop().create_future()
+        if operation_kind == "future"
+        else asyncio.create_task(work())
+    )
+    waiter = asyncio.create_task(_await_owned_task(operation))
+    try:
+        async with asyncio.timeout(10):
+            await asyncio.sleep(0)
+            graph = asyncio.capture_call_graph(operation)
+            assert graph is not None
+            assert {node.future for node in graph.awaited_by} == {waiter}
+            if cancel_waiter:
+                for message in ("first delivered cancellation", "second cancellation"):
+                    waiter.cancel(message)
+                    await asyncio.sleep(0)
+                    assert not waiter.done() and not operation.done()
+                    graph = asyncio.capture_call_graph(operation)
+                    assert graph is not None
+                    assert {node.future for node in graph.awaited_by} == {waiter}
+
+            if ending == "cancel":
+                operation.cancel("operation cancelled")
+            elif operation_kind == "task":
+                release.set()
+            elif ending == "failure":
+                operation.set_exception(failure)
+            else:
+                operation.set_result(value)
+
+            if cancel_waiter or ending == "cancel":
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await waiter
+                if cancel_waiter:
+                    assert caught.value.args == ("first delivered cancellation",)
+            elif ending == "failure":
+                with pytest.raises(OSError) as caught_error:
+                    await waiter
+                assert caught_error.value is failure
+            else:
+                assert await waiter is value
+            graph = asyncio.capture_call_graph(operation)
+            assert graph is not None
+            assert not graph.awaited_by
+    finally:
+        release.set()
+        operation.cancel()
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, operation, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(asyncio, "capture_call_graph"),
+    reason="call graph introspection requires Python 3.14",
+)
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_owned_task_preserves_call_graph_for_shared_operation(cancel_first) -> None:
+    """Concurrent cleanup waiters retain their independent edges while draining."""
+    from fpstreams.runtime.tasks import _await_owned_task
+
+    release = asyncio.Event()
+    value = object()
+
+    async def work():
+        await release.wait()
+        return value
+
+    operation = asyncio.create_task(work())
+    waiters = [asyncio.create_task(_await_owned_task(operation)) for _ in range(2)]
+    try:
+        async with asyncio.timeout(10):
+            await asyncio.sleep(0)
+            graph = asyncio.capture_call_graph(operation)
+            assert graph is not None
+            assert {node.future for node in graph.awaited_by} == set(waiters)
+            if cancel_first:
+                for message in ("first delivered cancellation", "second cancellation"):
+                    waiters[0].cancel(message)
+                    await asyncio.sleep(0)
+                    assert all(not waiter.done() for waiter in waiters)
+                    assert not operation.done()
+                    graph = asyncio.capture_call_graph(operation)
+                    assert graph is not None
+                    assert {node.future for node in graph.awaited_by} == set(waiters)
+            release.set()
+            results = await asyncio.gather(*waiters, return_exceptions=True)
+            assert results[1] is value
+            if cancel_first:
+                assert isinstance(results[0], asyncio.CancelledError)
+                assert waiters[0].cancelled()
+            else:
+                assert results[0] is value
+            graph = asyncio.capture_call_graph(operation)
+            assert graph is not None
+            assert not graph.awaited_by
+    finally:
+        release.set()
+        operation.cancel()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(operation, *waiters, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(asyncio, "capture_call_graph"),
+    reason="call graph introspection requires Python 3.14",
+)
+@pytest.mark.parametrize("custom_task", [False, True])
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_task_cancel_keeps_child_linked_until_cleanup_finishes(
+    custom_task: bool, cancel_waiter: bool
+) -> None:
+    """A cancellation drain stays visible to call-graph inspection until completion."""
+    loop = asyncio.get_running_loop()
+    original_factory = loop.get_task_factory()
+    if custom_task:
+
+        class CustomTask(asyncio.Task):
+            pass
+
+        loop.set_task_factory(
+            lambda loop, coroutine, **kwargs: CustomTask(coroutine, loop=loop, **kwargs)
+        )
+    runtime = TaskRuntime(QueryLimits(), QueryMetrics())
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+
+    async def work() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+
+    task = runtime.create_task(work(), role=TaskRole.USER_CALL)
+    await started.wait()
+    waiter = asyncio.create_task(runtime.cancel(task))
+
+    def contains_waiter(node) -> bool:
+        return node.future is waiter or any(contains_waiter(parent) for parent in node.awaited_by)
+
+    try:
+        async with asyncio.timeout(5):
+            await cleaning.wait()
+            for message in ("first-delivered", "later-cancel"):
+                graph = asyncio.capture_call_graph(task)
+                assert graph is not None
+                assert any(contains_waiter(node) for node in graph.awaited_by)
+                if cancel_waiter:
+                    waiter.cancel(message)
+                    for _ in range(3):
+                        await asyncio.sleep(0)
+                    assert not waiter.done() and not task.done()
+            release.set()
+            if cancel_waiter:
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await waiter
+                assert caught.value.args == ("first-delivered",)
+            else:
+                assert await waiter is None
+        graph = asyncio.capture_call_graph(task)
+        assert graph is not None and not graph.awaited_by
+    finally:
+        release.set()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await runtime.aclose()
+        loop.set_task_factory(original_factory)
+
+
+def test_task_cancel_rejects_task_from_another_event_loop() -> None:
+    """A foreign task fails promptly without waiting for its event loop to advance."""
+    from contextlib import suppress
+
+    foreign_loop = asyncio.new_event_loop()
+    owner_loop = asyncio.new_event_loop()
+    runtime = TaskRuntime(QueryLimits(), QueryMetrics())
+    child = foreign_loop.create_task(asyncio.sleep(0))
+    waiter = owner_loop.create_task(runtime.cancel(child))
+    try:
+        for _ in range(4):
+            owner_loop.run_until_complete(asyncio.sleep(0))
+        assert waiter.done()
+        with pytest.raises((ValueError, asyncio.InvalidStateError)) as caught:
+            waiter.result()
+        assert "different loop" in str(caught.value) or str(caught.value) == "Result is not set."
+    finally:
+        # Advance both loops even if a regressed implementation waited on the child.
+        with suppress(asyncio.CancelledError):
+            foreign_loop.run_until_complete(child)
+
+        async def cleanup() -> None:
+            await asyncio.gather(waiter, return_exceptions=True)
+            await runtime.aclose()
+
+        owner_loop.run_until_complete(cleanup())
+        foreign_loop.close()
+        owner_loop.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_kind", ["future", "task"])
+@pytest.mark.parametrize("already_done", [False, True], ids=["pending", "already-done"])
+async def test_owned_task_preserves_inner_cancellation_details(
+    operation_kind, already_done
+) -> None:
+    from fpstreams.runtime.tasks import _await_owned_task
+
+    operation = (
+        asyncio.get_running_loop().create_future()
+        if operation_kind == "future"
+        else asyncio.create_task(asyncio.Event().wait())
+    )
+    waiter = None
+    try:
+        async with asyncio.timeout(10):
+            if already_done:
+                operation.cancel("operation cancelled")
+                await asyncio.sleep(0)
+                assert operation.done()
+            waiter = asyncio.create_task(_await_owned_task(operation))
+            if not already_done:
+                await asyncio.sleep(0)
+                operation.cancel("operation cancelled")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await waiter
+            assert waiter.cancelled()
+            assert operation.cancelled()
+            if already_done:
+                assert caught.value.args == ("operation cancelled",)
+                assert not getattr(caught.value, "__notes__", ())
+            else:
+                assert caught.value.args == ()
+                assert caught.value.__notes__ == [
+                    "cleanup failed: CancelledError: operation cancelled"
+                ]
+    finally:
+        operation.cancel()
+        if waiter is not None and not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(
+            *(pending for pending in (operation, waiter) if pending is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_fails", [False, True], ids=["result", "failure"])
+async def test_owned_task_drains_borrowed_executor_after_repeated_cancellation(
+    operation_fails,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fpstreams.runtime.tasks import _await_owned_task
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    events = []
+    value = object()
+    failure = OSError("owned operation failed")
+    failure.add_note("owned operation detail")
+
+    def work():
+        events.append("work:start")
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=10):
+            raise TimeoutError("test did not release the owned executor operation")
+        events.append("work:end")
+        if operation_fails:
+            raise failure
+        return value
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        operation = loop.run_in_executor(executor, work)
+        waiter = asyncio.create_task(_await_owned_task(operation))
+        try:
+            async with asyncio.timeout(10):
+                await started.wait()
+                waiter.cancel("first delivered cancellation")
+                await asyncio.sleep(0)
+                waiter.cancel("second cancellation")
+                await asyncio.sleep(0)
+                assert not waiter.done()
+                assert not operation.done()
+                second = await loop.run_in_executor(executor, lambda: "second worker")
+                assert second == "second worker"
+                release.set()
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await waiter
+                events.append("caller:cancelled")
+                assert caught.value.args == ("first delivered cancellation",)
+                assert waiter.cancelled()
+                assert operation.done() and not operation.cancelled()
+                if operation_fails:
+                    assert operation.exception() is failure
+                    assert caught.value.__notes__ == [
+                        "cleanup failed: OSError: owned operation failed",
+                        "owned operation detail",
+                    ]
+                else:
+                    assert operation.result() is value
+                    assert not getattr(caught.value, "__notes__", ())
+                assert events == ["work:start", "work:end", "caller:cancelled"]
+                reused = await loop.run_in_executor(executor, lambda: "still usable")
+                assert reused == "still usable"
+        finally:
+            release.set()
+            if not waiter.done():
+                waiter.cancel()
+            await asyncio.gather(waiter, operation, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_completed_tasks_leave_live_registry_before_query_close() -> None:
+    """Awaited tasks retire immediately rather than accumulating until query shutdown."""
+    metrics = QueryMetrics()
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), metrics)
+    for value in range(100):
+        task = tasks.create_task(asyncio.sleep(0, result=value), role=TaskRole.USER_CALL)
+        assert await tasks.take_result(task) == value
+        assert tasks.live_count == 0
+    assert metrics.high_water_tasks <= 1
+
+
+@pytest.mark.asyncio
+async def test_task_scope_close_drains_completed_unobserved_failure() -> None:
+    """A settled failure stays scope-owned until its result is observed or drained."""
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), QueryMetrics())
+    scope = tasks.scope("failure", max_tasks=1)
+
+    async def fail() -> None:
+        raise RuntimeError("task failed")
+
+    task = scope.create_task(fail(), role=TaskRole.USER_CALL)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert task.done()
+    assert scope.live_count == 1
+    assert task._log_traceback  # type: ignore[attr-defined]
+
+    await scope.aclose()
+
+    assert not task._log_traceback  # type: ignore[attr-defined]
+    assert scope.live_count == 0
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+async def test_task_scope_cancel_failure_retains_ownership_for_close() -> None:
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), QueryMetrics())
+    scope = tasks.scope("cancel", max_tasks=1)
+    task = scope.create_task(asyncio.sleep(10), role=TaskRole.USER_CALL)
+
+    with (
+        failpoint("task.cancel.before", OSError("cancel failed")),
+        pytest.raises(OSError, match="cancel failed"),
+    ):
+        await scope.cancel(task)
+
+    assert scope.live_count == 1
+    assert tasks.live_count == 1
+    assert not task.done()
+
+    await scope.aclose()
+
+    assert task.cancelled()
+    assert scope.live_count == 0
+    assert tasks.live_count == 0
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["runtime", "scope"])
+@pytest.mark.parametrize("outcome", ["cancel", "return", "error"])
+async def test_task_cancel_drains_cleanup_before_repeated_caller_cancellation(
+    owner: str, outcome: str
+) -> None:
+    """Cancelling a drain waiter must not cancel the child's cleanup a second time."""
+    runtime = TaskRuntime(QueryLimits(max_tasks=3), QueryMetrics())
+    scope = runtime.scope("cancel-one", max_tasks=1)
+    sibling = runtime.scope("sibling", max_tasks=1)
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    sibling_release = asyncio.Event()
+    events: list[str] = []
+    failure = OSError("child cleanup failed")
+
+    async def work() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("cleanup-start")
+            cleaning.set()
+            await release.wait()
+            events.append("cleanup-done")
+            if outcome == "error":
+                raise failure from None
+            if outcome == "return":
+                return
+            raise
+
+    task = scope.create_task(work(), role=TaskRole.USER_CALL)
+    sibling_task = sibling.create_task(sibling_release.wait(), role=TaskRole.USER_CALL)
+    await started.wait()
+    cancel = asyncio.create_task(runtime.cancel(task) if owner == "runtime" else scope.cancel(task))
+    try:
+        async with asyncio.timeout(5):
+            await cleaning.wait()
+            for message in ("first-delivered", "later-cancel"):
+                cancel.cancel(message)
+                for _ in range(4):
+                    await asyncio.sleep(0)
+                assert not cancel.done()
+                assert not task.done()
+                assert not sibling_task.done()
+                assert events == ["cleanup-start"]
+            release.set()
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await cancel
+            assert caught.value.args == ("first-delivered",)
+        assert events == ["cleanup-start", "cleanup-done"]
+        assert cancel.cancelled()
+        assert task.done()
+        assert task.cancelled() == (outcome == "cancel")
+        if outcome == "error":
+            assert task.exception() is failure
+        # A failed cancel call retains the scope record for its existing close path.
+        assert scope.live_count == 1
+        assert runtime.live_count == 1
+        sibling_release.set()
+        assert await sibling.take_result(sibling_task)
+    finally:
+        release.set()
+        sibling_release.set()
+        await asyncio.gather(cancel, return_exceptions=True)
+        await runtime.aclose()
+    assert runtime.live_count == scope.live_count == sibling.live_count == 0
+
+
+@pytest.mark.asyncio
+async def test_task_runtime_close_finishes_all_scopes_before_propagating_cancellation() -> None:
+    tasks = TaskRuntime(QueryLimits(max_tasks=3), QueryMetrics())
+    sibling = tasks.scope("sibling", max_tasks=1)
+    stubborn = tasks.scope("stubborn", max_tasks=1)
+    sibling_task = sibling.create_task(asyncio.sleep(10), role=TaskRole.OPERATOR)
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resist_one_cancellation() -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+
+    stubborn_task = stubborn.create_task(resist_one_cancellation(), role=TaskRole.OPERATOR)
+    close_task = asyncio.create_task(tasks.aclose())
+    await cancellation_seen.wait()
+
+    close_task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert stubborn_task.done()
+    assert sibling_task.cancelled()
+    assert tasks.live_count == 0
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_runtime_close_releases_resources_before_propagating_cancellation() -> None:
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("stubborn", max_tasks=1)
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+    cleanup_calls: list[str] = []
+
+    async def resist_one_cancellation() -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+
+    task = scope.create_task(resist_one_cancellation(), role=TaskRole.OPERATOR)
+    runtime.resources.own("resource", cleanup_calls.append)
+    close_task = asyncio.create_task(runtime.aclose())
+    await cancellation_seen.wait()
+
+    close_task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert task.done()
+    assert runtime.tasks.live_count == 0
+    assert runtime.resources.closed
+    assert cleanup_calls == ["resource"]
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_runtime_resource_closer_can_reenter_close() -> None:
+    runtime = QueryRuntime()
+    cleanup_calls = 0
+
+    async def close(_value: str) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await runtime.aclose()
+
+    await runtime.resources.aown("resource", close)
+
+    await runtime.aclose()
+
+    assert cleanup_calls == 1
+    assert runtime.resources.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["scope", "tasks", "query"])
+async def test_owned_task_cannot_close_its_own_owner(owner: str) -> None:
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("owned", max_tasks=1)
+
+    async def close_owner() -> None:
+        with pytest.raises(RuntimeError, match="owned task cannot close"):
+            if owner == "scope":
+                await scope.aclose()
+            elif owner == "tasks":
+                await runtime.tasks.aclose()
+            else:
+                await runtime.aclose()
+
+    task = scope.create_task(close_owner(), role=TaskRole.OPERATOR)
+
+    await scope.take_result(task)
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(asyncio, "eager_task_factory"),
+    reason="asyncio eager task factory requires Python 3.12+",
+)
+@pytest.mark.parametrize("owner", ["scope", "tasks", "query"])
+async def test_eager_owned_task_cannot_close_its_own_owner(owner: str) -> None:
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("eager-owned", max_tasks=1)
+
+    async def close_owner() -> None:
+        with pytest.raises(RuntimeError, match="owned task cannot close"):
+            if owner == "scope":
+                await scope.aclose()
+            elif owner == "tasks":
+                await runtime.tasks.aclose()
+            else:
+                await runtime.aclose()
+
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    factory = asyncio.eager_task_factory  # type: ignore[attr-defined]
+    loop.set_task_factory(factory)
+    try:
+        task = scope.create_task(close_owner(), role=TaskRole.OPERATOR)
+    finally:
+        loop.set_task_factory(previous_factory)
+
+    await scope.take_result(task)
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(asyncio, "eager_task_factory"),
+    reason="asyncio eager task factory requires Python 3.12+",
+)
+async def test_eager_task_creation_counts_inflight_runtime_admission() -> None:
+    runtime = QueryRuntime(QueryLimits(max_tasks=1))
+    scope = runtime.tasks.scope("eager-limit")
+
+    async def create_nested() -> None:
+        with pytest.raises(RuntimeError, match="max_tasks=1"):
+            scope.create_task(asyncio.sleep(0), role=TaskRole.OPERATOR)
+
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    factory = asyncio.eager_task_factory  # type: ignore[attr-defined]
+    loop.set_task_factory(factory)
+    try:
+        task = scope.create_task(create_nested(), role=TaskRole.OPERATOR)
+    finally:
+        loop.set_task_factory(previous_factory)
+
+    await scope.take_result(task)
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_query_close_waiters_observe_the_same_cleanup_failure() -> None:
+    runtime = QueryRuntime()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    failure = OSError("resource close failed")
+    failure.add_note("resource cleanup detail")
+
+    async def fail_close(_value: str) -> None:
+        entered.set()
+        await release.wait()
+        raise failure
+
+    await runtime.resources.aown("resource", fail_close)
+    left_error = ValueError("left failed")
+    right_error = LookupError("right failed")
+    left = asyncio.create_task(runtime.aclose(left_error))
+    await entered.wait()
+    right = asyncio.create_task(runtime.aclose(right_error))
+    plain = asyncio.create_task(runtime.aclose())
+    release.set()
+
+    results = await asyncio.gather(left, right, plain, return_exceptions=True)
+
+    assert results[:2] == [None, None]
+    assert results[2] is failure
+    expected_notes = [
+        "cleanup failed: OSError: resource close failed",
+        "resource cleanup detail",
+    ]
+    assert left_error.__notes__ == expected_notes
+    assert right_error.__notes__ == expected_notes
+
+
+@pytest.mark.asyncio
+async def test_task_scope_disposes_awaitable_when_submission_fails(monkeypatch) -> None:
+    import fpstreams.runtime.tasks as tasks_module
+
+    class TrackedAwaitable:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def __await__(self):
+            if False:
+                yield None
+            return None
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    def reject_submission(_awaitable):
+        raise OSError("task submission failed")
+
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), QueryMetrics())
+    scope = tasks.scope("submit")
+    awaitable = TrackedAwaitable()
+    monkeypatch.setattr(tasks_module.asyncio, "ensure_future", reject_submission)
+
+    with pytest.raises(OSError, match="task submission failed"):
+        scope.create_task(awaitable, role=TaskRole.USER_CALL)
+
+    assert awaitable.close_calls == 1
+    assert scope.live_count == 0
+    assert tasks.live_count == 0
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_schedule_failure_remains_scope_owned_until_close() -> None:
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), QueryMetrics())
+    scope = tasks.scope("post-schedule", max_tasks=1)
+
+    with (
+        failpoint("task.create.after", OSError("create failed")),
+        pytest.raises(OSError, match="create failed"),
+    ):
+        scope.create_task(asyncio.sleep(10), role=TaskRole.OPERATOR)
+
+    assert scope.live_count == 1
+    assert tasks.live_count == 1
+    await scope.aclose()
+    assert scope.live_count == 0
+    assert tasks.live_count == 0
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["scope", "tasks", "query"])
+async def test_cleanup_task_submission_failure_can_be_retried(owner: str, monkeypatch) -> None:
+    import fpstreams.runtime.tasks as tasks_module
+
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("retry", max_tasks=1)
+    task = scope.create_task(asyncio.sleep(10), role=TaskRole.OPERATOR)
+    cleanup_calls: list[str] = []
+    runtime.resources.own("resource", cleanup_calls.append)
+    original_create_task = asyncio.create_task
+
+    def reject_cleanup_task(*_args, **_kwargs):
+        raise OSError("cleanup task submission failed")
+
+    monkeypatch.setattr(tasks_module.asyncio, "create_task", reject_cleanup_task)
+    target = scope if owner == "scope" else runtime.tasks if owner == "tasks" else runtime
+
+    with pytest.raises(OSError, match="cleanup task submission failed"):
+        await target.aclose()
+
+    monkeypatch.setattr(tasks_module.asyncio, "create_task", original_create_task)
+    await target.aclose()
+
+    if owner in {"scope", "tasks"}:
+        assert task.cancelled()
+        await runtime.aclose()
+    else:
+        assert task.cancelled()
+        assert cleanup_calls == ["resource"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_scope_cleanup_submission_failure_waits_for_cancellation(cancel_waiter) -> None:
+    """Submission failure belongs to its caller; successful fallback is shared and retryable."""
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("fallback", max_tasks=1)
+    started = asyncio.Event()
+    draining = asyncio.Event()
+    release = asyncio.Event()
+    resources = []
+
+    async def work():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            draining.set()
+            await release.wait()
+
+    worker = scope.create_task(work(), role=TaskRole.OPERATOR)
+    runtime.resources.own("resource", resources.append)
+    loop = asyncio.get_running_loop()
+    previous = loop.get_task_factory()
+    failure = OSError("cleanup owner rejected")
+    submissions = []
+    first = second = None
+
+    def reject_once(loop, coroutine, **kwargs):
+        submissions.append(coroutine.__qualname__)
+        if len(submissions) == 1:
+            raise failure
+        if previous is not None:
+            return previous(loop, coroutine, **kwargs)
+        return asyncio.Task(coroutine, loop=loop, **kwargs)
+
+    try:
+        async with asyncio.timeout(10):
+            await started.wait()
+            first = asyncio.create_task(scope.aclose())
+            loop.set_task_factory(reject_once)
+            await draining.wait()
+            assert not first.done()
+            assert submissions == ["TaskScope._aclose_impl"]
+            loop.set_task_factory(previous)
+            second = asyncio.create_task(scope.aclose())
+            if cancel_waiter:
+                first.cancel("first waiter cancelled")
+                await asyncio.sleep(0)
+                first.cancel("second cancellation")
+                await asyncio.sleep(0)
+            assert not worker.done()
+            release.set()
+            results = await asyncio.gather(first, second, return_exceptions=True)
+            assert results == [failure, None]
+            if cancel_waiter:
+                assert failure.__notes__ == [
+                    "cleanup failed: CancelledError: first waiter cancelled"
+                ]
+            assert worker.done()
+            assert scope.live_count == runtime.tasks.live_count == 0
+            await scope.aclose()
+            await runtime.aclose()
+            assert resources == ["resource"]
+            assert runtime.resources.closed
+    finally:
+        loop.set_task_factory(previous)
+        release.set()
+        for task in (first, second, worker):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (first, second, worker) if task is not None),
+            return_exceptions=True,
+        )
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_runtime_cleanup_submits_only_one_owner_task() -> None:
+    runtime = QueryRuntime(QueryLimits(max_tasks=2))
+    scope = runtime.tasks.scope("single-owner", max_tasks=1)
+    task = scope.create_task(asyncio.sleep(10), role=TaskRole.OPERATOR)
+    cleanup_calls: list[str] = []
+    runtime.resources.own("resource", cleanup_calls.append)
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    factory_calls = 0
+
+    def reject_nested_factory(loop, coroutine, **kwargs):
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls > 1:
+            raise OSError("nested cleanup submission failed")
+        return asyncio.Task(coroutine, loop=loop, **kwargs)
+
+    loop.set_task_factory(reject_nested_factory)
+    failure: BaseException | None = None
+    try:
+        await runtime.aclose()
+    except BaseException as error:
+        failure = error
+    finally:
+        loop.set_task_factory(previous_factory)
+
+    if failure is not None:
+        await runtime.tasks.aclose()
+        await runtime.resources.aclose()
+
+    assert failure is None
+    assert factory_calls == 1
+    assert task.cancelled()
+    assert cleanup_calls == ["resource"]
+
+
+@pytest.mark.asyncio
+async def test_task_scope_disposal_failure_does_not_hide_admission_error() -> None:
+    class FailingCloseAwaitable:
+        def __await__(self):
+            if False:
+                yield None
+            return None
+
+        def close(self) -> None:
+            raise OSError("awaitable close failed")
+
+    tasks = TaskRuntime(QueryLimits(max_tasks=2), QueryMetrics())
+    scope = tasks.scope("closed")
+    await scope.aclose()
+
+    with pytest.raises(RuntimeError, match="task scope is closed") as captured:
+        scope.create_task(FailingCloseAwaitable(), role=TaskRole.USER_CALL)
+
+    assert captured.value.__notes__ == ["cleanup failed: OSError: awaitable close failed"]
+    await tasks.aclose()
+
+
+@pytest.mark.asyncio
+async def test_task_limit_rejects_before_scheduling_coroutine() -> None:
+    """A rejected coroutine remains caller-owned and can be closed without a warning."""
+    gate = asyncio.Event()
+    tasks = TaskRuntime(QueryLimits(max_tasks=1), QueryMetrics())
+    first = tasks.create_task(gate.wait(), role=TaskRole.USER_CALL)
+    coroutine = asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="max_tasks=1"):
+        tasks.create_task(coroutine, role=TaskRole.USER_CALL)
+    coroutine.close()
+    gate.set()
+    await tasks.take_result(first)
+
+
+def test_spill_registry_removes_registered_directory(tmp_path) -> None:
+    """A query-owned spill directory is removed on resource cleanup, not its parent."""
+    resources = ResourceRegistry()
+    spills = SpillFileRegistry(resources, QueryMetrics())
+    directory = spills.create_directory(tmp_path)
+    path = spills.register(directory / "run-000001.bin")
+    path.write_bytes(b"abc")
+    spills.record_write(3)
+    resources.close()
+
+    assert not directory.exists()
+
+
+# --- Query runtime ownership ---
+
+
+def test_file_manager_enforces_budget_and_releases_capacity(tmp_path) -> None:
+    """Tracked files obey the hard query limit and retire metrics on early close."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=2))
+    first = runtime.files.open(tmp_path / "first.bin", "wb")
+    second = runtime.files.open(tmp_path / "second.bin", "wb")
+
+    assert runtime.metrics.open_files == 2
+    assert runtime.metrics.high_water_open_files == 2
+    with pytest.raises(FileLimitError, match=r"current=2, limit=2"):
+        runtime.files.open(tmp_path / "rejected.bin", "wb")
+
+    first.close()
+    replacement = runtime.files.open(tmp_path / "replacement.bin", "wb")
+    assert runtime.metrics.open_files == 2
+    runtime.close()
+
+    assert first.closed and second.closed and replacement.closed
+    assert runtime.metrics.open_files == 0
+
+
+def test_released_file_leases_do_not_accumulate_registry_references(tmp_path) -> None:
+    """Sequential spill I/O retains neither descriptors nor closed proxy objects."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+
+    for position in range(1_000):
+        runtime.files.open(tmp_path / f"lease-{position}.bin", "wb").close()
+
+    assert runtime.metrics.open_files == 0
+    assert runtime.resources._records == []
+    runtime.close()
+
+
+def test_file_registration_failure_returns_descriptor_lease(tmp_path) -> None:
+    """A failure after ownership registration cannot strand an open descriptor."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+
+    with (
+        failpoint("resource.register.after", OSError("registration failed")),
+        pytest.raises(OSError, match="registration failed"),
+    ):
+        runtime.files.open(tmp_path / "failed.bin", "wb")
+
+    assert runtime.metrics.open_files == 0
+    assert runtime.metrics.high_water_open_files == 1
+    runtime.close()
+
+
+def test_file_manager_serializes_concurrent_limit_admission(tmp_path, monkeypatch) -> None:
+    """Two simultaneous opens cannot both pass a one-descriptor query limit."""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import suppress
+    from pathlib import Path
+    from threading import Barrier, BrokenBarrierError
+
+    barrier = Barrier(2)
+    original_open = Path.open
+
+    def synchronized_open(path: Path, mode: str):
+        # Without one admission lock both callers reach this barrier after the
+        # same stale limit check. With the lock, the first times out and commits
+        # its lease before the second caller can perform its check.
+        with suppress(BrokenBarrierError):
+            barrier.wait(timeout=0.2)
+        return original_open(path, mode)
+
+    monkeypatch.setattr(Path, "open", synchronized_open)
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+
+    def acquire(position: int):
+        try:
+            return runtime.files.open(tmp_path / f"concurrent-{position}.bin", "wb")
+        except FileLimitError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        opened = [handle for handle in pool.map(acquire, range(2)) if handle is not None]
+
+    assert len(opened) == 1
+    assert runtime.metrics.open_files == 1
+    opened[0].close()
+    runtime.close()
+
+
+def test_closed_runtime_rejects_new_file_and_spill_ownership(tmp_path) -> None:
+    """Cleanup is one-way: reopening after close must not create an unowned lease."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+    runtime.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        runtime.files.open(tmp_path / "leaked.bin", "wb")
+    with pytest.raises(RuntimeError, match="closed"):
+        SpillStore(runtime, parent=tmp_path, operation="closed")
+
+    assert runtime.metrics.open_files == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_resource_registry_closes_lifo_and_is_idempotent() -> None:
+    """Owned synchronous resources close in reverse acquisition order exactly once."""
+    events: list[str] = []
+    resources = ResourceRegistry()
+    resources.own("first", lambda value: events.append(value))
+    resources.own("second", lambda value: events.append(value))
+    resources.close()
+    resources.close()
+
+    assert events == ["second", "first"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind", ["sync_iterators", "async_iterators", "registry", "async_registry", "query"]
+)
+@pytest.mark.parametrize("cancelled", [False, True], ids=["cleanup-error", "active-cancellation"])
+async def test_cleanup_continues_when_exception_message_raises(kind: str, cancelled: bool) -> None:
+    """Formatting diagnostics preserves error identity and attempts every closer."""
+    from fpstreams.planning.async_utils import close_async_iterators
+    from fpstreams.runtime.iterators import close_iterators
+
+    class BadMessage(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("message formatting failed")
+
+    primary = ValueError("first close failed")
+    broken = BadMessage()
+    broken.add_note("original source context")
+    events: list[str] = []
+
+    class Owner:
+        def __init__(self, name: str, failure: BaseException | None = None) -> None:
+            self.name, self.failure = name, failure
+
+        def close(self) -> None:
+            events.append(self.name)
+            if self.failure is not None:
+                raise self.failure
+
+        async def aclose(self) -> None:
+            self.close()
+
+    owners = [Owner("first", primary), Owner("broken", broken), Owner("last")]
+    active = asyncio.CancelledError("cancelled operation") if cancelled else None
+
+    async def cleanup() -> None:
+        if kind == "sync_iterators":
+            close_iterators(owners, active_error=active)
+        elif kind == "async_iterators":
+            await close_async_iterators(owners, active_error=active)
+        elif kind == "registry":
+            registry = ResourceRegistry()
+            for owner in reversed(owners):
+                registry.own(owner)
+            registry.close(active)
+        else:
+            runtime = QueryRuntime()
+            for owner in reversed(owners):
+                await runtime.resources.aown(owner)
+            if kind == "async_registry":
+                await runtime.resources.aclose(active)
+            else:
+                await runtime.aclose(active)
+
+    if active is not None:
+        await cleanup()
+        target: BaseException = active
+    else:
+        with pytest.raises(ValueError) as captured:
+            await cleanup()
+        assert captured.value is primary
+        target = captured.value
+    assert events == ["first", "broken", "last"]
+    assert any("BadMessage: <exception message unavailable>" in note for note in target.__notes__)
+    assert "original source context" in target.__notes__
+
+
+def test_cleanup_diagnostics_preserve_custom_exception_formatting() -> None:
+    """The guarded formatter retains the existing empty-format-spec behavior."""
+
+    class FormattedError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("use the custom format")
+
+        def __format__(self, spec: str) -> str:
+            assert spec == ""
+            return "formatted close description"
+
+    registry = ResourceRegistry()
+
+    def close(_value: object) -> None:
+        raise FormattedError()
+
+    registry.own(object(), close)
+    active = ValueError("operation failed")
+    registry.close(active)
+    assert active.__notes__ == ["cleanup failed: FormattedError: formatted close description"]
+
+
+def test_cleanup_errors_are_notes_on_active_error() -> None:
+    """Pipeline errors remain primary when cleanup has independent failures."""
+    resources = ResourceRegistry()
+
+    def fail(_value: object) -> None:
+        raise OSError("close failed")
+
+    resources.own(object(), fail)
+    active = ValueError("pipeline failed")
+    resources.close(active)
+
+    assert active.__notes__ == ["cleanup failed: OSError: close failed"]
+
+
+@pytest.mark.asyncio
+async def test_async_registry_awaits_every_closer_in_lifo_order() -> None:
+    """Async owners preserve the same LIFO semantics."""
+    events: list[str] = []
+    resources = ResourceRegistry()
+
+    async def close(value: str) -> None:
+        events.append(value)
+
+    await resources.aown("first", close)
+    await resources.aown("second", close)
+    await resources.aclose()
+
+    assert events == ["second", "first"]
+
+
+@pytest.mark.asyncio
+async def test_sync_cleanup_rejects_async_owners_without_losing_them() -> None:
+    events: list[str] = []
+    resources = ResourceRegistry()
+    resources.own("sync", lambda value: events.append(value))
+
+    async def close(value: str) -> None:
+        events.append(value)
+
+    owner = await resources.aown("async", close)
+    with pytest.raises(RuntimeError, match="arelease"):
+        resources.release(owner)
+    with pytest.raises(RuntimeError, match="aclose"):
+        resources.close()
+    assert not resources.closed
+    assert events == []
+    await resources.aclose()
+    assert events == ["async", "sync"]
+
+    resources = ResourceRegistry()
+    owner = await resources.aown("released", close)
+    active = ValueError("active")
+    resources.release(owner, active)
+    resources.close(active)
+    assert len(active.__notes__) == 2
+    assert "arelease" in active.__notes__[0]
+    assert "aclose" in active.__notes__[1]
+    await resources.arelease(owner)
+    await resources.aclose()
+    assert events == ["async", "sync", "released"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [False, True])
+async def test_query_runtime_sync_close_keeps_async_cleanup_available(active: bool) -> None:
+    events: list[str] = []
+    runtime = QueryRuntime()
+
+    async def close(value: str) -> None:
+        events.append(value)
+
+    await runtime.resources.aown("async", close)
+    failure = ValueError("operation") if active else None
+    if failure is None:
+        with pytest.raises(RuntimeError, match="aclose"):
+            runtime.close()
+    else:
+        runtime.close(failure)
+        assert "aclose" in failure.__notes__[0]
+    assert events == []
+    await runtime.aclose()
+    assert events == ["async"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_task", [False, True])
+@pytest.mark.parametrize("active", [False, True])
+async def test_query_runtime_sync_close_preserves_async_scope(
+    with_task: bool, active: bool
+) -> None:
+    runtime = QueryRuntime()
+    scope = runtime.tasks.scope("owned")
+    task = scope.create_task(asyncio.sleep(60), role=TaskRole.USER_CALL) if with_task else None
+    if active:
+        failure = ValueError("operation")
+        runtime.close(failure)
+        assert "async tasks require aclose" in failure.__notes__[0]
+    else:
+        with pytest.raises(RuntimeError, match="async tasks require aclose"):
+            runtime.close()
+    await runtime.aclose()
+    if task is not None:
+        assert task.cancelled()
+    assert scope._closed
+
+
+@pytest.mark.asyncio
+async def test_async_registry_early_release_forgets_owner_and_closes_once() -> None:
+    """An explicitly retired async owner is neither retained nor closed again."""
+
+    class NonIdempotentOwner:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            if self.close_calls > 1:
+                raise RuntimeError("async owner closed twice")
+
+    resources = ResourceRegistry()
+    owner = await resources.aown(NonIdempotentOwner())
+
+    await resources.arelease(owner)
+    await resources.arelease(owner)
+    await resources.aclose()
+
+    assert owner.close_calls == 1
+    assert resources._records == []
+
+
+@pytest.mark.asyncio
+async def test_async_registry_release_keeps_active_error_primary() -> None:
+    """Early async cleanup annotates, rather than replaces, an active failure."""
+    close_calls = 0
+
+    async def fail_close(_value: object) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        raise OSError("inner close failed")
+
+    resources = ResourceRegistry()
+    owner = await resources.aown(object(), fail_close)
+    active = asyncio.CancelledError("query cancelled")
+
+    await resources.arelease(owner, active)
+    await resources.aclose()
+
+    assert close_calls == 1
+    assert active.__notes__ == ["cleanup failed: OSError: inner close failed"]
+
+
+def test_query_runtime_closes_owned_resources_on_execution_error() -> None:
+    """Injected runtimes close query-owned resources while keeping the pipeline error primary."""
+    events: list[str] = []
+    runtime = QueryRuntime()
+    runtime.resources.own("closed", lambda value: events.append(value))
+    pipeline = flow([1]).map(lambda _value: (_ for _ in ()).throw(ValueError("boom")))
+    physical = compile_query(pipeline._query("list"))
+
+    with pytest.raises(ValueError, match="boom"):
+        list(execute_physical(physical, runtime=runtime))
+
+    assert events == ["closed"]
+
+
+def test_execute_physical_keeps_runtime_alive_until_iterator_close() -> None:
+    """Query-owned resources stay live until an iterator completes or is closed."""
+    cleanup_calls: list[str] = []
+    runtime = QueryRuntime()
+    runtime.resources.own("runtime", lambda value: cleanup_calls.append(value))
+    physical = compile_query(flow(range(100))._query("iterate"))
+    iterator = execute_physical(physical, runtime=runtime)
+
+    assert next(iterator) == 0
+    assert cleanup_calls == []
+    close = getattr(iterator, "close", None)
+    assert callable(close)
+    close()
+    assert cleanup_calls == ["runtime"]
+
+
+def test_execute_physical_close_surfaces_runtime_cleanup_failure() -> None:
+    """An explicit iterator close exposes a failing query-owned resource cleanup."""
+    cleanup_calls: list[str] = []
+    runtime = QueryRuntime()
+    failure = OSError("runtime close failed")
+
+    def fail_close(value: str) -> None:
+        cleanup_calls.append(value)
+        raise failure
+
+    runtime.resources.own("runtime", fail_close)
+    physical = compile_query(flow(range(100))._query("iterate"))
+    iterator = execute_physical(physical, runtime=runtime)
+
+    assert next(iterator) == 0
+    close = getattr(iterator, "close", None)
+    assert callable(close)
+    with pytest.raises(OSError, match="runtime close failed") as captured:
+        close()
+
+    assert captured.value is failure
+    assert cleanup_calls == ["runtime"]
+
+
+def test_execute_physical_close_before_first_next_is_lazy_and_surfaces_cleanup_failure() -> None:
+    """Closing an unstarted iterator retires its runtime without opening its source."""
+    source_opens: list[str] = []
+    cleanup_calls: list[str] = []
+    runtime = QueryRuntime()
+    failure = OSError("runtime close failed")
+
+    def values() -> Iterator[int]:
+        source_opens.append("source")
+        return iter(range(3))
+
+    def fail_close(value: str) -> None:
+        cleanup_calls.append(value)
+        raise failure
+
+    runtime.resources.own("runtime", fail_close)
+    physical = compile_query(flow.defer(values)._query("iterate"))
+    iterator = execute_physical(physical, runtime=runtime)
+    close = getattr(iterator, "close", None)
+
+    assert callable(close)
+    assert source_opens == []
+    with pytest.raises(OSError, match="runtime close failed") as captured:
+        close()
+
+    assert captured.value is failure
+    assert cleanup_calls == ["runtime"]
+    assert source_opens == []
+
+
+def test_execute_physical_setup_failure_closes_runtime_and_keeps_primary_error() -> None:
+    """Physical setup errors remain primary while query-owned resources are closed."""
+    cleanup_calls: list[str] = []
+    runtime = QueryRuntime()
+
+    def fail_close(value: str) -> None:
+        cleanup_calls.append(value)
+        raise OSError("runtime close failed")
+
+    runtime.resources.own("runtime", fail_close)
+    physical = compile_query(flow([1])._query("list"))
+    invalid = replace(physical, nodes=(PhysicalNode((0,), "unknown"),))
+
+    with pytest.raises(PhysicalExecutionError, match="unknown physical node") as captured:
+        execute_physical(invalid, runtime=runtime)
+
+    assert cleanup_calls == ["runtime"]
+    assert captured.value.__notes__ == ["cleanup failed: OSError: runtime close failed"]
+
+
+def test_execute_physical_invalid_backend_payload_closes_runtime() -> None:
+    """Backend validation still retires resources owned by an injected runtime."""
+    cleanup_calls: list[str] = []
+    runtime = QueryRuntime()
+    runtime.resources.own("runtime", lambda value: cleanup_calls.append(value))
+    physical = compile_query(flow([1])._query("list"))
+    invalid = replace(physical, backend_payload=object())  # type: ignore[arg-type]
+
+    with pytest.raises(PhysicalExecutionError, match="unknown backend payload"):
+        execute_physical(invalid, runtime=runtime)
+
+    assert cleanup_calls == ["runtime"]
+
+
+# --- Spill storage lifecycle ---
+
+
+def test_spilled_count_preaggregation_planner_accepts_only_the_closed_count_shape() -> None:
+    """A broader selector or collector must never acquire the count-only spill strategy."""
+    import pickle
+
+    import fpstreams
+
+    class OutputName(str):
+        pass
+
+    records = [{"id": 1, "band": "a", "value": 2}]
+    canonical_count = fpstreams.agg.count()
+    cloned_count = fpstreams.ReducerAggregator(
+        canonical_count.initializer,
+        canonical_count.step,
+        lambda count: count + 100,
+        merge=canonical_count.combine,  # type: ignore[arg-type]
+        laws=canonical_count.laws,
+        done=canonical_count.done,
+        native=canonical_count.native,
+    )
+    mutated_finish = fpstreams.agg.count()
+    object.__setattr__(mutated_finish, "finish", lambda count: count + 100)
+    mutated_done = fpstreams.agg.count()
+    object.__setattr__(mutated_done, "done", lambda _count: False)
+    pickled_count = pickle.loads(pickle.dumps(fpstreams.agg.count()))
+    candidates = (
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count()),
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.sum("value")),
+        fpstreams.rows(records)
+        .group_by("id")
+        .spill(2)
+        .aggregate(total=fpstreams.agg.collect("value")),
+        fpstreams.rows(records)
+        .group_by("id")
+        .spill(2)
+        .aggregate(total=fpstreams.Aggregator(lambda: 0, lambda state, _row: state + 1)),
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=cloned_count),
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=mutated_finish),
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=mutated_done),
+        fpstreams.rows(records).group_by("id").spill(2).aggregate(total=pickled_count),
+        fpstreams.rows(records)
+        .group_by("id", "band")
+        .spill(2)
+        .aggregate(total=fpstreams.agg.count()),
+        fpstreams.rows([{"nested": {"id": 1}}])
+        .group_by("nested.id")
+        .spill(2)
+        .aggregate(total=fpstreams.agg.count()),
+        fpstreams.rows(records)
+        .group_by(lambda row: row["id"])
+        .spill(2)
+        .aggregate(total=fpstreams.agg.count()),
+        fpstreams.rows(records)
+        .group_by("id")
+        .spill(2)
+        .aggregate(**{OutputName("total"): fpstreams.agg.count()}),
+        fpstreams.rows(records)
+        .group_by("id")
+        .spill(2)
+        .aggregate(total=fpstreams.agg.count(), other=fpstreams.agg.count()),
+    )
+
+    planned = [
+        getattr(compile_query(rows._flow._query("list")).root, "spill_count", None) is not None
+        for rows in candidates
+    ]
+
+    assert planned == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
+
+
+def _execute_spilled_count(
+    records: list[dict[str, Any]],
+    *,
+    key_field: str,
+    output_name: str,
+    partitions: int = 8,
+    instrumented: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """Execute one real spill-count plan and return its result and physical bytes."""
+    import fpstreams
+
+    grouped = (
+        fpstreams.rows(records)
+        .group_by(key_field)
+        .spill(partitions)
+        .aggregate(**{output_name: fpstreams.agg.count()})
+    )
+    physical = compile_query(grouped._flow._query("list"))
+    runtime = QueryRuntime()
+    if instrumented:
+        with failpoint("unrelated.transition", RuntimeError("unused")):
+            result = list(execute_physical(physical, runtime=runtime))
+    else:
+        result = list(execute_physical(physical, runtime=runtime))
+    physical_bytes = runtime.metrics.spill_bytes
+    runtime.close()
+    return result, physical_bytes
+
+
+def test_spilled_count_preaggregation_reduces_physical_spill_without_changing_results() -> None:
+    """A repeated pure record key becomes one partial while an instrumented run stays raw."""
+    records = [
+        {"id": "hot", "position": position, "payload": "x" * 96} for position in range(4_096)
+    ]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", instrumented=True
+    )
+
+    assert optimized == canonical == [{"id": "hot", "total": len(records)}]
+    assert optimized_bytes * 4 < canonical_bytes
+
+
+def test_spilled_count_preaggregation_auto_colds_a_uniform_stream() -> None:
+    """A bounded prefix with no frequency signal switches permanently to raw spilling."""
+    records = [{"id": position, "payload": position} for position in range(20_000)]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", partitions=32, instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="id", output_name="total", partitions=32, instrumented=True
+    )
+
+    assert optimized == canonical
+    assert optimized_bytes == canonical_bytes
+
+
+def test_spilled_count_gate_rejects_many_shallow_repeats_without_a_hot_key(
+    monkeypatch,
+) -> None:
+    """Aggregate repeat evidence alone must not admit hundreds of one-row partials."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    keys = [key for _round in range(2) for key in range(128)]
+    keys.extend(key for _round in range(6) for key in range(128))
+    keys.extend(key for _round in range(8) for key in range(128, 512))
+    records = [
+        {
+            "segment": key,
+            **{f"measure_{field}": position + field for field in range(4)},
+        }
+        for position, key in enumerate(keys)
+    ]
+    partials = 0
+    original_partial = spill.group_count_partial
+
+    def tracked_partial(*args, **kwargs):
+        nonlocal partials
+        partials += 1
+        return original_partial(*args, **kwargs)
+
+    monkeypatch.setattr(spill, "group_count_partial", tracked_partial)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("segment")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result == [{"segment": key, "observations": 8} for key in range(512)]
+    assert partials == 0
+
+
+def test_spilled_count_gate_extends_evidence_for_stable_low_cardinality() -> None:
+    """Strong recurrence may earn bounded extra sampling before count admission."""
+    keys = [key for _round in range(32) for key in range(256)]
+    records = [
+        {
+            "segment": key,
+            **{f"measure_{field}": position + field for field in range(36)},
+        }
+        for position, key in enumerate(keys)
+    ]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="segment", output_name="observations", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="segment", output_name="observations", instrumented=True
+    )
+
+    assert optimized == canonical == [{"segment": key, "observations": 32} for key in range(256)]
+    assert optimized_bytes * 2 < canonical_bytes
+
+
+def test_spilled_count_gate_rechecks_a_cold_prefix_for_later_hot_data() -> None:
+    """One cold sample must not permanently hide a sustained later hot key."""
+    keys = [*range(1, 257), *([0] * 4_096)]
+    records = [
+        {
+            "cohort": key,
+            **{f"reading_{field}": position + field for field in range(10)},
+        }
+        for position, key in enumerate(keys)
+    ]
+
+    optimized, optimized_bytes = _execute_spilled_count(
+        records, key_field="cohort", output_name="observations", instrumented=False
+    )
+    canonical, canonical_bytes = _execute_spilled_count(
+        records, key_field="cohort", output_name="observations", instrumented=True
+    )
+
+    assert optimized == canonical
+    assert optimized_bytes * 2 < canonical_bytes
+
+
+def test_spilled_count_gate_retires_after_a_hot_prefix_turns_cold(monkeypatch) -> None:
+    """A stale prefix signal must not keep scanning an arbitrarily long unique tail."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    keys = [*([0] * 230), *range(1, 27), *range(1_000, 5_096)]
+    records = [
+        {
+            "cohort": key,
+            **{f"reading_{field}": position + field for field in range(30)},
+        }
+        for position, key in enumerate(keys)
+    ]
+    purity_checks = 0
+    original_proof = spill._pickle_pure_row
+
+    def tracked_proof(row, key):
+        nonlocal purity_checks
+        purity_checks += 1
+        return original_proof(row, key)
+
+    monkeypatch.setattr(spill, "_pickle_pure_row", tracked_proof)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("cohort")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result[0] == {"cohort": 0, "observations": 230}
+    assert len(result) == 4_123
+    assert result[-1] == {"cohort": 5_095, "observations": 1}
+    assert purity_checks < len(records) // 2
+
+
+def test_spilled_count_gate_stops_rechecking_a_still_unique_stream(monkeypatch) -> None:
+    """A second cold window is enough when recurrence evidence remains absent."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    records = [
+        {
+            "cohort": position,
+            **{f"reading_{field}": position + field for field in range(2)},
+        }
+        for position in range(2_048)
+    ]
+    purity_checks = 0
+    original_proof = spill._pickle_pure_row
+
+    def tracked_proof(row, key):
+        nonlocal purity_checks
+        purity_checks += 1
+        return original_proof(row, key)
+
+    monkeypatch.setattr(spill, "_pickle_pure_row", tracked_proof)
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("cohort")
+        .spill(8)
+        .aggregate(observations=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result == [{"cohort": position, "observations": 1} for position in range(2_048)]
+    assert purity_checks <= 512
+
+
+def test_spilled_count_type_guard_keeps_custom_serialization_calls(monkeypatch) -> None:
+    """A class equating itself to int must still flush the hot cache before pickling."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    calls: list[str] = []
+
+    class Meta(type):
+        def __hash__(cls) -> int:
+            calls.append("class hash")
+            return hash(int)
+
+        def __eq__(cls, other: object) -> bool:
+            calls.append("class equality")
+            return other is int or other is cls
+
+    class Payload(metaclass=Meta):
+        def __reduce__(self):
+            calls.append("reduce")
+            return int, (7,)
+
+    records = [{"id": 0, "payload": 7} for _ in range(256)] + [
+        {"id": 0, "payload": Payload()} for _ in range(32)
+    ]
+    query = fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+    with monkeypatch.context() as scoped:
+        scoped.setattr(spill, "_pickle_pure_row", lambda _row, _key: False)
+        expected = query.to_list()
+    expected_calls = calls.copy()
+    calls.clear()
+
+    assert query.to_list() == expected == [{"id": 0, "total": 288}]
+    assert calls == expected_calls
+    assert calls.count("reduce") == 32
+
+
+class _SpillPickleObserved:
+    calls = 0
+
+    def __reduce__(self):
+        type(self).calls += 1
+        return type(self), ()
+
+
+class _SpillRedirectedRow(dict[str, object]):
+    def __getitem__(self, key: str) -> object:
+        if key == "id":
+            return True
+        return super().__getitem__(key)
+
+
+class _SpillCollisionKey:
+    comparisons = 0
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        return -2
+
+    def __eq__(self, other: object) -> bool:
+        type(self).comparisons += 1
+        if isinstance(other, _SpillCollisionKey):
+            return self.value == other.value
+        return self.value == other
+
+
+class _SpillStatefulCollisionKey:
+    comparisons = 0
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        return -2
+
+    def __eq__(self, other: object) -> bool:
+        type(self).comparisons += 1
+        value = other.value if isinstance(other, _SpillStatefulCollisionKey) else other
+        return type(self).comparisons <= 8 and self.value == value
+
+
+class _SpillStatefulFieldKey:
+    comparisons = 0
+
+    def __hash__(self) -> int:
+        return hash("id")
+
+    def __eq__(self, other: object) -> bool:
+        type(self).comparisons += 1
+        # CPython may compare one colliding dict key more than once after the
+        # subscription bytecode specializes.  Keep the result stable so this
+        # probe measures executor retries rather than hash-table internals.
+        return False
+
+
+def test_spilled_count_preaggregation_keeps_mixed_protocol_and_key_semantics() -> None:
+    """Only pure exact rows compact; cold rows and numeric aliases merge canonically."""
+    import math
+
+    import fpstreams
+
+    _SpillPickleObserved.calls = 0
+    nan = float("nan")
+    records: list[dict[str, object]] = [
+        {"id": "first", "payload": 0},
+        _SpillRedirectedRow(id="not-the-selected-key", payload=1),
+        {"id": 1, "payload": _SpillPickleObserved()},
+        *({"id": key, "payload": position} for position, key in enumerate((1.0, 1, True) * 64)),
+        *({"id": "first", "payload": position} for position in range(32)),
+        {"id": nan, "payload": "left"},
+        {"id": nan, "payload": "right"},
+    ]
+
+    result = (
+        fpstreams.rows(records)
+        .group_by("id")
+        .spill(8)
+        .aggregate(total=fpstreams.agg.count())
+        .to_list()
+    )
+
+    assert result[0] == {"id": "first", "total": 33}
+    assert result[1]["id"] is True
+    assert result[1]["total"] == 194
+    assert [row["total"] for row in result[2:]] == [1, 1]
+    assert all(math.isnan(row["id"]) for row in result[2:])
+    assert _SpillPickleObserved.calls == 1
+
+
+def test_spilled_count_preaggregation_requires_exact_evidence_before_admission() -> None:
+    """Sketch collisions cannot let a later custom-equal key replace the first built-in key."""
+    import fpstreams
+
+    def execute(*, instrumented: bool) -> tuple[list[dict[str, object]], int]:
+        _SpillCollisionKey.comparisons = 0
+        records = [
+            *({"id": -1, "position": position} for position in range(256)),
+            *({"id": -2, "position": 256 + position} for position in range(44)),
+            {"id": _SpillCollisionKey(-2), "position": 300},
+            *({"id": -2, "position": 301 + position} for position in range(29)),
+        ]
+        grouped = (
+            fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+        )
+        runtime = QueryRuntime()
+        physical = compile_query(grouped._flow._query("list"))
+        if instrumented:
+            with failpoint("unrelated.transition", RuntimeError("unused")):
+                result = list(execute_physical(physical, runtime=runtime))
+        else:
+            result = list(execute_physical(physical, runtime=runtime))
+        comparisons = _SpillCollisionKey.comparisons
+        runtime.close()
+        return result, comparisons
+
+    optimized, optimized_comparisons = execute(instrumented=False)
+    canonical, canonical_comparisons = execute(instrumented=True)
+
+    assert (
+        optimized
+        == canonical
+        == [
+            {"id": -1, "total": 256},
+            {"id": -2, "total": 74},
+        ]
+    )
+    assert type(optimized[1]["id"]) is int
+    assert optimized_comparisons == canonical_comparisons
+
+
+def test_spilled_count_preaggregation_turns_permanently_cold_at_custom_protocol_rows() -> None:
+    """A custom key is written after earlier partials and before all later canonical raw rows."""
+    import fpstreams
+
+    def execute(*, instrumented: bool) -> tuple[list[tuple[str, int, int]], int]:
+        _SpillStatefulCollisionKey.comparisons = 0
+        records = [
+            *({"id": -1, "position": position} for position in range(256)),
+            {"id": _SpillStatefulCollisionKey(-2), "position": 256},
+            *({"id": -2, "position": 257 + position} for position in range(73)),
+        ]
+        grouped = (
+            fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+        )
+        runtime = QueryRuntime()
+        physical = compile_query(grouped._flow._query("list"))
+        if instrumented:
+            with failpoint("unrelated.transition", RuntimeError("unused")):
+                result = list(execute_physical(physical, runtime=runtime))
+        else:
+            result = list(execute_physical(physical, runtime=runtime))
+        comparisons = _SpillStatefulCollisionKey.comparisons
+        runtime.close()
+        normalized = [
+            (
+                "custom" if type(row["id"]) is _SpillStatefulCollisionKey else "int",
+                row["id"].value if type(row["id"]) is _SpillStatefulCollisionKey else row["id"],
+                row["total"],
+            )
+            for row in result
+        ]
+        return normalized, comparisons
+
+    optimized, optimized_comparisons = execute(instrumented=False)
+    canonical, canonical_comparisons = execute(instrumented=True)
+
+    assert optimized == canonical
+    assert optimized_comparisons == canonical_comparisons
+
+
+def test_spilled_count_preaggregation_does_not_retry_direct_field_selection() -> None:
+    """A failed exact-dict field selection has the canonical observable lookup count."""
+    from contextlib import nullcontext
+
+    import fpstreams
+
+    def execute(*, instrumented: bool) -> tuple[str, type[BaseException] | None, int]:
+        _SpillStatefulFieldKey.comparisons = 0
+        grouped = (
+            fpstreams.rows([{_SpillStatefulFieldKey(): "hot"}])
+            .group_by("id")
+            .spill(2)
+            .aggregate(total=fpstreams.agg.count())
+        )
+        context = (
+            failpoint("unrelated.transition", RuntimeError("unused"))
+            if instrumented
+            else nullcontext()
+        )
+        with context, pytest.raises(fpstreams.SelectionError) as caught:
+            grouped.to_list()
+        return (
+            str(caught.value),
+            type(caught.value.__cause__) if caught.value.__cause__ is not None else None,
+            _SpillStatefulFieldKey.comparisons,
+        )
+
+    assert execute(instrumented=False) == execute(instrumented=True)
+
+
+def test_spilled_count_preaggregation_keeps_wide_row_graphs_out_of_bounded_hot_state() -> None:
+    """Purity proof scratch space is capped instead of retaining an arbitrarily wide row."""
+    import fpstreams
+
+    record = {"id": "hot", **{f"field_{position}": position for position in range(512)}}
+    records = [dict(record) for _position in range(32)]
+
+    def spill_bytes(*, instrumented: bool) -> int:
+        grouped = (
+            fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+        )
+        runtime = QueryRuntime()
+        physical = compile_query(grouped._flow._query("list"))
+        if instrumented:
+            with failpoint("unrelated.transition", RuntimeError("unused")):
+                assert list(execute_physical(physical, runtime=runtime)) == [
+                    {"id": "hot", "total": len(records)}
+                ]
+        else:
+            assert list(execute_physical(physical, runtime=runtime)) == [
+                {"id": "hot", "total": len(records)}
+            ]
+        result = runtime.metrics.spill_bytes
+        runtime.close()
+        return result
+
+    assert spill_bytes(instrumented=False) == spill_bytes(instrumented=True)
+
+
+def test_spilled_count_preaggregation_does_not_retain_unbounded_primitive_keys() -> None:
+    """An exact built-in key larger than the cache byte cap remains canonical cold data."""
+    import fpstreams
+
+    key = "x" * 8_192
+    records = [{"id": key, "position": position} for position in range(32)]
+
+    def execute(*, instrumented: bool) -> tuple[list[dict[str, object]], int]:
+        grouped = (
+            fpstreams.rows(records).group_by("id").spill(2).aggregate(total=fpstreams.agg.count())
+        )
+        runtime = QueryRuntime()
+        physical = compile_query(grouped._flow._query("list"))
+        if instrumented:
+            with failpoint("unrelated.transition", RuntimeError("unused")):
+                result = list(execute_physical(physical, runtime=runtime))
+        else:
+            result = list(execute_physical(physical, runtime=runtime))
+        physical_bytes = runtime.metrics.spill_bytes
+        runtime.close()
+        return result, physical_bytes
+
+    optimized, optimized_bytes = execute(instrumented=False)
+    canonical, canonical_bytes = execute(instrumented=True)
+
+    assert optimized == canonical == [{"id": key, "total": len(records)}]
+    assert optimized_bytes == canonical_bytes
+
+
+def test_spilled_count_preaggregation_uses_exact_virtual_partition_limits(tmp_path) -> None:
+    """Hot partials retain canonical raw row and framed-byte limits through repartition."""
+    import fpstreams
+    from fpstreams.storage.codec import SpillCodec
+
+    records = [{"id": "hot", "payload": "x" * 64} for _position in range(512)]
+    codec = SpillCodec()
+    canonical_bytes = len(b"FPSTRM\x00\x01") + sum(
+        len(codec.encode_record((position, "hot", row))) for position, row in enumerate(records)
+    )
+
+    exact = fpstreams.SpillLimits(
+        max_partition_rows=len(records),
+        max_partition_bytes=canonical_bytes,
+        max_matches_per_key=1,
+        max_output_rows=1,
+        max_repartition_depth=0,
+    )
+    assert fpstreams.rows(records).group_by("id").spill(
+        2, tempdir=tmp_path, limits=exact
+    ).aggregate(total=fpstreams.agg.count()).to_list() == [{"id": "hot", "total": len(records)}]
+
+    too_few_rows = fpstreams.SpillLimits(
+        max_partition_rows=len(records) - 1,
+        max_partition_bytes=canonical_bytes,
+        max_matches_per_key=1,
+        max_output_rows=1,
+        max_repartition_depth=1,
+    )
+    with pytest.raises(fpstreams.BufferLimitError, match=r"max_partition_rows.*1 repartition"):
+        (
+            fpstreams.rows(records)
+            .group_by("id")
+            .spill(2, tempdir=tmp_path, limits=too_few_rows)
+            .aggregate(total=fpstreams.agg.count())
+            .to_list()
+        )
+
+    too_few_bytes = fpstreams.SpillLimits(
+        max_partition_rows=len(records),
+        max_partition_bytes=canonical_bytes - 1,
+        max_matches_per_key=1,
+        max_output_rows=1,
+        max_repartition_depth=0,
+    )
+    with pytest.raises(fpstreams.BufferLimitError, match="max_partition_bytes"):
+        (
+            fpstreams.rows(records)
+            .group_by("id")
+            .spill(2, tempdir=tmp_path, limits=too_few_bytes)
+            .aggregate(total=fpstreams.agg.count())
+            .to_list()
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spilled_count_preaggregation_keeps_repartition_bytes_canonical(tmp_path) -> None:
+    """Nested built-ins stay raw when pickle roundtrips change their framed byte size."""
+    import pickle
+    from contextlib import nullcontext
+
+    import fpstreams
+    from fpstreams.storage.codec import SpillCodec
+
+    size = 600
+    records = [{"key": 0, "payload": {str(0): {str(0): position % 3}}} for position in range(size)]
+    codec = SpillCodec()
+    initial_bytes = stable_bytes = len(b"FPSTRM\x00\x01")
+    for position, row in enumerate(records):
+        frame = codec.encode_record((position, 0, row))
+        initial_bytes += len(frame)
+        stable_bytes += len(codec.encode_record(pickle.loads(frame[4:])))
+    assert (initial_bytes, stable_bytes) == (36_352, 35_152)
+    limits = fpstreams.SpillLimits(
+        max_partition_rows=size,
+        max_partition_bytes=stable_bytes,
+        max_matches_per_key=1,
+        max_output_rows=1,
+        max_repartition_depth=1,
+    )
+
+    def execute(*, instrumented: bool) -> list[dict[str, int]]:
+        grouped = (
+            fpstreams.rows(records)
+            .group_by("key")
+            .spill(2, tempdir=tmp_path, limits=limits)
+            .aggregate(n=fpstreams.agg.count())
+        )
+        context = (
+            failpoint("unrelated.transition", RuntimeError("unused"))
+            if instrumented
+            else nullcontext()
+        )
+        with context:
+            return grouped.to_list()
+
+    assert execute(instrumented=False) == execute(instrumented=True) == [{"key": 0, "n": size}]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spilled_count_preaggregation_colds_distinct_equal_flat_strings_and_bytes() -> None:
+    """Identity-sensitive flat values stay raw before pickle can canonicalize aliases."""
+    import pickle
+
+    import fpstreams
+    from fpstreams.storage.codec import SpillCodec
+
+    builders = (
+        (lambda: {"key": str(0), "payload": str(0)}, True),
+        (lambda: {"key": 0, "a": str(0), "b": str(0)}, True),
+        (lambda: {"key": 0, "a": bytes([0]) * 0, "b": bytes([1]) * 0}, True),
+        (
+            lambda: {
+                "key": 0,
+                "a": bytes(bytearray(b"x" * 30)),
+                "b": bytes(bytearray(b"x" * 30)),
+            },
+            False,
+        ),
+    )
+    codec = SpillCodec()
+
+    def execute(
+        records: list[dict[str, object]], *, instrumented: bool
+    ) -> tuple[list[dict[str, object]], int]:
+        grouped = (
+            fpstreams.rows(records).group_by("key").spill(2).aggregate(n=fpstreams.agg.count())
+        )
+        runtime = QueryRuntime()
+        physical = compile_query(grouped._flow._query("list"))
+        if instrumented:
+            with failpoint("unrelated.transition", RuntimeError("unused")):
+                result = list(execute_physical(physical, runtime=runtime))
+        else:
+            result = list(execute_physical(physical, runtime=runtime))
+        spill_bytes = runtime.metrics.spill_bytes
+        runtime.close()
+        return result, spill_bytes
+
+    for build, size_drifts in builders:
+        first = build()
+        record = (0, first["key"], first)
+        sizes: list[int] = []
+        for _generation in range(4):
+            frame = codec.encode_record(record)
+            sizes.append(len(frame))
+            record = pickle.loads(frame[4:])
+        assert (len(set(sizes)) > 1) is size_drifts
+        records = [build() for _position in range(600)]
+
+        assert execute(records, instrumented=False) == execute(records, instrumented=True)
+
+
+def test_active_failpoint_keeps_spilled_count_on_canonical_source_and_cleanup_path(
+    tmp_path, monkeypatch
+) -> None:
+    """Instrumentation disables partial creation before the one-shot source is opened."""
+    import fpstreams
+    from fpstreams.tabular import spill
+
+    opened = False
+    specialized = False
+
+    def records():
+        nonlocal opened
+        opened = True
+        yield from ({"id": "hot", "value": value} for value in range(32))
+
+    original = spill._partition_count_rows
+
+    def tracked(*args, **kwargs):
+        nonlocal specialized
+        specialized = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(spill, "_partition_count_rows", tracked)
+    grouped = (
+        fpstreams.rows(records())
+        .group_by("id")
+        .spill(2, tempdir=tmp_path)
+        .aggregate(total=fpstreams.agg.count())
+    )
+
+    with (
+        failpoint("source.open.after", RuntimeError("instrumented open")),
+        pytest.raises(RuntimeError, match="instrumented open"),
+    ):
+        grouped.to_list()
+
+    assert not opened
+    assert not specialized
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spill_store_round_trips_arbitrary_records(tmp_path) -> None:
+    """One versioned run preserves heterogeneous picklable Python records."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=4))
+    store = SpillStore(runtime, parent=tmp_path, operation="test")
+    writer = store.create_writer(generation=0, partition=0)
+    writer.write((1, "a"))
+    writer.write({"values": (2, 3)})
+    run = writer.close()
+
+    assert list(store.read(run)) == [(1, "a"), {"values": (2, 3)}]
+    runtime.close()
+    assert not store.directory.exists()
+
+
+def test_spill_store_batches_large_runs_without_changing_logical_metrics(
+    tmp_path, monkeypatch
+) -> None:
+    """Large runs amortize pickle framing while retaining rows, bytes, and values."""
+    from fpstreams.storage import codec as codec_module
+
+    calls = 0
+    pickle_dumps = codec_module.pickle.dumps
+
+    def counted_dumps(value, *, protocol):
+        nonlocal calls
+        calls += 1
+        return pickle_dumps(value, protocol=protocol)
+
+    monkeypatch.setattr(codec_module.pickle, "dumps", counted_dumps)
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="batched")
+    values = list(range(4_097))
+
+    run = store.write_run(0, 0, values)
+
+    assert list(store.read(run)) == values
+    assert run.rows == len(values)
+    assert run.bytes == runtime.metrics.spill_bytes + len(b"FPSTRM\x00\x01")
+    assert 1 < calls < 100
+    runtime.close()
+
+
+def test_spill_writer_open_failpoint_releases_its_lease_immediately(tmp_path) -> None:
+    """A constructor failure after open cannot poison the remaining query budget."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+    store = SpillStore(runtime, parent=tmp_path, operation="open-failure")
+
+    with (
+        failpoint("spill.open.after", OSError("open transition failed")),
+        pytest.raises(OSError, match="open transition failed"),
+    ):
+        store.create_writer(generation=0, partition=0)
+
+    assert runtime.metrics.open_files == 0
+    replacement = store.create_writer(generation=0, partition=1)
+    replacement.write("still usable")
+    replacement.close()
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_spill_run_keeps_source_error_primary_when_iterator_close_fails(tmp_path) -> None:
+    """Writer and iterator cleanup failures become notes on the pipeline error."""
+    primary = ValueError("primary source failure")
+
+    class FailingValues:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise primary
+
+        def close(self) -> None:
+            raise OSError("secondary iterator close")
+
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+    store = SpillStore(runtime, parent=tmp_path, operation="source-failure")
+
+    with pytest.raises(ValueError, match="primary source failure") as caught:
+        store.write_run(0, 0, FailingValues())
+
+    assert caught.value is primary
+    assert caught.value.__notes__ == ["cleanup failed: OSError: secondary iterator close"]
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_spill_sort_records_avoid_per_row_dataclass_reflection(tmp_path, monkeypatch) -> None:
+    """Record framing must not rediscover dataclass fields for every spilled row."""
+    import dataclasses
+
+    calls = 0
+    fields = dataclasses.fields
+
+    def counted_fields(value):
+        nonlocal calls
+        calls += 1
+        return fields(value)
+
+    monkeypatch.setattr(dataclasses, "fields", counted_fields)
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="sort-records")
+    records = [SortRecord(value, value, value) for value in range(128)]
+
+    run = store.write_run(0, 0, records)
+
+    assert list(store.read(run)) == records
+    assert calls <= 2
+    runtime.close()
+
+
+def test_value_only_merge_evaluates_each_current_record_key_once(tmp_path) -> None:
+    """Heap comparisons reuse one key per cursor instead of re-running user code."""
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="position-sort")
+    runs = [
+        store.write_run(
+            0,
+            partition,
+            [PositionRecord(position, value) for position, value in records],
+        )
+        for partition, records in enumerate(
+            (
+                ((0, 1), (3, 4), (6, 7)),
+                ((1, 2), (4, 5), (7, 8)),
+                ((2, 3), (5, 6), (8, 9)),
+            )
+        )
+    ]
+    calls = 0
+
+    def key(value: int) -> int:
+        nonlocal calls
+        calls += 1
+        return value
+
+    merged = list(_merge_position_runs(store, runs, key=key, reverse=False))
+
+    assert [record.value for record in merged] == list(range(1, 10))
+    assert calls == len(merged)
+    runtime.close()
+
+
+def test_ephemeral_spill_skips_fsync_without_weakening_durable_default(
+    tmp_path, monkeypatch
+) -> None:
+    """Query-temporary runs may skip crash durability; ordinary stores still sync."""
+    calls: list[int] = []
+    monkeypatch.setattr("fpstreams.storage.spill_store.os.fsync", calls.append)
+
+    durable_runtime = QueryRuntime()
+    durable = SpillStore(durable_runtime, parent=tmp_path, operation="durable")
+    durable.write_run(0, 0, ["kept"])
+    durable_runtime.close()
+
+    ephemeral_runtime = QueryRuntime()
+    ephemeral = SpillStore(
+        ephemeral_runtime,
+        parent=tmp_path,
+        operation="ephemeral",
+        durable=False,
+    )
+    run = ephemeral.write_run(0, 0, ["temporary"])
+
+    assert len(calls) == 1
+    assert list(ephemeral.read(run)) == ["temporary"]
+    ephemeral_runtime.close()
+
+
+def test_truncated_run_fails_and_cleans_up(tmp_path) -> None:
+    """Malformed frame input raises a normalized format error before runtime cleanup."""
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="test")
+    run = store.write_run(0, 0, [1, 2, 3])
+    run.path.write_bytes(run.path.read_bytes()[:-2])
+
+    with pytest.raises(SpillFormatError, match="truncated"):
+        list(store.read(run))
+
+    runtime.close()
+    assert not store.directory.exists()
+
+
+def test_generation_replacement_publishes_new_runs_before_removing_old(tmp_path) -> None:
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="test")
+    old_run = store.write_run(0, 0, ["old"])
+    old = SpillGeneration(0, (old_run,))
+    store.commit_generation(old)
+    new_run = store.write_run(1, 0, ["new"])
+    new = SpillGeneration(1, (new_run,))
+
+    store.replace_generation(old, new)
+
+    assert not old_run.path.exists()
+    assert new_run.path.exists()
+    assert list(store.read(new_run)) == ["new"]
+    runtime.close()
+
+
+def test_generation_replacement_keeps_durable_metadata_if_unlink_fails(tmp_path) -> None:
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="test")
+    old_run = store.write_run(0, 0, ["old"])
+    old = SpillGeneration(0, (old_run,))
+    store.commit_generation(old)
+    new_run = store.write_run(1, 0, ["new"])
+    new = SpillGeneration(1, (new_run,))
+
+    with (
+        failpoint("spill.unlink.before", OSError("injected unlink failure")),
+        pytest.raises(OSError, match="injected unlink failure"),
+    ):
+        store.replace_generation(old, new)
+
+    assert store._generations == {0: old, 1: new}
+    assert old_run.path.exists()
+    assert new_run.path.exists()
+    runtime.close()
+
+
+def test_spill_writer_can_append_a_closed_partition_run(tmp_path) -> None:
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="test")
+    writer = store.create_writer(generation=0, partition=0)
+    writer.write("first")
+    first = writer.close()
+    resumed = store.create_writer(generation=0, partition=0, path=first.path, append=True)
+    resumed.write("second")
+    resumed.close()
+
+    assert list(store.read(first)) == ["first", "second"]
+    runtime.close()
+
+
+def test_partition_writers_can_use_framed_store_runs(tmp_path) -> None:
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="partition")
+    writers = SpillPartitionWriters(store.directory, "input", 2, operation="group_by", store=store)
+    writers.dump(0, (0, "left"))
+    writers.dump(1, (1, "right"))
+    writers.close()
+
+    assert list(read(writers.files()[0].path, store=store)) == [(0, "left")]
+    assert list(read(writers.files()[1].path, store=store)) == [(1, "right")]
+    runtime.close()
+
+
+def test_buffered_partition_write_failpoint_releases_file_lease(tmp_path) -> None:
+    """The encoded-byte flush retains the common spill write failure boundary."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+    store = SpillStore(runtime, parent=tmp_path, operation="partition-failure", durable=False)
+    writers = SpillPartitionWriters(
+        store.directory,
+        "input",
+        64,
+        operation="group_by",
+        store=store,
+    )
+    writers.dump(0, (0, "value"))
+
+    with (
+        failpoint("spill.write.before", OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        writers.close()
+
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_partition_read_uses_the_shared_failpoint_and_releases_its_lease(tmp_path) -> None:
+    """Tabular readers use the same tracked read boundary as ordinary spill runs."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=1))
+    store = SpillStore(runtime, parent=tmp_path, operation="partition-read", durable=False)
+    run = store.write_run(0, 0, ["value"])
+    values = read(run.path, store=store)
+
+    with (
+        failpoint("spill.read.before", OSError("read failed")),
+        pytest.raises(OSError, match="read failed"),
+    ):
+        next(values)
+
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_store_partition_writer_appends_after_a_bounded_buffer_flush(tmp_path, monkeypatch) -> None:
+    from fpstreams.tabular import spill_io
+
+    monkeypatch.setattr(spill_io, "_PARTITION_BUFFER_BYTES", 1)
+    runtime = QueryRuntime()
+    store = SpillStore(runtime, parent=tmp_path, operation="partition")
+    writers = SpillPartitionWriters(store.directory, "input", 33, operation="group_by", store=store)
+    writers.dump(0, "before")
+    for partition in range(1, 33):
+        writers.dump(partition, partition)
+    writers.dump(0, "after")
+    writers.close()
+
+    assert list(read(writers.files()[0].path, store=store)) == ["before", "after"]
+    runtime.close()
+
+
+def test_wide_partition_writer_and_repartition_share_the_query_file_budget(tmp_path) -> None:
+    """A source reader plus wide repartition never relies on a stale FD snapshot."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=2))
+    store = SpillStore(runtime, parent=tmp_path, operation="repartition", durable=False)
+    values = [(position, position, {"id": position}) for position in range(80)]
+    run = store.write_run(0, 0, values)
+    source = PartitionFile(run.path, run.rows, run.bytes)
+
+    outputs = repartition(
+        source,
+        store.directory,
+        "child",
+        64,
+        operation="group_by",
+        salt=7,
+        store=store,
+    )
+    actual = [value for output in outputs for value in read(output.path, store=store)]
+
+    assert sorted(actual) == values
+    assert runtime.metrics.high_water_open_files <= 2
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_ordered_spill_merge_collapses_256_paths_within_file_budget(tmp_path) -> None:
+    """Result ordering uses bounded merge generations rather than 256 simultaneous readers."""
+    runtime = QueryRuntime(QueryLimits(max_open_files=3))
+    store = SpillStore(runtime, parent=tmp_path, operation="ordered-merge", durable=False)
+    paths = []
+    for position in reversed(range(256)):
+        path = store.directory / f"result-{position}.bin"
+        writer = SpillLazyWriter(path, operation="ordered-merge", store=store)
+        writer.dump((position, position))
+        writer.close()
+        paths.append(path)
+
+    with pytest.raises(RuntimeError, match="closed"):
+        writer.dump((999, 999))
+
+    values = merge_ordered(paths, store=store)
+    assert next(values) == 0
+    assert [0, *values] == list(range(256))
+    assert runtime.metrics.high_water_open_files <= 3
+    assert runtime.metrics.open_files == 0
+
+    early_paths = []
+    for position in range(8):
+        path = store.directory / f"early-{position}.bin"
+        early_writer = SpillLazyWriter(path, operation="ordered-merge", store=store)
+        early_writer.dump((position, position))
+        early_writer.close()
+        early_paths.append(path)
+    early = merge_ordered(early_paths, store=store)
+    assert next(early) == 0
+    early.close()
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_ordered_spill_merge_early_close_surfaces_reader_cleanup_failures(
+    tmp_path, monkeypatch
+) -> None:
+    """Early consumer close reports reader failures after attempting every close."""
+    from fpstreams.runtime import TrackedBinaryFile
+
+    runtime = QueryRuntime(QueryLimits(max_open_files=4))
+    store = SpillStore(runtime, parent=tmp_path, operation="ordered-close", durable=False)
+    paths = [store.write_run(0, position, [(position, position)]).path for position in range(2)]
+    close_calls = 0
+    original_close = TrackedBinaryFile._close_owned
+
+    def fail_after_reader_close(handle: TrackedBinaryFile) -> None:
+        nonlocal close_calls
+        is_reader = handle.readable()
+        original_close(handle)
+        if is_reader:
+            close_calls += 1
+            raise OSError(f"reader close failure {close_calls}")
+
+    monkeypatch.setattr(TrackedBinaryFile, "_close_owned", fail_after_reader_close)
+    values = merge_ordered(paths, store=store)
+    assert next(values) == 0
+
+    with pytest.raises(OSError, match="reader close failure 1") as captured:
+        values.close()
+
+    assert captured.value.__notes__ == ["cleanup failed: OSError: reader close failure 2"]
+    assert close_calls == len(paths)
+    assert runtime.metrics.open_files == 0
+    runtime.close()
+
+
+def test_nested_join_and_group_spills_compose_under_one_file_budget() -> None:
+    """A downstream spill may consume an upstream spill without descriptor deadlock."""
+    import fpstreams
+
+    left = [{"id": position % 8, "left": position} for position in range(64)]
+    right = [{"id": position, "right": position * 10} for position in range(8)]
+    rows = (
+        fpstreams.rows(left)
+        .join(right, on="id", partitions=4)
+        .group_by("id")
+        .spill(4)
+        .aggregate(count=fpstreams.agg.count())
+    )
+    physical = compile_query(rows._flow._query("list"))
+    runtime = QueryRuntime(QueryLimits(max_open_files=4))
+
+    actual = list(execute_physical(physical, runtime=runtime))
+
+    assert sorted(actual, key=lambda row: row["id"]) == [
+        {"id": position, "count": 8} for position in range(8)
+    ]
+    assert runtime.metrics.high_water_open_files <= 4
+    assert runtime.metrics.open_files == 0
+    assert runtime.metrics.spill_bytes > 0
+
+
+def test_spilled_relational_file_minimum_is_checked_before_one_shot_input(tmp_path) -> None:
+    """An unusable file budget fails before claiming or advancing a source generator."""
+    import fpstreams
+
+    opened = False
+
+    def records():
+        nonlocal opened
+        opened = True
+        yield {"id": 1}
+
+    rows = fpstreams.rows(records()).group_by("id").spill(2).aggregate(count=fpstreams.agg.count())
+    physical = compile_query(rows._flow._query("list"))
+    runtime = QueryRuntime(QueryLimits(max_open_files=3))
+    runtime.files.open(tmp_path / "held.bin", "wb")
+
+    with pytest.raises(RuntimeError, match=r"at least 3.*available=2"):
+        list(execute_physical(physical, runtime=runtime))
+
+    assert not opened
+    assert runtime.metrics.open_files == 0
+    assert rows.to_list() == [{"id": 1, "count": 1}]
+    assert opened
+
+
+def test_sort_merge_fan_in_obeys_the_query_file_limit_during_compaction(tmp_path) -> None:
+    runtime = QueryRuntime(QueryLimits(max_open_files=4))
+    store = SpillStore(runtime, parent=tmp_path, operation="sort")
+    runs = [
+        store.write_run(0, position, [SortRecord(position, position, position)])
+        for position in range(5)
+    ]
+    operation = SortOp(None, False, 1)
+    fan_in = _sort_merge_fan_in(runtime)
+
+    collapsed, _generation = _collapse_sort_runs(store, runs, operation, 0, fan_in)
+
+    assert fan_in == 2
+    assert len(collapsed) <= fan_in
+    assert [record.value for record in _merge_sort_runs(store, collapsed, operation)] == list(
+        range(5)
+    )
+    runtime.close()
+
+
+def test_physical_external_sort_uses_injected_runtime_budget_and_metrics() -> None:
+    """The physical sort must not replace the caller's limits with a nested runtime."""
+    physical = compile_query(
+        flow(range(20, 0, -1)).external_sort(buffer_size=1).with_engine("python")._query("list")
+    )
+    rejected = QueryRuntime(QueryLimits(max_open_files=1))
+    with pytest.raises(RuntimeError, match="at least 3"):
+        list(execute_physical(physical, runtime=rejected))
+
+    runtime = QueryRuntime(QueryLimits(max_open_files=4))
+    assert list(execute_physical(physical, runtime=runtime)) == list(range(1, 21))
+    assert 0 < runtime.metrics.high_water_open_files <= 4
+    assert runtime.metrics.open_files == 0
+    assert runtime.metrics.spill_bytes > 0
+
+
+def test_sorted_cursor_contract() -> None:
+    from fpstreams.execution.sorted_streams import _EOF, _KeyShape, _SortedCursor
+    from fpstreams.planning.source import Source
+
+    events = []
+
+    class Values:
+        def __init__(self, values):
+            self.values = iter(values)
+            self.closed = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            events.append("pull")
+            return next(self.values)
+
+        def close(self):
+            self.closed += 1
+
+    values = Values([1, 1, 3])
+
+    def open_values():
+        events.append("open")
+        return values
+
+    def key(value):
+        events.append(("key", value))
+        return value
+
+    cursor = _SortedCursor(Source.defer(open_values), key, side="left")
+    assert events == []
+    assert cursor.peek() == (1, 1)
+    assert cursor.peek() == (1, 1)
+    assert events == ["open", "pull", ("key", 1)]
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (3, 3)
+    assert cursor.peek() is _EOF
+    assert cursor.pop() is _EOF
+    cursor.close()
+    cursor.close()
+    assert values.closed == 1
+
+    unordered = Values([1, 3, 2])
+    cursor = _SortedCursor(Source.from_iterable(unordered), lambda v: v, side="right")
+    assert cursor.pop() == (1, 1)
+    assert cursor.pop() == (3, 3)
+    with pytest.raises(ValueError, match=r"right.*index 2"):
+        cursor.peek()
+    assert unordered.closed == 1
+    cursor.close()
+    assert unordered.closed == 1
+
+    class IntSubclass(int):
+        pass
+
+    for invalid in (True, 1.0, None, IntSubclass(1), (), ((1,),), (1, False)):
+        source = Values([invalid])
+        cursor = _SortedCursor(Source.from_iterable(source), lambda v: v, side="left")
+        with pytest.raises(TypeError):
+            cursor.peek()
+        assert source.closed == 1
+    for valid in (2**100, "a", b"a", (1, "a", b"a")):
+        cursor = _SortedCursor(Source.from_iterable([valid]), lambda v: v, side="left")
+        assert cursor.pop()[0] is valid
+        cursor.close()
+
+    for changed in ([1, "a"], [(1,), 2], [(1, "a"), (2, 3)], [(1,), (2, 3)]):
+        cursor = _SortedCursor(Source.from_iterable(changed), lambda v: v, side="left")
+        cursor.pop()
+        with pytest.raises(TypeError):
+            cursor.pop()
+
+    shape = _KeyShape()
+    left = _SortedCursor(Source.from_iterable([1]), lambda v: v, side="left", shape=shape)
+    right = _SortedCursor(Source.from_iterable(["a"]), lambda v: v, side="right", shape=shape)
+    left.pop()
+    with pytest.raises(TypeError):
+        right.peek()
+    left.close()
+
+    error = LookupError("selector failed")
+    source = Values([1])
+
+    def fail(_value):
+        raise error
+
+    cursor = _SortedCursor(Source.from_iterable(source), fail, side="left")
+    with pytest.raises(LookupError) as caught:
+        cursor.peek()
+    assert caught.value is error
+    assert source.closed == 1
+
+    opened = []
+    cursor = _SortedCursor(Source.defer(lambda: opened.append(True) or iter(())), key, side="left")
+    cursor.close()
+    assert cursor.peek() is _EOF
+    assert opened == []
+
+
+def test_sorted_cursor_preserves_failures_and_record_identity() -> None:
+    from fpstreams.execution.sorted_streams import _EOF, _SortedCursor
+    from fpstreams.planning.source import Source
+
+    row = {"key": 1}
+    cursor = _SortedCursor(Source.from_iterable([row]), lambda v: v["key"], side="left")
+    first = cursor.peek()
+    assert cursor.peek() is first
+    assert cursor.pop() is first
+    assert first[1] is row
+    assert cursor.peek() is _EOF
+    cursor.close()
+
+    def check_failure(failure_site):
+        primary = RuntimeError(failure_site)
+        cleanup = RuntimeError("close failed")
+        closed = []
+
+        class Failing:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if failure_site == "pull":
+                    raise primary
+                return 1
+
+            def close(self):
+                closed.append(True)
+                raise cleanup
+
+        def opener():
+            if failure_site == "open":
+                raise primary
+            return Failing()
+
+        def key(_value):
+            raise primary
+
+        cursor = _SortedCursor(Source.defer(opener), key, side="left")
+        with pytest.raises(RuntimeError) as caught:
+            cursor.peek()
+        assert caught.value is primary
+        assert closed == ([] if failure_site == "open" else [True])
+        if closed:
+            assert any("close failed" in note for note in primary.__notes__)
+        cursor.close()
+
+    for failure_site in ("open", "pull", "key"):
+        check_failure(failure_site)
+
+    cleanup = RuntimeError("normal close failed")
+
+    class Empty:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            raise cleanup
+
+    cursor = _SortedCursor(Source.from_iterable(Empty()), lambda v: v, side="left")
+    assert cursor.peek() is _EOF
+    with pytest.raises(RuntimeError) as caught:
+        cursor.close()
+    assert caught.value is cleanup
+    cursor.close()
+
+
+def test_sorted_group_cleanup_and_retention() -> None:
+    import fpstreams
+
+    class Row(dict):
+        live = 0
+        peak = 0
+
+        def __init__(self, **fields):
+            super().__init__(fields)
+            Row.live += 1
+            Row.peak = max(Row.peak, Row.live)
+
+        def __del__(self):
+            Row.live -= 1
+
+    closed = []
+    pulled = []
+    group_width = 20
+
+    def source():
+        try:
+            for index in range(10_000):
+                pulled.append(index)
+                yield Row(k=index // group_width, value=1)
+        finally:
+            closed.append(True)
+
+    grouped = (
+        fpstreams.flow.defer(source)
+        .rows()
+        .group_by_sorted("k")
+        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+    )
+    assert pulled == []
+    result = grouped.to_list()
+    assert len(result) == 500
+    assert result[0] == {"k": 0, "count": 20, "total": 20}
+    assert result[-1] == {"k": 499, "count": 20, "total": 20}
+    assert Row.peak <= 2
+    assert Row.live == 0
+    assert closed == [True]
+
+    pulled.clear()
+    closed.clear()
+    assert grouped.take(0).to_list() == []
+    assert pulled == closed == []
+    assert grouped.take(1).to_list() == [{"k": 0, "count": 20, "total": 20}]
+    assert pulled == list(range(21))
+    assert closed == [True]
+    assert Row.live == 0
+
+    once = (
+        fpstreams.flow(source()).rows().group_by_sorted("k").aggregate(count=fpstreams.agg.count())
+    )
+    iterator = iter(once)
+    assert next(iterator) == {"k": 0, "count": 20}
+    iterator.close()
+    assert Row.live == 0
+    with pytest.raises(fpstreams.FlowConsumedError):
+        once.to_list()
+
+    group_width = 10_000
+    assert grouped.to_list() == [{"k": 0, "count": 10_000, "total": 10_000}]
+    assert Row.peak <= 2
+    assert Row.live == 0
+
+
+@pytest.mark.parametrize("failure_site", ["key", "initialize", "step", "finish", "source"])
+def test_sorted_group_preserves_primary_and_cleanup_failures(failure_site) -> None:
+    from fpstreams import Aggregator, flow
+
+    primary = RuntimeError(failure_site)
+    cleanup = RuntimeError("source close failed")
+    closed = []
+
+    def fail(*_args):
+        raise primary
+
+    class Records:
+        def __init__(self):
+            self.iterator = iter([{"k": 1}, {"k": 1}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if failure_site == "source":
+                raise primary
+            return next(self.iterator)
+
+        def close(self):
+            closed.append(True)
+            raise cleanup
+
+    aggregation = Aggregator(
+        fail if failure_site == "initialize" else lambda: 0,
+        fail if failure_site == "step" else lambda state, _row: state + 1,
+        fail if failure_site == "finish" else lambda state: state,
+    )
+    result = (
+        flow(Records())
+        .rows()
+        .group_by_sorted(fail if failure_site == "key" else "k")
+        .aggregate(total=aggregation)
+    )
+    with pytest.raises(RuntimeError) as caught:
+        result.to_list()
+    assert caught.value is primary
+    assert closed == [True]
+    assert any("source close failed" in note for note in primary.__notes__)
+
+
+@pytest.mark.parametrize("short_circuit", [False, True])
+def test_sorted_group_success_reports_close_failure(short_circuit) -> None:
+    from fpstreams import agg, flow
+
+    error = RuntimeError("successful group could not close source")
+    closed = []
+
+    class Records:
+        def __init__(self):
+            self.values = iter([{"k": 1}, {"k": 2}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.values)
+
+        def close(self):
+            closed.append(True)
+            raise error
+
+    result = flow(Records()).rows().group_by_sorted("k").aggregate(count=agg.count())
+    if short_circuit:
+        result = result.take(1)
+    with pytest.raises(RuntimeError) as caught:
+        result.to_list()
+    assert caught.value is error
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("engine", ["python", "auto"])
+def test_sorted_join_failure_matrix(engine) -> None:
+    from fpstreams import BufferLimitError, flow
+
+    events = []
+
+    def left():
+        try:
+            while True:
+                events.append("left")
+                yield {"id": 1, "l": 1}
+        finally:
+            events.append("left close")
+
+    def right():
+        try:
+            for i in range(2):
+                events.append("right")
+                yield {"id": 1, "r": i}
+        finally:
+            events.append("right close")
+
+    result = flow(left()).with_engine(engine).rows().join_sorted(right(), on="id").take(3).to_list()
+    assert [row["r"] for row in result] == [0, 1, 0]
+    assert events.count("left") == 2
+    assert events.count("left close") == events.count("right close") == 1
+    events.clear()
+
+    def infinite_right():
+        try:
+            while True:
+                events.append("right")
+                yield {"id": 1}
+        finally:
+            events.append("right close")
+
+    with pytest.raises(BufferLimitError, match="right"):
+        flow(left()).with_engine(engine).rows().join_sorted(
+            infinite_right(), on="id", max_right_group_rows=3
+        ).to_list()
+    assert events.count("right") == 4
+    assert events.count("left close") == events.count("right close") == 1
+    events.clear()
+    failure = RuntimeError("key failed")
+
+    def bad_key(row):
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        flow(left()).with_engine(engine).rows().join_sorted(right(), on=bad_key).to_list()
+    assert caught.value is failure
+    assert events.count("left close") == 1
+    # Closing an unopened generator does not enter its finally block.
+    assert "right" not in events
+
+    def cleanup_failure():
+        try:
+            yield {"id": 1}
+        finally:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeError) as caught:
+        flow(cleanup_failure()).with_engine(engine).rows().join_sorted(
+            [{"id": 1}], on=bad_key
+        ).to_list()
+    assert caught.value is failure
+    assert any("close failed" in note for note in caught.value.__notes__)
+    right_rows = [{"id": 1}, {"id": 2}, {"id": 0}]
+    assert flow([{"id": 1}]).rows().join_sorted(right_rows, on="id").to_list() == [{"id": 1}]
+    rows = iter(
+        flow([{"id": 1}, {"id": 2}, {"id": 0}]).rows().join_sorted([{"id": 1}, {"id": 2}], on="id")
+    )
+    assert next(rows) == {"id": 1}
+    assert next(rows) == {"id": 2}
+    with pytest.raises(ValueError, match="left"):
+        next(rows)
+
+
+def test_atomic_path_publication_contract(tmp_path, monkeypatch) -> None:
+    import os
+
+    from fpstreams.io_safety import atomic_output_path
+
+    target = tmp_path / "output.txt"
+    target.write_text("old")
+    error = RuntimeError("writer failed")
+    with (
+        pytest.raises(RuntimeError) as caught,
+        atomic_output_path(target, if_exists="replace") as temporary,
+    ):
+        temporary.write_text("partial")
+        raise error
+    assert caught.value is error
+    assert target.read_text() == "old"
+    assert sorted(tmp_path.iterdir()) == [target]
+    with atomic_output_path(target, if_exists="replace") as temporary:
+        assert temporary.parent == target.parent
+        temporary.write_text("new")
+    assert target.read_text() == "new"
+    with pytest.raises(FileExistsError), atomic_output_path(target, if_exists="error"):
+        pytest.fail("existing target must fail before writer")
+    target.unlink()
+    real_link = os.link
+
+    def raced(source, destination):
+        target.write_text("other process")
+        real_link(source, destination)
+
+    monkeypatch.setattr(os, "link", raced)
+    with pytest.raises(FileExistsError), atomic_output_path(target, if_exists="error") as temporary:
+        temporary.write_text("ours")
+    assert target.read_text() == "other process"
+    assert sorted(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_path_rejects_dangling_symlink(tmp_path) -> None:
+    from fpstreams.io_safety import atomic_output_path
+
+    target = tmp_path / "output.txt"
+    try:
+        target.symlink_to(tmp_path / "missing")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this filesystem or account")
+    with (
+        pytest.raises(ValueError, match="symlink"),
+        atomic_output_path(target, if_exists="replace"),
+    ):
+        pytest.fail("dangling symlink must fail")
+
+
+@pytest.mark.parametrize("operation", ["merge", "join"])
+def test_sorted_composed_branches_reject_same_raw_iterator(operation) -> None:
+    from fpstreams import flow
+
+    class Shared:
+        def __init__(self):
+            self.pulls = 0
+            self.closes = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self.pulls += 1
+            if self.pulls > 4:
+                raise StopIteration
+            return {"id": self.pulls}
+
+        def close(self):
+            self.closes += 1
+
+    shared = Shared()
+    left = flow(shared).map(lambda row: row)
+    right = flow(shared).map(lambda row: row)
+    query = (
+        left.merge_sorted(right, key="id")
+        if operation == "merge"
+        else left.rows().join_sorted(right, on="id")
+    )
+    with pytest.raises(ValueError, match="same iterator"):
+        next(iter(query))
+    assert shared.pulls == 0
+    assert shared.closes == 1
+
+
+@pytest.mark.parametrize("operation", ["merge", "group", "join"])
+@pytest.mark.parametrize("compound", [False, True])
+def test_sorted_keys_reject_custom_types_before_comparison(operation, compound) -> None:
+    from fpstreams import agg
+
+    events = []
+
+    class EqualToBuiltin(type):
+        def __eq__(cls, other):
+            events.append("metaclass equality")
+            return True
+
+    class CustomInt(int, metaclass=EqualToBuiltin):
+        def __eq__(self, other):
+            events.append("value equality")
+            return True
+
+        def __lt__(self, other):
+            events.append("value comparison")
+            return False
+
+    def key(value):
+        return (value, "fixed") if compound else value
+
+    rows = [{"id": key(1)}, {"id": key(CustomInt(2))}, {"id": key(3)}]
+    other = [{"id": key(3)}]
+    left = flow(rows)
+    query = (
+        left.merge_sorted(other, key="id")
+        if operation == "merge"
+        else left.rows().group_by_sorted("id").aggregate(count=agg.count())
+        if operation == "group"
+        else left.rows().join_sorted(other, on="id")
+    )
+    with pytest.raises(TypeError, match="exact int"):
+        query.to_list()
+    assert events == []
+
+
+def test_concurrent_callers_share_statistics_description_and_readonly_inputs(
+    record_property,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from fractions import Fraction
+    from threading import Barrier, Lock, get_ident
+
+    from fpstreams import Collectors, FlowConsumedError, fitem, item
+
+    np = pytest.importorskip("numpy")
+    values = tuple(1e12 + index / 1024 for index in [0, 1, 2, 1, 3] * 17)
+    array = np.array(values, dtype=np.float64)
+    array.setflags(write=False)
+    collector = Collectors.statistics(ddof=0)
+    shared = tuple(
+        flow(values).map(fitem + 0.0).with_engine(engine) for engine in ("python", "native")
+    )
+    exact = tuple(Fraction(value) for value in values)
+    center = sum(exact) / len(exact)
+    expected = float(sum((value - center) ** 2 for value in exact) / len(exact))
+    source_range = range(10**12, 10**12 + 8193)
+    expected_range_variance = float(Fraction(len(source_range) ** 2 - 1, 12))
+    ready = Barrier(4, timeout=10)
+    lock = Lock()
+    callers = set()
+
+    def run():
+        with lock:
+            callers.add(get_ident())
+        ready.wait()
+        for _ in range(3):
+            # The shared Collector owns no accumulation state; each invocation creates it.
+            assert flow(values).collect(collector)["variance"] == pytest.approx(expected, rel=1e-14)
+            for engine, pipeline in zip(("python", "native"), shared, strict=True):
+                assert pipeline.variance(ddof=0) == pytest.approx(expected, rel=1e-14)
+                assert flow.from_numpy(array).with_engine(engine).variance(ddof=0) == pytest.approx(
+                    expected, rel=1e-14
+                )
+                ranged = flow(source_range).map(item + 1).with_engine(engine)
+                # More than two native signal-poll blocks execute from a non-main thread.
+                assert ranged.variance(ddof=0) == expected_range_variance
+                assert ranged.sum() == sum(source_range) + len(source_range)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(run) for _ in range(4)]
+        for future in futures:
+            future.result(timeout=30)
+        one_shot = flow(iter(values))
+
+        def claim():
+            ready.wait()
+            try:
+                return one_shot.to_list()
+            except FlowConsumedError:
+                return None
+
+        futures = [pool.submit(claim) for _ in range(4)]
+        results = [future.result(timeout=10) for future in futures]
+        assert results.count(None) == 3
+        assert [result for result in results if result is not None] == [list(values)]
+    assert len(callers) == 4
+    assert tuple(array) == values and not array.flags.writeable
+    record_property("caller_threads", len(callers))
+
+
+def test_concurrent_queries_share_bounded_pool_across_failure_and_early_exit(
+    record_property,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event, Lock, get_ident
+
+    from fpstreams import BoundedExecutor
+
+    ready = Barrier(4, timeout=10)
+    release, saturated = Event(), Event()
+    lock = Lock()
+    callers, workers, closed = set(), set(), set()
+    active = peak_active = peak_pending = 0
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        with BoundedExecutor(pool, max_pending=2) as bounded:
+
+            def work(kind, value):
+                nonlocal active, peak_active, peak_pending
+                with lock:
+                    workers.add(get_ident())
+                    active += 1
+                    peak_active = max(peak_active, active)
+                    peak_pending = max(peak_pending, bounded.pending)
+                    assert active <= 2 and bounded.pending <= 2
+                    if active == 2:
+                        saturated.set()
+                try:
+                    assert release.wait(10), "coordinator did not release the bounded workers"
+                    if kind == "error" and value == 0:
+                        raise ValueError("one query failed")
+                    return value * value
+                finally:
+                    with lock:
+                        active -= 1
+
+            def run(kind):
+                def source():
+                    try:
+                        yield from range(12)
+                    finally:
+                        with lock:
+                            closed.add(kind)
+
+                with lock:
+                    callers.add(get_ident())
+                ready.wait()
+                query = flow(source()).map_parallel(
+                    lambda value: work(kind, value), executor=bounded, buffer=6
+                )
+                if kind == "error":
+                    with pytest.raises(ValueError, match="one query failed"):
+                        query.to_list()
+                    return None
+                return query.take(1).to_list() if kind == "early" else query.to_list()
+
+            with ThreadPoolExecutor(max_workers=3) as submitting:
+                futures = {
+                    kind: submitting.submit(run, kind) for kind in ("healthy", "error", "early")
+                }
+                try:
+                    ready.wait()
+                    assert saturated.wait(10), "shared admission never filled both worker slots"
+                    assert bounded.pending == 2
+                finally:
+                    release.set()
+                assert futures["healthy"].result(timeout=20) == [
+                    value * value for value in range(12)
+                ]
+                assert futures["error"].result(timeout=20) is None
+                assert futures["early"].result(timeout=20) == [0]
+        # Wrapper shutdown waits for its callbacks without owning the borrowed pool.
+        assert bounded.pending == active == 0
+        assert pool.submit(pow, 3, 4).result(timeout=5) == 81
+    assert len(callers) == 3 and len(workers) >= 2
+    assert peak_active == peak_pending == 2
+    assert closed == {"healthy", "error", "early"}
+    record_property("caller_threads", len(callers))
+    record_property("worker_threads", len(workers))
+    record_property("peak_active", peak_active)
+    record_property("peak_pending", peak_pending)
+
+
+def test_bounded_executor_shares_admission_and_releases_cancelled_futures() -> None:
+    """Independent submitters share one cap without transferring pool ownership."""
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+        def shutdown(self, *args, **kwargs):
+            raise AssertionError("borrowed pool was closed")
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    first = bounded.submit(int, 1)
+    entered = Event()
+
+    def submit():
+        entered.set()
+        return bounded.submit(int, 2)
+
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        waiting = callers.submit(submit)
+        assert entered.wait(5)
+        assert bounded.pending == 1
+        assert not waiting.done()
+        assert first.cancel()
+        second = waiting.result(timeout=5)
+        assert bounded.pending == 1
+        second.set_result(2)
+        assert bounded.pending == 0
+    bounded.shutdown()
+    with pytest.raises(RuntimeError, match="shutdown"):
+        bounded.submit(int, 3)
+
+
+def test_bounded_executor_submit_failure_and_immediate_completion_release_capacity() -> None:
+    from concurrent.futures import Executor, Future
+
+    from fpstreams import BoundedExecutor
+
+    class ImmediateExecutor(Executor):
+        fail = True
+
+        def submit(self, function, /, *args, **kwargs):
+            if self.fail:
+                self.fail = False
+                raise ValueError("submit failed")
+            result = Future()
+            result.set_result(function(*args, **kwargs))
+            return result
+
+    bounded = BoundedExecutor(ImmediateExecutor(), max_pending=1)
+    with pytest.raises(ValueError, match="submit failed"):
+        bounded.submit(int, 1)
+    assert bounded.pending == 0
+    assert bounded.submit(pow, 2, exp=3).result() == 8
+    assert bounded.pending == 0
+    bounded.shutdown()
+
+
+def test_bounded_executor_shutdown_wakes_blocked_submitters() -> None:
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    queued = bounded.submit(int, 1)
+    entered = Event()
+
+    def submit():
+        entered.set()
+        return bounded.submit(int, 2)
+
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        waiting = callers.submit(submit)
+        assert entered.wait(5)
+        bounded.shutdown(wait=False, cancel_futures=True)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            waiting.result(timeout=5)
+    assert queued.cancelled()
+    assert bounded.pending == 0
+    bounded.shutdown()
+
+
+def test_bounded_executor_shutdown_cancels_work_being_submitted() -> None:
+    from concurrent.futures import Executor, Future, ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import BoundedExecutor
+
+    entered, release = Event(), Event()
+
+    class GatedExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return Future()
+
+    bounded = BoundedExecutor(GatedExecutor(), max_pending=1)
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        submitting = callers.submit(bounded.submit, int, 1)
+        try:
+            assert entered.wait(5)
+            assert bounded.pending == 1
+            bounded.shutdown(wait=False, cancel_futures=True)
+        finally:
+            release.set()
+        assert submitting.result(timeout=5).cancelled()
+    bounded.shutdown()
+    assert bounded.pending == 0
+
+
+def test_bounded_executor_interrupted_admission_does_not_block_later_callers(monkeypatch) -> None:
+    from concurrent.futures import Executor, Future
+
+    from fpstreams import BoundedExecutor
+
+    class DeferredExecutor(Executor):
+        def submit(self, function, /, *args, **kwargs):
+            return Future()
+
+    bounded = BoundedExecutor(DeferredExecutor(), max_pending=1)
+    first = bounded.submit(int, 1)
+
+    def interrupt():
+        raise KeyboardInterrupt("waiting for capacity")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(bounded._condition, "wait", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="capacity"):
+            bounded.submit(int, 2)
+    first.cancel()
+    second = bounded.submit(int, 3)
+    second.cancel()
+    bounded.shutdown()
+
+
+@pytest.mark.parametrize("limit", [0, -1, 1.5])
+def test_bounded_executor_rejects_invalid_capacity(limit) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fpstreams import BoundedExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool, pytest.raises((ValueError, TypeError)):
+        BoundedExecutor(pool, max_pending=limit)
+
+
+@pytest.mark.parametrize("ordered", [False, True])
+def test_bounded_executor_integrates_with_parallel_flows_and_keeps_pool_open(ordered) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fpstreams import BoundedExecutor, flow
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with BoundedExecutor(pool, max_pending=2) as bounded:
+            result = (
+                flow(range(12))
+                .map_parallel(abs, executor=bounded, buffer=6, ordered=ordered)
+                .to_list()
+            )
+            assert sorted(result) == list(range(12))
+            assert bounded.pending == 0
+            batches = flow(range(5)).parallel(executor=bounded).map_batches(sum, size=2).to_list()
+            assert batches == [1, 5, 4]
+        assert pool.submit(abs, -7).result(timeout=5) == 7
+
+
+def test_file_checkpoint_reopens_partitions_and_invalidates_changed_inputs(tmp_path) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("one")
+    calls = []
+
+    def transform(input_path, output_path):
+        calls.append(input_path)
+        output_path.write_text(input_path.read_text().upper())
+
+    store = FileCheckpoint(tmp_path / "results", version="uppercase-v1")
+    first = store.run(source, transform)
+    assert first.read_text() == "ONE"
+    reopened = FileCheckpoint(tmp_path / "results", version="uppercase-v1")
+    assert reopened.run(source, transform) == first
+    assert len(calls) == 1
+    source.write_text("two")
+    second = reopened.run(source, transform)
+    assert second != first and second.read_text() == "TWO"
+    assert first.read_text() == "ONE"
+    new_version = FileCheckpoint(tmp_path / "results", version="uppercase-v2")
+    assert new_version.run(source, transform) != second
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_file_checkpoint_does_not_publish_failed_or_partial_outputs(tmp_path, error_type) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    error = error_type("callback failed")
+
+    def fail(input_path, output_path):
+        output_path.write_text("partial")
+        raise error
+
+    with pytest.raises(error_type) as caught:
+        store.run(source, fail)
+    assert caught.value is error
+    assert not list((tmp_path / "results").glob("*/metadata.json"))
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    assert result.read_text() == "input"
+
+
+@pytest.mark.parametrize("corruption", ["output", "metadata", "missing"])
+def test_file_checkpoint_detects_corruption_before_reusing_results(tmp_path, corruption) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    if corruption == "output":
+        result.write_text("corrupt")
+    elif corruption == "metadata":
+        result.with_name("metadata.json").write_text("{}")
+    else:
+        result.unlink()
+
+    def forbidden(*args):
+        raise AssertionError("a corrupt checkpoint must not silently rerun side effects")
+
+    with pytest.raises(ValueError, match="checkpoint"):
+        store.run(source, forbidden)
+
+
+def test_file_checkpoint_rejects_source_mutation_and_missing_output(tmp_path) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("before")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+
+    def mutate(input_path, output_path):
+        output_path.write_text("old result")
+        input_path.write_text("after")
+
+    with pytest.raises(ValueError, match="changed"):
+        store.run(source, mutate)
+    with pytest.raises(ValueError, match="output"):
+        store.run(source, lambda i, o: None)
+    assert not list((tmp_path / "results").glob("*/metadata.json"))
+
+
+def test_file_checkpoint_concurrent_same_partition_is_not_computed_twice(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    entered, release = Event(), Event()
+
+    def transform(input_path, output_path):
+        entered.set()
+        assert release.wait(5)
+        output_path.write_text(input_path.read_text())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(store.run, source, transform)
+        try:
+            assert entered.wait(5)
+            with pytest.raises(BlockingIOError):
+                store.run(source, transform)
+        finally:
+            release.set()
+        result = running.result(timeout=5)
+    assert store.run(source, transform) == result
+
+
+def test_file_checkpoint_process_exit_releases_lock_without_publishing_partial_output(
+    tmp_path,
+) -> None:
+    """A killed worker must not leave a stale ownership claim or a reusable partial result."""
+    import subprocess
+    import sys
+
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    program = tmp_path / "worker.py"
+    program.write_text(
+        "import sys, time\n"
+        "from fpstreams import FileCheckpoint\n"
+        "def transform(input_path, output_path):\n"
+        "    output_path.write_text('partial')\n"
+        "    print('ready', flush=True)\n"
+        "    time.sleep(120)\n"
+        "FileCheckpoint(sys.argv[1], version='v1').run(sys.argv[2], transform)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(program), str(tmp_path / "results"), str(source)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+    finally:
+        process.kill()
+        process.communicate(timeout=10)
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text().upper()))
+    assert result.read_text() == "INPUT"
+    assert len(list((tmp_path / "results").glob("*/metadata.json"))) == 1
+
+
+@pytest.mark.parametrize("target", ["output", "metadata", "entry"])
+def test_file_checkpoint_rejects_symlinked_completed_entries(tmp_path, target) -> None:
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    result = store.run(source, lambda i, o: o.write_text(i.read_text()))
+    selected = result if target == "output" else result.with_name("metadata.json")
+    if target == "entry":
+        selected = result.parent
+    renamed = selected.with_name(selected.name + "-original")
+    selected.rename(renamed)
+    try:
+        selected.symlink_to(renamed, target_is_directory=target == "entry")
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+    with pytest.raises(ValueError, match="checkpoint"):
+        store.run(source, lambda i, o: o.write_text("unexpected"))
+    assert source.read_text() == "input"
+
+
+def test_file_checkpoint_runs_distinct_partitions_in_parallel(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from fpstreams import FileCheckpoint, flow
+
+    inputs = [tmp_path / f"input-{index}.txt" for index in range(2)]
+    for index, path in enumerate(inputs):
+        path.write_text(str(index))
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    barrier = Barrier(2)
+
+    def transform(input_path, output_path):
+        barrier.wait(timeout=5)
+        output_path.write_text(input_path.read_text())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = (
+            flow(inputs)
+            .map_parallel(lambda path: store.run(path, transform), executor=pool)
+            .to_list()
+        )
+    assert [path.read_text() for path in results] == ["0", "1"]
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_file_checkpoint_stage_cleanup_keeps_callback_failure(
+    tmp_path, monkeypatch, error_type
+) -> None:
+    """Staging cleanup is attempted without replacing the original callback failure."""
+    import fpstreams.storage.checkpoint as checkpoint
+
+    original = checkpoint.TemporaryDirectory
+    primary = error_type("processing failed")
+    cleanup = OSError("stage cleanup failed")
+    cleaned = []
+
+    class FailingCleanup(original):
+        def cleanup(self):
+            super().cleanup()
+            cleaned.append(True)
+            raise cleanup
+
+    source = tmp_path / "input"
+    source.write_text("input")
+    store = checkpoint.FileCheckpoint(tmp_path / "results", version="v1")
+
+    def fail(input_path, output_path):
+        output_path.write_text("partial")
+        raise primary
+
+    with monkeypatch.context() as patch:
+        patch.setattr(checkpoint, "TemporaryDirectory", FailingCleanup)
+        with pytest.raises(error_type) as caught:
+            store.run(source, fail)
+    assert caught.value is primary
+    assert primary.__notes__ == ["cleanup failed: OSError: stage cleanup failed"]
+    assert cleaned == [True]
+    assert all(path.suffix == ".lock" for path in (tmp_path / "results").iterdir())
+    assert (
+        store.run(
+            source, lambda input_path, output_path: output_path.write_text("complete")
+        ).read_text()
+        == "complete"
+    )
+
+
+def test_file_checkpoint_lock_close_keeps_callback_failure(tmp_path, monkeypatch) -> None:
+    """Even a lock-file close failure preserves processing failure and releases the lock."""
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input"
+    source.write_text("input")
+    original_open = type(source).open
+    primary = ValueError("processing failed")
+    cleanup = OSError("lock close failed")
+    closed = []
+
+    class ClosingLock:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def close(self):
+            self.handle.close()
+            closed.append(True)
+            raise cleanup
+
+    def open_path(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        return ClosingLock(handle) if path.suffix == ".lock" else handle
+
+    def fail(input_path, output_path):
+        raise primary
+
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    with monkeypatch.context() as patch:
+        patch.setattr(type(source), "open", open_path)
+        with pytest.raises(ValueError) as caught:
+            store.run(source, fail)
+    assert caught.value is primary
+    assert primary.__notes__ == ["cleanup failed: OSError: lock close failed"]
+    assert closed == [True]
+    assert (
+        store.run(
+            source, lambda input_path, output_path: output_path.write_text("retry")
+        ).read_text()
+        == "retry"
+    )
+
+
+def test_file_checkpoint_postpublication_cleanup_error_keeps_verified_result(
+    tmp_path, monkeypatch
+) -> None:
+    """An unlock error after publication does not cause a retry to repeat its callback."""
+    fcntl = pytest.importorskip("fcntl")
+    from fpstreams import FileCheckpoint
+
+    source = tmp_path / "input"
+    source.write_text("input")
+    original = fcntl.flock
+    cleanup = OSError("unlock failed after publication")
+    calls = []
+
+    def transform(input_path, output_path):
+        calls.append(True)
+        output_path.write_text("complete")
+
+    def flock(handle, flags):
+        if flags == fcntl.LOCK_UN:
+            raise cleanup
+        return original(handle, flags)
+
+    store = FileCheckpoint(tmp_path / "results", version="v1")
+    with monkeypatch.context() as patch:
+        patch.setattr(fcntl, "flock", flock)
+        with pytest.raises(OSError) as caught:
+            store.run(source, transform)
+    assert caught.value is cleanup
+    assert store.run(source, transform).read_text() == "complete"
+    assert calls == [True]
+
+
+def test_file_checkpoint_unlock_failure_preserves_the_callback_error(tmp_path, monkeypatch) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    from fpstreams import FileCheckpoint
+
+    original = fcntl.flock
+    source = tmp_path / "input.txt"
+    source.write_text("input")
+    error = ValueError("processing failed")
+
+    def flock(handle, flags):
+        if flags == fcntl.LOCK_UN:
+            raise OSError("unlock failed")
+        return original(handle, flags)
+
+    def fail(input_path, output_path):
+        raise error
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with pytest.raises(ValueError, match="processing failed") as caught:
+        FileCheckpoint(tmp_path / "results", version="v1").run(source, fail)
+    assert caught.value is error
+    assert any("unlock failed" in note for note in error.__notes__)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), 1.5])
+def test_resource_limits_reject_noninteger_counts_before_registration(invalid):
+    for field in ("max_tasks", "max_open_files"):
+        with pytest.raises(TypeError):
+            QueryLimits(**{field: invalid})
+    runtime = TaskRuntime(QueryLimits(), QueryMetrics())
+    with pytest.raises(TypeError):
+        runtime.scope("invalid", max_tasks=invalid)
+    assert runtime._scopes == [] and runtime.live_count == 0
+
+
+async def test_integer_index_limits_enforce_real_task_and_file_admission(tmp_path):
+    from fpstreams.runtime.files import FileLimitError
+    from fpstreams.runtime.query import QueryRuntime
+
+    class One:
+        def __init__(self):
+            self.calls = 0
+
+        def __index__(self):
+            self.calls += 1
+            return 1
+
+    tasks, files, scoped = One(), One(), One()
+    runtime = QueryRuntime(QueryLimits(max_tasks=tasks, max_open_files=files))
+    scope = runtime.tasks.scope("indexed", max_tasks=scoped)
+    task = scope.create_task(asyncio.sleep(10), role=TaskRole.USER_CALL)
+    try:
+        with pytest.raises(RuntimeError, match="limit"):
+            scope.create_task(asyncio.sleep(0), role=TaskRole.USER_CALL)
+        first = runtime.files.open(tmp_path / "first", "wb")
+        with pytest.raises(FileLimitError):
+            runtime.files.open(tmp_path / "rejected", "wb")
+        assert not (tmp_path / "rejected").exists()
+        first.close()
+        runtime.files.open(tmp_path / "second", "wb")
+        assert tasks.calls == files.calls == scoped.calls == 1
+    finally:
+        await runtime.aclose()
+    assert task.cancelled()
+    assert runtime.metrics.open_files == runtime.metrics.live_tasks == 0
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_spill_decoder_releases_buffers_and_prior_records_before_next_frame(batched):
+    import io
+    import weakref
+    from collections import UserDict
+
+    from fpstreams.storage.codec import SpillCodec
+
+    class Buffer(bytearray):
+        pass
+
+    codec = SpillCodec()
+    encoded = io.BytesIO()
+    codec.write_header(encoded)
+    values = (UserDict({"value": "x" * 4096}), UserDict({"value": 2}))
+    if batched:
+        codec.write_records(encoded, values)
+    else:
+        codec.write_record(encoded, values[0])
+    codec.write_record(encoded, "next frame")
+    payloads = []
+    decoded = []
+
+    class Handle(io.BytesIO):
+        reads = 0
+
+        def read(self, size=-1):
+            self.reads += 1
+            if self.reads == 4:
+                assert all(reference() is None for reference in decoded)
+            raw = super().read(size)
+            if self.reads == 3:
+                payload = Buffer(raw)
+                payloads.append(weakref.ref(payload))
+                return payload
+            return raw
+
+    handle = Handle(encoded.getvalue())
+    iterator = codec.read_records(handle)
+    for expected in values if batched else values[:1]:
+        item = next(iterator)
+        assert item == expected
+        decoded.append(weakref.ref(item))
+        assert payloads[0]() is None
+        del item
+    assert next(iterator) == "next frame"
+    assert list(iterator) == []
+    assert not handle.closed

@@ -502,7 +502,8 @@ fn f64_buffer_v2_preserves_identity_and_fallback_results() {
                 None,
                 None,
                 1.0 / 3.0,
-                1.9999999999999997e32,
+                // Exact M2 is 2 * 10^32 + 2/3, rounded to the nearest f64.
+                2e32,
             ),
         );
 

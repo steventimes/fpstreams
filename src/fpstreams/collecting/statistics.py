@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import math
 import operator
+import sys
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from numbers import Complex, Number, Real
-from typing import Any, SupportsIndex, TypeAlias, cast
+from typing import Any, Protocol, SupportsIndex, TypeAlias, cast
 
 from ..expressions.selectors import Selector, compile_selector
 
 StatisticsSnapshot: TypeAlias = tuple[int, float, float]
 RollingSnapshot: TypeAlias = tuple[int, float | None, float | None]
+
+
+class _RollingState(Protocol):
+    def accept(self, value: float | None) -> RollingSnapshot: ...
+
+
 _CANONICAL_REAL_BINDINGS = (Number, complex, Complex, Real, isinstance)
 
 
@@ -120,9 +127,15 @@ class _RollingStatistics:
         return self.count, mean, variance
 
 
+class _RollingStep(Protocol):
+    def __call__(
+        self, state: Any, item: Any, *, use_native: bool = True
+    ) -> tuple[Any, RollingSnapshot]: ...
+
+
 def rolling_statistics_step(
-    size: SupportsIndex, selector: Selector | None, ddof: SupportsIndex
-) -> Callable[[Any, Any], tuple[Any, RollingSnapshot]]:
+    size: SupportsIndex, selector: Selector | None, ddof: SupportsIndex, *, use_native: bool = True
+) -> _RollingStep:
     """Freeze configuration for map_accum, creating window state on the first item."""
     width, degrees = operator.index(size), operator.index(ddof)
     if width <= 0:
@@ -131,14 +144,30 @@ def rolling_statistics_step(
         raise ValueError("ddof must be non-negative")
     select = None if selector is None else compile_selector(selector)
 
-    def advance(state: _RollingStatistics | None, item: Any) -> tuple[Any, RollingSnapshot]:
+    def advance(
+        state: Any, item: Any, *, use_native: bool = use_native
+    ) -> tuple[Any, RollingSnapshot]:
         value = item if select is None else select(item)
         converted = None if value is None else finite_number(value)
         if state is None:
-            state = _RollingStatistics(width, degrees)
+            state = _rolling_state(width, degrees, use_native)
         return state, state.accept(converted)
 
     return advance
+
+
+def _rolling_state(width: int, degrees: int, use_native: bool) -> _RollingState:
+    """Keep missing extensions and unbounded Python configuration on the reference path."""
+    if use_native and width <= sys.maxsize and degrees <= sys.maxsize:
+        try:
+            from fpstreams import _native
+        except ImportError:
+            pass
+        else:
+            factory = getattr(_native, "RollingStatistics", None)
+            if factory is not None:
+                return cast(_RollingState, factory(width, degrees))
+    return _RollingStatistics(width, degrees)
 
 
 @dataclass(slots=True)
@@ -147,7 +176,8 @@ class OnlineStatistics:
 
     `total` and `compensation` implement a compensated floating-point sum used by
     :meth:`snapshot` for the reported mean. `rolling_mean` and `squared_deviations` implement
-    Welford's online variance update.
+    Welford's online variance update relative to the first finite observation. Keeping the
+    running center near zero avoids losing small deviations to a large common offset.
     """
 
     count: int = 0
@@ -155,6 +185,7 @@ class OnlineStatistics:
     compensation: float = 0.0
     rolling_mean: float = 0.0
     squared_deviations: float = 0.0
+    _origin: float = 0.0
 
     def accept(self, item: Any) -> None:
         """Convert one real number to `float` and update every statistic in place.
@@ -192,9 +223,12 @@ class OnlineStatistics:
             self.compensation = 0.0
         self.total = combined
 
-        delta = value - self.rolling_mean
+        if self.count == 1 and math.isfinite(value):
+            self._origin = value
+        shifted = value - self._origin
+        delta = shifted - self.rolling_mean
         self.rolling_mean += delta / self.count
-        self.squared_deviations += delta * (value - self.rolling_mean)
+        self.squared_deviations += delta * (shifted - self.rolling_mean)
 
     def snapshot(self) -> StatisticsSnapshot:
         """Return `(count, compensated_mean, squared_deviations)` for finalizers.

@@ -7,12 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
-from .aggregation import (
-    AggregationItems,
-    Aggregator,
-    NativeAggregation,
-    native_aggregation_is_live,
-)
+from .aggregation import AggregationItems, Aggregator, NativeAggregation, native_aggregation_is_live
 from .program import CollectorProgram, compile_collectors
 
 ScalarAggregateTerminal: TypeAlias = Literal["count", "min", "max", "first", "last"]

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import TypeVar, cast
 
+from ..errors import _cleanup_error_summary
+
 T = TypeVar("T")
 
 
@@ -17,7 +19,6 @@ class _ResourceRecord:
     resource: object
     close: Callable[[object], None] | None
     aclose: Callable[[object], Awaitable[None]] | None
-    released: bool = False
 
 
 def _add_cleanup_failure(active: BaseException | None, errors: list[BaseException]) -> None:
@@ -37,7 +38,7 @@ def _add_cleanup_failure(active: BaseException | None, errors: list[BaseExceptio
 def _append_cleanup_failure(target: BaseException, error: BaseException) -> None:
     """Add one cleanup summary and preserve diagnostics nested on that failure."""
     nested_notes = tuple(getattr(error, "__notes__", ()) or ())
-    target.add_note(f"cleanup failed: {type(error).__name__}: {error}")
+    target.add_note(_cleanup_error_summary(error))
     if target is not error:
         for note in nested_notes:
             target.add_note(note)
@@ -121,8 +122,8 @@ class ResourceRegistry:
         *,
         cleanup_boundary: bool = True,
     ) -> None:
-        """Close one exact resource identity early, preserving an active error."""
-        selected = self._take_record(resource)
+        """Close a sync owner early; async owners require ``arelease``."""
+        selected = self._take_record(resource, synchronous=True, active_error=active_error)
         if selected is not None:
             self._close_record(selected, active_error, cleanup_boundary=cleanup_boundary)
 
@@ -142,15 +143,23 @@ class ResourceRegistry:
                 cleanup_boundary=cleanup_boundary,
             )
 
-    def _take_record(self, resource: object) -> _ResourceRecord | None:
+    def _take_record(
+        self,
+        resource: object,
+        *,
+        synchronous: bool = False,
+        active_error: BaseException | None = None,
+    ) -> _ResourceRecord | None:
         """Atomically transfer one registered identity to an early-release caller."""
         with self._lock:
             for index in range(len(self._records) - 1, -1, -1):
                 record = self._records[index]
                 if record.resource is resource:
-                    if record.released:
+                    if synchronous and record.aclose is not None:
+                        _add_cleanup_failure(
+                            active_error, [RuntimeError("async resource requires arelease()")]
+                        )
                         return None
-                    record.released = True
                     # Explicitly released files are the hot path and normally sit
                     # at the tail, making this an O(1) pop. Removing the record is
                     # also essential for async inner streams: a long query must
@@ -198,29 +207,29 @@ class ResourceRegistry:
             _add_cleanup_failure(active, [error])
 
     def close(self, active_error: BaseException | None = None) -> None:
-        """Synchronously close every synchronous owner in LIFO order."""
+        """Close sync owners in LIFO order; async owners require ``aclose``."""
         with self._lock:
             if self._closed:
                 return
+            if any(record.aclose is not None for record in self._records):
+                _add_cleanup_failure(
+                    active_error, [RuntimeError("async resources require aclose()")]
+                )
+                return
             self._closed = True
-            records: list[_ResourceRecord] = []
-            for record in reversed(self._records):
-                if record.released:
-                    continue
-                record.released = True
-                if record.close is not None:
-                    records.append(record)
+            records = [
+                (record.resource, record.close)
+                for record in reversed(self._records)
+                if record.close is not None
+            ]
             self._records.clear()
         errors: list[BaseException] = []
-        for record in records:
+        for resource, closer in records:
             try:
                 from .failpoints import hit
 
                 hit("resource.close.before")
-                closer = record.close
-                if closer is None:
-                    raise RuntimeError("synchronous resource lost its registered closer")
-                closer(record.resource)
+                closer(resource)
             except BaseException as error:
                 errors.append(error)
         _add_cleanup_failure(active_error, errors)
@@ -231,12 +240,7 @@ class ResourceRegistry:
             if self._closed:
                 return
             self._closed = True
-            records: list[_ResourceRecord] = []
-            for record in reversed(self._records):
-                if record.released:
-                    continue
-                record.released = True
-                records.append(record)
+            records = list(reversed(self._records))
             self._records.clear()
         errors: list[BaseException] = []
         for record in records:

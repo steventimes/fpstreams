@@ -10,10 +10,8 @@ from threading import Lock
 from types import CodeType, FunctionType
 from typing import Any
 
-from .._provenance import (
-    row_expression_environment_is_current,
-    row_expression_environment_snapshot,
-)
+from .._provenance import row_expression_environment_is_current, row_expression_environment_snapshot
+from ..errors import SelectionError, _record_user_selection_error
 from .row_ir import (
     Binary,
     Call,
@@ -398,7 +396,21 @@ class LazyRowEvaluator:
                         graph,
                     )
                 program = self._program
-        return program(row)
+        try:
+            return program(row)
+        except SelectionError as error:
+            provenance = self._program_provenance
+            if (
+                type(program) is not RowProgram
+                or provenance is None
+                or program.expression is not provenance[2]
+                or (
+                    type(program.expression) is FunctionType
+                    and program.expression.__code__ is not provenance[3]
+                )
+            ):
+                _record_user_selection_error(error)
+            raise
 
 
 def cached_row_program(evaluator: object) -> RowProgram | None:

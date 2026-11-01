@@ -18,6 +18,8 @@ from numbers import Real
 from time import perf_counter_ns
 from typing import Any, Generic, Literal, TypeVar, cast, overload
 
+import fpstreams
+
 from ..collecting.aggregate_program import (
     AggregationProgram,
     NativeAggregateField,
@@ -55,11 +57,8 @@ from ..execution.physical import execute_physical
 from ..execution.sync import open_operations
 from ..expressions.scalar import Expr, FExpr
 from ..expressions.selectors import Selector, compile_selector
-from ..io_safety import output_path, spreadsheet_safe_cell
-from ..physical.plan import (
-    BackendPayload,
-    PhysicalPlan,
-)
+from ..io_safety import _closing_output_writer, output_path, spreadsheet_safe_cell
+from ..physical.plan import BackendPayload, PhysicalPlan
 from ..planning.compiler import compile_query
 from ..planning.logical import Pipeline, Query, SourceNode, linear_pipeline
 from ..planning.native import _AUTO_THRESHOLD as _NATIVE_AUTO_THRESHOLD
@@ -77,17 +76,11 @@ from ..planning.source import (
     _CANONICAL_SOURCE_OPEN_NATIVE_CODE,
     Source,
 )
-from ..planning.source import (
-    _function_code as _function_code_no_audit,
-)
-from ..planning.sync import (
-    DropOp,
-    Operation,
-    SortOp,
-    TakeOp,
-)
+from ..planning.source import _function_code as _function_code_no_audit
+from ..planning.sync import DropOp, Operation, SortOp, TakeOp
 from ..primitives.result import Err, Ok
 from ..runtime import failpoints as _failpoints
+from ..runtime._distinct import reraise_key_type_error
 from ..runtime.failpoints import has_active_failpoints
 from ..runtime.iterators import closing_iterators
 from ..runtime.report import (
@@ -97,39 +90,24 @@ from ..runtime.report import (
     _start_recording,
     _stop_recording,
 )
-from . import _flow_frequencies, _flow_materialize, _flow_numeric, _flow_structural_list
-from ._flow_frequencies import (
-    _prepend_frequency_boundary as _prepend_frequency_boundary,
-)
-from ._flow_frequencies import (
-    _update_identity_frequency_counts as _update_identity_frequency_counts,
-)
-from ._flow_materialize import (
-    _canonical_python_materializer as _canonical_python_materializer,
-)
-from ._flow_materialize import (
-    _direct_python_scalar_loop as _direct_python_scalar_loop,
-)
-from ._flow_materialize import (
-    _open_direct_python_scalar_values as _open_direct_python_scalar_values,
-)
-from ._flow_materialize import (
-    _try_direct_arrow_list as _try_direct_arrow_list,
-)
-from ._flow_materialize import (
-    _try_direct_numpy_list as _try_direct_numpy_list,
-)
-from ._flow_materialize import (
-    _try_direct_python_scalar_sum as _try_direct_python_scalar_sum,
-)
-from ._flow_numeric import (
+from . import _terminals as _flow_materialize
+from ._terminals import _canonical_python_materializer as _canonical_python_materializer
+from ._terminals import _direct_python_scalar_loop as _direct_python_scalar_loop
+from ._terminals import _open_direct_python_scalar_values as _open_direct_python_scalar_values
+from ._terminals import _try_direct_arrow_list as _try_direct_arrow_list
+from ._terminals import _try_direct_numpy_list as _try_direct_numpy_list
+from ._terminals import _try_direct_python_scalar_sum as _try_direct_python_scalar_sum
+from ._terminals import reductions as _flow_frequencies
+from ._terminals import reductions as _flow_numeric
+from ._terminals import structural as _flow_structural_list
+from ._terminals.reductions import (
     _f64_total_compatibility_fallback as _f64_total_compatibility_fallback,
 )
-from ._flow_numeric import (
-    _minmax_python_values as _minmax_python_values,
-)
-from ._flow_numeric import (
-    _requires_sequential_f64_total as _requires_sequential_f64_total,
+from ._terminals.reductions import _minmax_python_values as _minmax_python_values
+from ._terminals.reductions import _prepend_frequency_boundary as _prepend_frequency_boundary
+from ._terminals.reductions import _requires_sequential_f64_total as _requires_sequential_f64_total
+from ._terminals.reductions import (
+    _update_identity_frequency_counts as _update_identity_frequency_counts,
 )
 
 T = TypeVar("T")
@@ -1094,7 +1072,7 @@ class FlowTerminalsMixin(Generic[T]):
             and _is_exact_i64(values[-1])
         ):
             try:
-                from .. import _native
+                from fpstreams import _native
             except ImportError:
                 pass
             else:
@@ -1131,7 +1109,7 @@ class FlowTerminalsMixin(Generic[T]):
         with (
             output_path(path, atomic=atomic, if_exists=if_exists) as destination,
             self._open() as iterator,
-            open(destination, "w", encoding=encoding, newline="") as handle,
+            _closing_output_writer(open(destination, "w", encoding=encoding, newline="")) as handle,
         ):
             writer = csv.writer(handle, lineterminator="\n")
             if columns is not None:
@@ -1187,7 +1165,7 @@ class FlowTerminalsMixin(Generic[T]):
         with (
             output_path(path, atomic=atomic, if_exists=if_exists) as destination,
             self._open() as iterator,
-            open(destination, "w", encoding=encoding) as handle,
+            _closing_output_writer(open(destination, "w", encoding=encoding)) as handle,
         ):
             handle.write("[")
             first = True
@@ -1227,7 +1205,7 @@ class FlowTerminalsMixin(Generic[T]):
         with (
             output_path(path, atomic=atomic, if_exists=if_exists) as destination,
             self._open() as iterator,
-            open(destination, "w", encoding=encoding) as handle,
+            _closing_output_writer(open(destination, "w", encoding=encoding)) as handle,
         ):
             for item in iterator:
                 for chunk in encoder.iterencode(item):
@@ -1369,13 +1347,19 @@ class FlowTerminalsMixin(Generic[T]):
     summarize = aggregate
 
     @overload
-    def collect(self, collector: Collector[T, S, C], /) -> C: ...
+    def collect(
+        self,
+        collector: Collector[T, S, C],
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C: ...
 
     @overload
     def collect(
         self,
         collector: Callable[[Iterable[T]], C],
         /,
+        **collectors: Collector[T, Any, Any],
     ) -> C: ...
 
     @overload
@@ -1385,14 +1369,6 @@ class FlowTerminalsMixin(Generic[T]):
         /,
         **collectors: Collector[T, Any, Any],
     ) -> dict[str, Any]: ...
-
-    @overload
-    def collect(
-        self,
-        collector: Callable[[Iterable[T]], C] | Collector[T, Any, C] | None = None,
-        /,
-        **collectors: Collector[T, Any, Any],
-    ) -> C | dict[str, Any]: ...
 
     def collect(
         self,
@@ -1486,7 +1462,7 @@ class FlowTerminalsMixin(Generic[T]):
                     raise TypeError("partition_results() requires Result values")
         return successes, failures
 
-    def to_async(self) -> Any:
+    def to_async(self) -> fpstreams.AsyncFlow[T]:
         """View this synchronous pipeline as an AsyncFlow.
 
         Returns:
@@ -1495,6 +1471,12 @@ class FlowTerminalsMixin(Generic[T]):
         from .async_flow import aflow
 
         return aflow(self)
+
+    @overload
+    def first(self) -> T: ...
+
+    @overload
+    def first(self, default: R) -> T | R: ...
 
     def first(self, default: Any = _MISSING) -> T | Any:
         """Return the first item without consuming an unnecessary tail.
@@ -1526,6 +1508,12 @@ class FlowTerminalsMixin(Generic[T]):
                 if default is _MISSING:
                     raise EmptyFlowError("first() requires at least one item") from None
                 return default
+
+    @overload
+    def last(self) -> T: ...
+
+    @overload
+    def last(self, default: R) -> T | R: ...
 
     def last(self, default: Any = _MISSING) -> T | Any:
         """Return the last item, or default when the flow is empty.
@@ -1571,6 +1559,12 @@ class FlowTerminalsMixin(Generic[T]):
             raise EmptyFlowError("last() requires at least one item")
         return found
 
+    @overload
+    def find(self, predicate: Callable[[T], Any]) -> T: ...
+
+    @overload
+    def find(self, predicate: Callable[[T], Any], default: R) -> T | R: ...
+
     def find(self, predicate: Callable[[T], Any], default: Any = _MISSING) -> T | Any:
         """Return the first matching item, a default, or raise EmptyFlowError.
 
@@ -1587,10 +1581,11 @@ class FlowTerminalsMixin(Generic[T]):
         matches = self.filter(predicate)
         if default is not _MISSING:
             return matches.first(default)
-        try:
-            return matches.first()
-        except EmptyFlowError:
-            raise EmptyFlowError("find() found no matching item") from None
+        missing = object()
+        result = matches.first(missing)
+        if result is missing:
+            raise EmptyFlowError("find() found no matching item")
+        return result
 
     def find_index(self, predicate: Callable[[T], Any]) -> int | None:
         """Return the index of the first matching item, or None.
@@ -1634,6 +1629,12 @@ class FlowTerminalsMixin(Generic[T]):
                 return None
         return self.find_index(lambda item: item == value)
 
+    @overload
+    def nth(self, index: int) -> T: ...
+
+    @overload
+    def nth(self, index: int, default: R) -> T | R: ...
+
     def nth(self, index: int, default: Any = _MISSING) -> T | Any:
         """Return the item at a positive or negative index.
 
@@ -1665,17 +1666,19 @@ class FlowTerminalsMixin(Generic[T]):
             candidate = self.drop(position)
             if default is not _MISSING:
                 return candidate.first(default)
-            try:
-                return candidate.first()
-            except EmptyFlowError:
-                raise EmptyFlowError(f"nth({position}) is out of range") from None
+            missing = object()
+            result = candidate.first(missing)
+            if result is missing:
+                raise EmptyFlowError(f"nth({position}) is out of range")
+            return result
         if position == -1:
             if default is not _MISSING:
                 return self.last(default)
-            try:
-                return self.last()
-            except EmptyFlowError:
-                raise EmptyFlowError("nth(-1) is out of range") from None
+            missing = object()
+            result = self.last(missing)
+            if result is missing:
+                raise EmptyFlowError("nth(-1) is out of range")
+            return result
 
         width = -position
         with self._open() as iterator:
@@ -1929,7 +1932,7 @@ class FlowTerminalsMixin(Generic[T]):
             reduction = try_arrow_i64_field_reduction(pipeline, payload.arrow_prefix, "min")
             if reduction is not None:
                 if reduction.source_value_error is not None:
-                    raise EmptyFlowError("min() requires at least one item") from None
+                    raise reduction.source_value_error
                 if not reduction.seen:
                     raise EmptyFlowError("min() requires at least one item")
                 _record_direct_strategy(
@@ -1938,11 +1941,12 @@ class FlowTerminalsMixin(Generic[T]):
                     "an exact int64 Arrow field was reduced by a columnar kernel",
                 )
                 return cast(T, reduction.value)
-        try:
-            with _open_terminal_values(physical, pipeline) as iterator:
-                return cast(T, builtins.min(iterator, key=key))
-        except ValueError:
-            raise EmptyFlowError("min() requires at least one item") from None
+        missing = object()
+        with _open_terminal_values(physical, pipeline) as iterator:
+            extreme = builtins.min(iterator, key=key, default=missing)
+        if extreme is missing:
+            raise EmptyFlowError("min() requires at least one item")
+        return cast(T, extreme)
 
     def max(self, *, key: Callable[[T], Any] | None = None) -> T:
         """Return the largest item and raise on an empty flow.
@@ -1985,7 +1989,7 @@ class FlowTerminalsMixin(Generic[T]):
             reduction = try_arrow_i64_field_reduction(pipeline, payload.arrow_prefix, "max")
             if reduction is not None:
                 if reduction.source_value_error is not None:
-                    raise EmptyFlowError("max() requires at least one item") from None
+                    raise reduction.source_value_error
                 if not reduction.seen:
                     raise EmptyFlowError("max() requires at least one item")
                 _record_direct_strategy(
@@ -1994,11 +1998,12 @@ class FlowTerminalsMixin(Generic[T]):
                     "an exact int64 Arrow field was reduced by a columnar kernel",
                 )
                 return cast(T, reduction.value)
-        try:
-            with _open_terminal_values(physical, pipeline) as iterator:
-                return cast(T, builtins.max(iterator, key=key))
-        except ValueError:
-            raise EmptyFlowError("max() requires at least one item") from None
+        missing = object()
+        with _open_terminal_values(physical, pipeline) as iterator:
+            extreme = builtins.max(iterator, key=key, default=missing)
+        if extreme is missing:
+            raise EmptyFlowError("max() requires at least one item")
+        return cast(T, extreme)
 
     def top(self, count: int, *, key: Selector | None = None) -> list[T]:
         """Return up to count largest items without sorting the entire result.
@@ -2267,7 +2272,7 @@ class FlowTerminalsMixin(Generic[T]):
                 try:
                     state = states.get(group, missing)
                 except TypeError:
-                    raise TypeError("reduce_by() keys must be hashable") from None
+                    reraise_key_type_error(group, "reduce_by() keys must be hashable")
                 if state is missing:
                     state = initializer()
                 states[group] = function(state, item)
@@ -2328,7 +2333,7 @@ class FlowTerminalsMixin(Generic[T]):
                 try:
                     count = get_count(selected, 0)
                 except TypeError:
-                    raise TypeError("reduce_by() keys must be hashable") from None
+                    reraise_key_type_error(selected, "reduce_by() keys must be hashable")
                 counts[selected] = count + 1
             return counts
 

@@ -7,7 +7,7 @@ use crate::common::{
     extract_f64_buffer, extract_f64_container, kernel_error, materialize_target,
     materialize_values, snapshot_exact_container_prefix,
 };
-use crate::integer::I64Range;
+use crate::integer::{I64Range, run_interruptible_range};
 use crate::numeric_mean::mean_f64_container;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -54,14 +54,14 @@ pub(crate) fn execute_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64(values.map(|value| value as f64), program)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64(values, program))
-        .map_err(kernel_error)
 }
 
 /// Run a fused f64 program detached, then build the requested terminal container once.
@@ -111,15 +111,14 @@ pub(crate) fn materialize_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
-    })
-    .map(|value| value as f64);
-    let output = py
-        .detach(move || run_f64(values, program))
-        .map_err(kernel_error)?;
+    };
+    let output = run_interruptible_range(py, values, move |values| {
+        run_f64(values.map(|value| value as f64), program)
+    })?;
     materialize_values(py, output, target)
 }
 
@@ -293,14 +292,14 @@ pub(crate) fn terminal_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_terminal(values.map(|value| value as f64), program, terminal)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_terminal(values, program, terminal))
-        .map_err(kernel_error)
 }
 
 #[pyfunction]
@@ -326,14 +325,14 @@ pub(crate) fn statistics_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_statistics(values.map(|value| value as f64), program)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_statistics(values, program))
-        .map_err(kernel_error)
 }
 
 #[pyfunction]
@@ -434,14 +433,14 @@ pub(crate) fn mean_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_mean(values.map(|value| value as f64), program)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_mean(values, program))
-        .map_err(kernel_error)
 }
 
 #[pyfunction]
@@ -467,14 +466,14 @@ pub(crate) fn aggregate_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_aggregate(values.map(|value| value as f64), program)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_aggregate(values, program))
-        .map_err(kernel_error)
 }
 
 /// Compute only requested aggregate fields while retaining the eight-slot ABI schema.
@@ -550,14 +549,14 @@ pub(crate) fn aggregate_f64_range_masked(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_aggregate_masked(values.map(|value| value as f64), program, mask)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
 }
 
 #[pyfunction]
@@ -583,12 +582,12 @@ pub(crate) fn count_f64_range(
     if step == 0 {
         return Err(PyValueError::new_err("range step cannot be zero"));
     }
-    let values = (I64Range {
+    let values = I64Range {
         current: start,
         stop,
         step,
+    };
+    run_interruptible_range(py, values, move |values| {
+        run_f64_count(values.map(|value| value as f64), program)
     })
-    .map(|value| value as f64);
-    py.detach(move || run_f64_count(values, program))
-        .map_err(kernel_error)
 }

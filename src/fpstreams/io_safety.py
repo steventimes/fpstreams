@@ -1,4 +1,4 @@
-"""Validate record-size limits and neutralize formula-like spreadsheet cells."""
+"""Validate record I/O options and manage owned output files."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 
 _SPREADSHEET_PREFIXES = frozenset({"=", "+", "-", "@"})
 
@@ -44,6 +44,15 @@ def validate_max_record_bytes(value: int | None) -> int | None:
 
 
 @contextmanager
+def _closing_output_writer(writer: TextIO) -> Iterator[TextIO]:
+    """Close an owned text writer while retaining any active export failure."""
+    from fpstreams.runtime.iterators import closing_iterators
+
+    with closing_iterators((writer,)):
+        yield writer
+
+
+@contextmanager
 def atomic_output_path(
     target: str | os.PathLike[str], *, if_exists: Literal["replace", "error"]
 ) -> Iterator[Path]:
@@ -52,7 +61,7 @@ def atomic_output_path(
     The caller owns the writer and must close it before leaving the context.
     This guarantees atomic visibility, not durability after a power failure.
     """
-    from .runtime.resources import _add_cleanup_failure
+    from fpstreams.runtime.resources import _add_cleanup_failure
 
     if if_exists not in {"replace", "error"}:
         raise ValueError("if_exists must be replace or error")

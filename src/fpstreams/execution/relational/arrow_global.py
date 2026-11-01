@@ -24,7 +24,7 @@ from ...physical.relational import (
     SourcePhysicalNode,
 )
 from ...planning.arrow import ArrowPrefixPlan, plan_arrow_table_prefix
-from ...planning.arrow_source import ArrowBatchSource, batch_to_rows
+from ...planning.arrow.source import ArrowBatchSource, batch_to_rows
 from ...planning.logical import Pipeline
 from ...runtime.iterators import close_iterators
 

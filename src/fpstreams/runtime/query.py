@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Literal
 
+from ..errors import _cleanup_error_summary
 from .files import FileManager
 from .limits import QueryLimits
 from .metrics import QueryMetrics
@@ -51,14 +52,19 @@ class QueryRuntime:
         return False
 
     def close(self, active_error: BaseException | None = None) -> None:
-        """Close synchronous ownership once."""
+        """Close synchronous ownership; active async tasks or scopes require ``aclose``."""
         if self._closed:
+            return
+        if self.tasks.live_count or any(not scope._closed for scope in self.tasks._scopes):
+            _add_cleanup_failure(active_error, [RuntimeError("async tasks require aclose()")])
             return
         self._closed = True
         try:
             self.files.close()
             self.resources.close(active_error)
         finally:
+            if not self.resources.closed:
+                self._closed = False
             self._record_report_metrics()
 
     async def aclose(self, active_error: BaseException | None = None) -> None:
@@ -76,7 +82,7 @@ class QueryRuntime:
         except BaseException as error:
             if active_error is None:
                 raise
-            summary = f"cleanup failed: {type(error).__name__}: {error}"
+            summary = _cleanup_error_summary(error)
             notes = getattr(active_error, "__notes__", ()) or ()
             if summary not in notes:
                 _add_cleanup_failure(active_error, [error])

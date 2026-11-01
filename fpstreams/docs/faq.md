@@ -37,9 +37,11 @@ Forcing `native` is mainly useful for parity checks and diagnosis. It raises
 ## Why are `from_csv()` and `scan_csv()` separate?
 
 `rows.from_csv()` follows Python's `csv.DictReader` behavior and produces string
-cells. `rows.scan_csv()` uses PyArrow for typed, incremental reading and can push
-selected columns into conversion. Keeping two names makes their parsing and
-error contracts explicit.
+cells. `rows.scan_csv()` reads typed batches with PyArrow. To restrict the
+reader's columns, pass `pyarrow.csv.ConvertOptions(include_columns=...)` as
+`convert_options`. Query `.select()` follows conversion of every reader column
+in each batch, so errors in unselected columns still propagate. Keeping two
+names makes their parsing and error contracts explicit.
 
 ## Can I run a pipeline more than once?
 
@@ -58,6 +60,6 @@ when you need that execution model.
 
 Include the fpstreams and Python versions, CPU and operating system, input size,
 data types, key cardinality where relevant, the complete pipeline, and the
-terminal. A result across several sizes is more useful than one timing. The
-repository's `run_benchmark.sh` exposes the standard comparison matrix without
-requiring CLI arguments.
+terminal. A result across several sizes is more useful than one timing.
+Performance tools and raw reports are maintained locally and are not included
+in the public source distribution or GitHub Actions.

@@ -262,7 +262,11 @@ class Gatherer(Generic[T, S, R]):
             return proceed and not downstream.is_rejecting()
 
         integrate_legacy = cast("LegacyIntegrator[S, T, R]", self.integrator)
-        return all(downstream.push(value) for value in integrate_legacy(state, item))
+        for value in integrate_legacy(state, item):
+            accepted = downstream.push(value)
+            if not accepted:
+                return False
+        return True
 
     def _finish(self, state: S, downstream: Downstream[R]) -> None:
         """Run the configured finisher and stop forwarding legacy output after rejection."""

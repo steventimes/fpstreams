@@ -63,7 +63,7 @@ class _Fields:
             return self.values[name]
         return None if self.default is None else frozenset({(self.default, name)})
 
-    def select(self, selector: Any) -> Dependencies:
+    def select(self, selector: Any, *, analysis: RowExprAnalysis | None = None) -> Dependencies:
         if type(selector) is str:
             return self.resolve(selector.split(".")[0])
         if not _live_expression(selector):
@@ -78,7 +78,7 @@ class _Fields:
             if type(node) in {InputRow, Index}:
                 return None
             pending.extend(_children(node))
-        fields = self.analyze(selector._node).fields
+        fields = (self.analyze(selector._node) if analysis is None else analysis).fields
         return None if fields is None else _union([self.resolve(name) for name in fields])
 
 
@@ -135,12 +135,19 @@ def _map_fields(source: _Fields, operation: MapOp) -> _Fields:
     elif descriptor.kind == "with_columns":
         columns = _computed_columns(operation.function)
         if columns is not None:
-            if any(source.analyze(expression._node).opaque for _name, expression in columns):
-                return _Fields(analyze=source.analyze, rows=None)
+            analyses = []
+            for _name, expression in columns:
+                analysis = source.analyze(expression._node)
+                if analysis.opaque:
+                    return _Fields(analyze=source.analyze, rows=None)
+                analyses.append(analysis)
             return replace(
                 source,
                 values=source.values
-                | {name: source.select(selector) for name, selector in columns},
+                | {
+                    name: source.select(selector, analysis=analysis)
+                    for (name, selector), analysis in zip(columns, analyses, strict=True)
+                },
                 excluded=source.excluded - {name for name, _selector in columns},
             )
     elif descriptor.kind == "rename":

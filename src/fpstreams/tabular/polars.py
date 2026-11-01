@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator
 from importlib import import_module
 from typing import Any, cast
 
-from ..planning.arrow_source import ArrowBatchSource
+from ..planning.arrow.source import ArrowBatchSource
 from ..planning.source import Source
 from .arrow import _close, _deferred_arrow_source, _schema_names
 
@@ -33,6 +33,13 @@ def _positive_size(value: int) -> int:
     if size <= 0:
         raise ValueError("batch_size must be positive")
     return size
+
+
+def polars_from_arrow(pl: Any, table: Any) -> Any:
+    """Preserve zero-column cardinality even on older Polars Arrow converters."""
+    if table.num_rows and table.num_columns == 0:
+        return pl.DataFrame([{}] * table.num_rows)
+    return pl.from_arrow(table, rechunk=False)
 
 
 def polars_row_factory(

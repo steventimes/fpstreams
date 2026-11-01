@@ -14,12 +14,8 @@ from types import FunctionType
 from typing import Any, TypeAlias, cast
 
 from ..errors import DuplicateKeyError
-from ..planning.arrow_source import (
-    ArrowBatchSource,
-    ArrowScanRequest,
-    RangePredicate,
-)
-from ..planning.arrow_source import batch_to_rows as batch_to_rows
+from ..planning.arrow.source import ArrowBatchSource, ArrowScanRequest, RangePredicate
+from ..planning.arrow.source import batch_to_rows as batch_to_rows
 from ..planning.semantics import facts_from_capabilities
 from ..planning.source import Source, SourceCapabilities, _function_code
 from ..runtime.resources import _add_cleanup_failure

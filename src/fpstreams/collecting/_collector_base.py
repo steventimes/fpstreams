@@ -8,7 +8,7 @@ from typing import Any, Generic, TypeVar
 
 from ..runtime.iterators import closing_iterators
 
-T = TypeVar("T")
+T = TypeVar("T", contravariant=True)
 R = TypeVar("R")
 S = TypeVar("S")
 

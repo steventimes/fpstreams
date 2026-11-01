@@ -55,7 +55,7 @@ partition size, matches per key, output rows, and repartition depth.
 Limits must be positive integers except repartition depth, which may be zero.
 Exceeding a limit raises `BufferLimitError` and triggers query cleanup.
 
-## Shared executor budget (2.4.0) {#shared-executor-budget-unreleased}
+## Shared executor budget (2.4.0) {#shared-executor-budget-250}
 
 `BoundedExecutor` wraps a caller-owned executor. Its limit counts unfinished
 calls across every query using that wrapper, including calls already running.
@@ -68,10 +68,10 @@ the wrapper leaves the underlying pool open.
       members: true
       inherited_members: false
 
-## File partitions (2.4.0) {#file-partitions-unreleased}
+## File partitions (2.4.0) {#file-partitions-250}
 
 `FileCheckpoint` computes one output file per stable input partition and
-processing version. See the [recovery recipe](../user-guide/analytics.md#resume-file-partitions-unreleased)
+processing version. See the [recovery recipe](../user-guide/analytics.md#resume-file-partitions-250)
 for file ownership, retries, and storage requirements.
 
 ::: fpstreams.FileCheckpoint

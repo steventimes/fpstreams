@@ -469,7 +469,7 @@ def _extension_available(kind: NativeKind) -> bool:
     """Check and cache whether the native module exposes every kernel for
     ``kind``."""
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False
     cached = _EXTENSION_CAPABILITY_CACHE.get(kind)
@@ -518,7 +518,7 @@ def _exact_container_extraction_available() -> bool:
     """
     global _exact_container_capability_cache
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False
     cached = _exact_container_capability_cache
@@ -539,7 +539,7 @@ def _container_probe_available(kind: NativeKind) -> bool:
     before the bounded probe API existed.
     """
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False
     cached = _PROBE_CAPABILITY_CACHE.get(kind)
@@ -553,7 +553,7 @@ def _container_probe_available(kind: NativeKind) -> bool:
 def _buffer_extraction_available(kind: NativeKind) -> bool:
     """Require versioned endpoints before selecting an external numeric buffer."""
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False
     cached = _buffer_capability_cache.get(kind)
@@ -712,7 +712,7 @@ def _identity_program(
 def _exact_number_mean_available() -> bool:
     """Return whether the extension can validate a mixed exact-number container itself."""
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False
     return callable(getattr(_native, "mean_exact_numbers_v1", None))

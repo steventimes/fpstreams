@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 from importlib import import_module
 from typing import Any, cast
 
-from ..planning.arrow_source import ArrowBatchSource
+from ..planning.arrow.source import ArrowBatchSource
 from ..planning.source import Source
 from .arrow import (
     _arrow_modules,
@@ -53,6 +53,10 @@ def _dataframe_table_factory(
             result = _without_pandas_index(pa.table(frame))
             _schema_names(result.schema)
             return result
+        if allow_copy and _is_pandas_dataframe(frame):
+            result = _without_pandas_index(pa.Table.from_pandas(frame, preserve_index=False))
+            _schema_names(result.schema)
+            return result
         interchange = cast(Any, import_module("pyarrow.interchange"))
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -76,12 +80,12 @@ def _dataframe_rows(table: Callable[[], Any], size: int) -> Callable[[], Iterato
     return records
 
 
-def _stable_columnar_opener(frame: Any, table: Callable[[], Any]) -> Callable[[], Any] | None:
-    """Expose whole-table speculation only for the concrete pandas frame implementation."""
+def _is_pandas_dataframe(frame: Any) -> bool:
+    """Recognize concrete pandas frames without importing pandas for other adapters."""
     if type(frame).__module__.partition(".")[0] != "pandas":
-        return None
+        return False
     pandas = import_module("pandas")
-    return table if type(frame) is pandas.DataFrame else None
+    return type(frame) is pandas.DataFrame
 
 
 def dataframe_source(
@@ -104,6 +108,6 @@ def dataframe_source(
         batches,
         "dataframe",
         size,
-        columnar_opener=_stable_columnar_opener(frame, table),
+        columnar_opener=table if _is_pandas_dataframe(frame) else None,
     )
     return _deferred_arrow_source(_dataframe_rows(table, size), descriptor)

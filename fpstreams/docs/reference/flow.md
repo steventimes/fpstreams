@@ -9,7 +9,249 @@ execution must create a fresh iterable. Besides ordinary iterables,
 `flow(source)` retains supported PyArrow, pandas, Polars, Arrow C stream, and
 dataframe-interchange inputs.
 
-## Statistical pipelines (Unreleased)
+`chunk(size, strict=True)` (2.5.0) rejects an incomplete final batch when
+the flow reaches it. The default continues to emit a shorter final batch.
+`batch` is an alias; `AsyncFlow.chunk` provides the same option.
+In strict mode, the short tail has already been read when `ValueError` is
+raised; it is not emitted. To inspect a short tail yourself, use the default
+mode and check the tuple length. Stopping before that tail does not validate it.
+
+In the 2.5.0 source, `map_parallel` and `parallel` normalize non-`None`
+`workers` and `buffer` values
+with the integer `__index__` protocol when configuring the flow, before opening
+its source. Values must be positive. Floating-point values, including NaN and
+infinity, raise `TypeError`.
+
+## Consumption, batching, and cleanup
+
+In the 2.5.0 Python uniqueness path, `distinct` and `distinct_by` also
+compare hashable keys with previously seen unhashable keys, and vice versa.
+The first accepted equal key wins. Mixed categories can invoke additional
+equality callbacks and propagate their errors. State retains distinct keys;
+with H hashable and U unhashable keys, cross-category comparisons may take
+O(H × U) time and state uses O(H + U) references. Existing same-category
+comparison rules remain unchanged. For a new hashable key, each previously
+accepted unhashable key is compared as `seen == key`; for a new unhashable key,
+accepted hashable keys are compared as `key == seen` in encounter order.
+
+`group_runs` emits each contiguous group as a complete tuple. To detect a
+group boundary, it reads the first item of the next group and computes its key
+before emitting the previous group. If that key computation fails, the previous
+group has not yet been emitted. It holds the whole current group in memory;
+the tuple contains the original item references, without deep copies. An
+infinite run with no key change cannot produce a completed group.
+
+In the 2.5.0 source, `concat` opens each additional source only when it
+reaches it and closes an opened iterator on completion or early exit. Passing
+the same one-shot iterator as the input and as an additional source does not
+give the additional source a second ownership of that iterator.
+
+In the 2.5.0 Python grouping path, `reduce_by` and `frequencies`
+propagate errors raised by a key's custom hash or equality operation unchanged.
+An unhashable key raises `TypeError`.
+
+`zip` pulls the left input before the right input. If the right input ends
+first, a left item can already have been consumed without appearing in a pair.
+This also matters when the inputs have side effects. `strict=True` checks for
+unequal lengths during consumption, so a downstream `take` cannot validate an
+unconsumed tail. `zip_longest` uses `None` for padding by default, which is
+indistinguishable from an input `None`. Pass a unique sentinel when the
+distinction matters. A mutable `fillvalue` is reused, not copied.
+
+`intersperse` reads the next input item before emitting its separator.
+Consequently, `intersperse(...).take(2)` can consume two source items even
+though only the first item and a separator are returned. A successful `first`
+or `find` only checks the consumed prefix; consume the entire source if all
+items and source errors must be checked.
+
+`batch_by_size` checks the next item's size before emitting a pending batch,
+including when `max_count` has already been reached. An oversized next item
+in strict mode or an error from the source or size function can therefore stop
+the flow before that pending batch is emitted. Normal exhaustion emits the
+remaining nonempty batch. The operation does not copy the items in its tuples.
+
+With `map_parallel(..., ordered=False)`, results arrive in completion order;
+following it with `take(n)` does not select the first `n` inputs. Work already
+submitted can have started even when its result is never returned.
+
+Terminal operations own their iteration and close it when they stop. When
+iterating directly, keep and explicitly close the iterator if you stop early;
+`break` alone does not close a retained iterator. In the Python path, direct
+iteration of `take(1)` can yield its last item while the source remains open;
+cleanup occurs when iteration resumes or the iterator is explicitly closed.
+For an iterator with a
+`close` method, `contextlib.closing` can express this ownership:
+
+```python
+from contextlib import closing
+from fpstreams import flow
+
+with closing(iter(flow(range(10)))) as values:
+    for value in values:
+        if value == 2:
+            break
+```
+
+For a direct `flow.defer(factory)` source, `take(0).to_list()` opens and closes
+the factory's iterator without pulling an item, while
+`collect(Collectors.head(0))` does not call the factory. Factory errors in the
+first case still propagate. Custom iterators need not implement `close`.
+
+## Flattening mapped iterables
+
+`flat_map()` expands one iterable level in order. A string is iterable and
+therefore yields its characters; a dictionary yields its keys. Wrap either in
+another iterable to keep it as one value.
+
+In the synchronous Python path, a mapped iterator is delegated with
+`yield from`. It is not explicitly closed when it is exhausted normally or when its
+own `__next__` raises. Closing an active delegated iterator after downstream
+early termination calls its `close()` if available. A generator may also run its
+own cleanup as it finishes; these details do not imply that every iterable
+provides a close hook.
+
+## Scan state and Gatherer completion
+
+`scan(initial, function)` emits one state per input and emits nothing for an
+empty input. It does not copy the initial state or results. If a callback
+mutates and returns one object, previously emitted references can observe
+later mutations; the supplied seed is also reused on another evaluation. Return
+fresh values for snapshots, and create a fresh pipeline and seed with `defer`
+when each execution needs independent state:
+
+```python
+from fpstreams import flow
+
+def add_key(counts, key):
+    return {**counts, key: counts.get(key, 0) + 1}
+
+counts = flow.defer(lambda: flow(["a", "b", "a"]).scan({}, add_key))
+expected = [{"a": 1}, {"a": 1, "b": 1}, {"a": 2, "b": 1}]
+assert counts.to_list() == expected
+assert counts.to_list() == expected
+```
+
+`scan_right` buffers the full source and computes the right fold before its
+first output; it emits nothing for an empty source. With `max_items`, it must
+read the next item to detect an exceeded limit, so the limit bounds buffered
+items rather than all source reads.
+
+For the synchronous `Gatherer`, the finisher runs on normal exhaustion and
+when the gatherer stops input. Downstream early close can also run it with a
+rejecting output channel. It must not infer that the source was exhausted from
+the number of items seen. Source or integration failures do not turn the
+finisher into a `finally` hook; manage separately owned resources explicitly.
+In a composed gatherer, an initializer or finisher failure can prevent later
+hooks from running.
+
+## Reduce values and check their types {#reduce-types}
+
+`reduce(function, initial=...)` combines values from left to right. Without an
+initial value, the first element is the accumulator; an empty flow raises
+`EmptyFlowError`. With an initial value, an empty flow returns that exact object.
+The callback must accept its own previous result as the next accumulator.
+
+The current declaration accepts `Callable[[Any, T], Any]` and returns `Any`,
+with or without an initial value. Runtime results can be more specific, but
+neither an ordinary lambda nor a named, annotated callback refines that public
+return type:
+
+```python
+from typing import Any, assert_type
+from fpstreams import flow
+
+assert_type(flow([1, 2]).reduce(lambda a, b: a + b), Any)  # runtime: 3
+assert_type(flow([1, 2]).reduce(lambda a, b: a + str(b), ""), Any)  # runtime: "12"
+```
+
+`Any` can also let an invalid callback pass static checking. For example,
+`def step(a: int, b: int) -> str: return str(a + b)` works for `[1, 2]`
+without an initial value, but fails with `TypeError` for `[1, 2, 3]`: its next
+accumulator is a string, which the callback cannot add to an integer.
+
+For an explicit accumulator contract, use the existing lazy `fold` operation and
+annotate its result. This gives ordinary lambdas concrete parameter types in both
+mypy and Pyright. The initializer creates state, and `.first()` returns the one
+emitted result:
+
+```python
+from fpstreams import Flow, flow
+
+
+def initial_text() -> str:
+    return ""
+
+
+query: Flow[str] = flow([1, 2]).fold(
+    initial_text, lambda state, item: state + str(item)
+)
+assert query.first() == "12"
+assert Flow[int]([]).fold(initial_text, lambda state, item: state).first() == ""
+```
+
+This is a migration from `reduce`, whose return declaration remains `Any`.
+`fold` requires an initializer and calls the step for every input item, including
+the first. It emits the initializer's exact result on empty input and never
+awaits state values. To migrate an unseeded reduction, choose an explicit seed
+that suits the operation; a singleton now also runs the step. The initializer
+runs once per evaluation, so use a factory when each evaluation needs fresh
+mutable state. A callback or seed containing `Any` can bypass the declared
+contract. These annotations add no runtime state checks and do not turn
+`list[Any]` into `list[int]`. For untrusted dynamic results, keep the runtime
+check described below.
+
+For a concrete result, receive it as `object` and check it before use:
+
+```python
+from fpstreams import flow
+
+result: object = flow([1, 2]).reduce(lambda a, b: a + b)
+if not isinstance(result, int):
+    raise TypeError("expected an integer accumulator")
+assert result == 3  # narrowed to int
+```
+
+When several calls share a specific accumulator contract, a local boundary can
+check the callback signature and the returned value:
+
+```python
+from collections.abc import Callable
+from fpstreams import Flow, flow
+
+
+def text_step(accumulator: str, item: int) -> str:
+    return accumulator + str(item)
+
+
+def reduce_text(values: Flow[int], step: Callable[[str, int], str], initial: str) -> str:
+    result: object = values.reduce(step, initial)
+    if not isinstance(result, str):
+        raise TypeError("text reducer returned a non-string")
+    return result
+
+
+callback: Callable[[str, int], str] = text_step
+assert reduce_text(flow([1, 2]), callback, "") == "12"
+```
+
+This is a caller-owned string example, not an additional fpstreams API or a
+promise of arbitrary generic safety. A callback returning `Any` can still bypass
+static signature checks; the explicit result check above catches a non-string
+result if the reduction returns. It does not validate every intermediate value.
+A nullable accumulator must accept `None`; nested `Any`, such as `list[Any]`,
+still carries unknown element types. Neither should be relabelled as a more
+precise type without evidence.
+
+In a source checkout, `tests/typing/reduce_examples.py` contains the runnable
+examples, nullable and nested-`Any` cases, identity checks, and a runtime witness
+for the invalid callback. `tests/typing/reduce_invalid.py` contains marked expected
+static errors and must not be executed. From the checkout root, the unified
+`uv run python scripts/check_typing.py` command checks both example pairs with
+mypy and Pyright, one invocation per checker. See the repository's CONTRIBUTING
+"Run the checks" section for setup and target selection. No optional data backend
+is needed to run the reduce examples.
+
+## Statistical pipelines (2.5.0)
 
 Use `collect(Collectors.statistics(...))` for one summary over the whole input,
 or `rolling_statistics(size, selector=..., ddof=0)` for one result per input item:
@@ -30,12 +272,12 @@ and a nonpositive size or negative `ddof` raises `ValueError` at construction.
 Non-real inputs raise `TypeError` during consumption; nonfinite rolling inputs
 raise `ValueError`. Each evaluation starts with fresh window state.
 
-See [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-unreleased)
+See [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-250)
 for Collector input policies and optional sketches, and the
-[rolling recipe](../user-guide/analytics.md#rolling-numerical-statistics-unreleased)
+[rolling recipe](../user-guide/analytics.md#rolling-numerical-statistics-250)
 for state bounds and rebuilding costs. These additions require the source version.
 
-## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-unreleased}
+## State-driven generation and mapping (2.4.0) {#state-driven-generation-and-mapping-250}
 
 `unfold` builds a source from state, while `map_accum` transforms an existing
 source with state. They use different tuple orders:
@@ -83,7 +325,7 @@ mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.
 
-## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-unreleased}
+## Reuse sliding-window aggregates (2.4.0) {#reuse-sliding-window-aggregates-250}
 
 `window_reduce(size, combine, step=1)` combines each count-based window without
 building a tuple and folding every overlapping value again:
@@ -121,7 +363,7 @@ take linear work in `size`. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against `window(...).map(...)` for those workloads.
 
-## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-unreleased}
+## Reduce adjacent runs with a Collector (2.4.0) {#reduce-adjacent-runs-with-a-collector-250}
 
 `collapse(predicate, collector)` feeds each nonempty adjacent run into fresh
 [Collector](collecting.md) state. The predicate sees neighboring input items,
@@ -244,6 +486,15 @@ assert explanation["arrow_prefix"] is None
 assert explanation["boundaries"] == []
 ```
 
+An `exact` cardinality describes the number of outputs on normal, complete
+consumption under the source facts available when `explain()` runs. It does not
+guarantee that callbacks succeed or finish, and a referenced mutable source can
+change before execution. `upper_bound` limits the outputs under the same source
+facts; it does not guarantee normal completion. When a strict zip or chunk is
+known to fail on a length mismatch, the planner reports a conservative upper
+bound rather than an exact count. A downstream `take` may stop before that
+failure is reached.
+
 An Arrow-capable plan reports its retained prefix and any guarded transition to
 Python rows in `arrow_prefix` and `boundaries`. Relational plans additionally
 report their selected tree and strategy in `relations`.
@@ -283,7 +534,7 @@ Bounded reads remain lazy, and an identity `count()` returns the exact cardinali
 | `flow.from_numpy(array, columns=...)` | Adapt a one-dimensional array to scalars or a two-dimensional array to named records |
 | `flow.from_dataframe(frame)` | Use the dataframe interchange protocol; `from_pandas` is an alias |
 | `flow.from_polars(frame)` | Retain a Polars DataFrame or LazyFrame |
-| `flow.scan_csv(path)` | Scan typed Arrow CSV batches with query column pruning |
+| `flow.scan_csv(path)` | Scan typed Arrow CSV batches; reader column selection requires explicit conversion options |
 | `flow.from_parquet(source)` | Scan Parquet with optional projection and filtering |
 | `flow.empty()` | Create a flow with no items |
 | `flow.of_nullable(value)` | Emit one value, or nothing when it is `None` |

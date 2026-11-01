@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...collecting._collector_base import Collector, _never_done
-from ...physical.relational import (
-    GroupAggregatePhysicalNode,
-)
+from ...physical.relational import GroupAggregatePhysicalNode
+from ...runtime._distinct import reraise_key_type_error
 from ..sync_ops import close_iterators
 
 
@@ -96,7 +95,7 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle mutation boundari
                 (hooks.namespace["hash"] if "hash" in hooks.namespace else hash)(key)  # noqa: SIM401
                 entry = groups.get(key)
             except TypeError:
-                raise TypeError("group_by keys must be hashable") from None
+                reraise_key_type_error(key, "group_by keys must be hashable")
             live_revision = collector._lifecycle_revision
             if live_revision != revision:
                 revision, initializer, step, done = _single_collector_lifecycle(collector)
@@ -182,7 +181,7 @@ def execute_collector_group(
                 (hooks.namespace["hash"] if "hash" in hooks.namespace else hash)(key)  # noqa: SIM401
                 entry = groups.get(key)
             except TypeError:
-                raise TypeError("group_by keys must be hashable") from None
+                reraise_key_type_error(key, "group_by keys must be hashable")
             if entry is None:
                 state = program.initialize()
                 groups[key] = (key, state)

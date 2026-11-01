@@ -11,6 +11,27 @@ mean that a source has been verified, reviewed, implemented, or benchmarked.
 does not mean that the capability is available or scheduled. Review notes below
 distinguish source review from implemented and verified changes.
 
+## Current adoption status (October 29, 2026)
+
+The numbered list remains the original 73-entry catalog. It is not an inventory
+of every later research batch. The status below describes the current source
+candidate; historical review notes retain their original dates and scope.
+
+| Area | Current status | Remaining condition |
+| --- | --- | --- |
+| Hash, sorted, and spill grouping | Implemented; count-only hot-key compaction and resource limits already exist. | None of these is a new algorithm proposal. |
+| Spill strategy guidance for ETL/OLAP | Worth validating; not implemented as new guidance or automatic selection. | Small-input peaks include a fixed 4 MiB encoding buffer. Compare realistic cardinality, skew, row width, ordering, and memory/disk costs before drawing a strategy boundary. Higher small-input memory is not a general rejection of spill. |
+| Ordered window aggregation | Two-Stacks Lite and an explicit associative, non-mutating `window_reduce` contract already exist. | The contract does not prove arbitrary callbacks lawful or promise worst-case constant latency. |
+| DABA / DABA Lite | Deferred; not implemented, rather than theoretically inapplicable. | A real tail-latency requirement and compatible partial-window, error, and cleanup behavior are still needed before a separate experiment. |
+| KLL/HLL collectors | Implemented through existing DataSketches kernels. | KLL vector-update registration alone does not establish a safe batch contract. The vector helper and callback/error timing need further evidence; batch optimization remains deferred. |
+| Static field dependencies and Arrow list materialization | Implemented within their documented guards. | Static dependencies are not per-record provenance; Arrow optimization is not a guarantee for arbitrary schemas or iterators. |
+| SSD buffer and workload methods | Method reference only; no storage-engine integration. | Separate actual resource budgets, stage costs, and effective configuration. RocksDB memtable/MVCC/page-layout mechanisms are not direct replacements for Python group states. |
+
+The SSD comparison used specific Tectonic main and Tectonic-Plus files and the
+LSMMemoryProfiling `fn-breakdown/lsmbuffer` branch, alongside the preserved
+four-repository review. It did not independently audit all 22 branches or their
+submodules. No new timing or implementation follows from this status update.
+
 ## Papers, 1–25
 
 | No. | Reference | Proposed use |
@@ -132,7 +153,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 Copying the Java name would obscure that difference.
 
 These are API comparisons, not a claim of semantic equivalence or measured
-performance. The [2.4.0 Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased)
+performance. The [2.4.0 Collector overload](reference/flow.md#reduce-adjacent-runs-with-a-collector-250)
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.
@@ -191,7 +212,7 @@ integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.
 
-### October 18: completed review and adopted changes (2.4.0) {#october-18-completed-review-and-adopted-changes-unreleased}
+### October 18: completed review and adopted changes (2.4.0) {#october-18-completed-review-and-adopted-changes-250}
 
 All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
@@ -206,7 +227,7 @@ The resulting changes reuse fpstreams' existing execution paths:
 - Synchronous `filter_map()` removes tuple adaptation while preserving iterator
   boundaries. Async `filter_map()` uses the existing serial fusion stage. Both
   call the mapper once per input and discard only `None`.
-- [Report metadata export](user-guide/execution-reports.md#metadata-export-unreleased)
+- [Report metadata export](user-guide/execution-reports.md#metadata-export-250)
   adds a schema version, metric units, resource scope, and event limits. Plan
   dictionaries also carry a schema version and execution mode. These are
   fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.
@@ -229,10 +250,10 @@ automatic reordering of arbitrary callbacks require separate contracts and
 were not adopted. Offline Optuna tuning informed the Arrow mask thresholds;
 the research dependencies and trial records are not product dependencies.
 
-## Cross-project follow-up (Unreleased)
+## Cross-project follow-up (2.5.0)
 
-The next batch adds explicit shared statistics, optional sketches, rolling
-numerical statistics, and conservative field dependencies. These changes use
+The current 2.5.0 source includes shared statistics, optional sketches,
+rolling numerical statistics, and conservative field dependencies. These changes use
 the existing Collector, `map_accum`, and plan explanation interfaces. The
 following sources supplement the earlier numbered list:
 
@@ -259,5 +280,5 @@ The field metadata is a static dependency description, not a per-record
 provenance implementation. Sketch estimates preserve the exact APIs and add
 their own type, missing-value, approximation, and merge contracts. See
 [collectors](reference/collecting.md),
-[rolling statistics](user-guide/analytics.md#rolling-numerical-statistics-unreleased),
-and [field dependencies](user-guide/execution-reports.md#static-field-dependencies-unreleased).
+[rolling statistics](user-guide/analytics.md#rolling-numerical-statistics-250),
+and [field dependencies](user-guide/execution-reports.md#static-field-dependencies-250).

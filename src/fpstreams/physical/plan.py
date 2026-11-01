@@ -14,6 +14,7 @@ from ..planning.native import EngineDecision
 from ..planning.numpy import NumpyPrefixPlan
 from ..planning.source import Source
 from ..planning.sync import Engine, Operation, ParallelSettings, SortOp
+from .compiled import ProgramFingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +39,7 @@ class CompiledExpressionPhysicalNode(PhysicalNode):
     operation: Operation
     expression: TypedExpr
     program: ExprProgram
+    fingerprint: ProgramFingerprint | None = None
 
 
 class SortStrategy(StrEnum):

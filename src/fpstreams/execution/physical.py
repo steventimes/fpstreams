@@ -21,7 +21,7 @@ from ..planning.logical import Pipeline
 from ..planning.sync import FilterOp, MapOp, Operation
 from ..runtime.query import QueryRuntime
 from . import execute
-from ._pair_dict import (
+from .pairs.dictionary import (
     PairDictConsumer,
     consume_pair_filter_to_dict,
     consume_pair_map_to_dict,
@@ -132,11 +132,11 @@ def consume_physical(  # noqa: C901 - terminal fast paths share one ownership st
     """Consume a physical plan while keeping sink and iterator cleanup in one stack."""
     pair_consumer = consumer if type(consumer) is PairDictConsumer else None
     if pair_consumer is not None and pipeline is not None and plan.root is None:
-        from ._pair_dict import (
+        from .pairs.dictionary import (
             try_consume_pair_unique_to_dict,
             try_consume_pair_value_filter_to_dict,
         )
-        from ._pair_row_filter import try_consume_pair_row_filter_to_dict
+        from .pairs.row_filter import try_consume_pair_row_filter_to_dict
 
         operations = operations_from_physical_nodes(plan.nodes)
         handled, result = try_consume_pair_unique_to_dict(
@@ -171,7 +171,7 @@ def consume_physical(  # noqa: C901 - terminal fast paths share one ownership st
         active_error: BaseException | None = None
         try:
             operations = operations_from_physical_nodes(plan.nodes)
-            from ._pair_dict import prepare_pair_value_map_to_dict
+            from .pairs.dictionary import prepare_pair_value_map_to_dict
 
             pair_value_map_snapshot = prepare_pair_value_map_to_dict(
                 plan,
@@ -191,7 +191,7 @@ def consume_physical(  # noqa: C901 - terminal fast paths share one ownership st
                 and operations
                 and is_canonical_pair_dict_consumer(pair_consumer)
             ):
-                from ..planning._pair_stages import PairFilterDescriptor, PairMapDescriptor
+                from ..planning.pairs import PairFilterDescriptor, PairMapDescriptor
                 from ..runtime.failpoints import has_active_failpoints
 
                 tail = operations[-1]
@@ -226,7 +226,7 @@ def consume_physical(  # noqa: C901 - terminal fast paths share one ownership st
             )
             with open_operations(source_iterator, prefix, runtime=runtime) as iterator:
                 if pair_map is not None and pair_consumer is not None:
-                    from ._pair_dict import try_consume_pair_value_map_to_dict_opened
+                    from .pairs.dictionary import try_consume_pair_value_map_to_dict_opened
 
                     handled, mapped = try_consume_pair_value_map_to_dict_opened(
                         plan,
@@ -245,7 +245,7 @@ def consume_physical(  # noqa: C901 - terminal fast paths share one ownership st
                     )
                 if pair_filter is not None and pair_consumer is not None:
                     if pair_filter.target == "row":
-                        from ._pair_row_filter import consume_pair_row_filter_to_dict
+                        from .pairs.row_filter import consume_pair_row_filter_to_dict
 
                         return cast(
                             R,

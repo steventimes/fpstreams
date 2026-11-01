@@ -9,11 +9,7 @@ from types import MappingProxyType
 from typing import Any, Literal, NoReturn, TypeAlias, cast
 
 from ..errors import SelectionError
-from ..expressions.selectors import (
-    Selector,
-    _normalize_direct_row_selector,
-    compile_selector,
-)
+from ..expressions.selectors import Selector, _normalize_direct_row_selector, compile_selector
 from ..runtime.iterators import close_iterators
 from .records import _as_record, _remember_columns
 

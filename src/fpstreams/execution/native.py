@@ -6,7 +6,8 @@ import sys
 from collections.abc import Callable, Iterator
 from typing import Any, TypeAlias, cast
 
-from .. import _native
+from fpstreams import _native
+
 from ..collecting.statistics import StatisticsSnapshot
 from ..expressions.scalar import Expr
 from ..planning.native import NativeProgram

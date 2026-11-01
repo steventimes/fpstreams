@@ -1,6 +1,6 @@
 """Re-export named aggregation types and lifecycle helpers for legacy imports."""
 
-from .collecting.aggregation import (
+from fpstreams.collecting.aggregation import (
     AggregationItems,
     Aggregator,
     NativeAggregateSnapshot,

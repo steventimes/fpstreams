@@ -58,7 +58,7 @@ from ..planning.async_ import (
     _Zip,
     _ZipLongest,
 )
-from ..planning.async_utils import _resolve, closing_async_iterators
+from ..planning.async_utils import _add_cleanup_error, _resolve, closing_async_iterators
 from ..planning.explain import AsyncPlanExplanation
 from ..planning.semantics import (
     AsyncTerminalName,
@@ -69,6 +69,7 @@ from ..planning.semantics import (
     TerminationEvidence,
 )
 from ..primitives.result import Err, Ok, Result
+from ..runtime.tasks import _await_owned_task, _start_cleanup_task
 from .async_terminals import AsyncFlowTerminalsMixin
 
 T = TypeVar("T")
@@ -277,6 +278,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             A reusable async flow of lines with trailing CR and LF characters removed.
+
+        Cancellation waits for an in-flight open, read, or close to finish before
+        releasing the file. A stalled filesystem operation can therefore delay cancellation.
         """
 
         async def lines() -> AsyncIterator[str]:
@@ -285,9 +289,39 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
                 import aiofiles  # type: ignore[import-untyped]
             except ImportError:
                 raise ImportError("AsyncFlow.from_file() requires the 'async' extra") from None
-            async with aiofiles.open(path, encoding=encoding) as file:
-                async for line in file:
+            active_error: BaseException | None = None
+            manager = aiofiles.open(path, encoding=encoding)
+            file: Any = None
+
+            async def enter() -> None:
+                nonlocal file
+                file = await manager.__aenter__()
+
+            try:
+                await _await_owned_task(_start_cleanup_task(enter()))
+                while line := await _await_owned_task(_start_cleanup_task(file.readline())):
                     yield line.rstrip("\r\n")
+            except BaseException as error:
+                active_error = error
+                raise
+            finally:
+                if file is not None:
+                    try:
+                        await _await_owned_task(
+                            _start_cleanup_task(
+                                manager.__aexit__(
+                                    type(active_error) if active_error is not None else None,
+                                    active_error,
+                                    active_error.__traceback__
+                                    if active_error is not None
+                                    else None,
+                                )
+                            )
+                        )
+                    except BaseException as error:
+                        if active_error is None or isinstance(active_error, GeneratorExit):
+                            raise
+                        _add_cleanup_error(active_error, error)
 
         return AsyncFlow._from_logical(AsyncLogicalPlan(_AsyncSource.defer(lines)))
 
@@ -300,8 +334,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             A reusable, infinite flow emitting `0, 1, 2, ...` at the requested interval.
+
+        Raises:
+            ValueError: If seconds is negative or NaN.
         """
-        if seconds < 0:
+        if not seconds >= 0:
             raise ValueError("seconds cannot be negative")
 
         async def ticks() -> AsyncIterator[int]:
@@ -364,7 +401,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
     def __aiter__(self) -> AsyncIterator[T]:
         """Execute the stored async plan and return its managed output iterator."""
-        from ..execution.async_scheduler import execute_async_physical
+        from ..execution.asynchronous import execute_async_physical
         from ..physical.async_plan import compile_async_query
         from ..runtime.report import _record_async_plan
 
@@ -425,6 +462,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         Callbacks run on the event loop. Timeout and cancellation are cooperative and cannot
         interrupt a callback that blocks the loop.
 
+        When concurrency exceeds one, one additional owned task reads the source so a slow
+        input cannot block completed results. The query-wide task budget includes this reader.
+
         Args:
             function: Sync or async mapper called once for each source item.
             concurrency: Maximum mapper calls in flight.
@@ -436,15 +476,16 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             An async flow of mapped values with bounded work and cleanup on early exit.
 
         Raises:
-            ValueError: If concurrency or buffer is less than one.
+            TypeError: If concurrency or buffer is not an integer.
+            ValueError: If concurrency or buffer is less than one, or timeout is not positive.
         """
         # Concurrency is stored in the plan and enforced when the flow is consumed.
+        concurrency = operator.index(concurrency)
         if concurrency < 1:
             raise ValueError("concurrency must be at least 1")
-        if timeout is not None and timeout <= 0:
+        if timeout is not None and not timeout > 0:
             raise ValueError("timeout must be positive")
-        if buffer is None:
-            buffer = 2 * concurrency
+        buffer = 2 * concurrency if buffer is None else operator.index(buffer)
         if buffer < 1:
             raise ValueError("buffer must be at least 1")
         operation = _MapAsync(function, concurrency, ordered, timeout, buffer)
@@ -596,9 +637,14 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             An async flow interleaving inner items in completion order under the concurrency cap.
+
+        Raises:
+            TypeError: If function is not callable or concurrency is not an integer.
+            ValueError: If concurrency is less than one.
         """
         if not callable(function):
             raise TypeError("function must be callable")
+        concurrency = operator.index(concurrency)
         if concurrency < 1:
             raise ValueError("concurrency must be at least 1")
         return cast(AsyncFlow[R], self._append(_MergeMap(function, concurrency)))
@@ -645,7 +691,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         Raises:
             ValueError: If seconds is not positive.
         """
-        if seconds <= 0:
+        if not seconds > 0:
             raise ValueError("seconds must be positive")
         return cast(AsyncFlow[T], self._append(_Delay(seconds)))
 
@@ -673,7 +719,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             raise TypeError("max_count must be an integer") from None
         if count < 1:
             raise ValueError("max_count must be at least 1")
-        if per <= 0:
+        if not per > 0:
             raise ValueError("per must be positive")
         return cast(AsyncFlow[T], self._append(_Throttle(count, per)))
 
@@ -692,7 +738,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         Raises:
             ValueError: If seconds is not positive.
         """
-        if seconds <= 0:
+        if not seconds > 0:
             raise ValueError("seconds must be positive")
         return self.throttle(1, per=seconds)
 
@@ -704,8 +750,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             An async flow that raises `TimeoutError` and cancels an overdue item pull.
+
+        Raises:
+            ValueError: If seconds is not positive.
         """
-        if seconds <= 0:
+        if not seconds > 0:
             raise ValueError("seconds must be positive")
         return cast(AsyncFlow[T], self._append(_Timeout(seconds)))
 
@@ -718,8 +767,11 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         Returns:
             An async flow that replaces a pending item whenever a newer one arrives.
                 The final pending item is emitted when the source completes.
+
+        Raises:
+            ValueError: If seconds is negative or NaN.
         """
-        if seconds < 0:
+        if not seconds >= 0:
             raise ValueError("seconds cannot be negative")
         return cast(AsyncFlow[T], self._append(_Debounce(seconds)))
 
@@ -739,7 +791,7 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             raise TypeError("max_count must be an integer") from None
         if count < 1:
             raise ValueError("max_count must be at least 1")
-        if seconds <= 0:
+        if not seconds > 0:
             raise ValueError("seconds must be positive")
         return cast(
             AsyncFlow[tuple[T, ...]],
@@ -972,23 +1024,24 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         """
         return cast(AsyncFlow[T], self._append(_DropWhile(predicate)))
 
-    def chunk(self, size: int) -> AsyncFlow[tuple[T, ...]]:
+    def chunk(self, size: int, *, strict: bool = False) -> AsyncFlow[tuple[T, ...]]:
         """Group consecutive items into fixed-size tuples.
 
         Args:
             size: Maximum number of consecutive items in each tuple.
+            strict: Raise during consumption if the final chunk is shorter than size.
 
         Returns:
-            An async flow of non-overlapping tuples, including a final shorter tuple when needed.
+            An async flow of non-overlapping tuples. By default, a final shorter tuple is emitted.
 
         Raises:
             TypeError: If size does not support the integer index protocol.
-            ValueError: If size is less than one.
+            ValueError: If size is less than one, or a final chunk is incomplete in strict mode.
         """
         size = operator.index(size)
         if size < 1:
             raise ValueError("size must be at least 1")
-        return cast(AsyncFlow[tuple[T, ...]], self._append(_Chunk(size)))
+        return cast(AsyncFlow[tuple[T, ...]], self._append(_Chunk(size, strict)))
 
     batch = chunk
 
@@ -1222,6 +1275,9 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
     ) -> AsyncFlow[T]:
         """Emit this flow followed by each supplied source.
 
+        Reused cursors are closed once per execution. Cursors that do not support
+        weak references can remain reachable until that execution finishes.
+
         Args:
             *others: Sync or async sources opened and drained after this flow, in argument order.
 
@@ -1305,6 +1361,22 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
 
     @overload
     def map_accum(
+        self,
+        initial: C,
+        function: Callable[
+            [C, T], tuple[C, R | Awaitable[R]] | Awaitable[tuple[C, R | Awaitable[R]]]
+        ],
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def map_accum(
+        self,
+        initial: C,
+        function: Callable[[C, T], tuple[C, Awaitable[R]] | Awaitable[tuple[C, Awaitable[R]]]],
+    ) -> AsyncFlow[R]: ...
+
+    @overload
+    def map_accum(
         self, initial: C, function: Callable[[C, T], Awaitable[tuple[C, R]]]
     ) -> AsyncFlow[R]: ...
 
@@ -1314,15 +1386,20 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
     ) -> AsyncFlow[R]: ...
 
     def map_accum(
-        self, initial: C, function: Callable[[C, T], tuple[C, R] | Awaitable[tuple[C, R]]]
-    ) -> AsyncFlow[R]:
+        self,
+        initial: C,
+        function: Callable[
+            [C, T], tuple[C, R | Awaitable[R]] | Awaitable[tuple[C, R | Awaitable[R]]]
+        ],
+    ) -> AsyncFlow[R] | AsyncFlow[Awaitable[R]]:
         """Map items sequentially while threading state through sync or async callbacks.
 
         Args:
             initial: State for the first callback, reused by reference for each evaluation.
                 Use `aflow.defer` if mutable state must be freshly allocated.
             function: Called as `function(state, item)` and resolves to `(next_state, output)`.
-                Each transition is awaited before the next item is requested.
+                Each transition and its output are awaited once if awaitable, before the next
+                item is requested. The next state itself is not awaited.
 
         Returns:
             A lazy async flow with one output per item, including `None` outputs. Empty
@@ -1335,14 +1412,16 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         if not callable(function):
             raise TypeError("function must be callable")
 
-        async def advance(state_and_output: tuple[C, R | None], item: T) -> tuple[C, R]:
+        async def advance(
+            state_and_output: tuple[C, R | Awaitable[R] | None], item: T
+        ) -> tuple[C, R | Awaitable[R]]:
             """Separate the replacement state from the emitted value."""
             state, output = await _resolve(function(state_and_output[0], item))
             return state, output
 
-        start: tuple[C, R | None] = (initial, None)
+        start: tuple[C, R | Awaitable[R] | None] = (initial, None)
         return cast(
-            AsyncFlow[R],
+            AsyncFlow[R] | AsyncFlow[Awaitable[R]],
             self.scan(start, advance).map(lambda state_and_output: state_and_output[1]),
         )
 
@@ -1480,6 +1559,29 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         if not callable(function):
             raise TypeError("function must be callable")
         return cast(AsyncFlow[R], self._append(_Fold(initializer, function)))
+
+    def fold_async(
+        self,
+        initializer: Callable[[], Awaitable[R]],
+        function: Callable[[R, T], Awaitable[R]],
+    ) -> AsyncFlow[R]:
+        """Fold with explicitly asynchronous hooks and a resolved state type.
+
+        Args:
+            initializer: Called once per evaluation and awaited once to create state.
+            function: Called for every item and awaited once to replace state.
+
+        Returns:
+            A lazy async flow emitting exactly one final state, including on empty input.
+                If the resolved state is itself awaitable, it is retained unchanged.
+
+        Notes:
+            Annotate the resulting `AsyncFlow[R]` to declare the accumulator contract
+            and provide context for a lambda step. Hooks must return awaitables.
+            As with other typed callbacks, `Any` can bypass this static contract; no
+            runtime state validation is added.
+        """
+        return self.fold(initializer, function)
 
     def batch_by_size(
         self,

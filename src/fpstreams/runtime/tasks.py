@@ -35,6 +35,11 @@ async def _await_cleanup_task(task: asyncio.Future[None]) -> None:
     """Finish one shared cleanup task before propagating caller cancellation."""
     if asyncio.current_task() is task:
         return
+    await _await_owned_task(task)
+
+
+async def _await_owned_task(task: asyncio.Future[T]) -> T:
+    """Observe an owned operation fully before propagating caller cancellation."""
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -45,18 +50,17 @@ async def _await_cleanup_task(task: asyncio.Future[None]) -> None:
         except BaseException:
             break
 
-    try:
-        task.result()
-    except BaseException as error:
-        if cancellation is None:
-            raise
-        _add_cleanup_failure(cancellation, [error])
     if cancellation is not None:
+        try:
+            task.result()
+        except BaseException as error:
+            _add_cleanup_failure(cancellation, [error])
         raise cancellation
+    return task.result()
 
 
-def _start_cleanup_task(coroutine: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
-    """Submit cleanup without leaking its coroutine or committing a half-closed owner."""
+def _start_cleanup_task(coroutine: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+    """Submit an operation required for safe cleanup without leaking its coroutine."""
     try:
         return asyncio.create_task(coroutine)
     except BaseException as error:
@@ -175,8 +179,11 @@ class TaskRuntime:
 
         hit("task.cancel.before")
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        self._retire_live(task)
+        try:
+            await _await_owned_task(asyncio.gather(task, return_exceptions=True))
+        finally:
+            if task.done():
+                self._retire_live(task)
 
     async def aclose(self) -> None:
         """Cancel and retire all still-live tasks exactly once."""
@@ -304,22 +311,47 @@ class TaskScope:
         if self._close_task is None:
             if self._closed:
                 return
-            close_task = _start_cleanup_task(self._aclose_impl())
+            try:
+                close_task = _start_cleanup_task(self._aclose_impl())
+            except BaseException as submission_error:
+                # Existing tasks can be drained without admitting another task.
+                completion = asyncio.get_running_loop().create_future()
+                self._close_task = completion
+                self._closed = True
+                try:
+                    await self._aclose_impl(protect=True)
+                except BaseException as cleanup_error:
+                    if isinstance(cleanup_error, asyncio.CancelledError) and not self._tasks:
+                        completion.set_result(None)
+                    else:
+                        completion.set_exception(cleanup_error)
+                        completion.exception()
+                    _add_cleanup_failure(submission_error, [cleanup_error])
+                else:
+                    completion.set_result(None)
+                raise
             self._close_task = close_task
             self._closed = True
         await _await_cleanup_task(self._close_task)
 
-    async def _aclose_impl(self) -> None:
+    async def _aclose_impl(self, *, protect: bool = False) -> None:
         """Drain this scope once under a cancellation-safe cleanup owner."""
         tasks = tuple(self._tasks)
         for task in tasks:
             if not task.done():
                 task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for task in tasks:
-            self._runtime._retire_live(task)
-        self._tasks.clear()
+        try:
+            if tasks:
+                completion = asyncio.gather(*tasks, return_exceptions=True)
+                if protect:
+                    await _await_owned_task(completion)
+                else:
+                    await completion
+        finally:
+            for task in tasks:
+                if task.done():
+                    self._runtime._retire_live(task)
+                    self._tasks.discard(task)
 
     async def _aclose_from_owner(self) -> None:
         """Run inline when the task runtime already owns cancellation shielding."""

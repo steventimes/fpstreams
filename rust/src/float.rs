@@ -10,6 +10,9 @@ use std::ops::ControlFlow;
 
 mod affine_pair;
 mod endpoints;
+mod rolling;
+
+pub(crate) use rolling::RollingStatistics;
 
 pub(crate) use affine_pair::run_f64_affine_comparison_pair_sum;
 pub(crate) use endpoints::{

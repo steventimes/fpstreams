@@ -33,7 +33,7 @@ Tabular constructors are listed in [data input and output](io.md).
 | One-to-many transform | `flat_map` |
 | Adjacent-run reduction | `collapse(predicate, merger)`; the 2.4.0 overload also accepts a Collector |
 | Prefix/suffix bounds | `take`, `drop`, `take_while`, `take_while_inclusive`, `drop_while` |
-| Stateful transform | `scan`, `scan_right`, `fold_by`, `reduce_by`, `gather` |
+| Stateful transform | `fold`, `scan`, `scan_right`, `fold_by`, `reduce_by`, `gather` |
 | Stateful mapping, 2.4.0 | `map_accum(initial, function)` emits outputs from `(next_state, output)` transitions |
 | De-duplication | `unique`, `unique_by`, `distinct`, `distinct_by` |
 | Error/value partitioning | `attempt`, `partition_results` |
@@ -41,13 +41,25 @@ Tabular constructors are listed in [data input and output](io.md).
 
 See [Flow](flow.md) for complete signatures.
 
+In Flow and AsyncFlow, `fold(initializer, function)` lazily emits one accumulated
+value. The initializer is a factory; consume the returned flow to run it.
+`reduce` and `fold_right` (an alias of `reduce_right`) are terminals.
+The 2.5.0 [`AsyncFlow.fold_async`](async_flow.md#explicit-asynchronous-accumulator-contract-250)
+adds explicitly awaitable hooks and a declared resolved accumulator type.
+
+`filter_none()` drops only `None` in both Flow and AsyncFlow. In v2,
+`compact()` drops only `None` in Flow but all falsey values in AsyncFlow;
+the same distinction applies to a supplied selector. See
+[moving between execution domains](../user-guide/concepts.md#moving-between-synchronous-and-asynchronous-flows)
+before porting a pipeline.
+
 ## Batch, window, and order
 
 | Category | Canonical methods |
 | --- | --- |
 | Fixed grouping | `chunk`, `window`, `pairwise`, `batch` |
 | Window aggregation (2.4.0) | `window_reduce(size, combine, step=1)` |
-| Rolling statistics (Unreleased) | `rolling_statistics(size, selector=..., ddof=0)`; [recipe](../user-guide/analytics.md#rolling-numerical-statistics-unreleased) |
+| Rolling statistics (2.5.0) | `rolling_statistics(size, selector=..., ddof=0)`; [recipe](../user-guide/analytics.md#rolling-numerical-statistics-250) |
 | One callback per batch | `map_batches` |
 | Conditional grouping | `chunk_by`, `batch_by_size`, `constrained_batches`, `group_runs`, `collapse` |
 | Stable order | `sort_by`, `sorted`, `external_sort_by`, `top`, `bottom` |
@@ -73,7 +85,7 @@ AsyncFlow adds `merge`, `combine_latest`, `flat_map_merge`, `merge_map`, and
 | Cardinality/truth | `count`, `count_by`, `any`, `all`, `none` |
 | Element lookup | `first`, `last`, `nth`, `find`, `find_index`, `index_of` |
 | Numeric | `sum`, `min`, `max`, `minmax`, `mean`, `average`, `variance`, `std` |
-| General reduction | `fold`, `fold_right`, `reduce`, `reduce_right`, `aggregate`, `summarize`, `collect` |
+| General reduction | `fold_right`, `reduce`, `reduce_right`, `aggregate`, `summarize`, `collect` |
 | Distribution | `frequencies`, `partition`, `describe` |
 | Containers | `to_list`, `to_tuple`, `to_set` |
 | Data systems | `to_numpy`, `to_pandas`, `to_csv` |
@@ -85,7 +97,7 @@ terminals return `None` where the statistic is undefined.
 
 The source version can also include static field inputs with
 `query.explain().to_dict(include_field_dependencies=True)` on Flow and Rows.
-See the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-unreleased).
+See the [plan dictionary reference](../user-guide/execution-reports.md#plan-dictionary-reference-250).
 
 ## Work with records
 
@@ -127,11 +139,11 @@ proof.
 
 The source version also provides `Collectors.statistics` for shared exact
 statistics and optional `Collectors.approx_quantiles` and
-`Collectors.approx_count_distinct` sketches. These factories are Unreleased;
-see [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-unreleased)
+`Collectors.approx_count_distinct` sketches. These factories are 2.5.0;
+see [shared and approximate statistics](collecting.md#shared-and-approximate-statistics-250)
 for input policies, installation, and error bounds.
 
-The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-unreleased)
+The [exact percentile recipe](../user-guide/analytics.md#exact-grouped-percentiles-250)
 uses collector composition for grouped p50 and p90 values, with explicit
 missing-value and small-group policies.
 
@@ -152,12 +164,13 @@ See [Pairs](pairs.md).
 ## Async operations
 
 AsyncFlow shares most synchronous transformations and the count, truth,
-lookup, fold, frequency, sum, extreme-value, mean, variance, and
+lookup, reduction, frequency, sum, extreme-value, mean, variance, and
 standard-deviation terminals. It does not currently expose `describe`. Its
 async-only groups are:
 
 | Task | Methods |
 | --- | --- |
+| Explicit async state (2.5.0) | `fold_async(initializer, function)` |
 | Concurrent callbacks | `map_async`, `flat_map_merge`, `merge_map`, `switch_map` |
 | Multiple async sources | `merge`, `combine_latest` |
 | Rate and time | `delay`, `interval`, `spaceout`, `throttle`, `debounce`, `timeout` |
@@ -167,6 +180,11 @@ async-only groups are:
 
 Concurrency, ordering, cancellation, and buffer bounds are documented with each
 method on [AsyncFlow](async_flow.md).
+
+The 2.5.0 [`Collectors.averaging_with`](collecting.md#explicit-averaging-operations-250)
+keeps accumulator and result types explicit. For record filtering,
+[`Rows.drop_nulls(missing="raise")`](rows.md#null-filtering-and-lookup-failures-250)
+propagates selected lookup failures; its compatibility default remains `"legacy"`.
 
 ## Expressions
 
@@ -187,7 +205,7 @@ See the full operator and precedence notes under [expressions](expressions.md).
 | --- | --- |
 | Optional/result values | `Option`, `Result`, `Ok`, `Err` |
 | Statistics | `SummaryStatistics` |
-| Execution reports | `ExecutionResult`, `ExecutionReport`; `ExecutionEvent` and versioned report/event `to_dict()` export added in 2.4.0 ([guide](../user-guide/execution-reports.md#metadata-export-unreleased)) |
+| Execution reports | `ExecutionResult`, `ExecutionReport`; `ExecutionEvent` and versioned report/event `to_dict()` export added in 2.4.0 ([guide](../user-guide/execution-reports.md#metadata-export-250)) |
 | Spill budgets | `SpillLimits` |
 | Shared executor budget, 2.4.0 | `BoundedExecutor` |
 | File partition recovery, 2.4.0 | `FileCheckpoint` |

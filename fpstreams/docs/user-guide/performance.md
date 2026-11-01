@@ -34,6 +34,19 @@ the normal way.
 
 ## Source shape matters
 
+Version 2.5.0 uses `itertools.batched` on Python 3.12+ for eligible
+retained-list chunks and exact generator, map, and filter cursors. Custom cursors
+and Python 3.11 keep the canonical iterator path. Strict batches still reject a
+short tail during consumption; early termination retains source cleanup.
+
+Rolling statistics can use a Rust window state while the plan and its callbacks
+execute in Python. Configured selectors execute in Python, and non-null values
+are converted once before Rust updates the shifted moments and compensated mean. Use
+`with_engine("python")` on a Flow to select the reference state. Missing native
+capabilities and Python-sized configuration values beyond the native range also
+use that implementation. These routes have local measurements; throughput,
+startup cost, and total process memory still depend on the workload and platform.
+
 Arrow's Parquet execution plan can read, cast, and fail before delivering a
 batch. `first()` and limited queries stop once they receive enough output, but
 cannot guarantee a result before a native source error. Source `columns` defines
@@ -80,6 +93,19 @@ flow(records).group_by(lambda row: normalize(row["region"]))
 
 Use an expression when it expresses the operation clearly. Keep a callable for
 logic that would become harder to read as an expression.
+
+Version 2.5.0 skips structural fingerprints for row expressions,
+whose compiled programs retain query-specific selector and literal bindings.
+This reduces setup work and lets deep expressions reach the iterative evaluator
+when direct AST compilation exceeds its bounds. Effect analysis visits shared IR
+nodes once; evaluation still runs every occurrence, including repeated selectors
+and callbacks. Scalar stages reuse their validated fingerprint across the
+compiled-program and physical-template caches. Cache keys, capacity, and locking
+are unchanged; repeated queries still bind their current source and terminal.
+
+NumPy filter lowering accepts only exact built-in integer and Boolean literals.
+Custom numeric types use Python comparison semantics without invoking their
+metaclasses' hashing or equality during that eligibility check.
 
 Since 2.2.0, `auto` can run a two-key count/sum group in Rust
 when its input is a retained list or tuple of exact tuple rows. Both keys and
@@ -174,9 +200,13 @@ output records. A columnar source can avoid part of that work only while its
 operations remain column-compatible. A Python callable or record-specific
 protocol can create a boundary back to row execution.
 
-For large typed CSV or Parquet data, prefer `scan_csv` or `from_parquet` with
-projection and filtering. Use compatibility `from_csv` when its string-cell
-semantics are what the application needs.
+For large typed CSV or Parquet data, consider `scan_csv` or `from_parquet`.
+CSV queries convert all caller-visible columns before applying a projection;
+`select()` does not skip conversion errors in unused columns. Pass Arrow CSV
+`ConvertOptions(include_columns=[...])` to restrict the reader explicitly.
+Parquet scans can push supported projection and filtering into the reader.
+Use compatibility `from_csv` when its string-cell semantics are what the
+application needs.
 
 Joins and groups are sensitive to:
 
@@ -219,7 +249,7 @@ If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.
 
-## Share a submission budget (2.4.0) {#share-a-submission-budget-unreleased}
+## Share a submission budget (2.4.0) {#share-a-submission-budget-250}
 
 Several queries can reuse one executor while keeping their own `buffer` limits.
 To cap their combined unfinished work, give them the same `BoundedExecutor`:
@@ -242,6 +272,12 @@ cancellation releases a slot. Shutdown wakes blocked submitters with
 `RuntimeError`; `cancel_futures=True` cancels this wrapper's queued calls.
 Running callbacks must finish cooperatively. Work submitted directly to `pool`
 does not count against the wrapper's budget.
+
+When evaluating a replayable Flow from multiple threads, keep shared inputs
+unchanged and use callbacks that are safe to call concurrently. Each evaluation
+creates its own Collector state through the initializer; a custom initializer
+must return independent state. A one-shot source still permits only one
+evaluation; competing callers receive `FlowConsumedError`.
 
 The shared limit counts tasks, not bytes or completed results. A blocked
 submitter can still retain the item it is submitting. Keep per-query buffers
@@ -290,7 +326,7 @@ validated before automatic filtering or projection. These fields can require
 reading columns that the query later discards. Explicit source `columns` and
 `filter` define the source boundary before this validation.
 
-Unreleased changes also recognize list, large-list, and fixed-size-list fields
+2.5.0 changes also recognize list, large-list, and fixed-size-list fields
 whose children contain only supported builtin scalars or lists. Full buffer
 validation still precedes automatic filtering or projection, including validation
 of unused list fields. Extension, temporal, struct, and map values retain the
@@ -337,6 +373,17 @@ results = await aflow(urls).map_async(fetch, concurrency=16, ordered=False).to_l
 `ordered=False` can return completed work sooner. Bounded buffers and explicit
 timeouts protect memory and latency. Short-circuiting or failure cancels owned
 tasks; user-created background tasks are outside that ownership boundary.
+
+Synchronous callbacks still run on the event loop. Increasing async concurrency
+does not make a CPU-bound callback run in parallel, and a callback that blocks
+the loop also delays cooperative timeouts and cancellation.
+
+In the 2.5.0 source, async file cancellation waits for an in-flight
+filesystem operation to finish before closing its handle. A stalled filesystem
+call can therefore delay cancellation indefinitely. Measure the complete query,
+including cleanup, and measure cancellation until the cancelled task finishes.
+Keep Python allocation peaks, native allocations, and process RSS separate;
+bounded item counts alone do not establish a byte-level memory bound.
 
 ## Measure representative work
 
@@ -417,25 +464,18 @@ reproduced on the chosen reference source. The
 [roadmap](../roadmap.md#next-development-steps) records the candidate order and
 the callback, lifetime, and cleanup requirements for each stage.
 
-The repository runner compares engine paths and offers a separate Python,
-NumPy, and pandas comparison suite. List the available scenarios before choosing
-what to measure:
+The following measurement methodology describes locally retained benchmark tools
+and historical reports. Those tools, fixtures, baselines, and raw reports are
+not part of the public source distribution. GitHub Actions does not run them.
+The local engine and cross-library suites compare Python, NumPy, and pandas
+paths with selected input shapes and correctness checks. Scenario selection
+itself collects no timing, allocation, or execution reports.
 
-```bash
-python benchmark.py --list-scenarios --quick --include 'fpstreams_operation/sync/*'
-python benchmark.py --competitive --list-scenarios --include 'rows.join.*'
-python benchmark.py --competitive --list-scenarios --include 'rows.with_columns*'
-```
-
-Both suites support `--quick` and `--include` when listing. For the engine suite,
-`--domain` selects integer workloads, floating-point workloads, or both. Engine
-listing creates small fixtures and releases them before returning; it does not
-run benchmark tasks or collect timing, allocation, or execution reports.
-
-Both suites emit schema 6 reports with dependency versions, Git state, source
+Both suites emit versioned reports with dependency versions, Git state, source
 and native hashes, and a workload fingerprint. They also record CPU affinity,
 NumPy CPU features and a fingerprint of selected kernel targets, plus SIMD,
 thread-count, Python hash-seed, and allocator settings.
+Read the format version from the generated report's top-level `schema_version` field.
 The allocator fields include `PYTHONMALLOC`, `PYTHONMALLOCSTATS`, `GLIBC_TUNABLES`,
 and an allowlist of `MALLOC_*` environment controls. These are requested settings;
 the report does not prove which allocator is active or reconstruct its allocation
@@ -444,13 +484,20 @@ An unavailable Git repository is recorded explicitly with `git_available=false`
 and null revision and dirty fields. Runtime configuration must match on both
 sides; older reports need to be regenerated.
 
+For CPU-bound Python thread benchmarks, compare a single-CPU placement with a
+broader CPU mask and include a standard-library allocation control. Record the
+worker count and CPU placement on both sides. The same allowed CPU mask does
+not guarantee the same worker placement, clock frequency, or socket locality.
+A slowdown shared by the control does not establish a cache or lock bottleneck.
+Keep placement controls separate from native parallel-throughput measurements.
+
 The engine suite can enforce ratios against its Python references from the same
 run. Composite count/sum groups and NamedTuple callable joins apply their extra
 speedup requirements from 1,000 rows. Smaller inputs still produce timing and
 allocation records, with `maximum_ratio=null` for these cases.
 
 Competitive reports describe cross-library timings without enforcing those
-ratios. For comparisons across versions, `benchmarks/regression.py` checks each
+ratios. For comparisons across versions, the local regression checker checks each
 task's timing and allocation against the baseline; this includes reference tasks
 and small-input cases without a same-run speedup requirement.
 
@@ -462,7 +509,7 @@ warmed measurements of the existing tasks. Identity cases reuse prepared
 pipelines; operation cases retain their construction and cleanup work. They do
 not measure first-call startup. The runner does not disable GC. Different sampling methods
 cannot share a baseline, so regenerate references made with single-call timing.
-The scheduled workflow also uploads all three reference runs for diagnosis.
+Keep all reference runs locally for diagnosis.
 
 The competitive runner rotates peer order, collects garbage, then warms the
 next task for at least 1ms before timing one call. Each result records the number
@@ -521,46 +568,28 @@ source for every call. `execution.status="unknown"` means that the task did not
 record a plan. An `observed` outer route still has the limits described in
 [execution reports](execution-reports.md).
 
-To compare another checkout, point `FPSTREAMS_BENCHMARK_SOURCE` at its `src`
-directory. Use the same runner and Python environment for both sides. Build
-the release extension for each checkout first, and keep size, filters, domain,
-and quick mode identical:
-
-```bash
-FPSTREAMS_BENCHMARK_SOURCE=/path/to/base/src .venv/bin/python benchmark.py \
-  --competitive --size 10000 --repeats 5 --include 'rows.join.*' \
-  --json artifacts/base-10000-run-1.json
-.venv/bin/python benchmark.py \
-  --competitive --size 10000 --repeats 5 --include 'rows.join.*' \
-  --json artifacts/current-10000-run-1.json
-```
-
-Repeat both commands with `run-2` and `run-3` filenames. Keep the raw reports and
-write the baseline to a separate file:
-
-```bash
-.venv/bin/python benchmarks/regression.py --create-baseline \
-  --provenance local_one_shot_unreviewed \
-  --output artifacts/base-10000-median.json \
-  artifacts/base-10000-run-1.json artifacts/base-10000-run-2.json \
-  artifacts/base-10000-run-3.json
-.venv/bin/python benchmarks/regression.py \
-  artifacts/base-10000-median.json artifacts/current-10000-run-1.json
-```
+To compare another checkout locally, use the same runner and Python environment
+for both sides. Build the release extension for each checkout first. Keep size,
+filters, domain, quick mode, and process layout identical, and verify the
+imported source fingerprint. Retain three independent reference reports and
+write their baseline to a separate file.
 
 Compare each current run against that baseline, then repeat at another size.
-The baseline retains each run's provenance. Code hashes, Git revisions, and
-fpstreams versions may differ between the two sides;
-workload settings and other dependency versions must match. Old reports that
-lack the required fields need to be regenerated.
+The baseline retains each run's provenance. Its three reference runs must use
+the same Python source fingerprint, native binary fingerprint, and fpstreams
+version. Candidate code hashes, Git revisions, and fpstreams versions may differ
+from the reference; workload settings and other dependency versions must match.
+Report schema 7 also records the `typing_extensions` version or its explicit
+absence. Regenerate older reports before comparing this dependency's environment.
+Malformed timing or dispersion values are rejected, including nonfinite or
+nonpositive first-row latency. Old reports that lack the required fields need
+to be regenerated.
 
-Cross-commit checks in CI still need a reviewed baseline that matches the
-runner's environment. Without one, the scheduled workflow compares three runs
-with a fourth from the same checkout. That checks timing consistency within
-one revision. These four engine runs collect 21 samples per scenario. Engine
-timing blocks also record process CPU time for diagnosis; regression checks
-continue to use wall time and the existing limits. The
-[roadmap](../roadmap.md) tracks the remaining baseline work.
+Historical same-checkout comparisons used three reference runs and a fourth
+comparison run, with 21 samples per scenario. They checked timing consistency
+within one revision. Engine timing blocks also recorded process CPU time for
+diagnosis, while comparisons used wall time and the existing limits. These
+local results do not establish a reviewed cross-commit CI baseline.
 
 ## Caller-owned executors
 
@@ -777,13 +806,61 @@ raw local reports and worker summaries are under
 `artifacts/next-releases/20260929T210456Z/D03/`; generated reports are ignored and
 are not published as a CI baseline.
 
-The competitive runner includes 54 `sorted.*` cases for full consumption, first
-output, and stopping after 16 outputs. It validates complete ordered values
-before timing, including full-consumption tasks whose timed terminal is `count()`.
-For larger benchmark sizes, join row budgets explicitly scale to cover the
-fixture; library defaults remain unchanged. To reproduce this local comparison:
+The local competitive runner used 54 `sorted.*` cases for full consumption,
+first output, and stopping after 16 outputs. It validated complete ordered
+values before timing, including full-consumption tasks whose timed terminal
+was `count()`. For larger sizes, join row budgets scaled to cover the fixture;
+library defaults remained unchanged.
 
-```bash
-uv run python benchmark.py --competitive --include 'sorted.*' \
-  --size 10000 --repeats 7 --json artifacts/sorted-10000.json
-```
+## Measure a complete database consumer
+
+The locally retained consumer helper compares a standard-library cursor, fpstreams with
+its Python engine, SQL pushdown, and optionally installed Polars. It reads the
+same frozen SQLite file, normalizes status, filters missing values, removes
+duplicate event identities, aggregates or exports records, and encodes JSON.
+Each output is checked against an independent oracle that includes valid zeros
+and Unicode text. The local helper prepares a new frozen fixture and measures
+export or aggregation with the selected backend. It is not included in the
+public source distribution.
+Polars requires its optional dependency. Fixture generation, file hashing,
+imports, output validation, and garbage collection are outside steady timing;
+timing includes database connection, reads, transformations, JSON encoding, and
+resource closure. First-query time is reported separately. It follows file
+hashing and does not represent a cold filesystem cache.
+
+Run each memory command in a fresh process. On Linux it reports current RSS
+before consumption, retained and released RSS, and the process high-water mark;
+the high-water mark can include earlier imports or hashing. The peak comes
+from Linux `VmHWM`, avoiding the earlier parent-process memory that
+`ru_maxrss` can retain across process creation. These are process measurements,
+not Python allocation peaks. Other platforms report unavailable
+RSS fields as null. Batch size bounds cursor fetches, while deduplication,
+sorting, exported rows, and serialized output can still grow with input size.
+
+This fixture gives duplicate identities identical business fields. Its SQL
+`DISTINCT` query is not a general replacement for first-record selection when
+duplicate identities carry conflicting values. SQL pushdown and materialized
+Polars perform different amounts of Python object work. Compare these complete
+consumer paths for your task; their timings do not rank equivalent engine
+kernels or establish service capacity, cache hit rates, or network latency.
+
+## 2.5.0 materialization changes
+
+For retained primitive Arrow Tables and RecordBatches, `to_list()` can collect a
+complete compatible columnar prefix directly. Streaming, unsupported conversion,
+and incomplete-prefix plans retain their existing paths and cleanup contracts.
+In a local CPython 3.12.13 experiment with 10,000 rows, projection, aliasing, and
+filter-plus-projection took 42.6%, 28.4%, and 33.9% less time respectively.
+These measurements include query construction, planning, and consumption with
+prepared input. They do not establish gains for other schemas or platforms.
+
+Opt-in field-dependency export reuses computed-column analyses within each
+step. For prebuilt explanations with 32 computed-column steps, measured export
+time fell by 30.3% with two columns and 37.4% with sixteen columns. These figures
+cover export only, excluding query construction and consumption.
+
+Both experiments used seven alternating process pairs and five timing samples
+per process. Their controls stayed within the predeclared 10% regression limit,
+and separate Python allocation peaks met the recorded limit. These are Python
+allocation results, not native-heap or RSS measurements. The RowExpr template
+cache was rejected because a control regressed by 60.8%; it is not enabled.

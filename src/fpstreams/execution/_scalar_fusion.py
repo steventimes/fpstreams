@@ -8,15 +8,8 @@ from collections.abc import Callable, Iterator
 from functools import lru_cache
 from typing import Any, Literal, cast
 
-from ..expressions._codegen import locate_generated_ast
-from ..expressions.scalar import (
-    _OPCODE_NAMES,
-    _OPCODES,
-    _UNARY_OPCODES,
-    Expr,
-    FExpr,
-    _ast_binary,
-)
+from ..expressions._codegen import generated_function, locate_generated_ast
+from ..expressions.scalar import _OPCODE_NAMES, _OPCODES, _UNARY_OPCODES, Expr, FExpr, _ast_binary
 from ..expressions.typed_ir import ExpressionSource
 from ..physical.plan import CompiledExpressionPhysicalNode, PhysicalNode
 from ..planning.sync import FilterOp, MapOp
@@ -158,9 +151,9 @@ def _compile_scalar_loop(stages: tuple[ScalarStage, ...]) -> ScalarLoop:
             )
         )
     body.append(ast.Expr(value=ast.Yield(value=ast.Name(id="_current", ctx=ast.Load()))))
-    function = ast.FunctionDef(
+    function = generated_function(
         name="_fpstreams_scalar_loop",
-        args=ast.arguments(
+        arguments=ast.arguments(
             posonlyargs=[],
             args=[ast.arg(arg="_source")],
             kwonlyargs=[],
@@ -175,10 +168,6 @@ def _compile_scalar_loop(stages: tuple[ScalarStage, ...]) -> ScalarLoop:
                 orelse=[],
             )
         ],
-        decorator_list=[],
-        returns=None,
-        type_comment=None,
-        type_params=[],
     )
     module = ast.Module(body=[function], type_ignores=[])
     namespace: dict[str, Any] = {

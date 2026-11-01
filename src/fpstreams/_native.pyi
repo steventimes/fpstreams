@@ -4,6 +4,7 @@ from typing import TypeAlias, final
 __all__ = [
     "NumpyGroupPartial",
     "NumpyGroupState",
+    "RollingStatistics",
     "aggregate_f64",
     "aggregate_f64_buffer_masked_v1",
     "aggregate_f64_buffer_masked_v2",
@@ -130,6 +131,11 @@ class NumpyGroupState: ...
 
 @final
 class NumpyGroupPartial: ...
+
+@final
+class RollingStatistics:
+    def __init__(self, size: int, ddof: int) -> None: ...
+    def accept(self, value: float | None) -> tuple[int, float | None, float | None]: ...
 
 def version() -> str: ...
 def sequential_f64_aggregate_total_v1() -> bool: ...

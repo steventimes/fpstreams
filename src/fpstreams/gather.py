@@ -1,5 +1,5 @@
 """Re-export the planning-layer `Gatherer` and `Downstream` protocols."""
 
-from .planning.gather import Downstream, Gatherer
+from fpstreams.planning.gather import Downstream, Gatherer
 
 __all__ = ["Downstream", "Gatherer"]

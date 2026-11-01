@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
+
+
+def reraise_key_type_error(key: Any, message: str) -> NoReturn:
+    """Translate provably unhashable keys without repeating hash or equality calls."""
+    for base in type.__getattribute__(type(key), "__mro__"):
+        namespace = type.__getattribute__(base, "__dict__")
+        if "__hash__" in namespace:
+            if namespace["__hash__"] is None:
+                raise TypeError(message) from None
+            break
+    raise
 
 
 class HashFailure(Exception):
@@ -16,12 +27,15 @@ class DistinctKey:
     raise TypeError. Subclasses and other values still require this wrapper.
     """
 
-    __slots__ = ("value",)
+    __slots__ = ("_precomputed_hash", "value")
 
-    def __init__(self, value: Any) -> None:
+    def __init__(self, value: Any, precomputed_hash: int | None = None) -> None:
         self.value = value
+        self._precomputed_hash = precomputed_hash
 
     def __hash__(self) -> int:
+        if self._precomputed_hash is not None:
+            return self._precomputed_hash
         try:
             return hash(self.value)
         except TypeError as error:

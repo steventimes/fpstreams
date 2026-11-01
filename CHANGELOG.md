@@ -1,12 +1,48 @@
 # Changelog
 
-This file records user-visible and compatibility-relevant changes in fpstreams 2,
+This file records user-visible and compatibility-relevant changes in fpstreams,
 including changed defaults.
 
-## Unreleased
+## 2.5.0
+
+Version 2.5.0 includes an
+intentional static typing incompatibility: `Collectors.averaging()` now
+returns `object` in type annotations rather than incorrectly promising `float`.
+Runtime arithmetic is unchanged. Use `Collectors.averaging_with()` for explicit
+accumulator and result types, or narrow the legacy result before use.
+
+Dynamic `reduce()` remains dynamically typed. For an explicit accumulator
+contract, use an annotated `Flow.fold()` result or `AsyncFlow.fold_async()`.
+The migration examples are in the collecting and async flow reference pages;
+2.5.0 does not claim to solve automatic `reduce()` inference.
 
 ### Added
 
+- `AsyncFlow.fold_async()` provides an explicit asynchronous state contract.
+  Use annotated `Flow.fold()` or `AsyncFlow.fold_async()` results when migrating
+  dynamic `reduce()` calls to a declared accumulator type.
+- `Collectors.averaging_with()` accepts typed accumulation, division, and empty
+  result callbacks for numeric types and custom arithmetic.
+- `Rows.drop_nulls(missing="raise")` propagates lookup failures. Callable
+  selectors can define actual absence by returning `None`; the default
+  `missing="legacy"` preserves historical lookup handling.
+- `Collectors.averaging()` now declares its result as `object`, replacing the
+  inaccurate `float` annotation. Runtime arithmetic is unchanged; migrate typed
+  consumers to `averaging_with()` or narrow the result explicitly.
+- `Flow.chunk()` and `AsyncFlow.chunk()` accept `strict=True` to reject an
+  incomplete final batch during consumption. The `batch` aliases also support it.
+- `Collectors.frequencies()` counts hashable inputs in first-encounter order and
+  composes with synchronous, asynchronous, and grouped collectors.
+- `Collectors.mode()` finds the most frequent hashable value in sync, async,
+  and grouped collection, with first-encountered tie breaking.
+- Extend experimental free-threaded core-concurrency CI to Python 3.15t alongside
+  3.14t. Check that native import keeps the GIL disabled, and keep optional adapter
+  dependencies out of these jobs through the shared `test-core` group.
+- Add standard CPython 3.15 to the runtime and consumer typing CI matrices.
+  The frozen data-adapter environment now uses pandas 3.0.6 and PyArrow 26.0.0
+  with Python 3.15 wheels.
+- Runnable resource-ownership examples cover early termination, callback errors,
+  and caller cancellation. CI executes their documented code without optional extras.
 - `Collectors.statistics(selector, ddof=0)` computes count, mean, variance, and
   standard deviation with one selection and conversion per valid item.
 - Optional `fpstreams[sketch]` collectors provide KLL approximate quantiles and
@@ -20,14 +56,147 @@ including changed defaults.
   operations retain source identities; unsupported operations report unknown
   dependencies. Value inputs and row selection inputs are reported separately.
 
+### Performance
+
+- Use C-backed batching for eligible strict retained-list chunks and exact
+  generator, map, and filter cursors on Python 3.12+. Python 3.11 and custom
+  cursors retain their iterator path.
+- Reduce intermediate generator calls in legacy Gatherers and selected-field
+  `Rows.drop_nulls()` while preserving lookup errors and short-circuiting.
+- Use an optional Rust numeric window state for rolling statistics. Selection
+  and numeric conversion remain in Python. Explicit Python execution and
+  extensions without this capability retain the reference implementation.
+
 ### Fixed
 
+- Reuse each compiled scalar stage's validated fingerprint for the physical-plan
+  cache instead of encoding the same expression again. Row expressions remain
+  outside structural caches.
+
+- NumPy filter planning checks numeric classes by identity, preserving Python
+  fallback for custom integer types whose metaclasses define hashing or equality.
+- Materializing deep `RowExpr` maps and filters skips the unused structural
+  fingerprint and reaches the iterative evaluator when direct compilation is bounded.
+- Row-expression effect analysis visits shared IR nodes once. Evaluation still
+  executes each occurrence, including repeated selectors and callbacks.
+
+- Close the iterator returned by custom Rows/Flow iteration in `to_columns()`
+  after exhaustion or conversion failure, preserving the primary error.
+- Respect custom row iteration in `arrow_batches()` with default or explicit
+  schemas. Check iteration at consumption time while retaining eligible native
+  paths and bounded batch conversion.
+
+- Finish a cancelled child's cleanup before propagating cancellation of its drain
+  waiter. Repeated caller cancellation no longer interrupts that cleanup or lets
+  timeout operators close the source before its pending pull has stopped.
+
+- Preserve each result when a shared row-expression node is evaluated more than
+  once. Stateful callbacks and dynamic selectors now agree with direct evaluation
+  in the iterative fallback, including nested lazy operands.
+
+- Convert Arrow extension columns on pandas 2.0 without the dataframe interchange
+  protocol when copying is allowed. Keep conversion lazy and exclude index columns.
+- Preserve zero-column row counts in Polars output, including bounded batches,
+  on the declared minimum Polars version.
+
+- Keep generated row and scalar functions compatible with Python 3.11 AST types.
+
+- Reject NaN async durations before opening a source or starting work. Zero stays
+  valid for `interval` and `debounce`. An invalid timer rearm preserves its
+  existing timer task.
+
+- Normalize integer counts for `merge_map` concurrency and synchronous parallel
+  workers/buffers before execution. Noninteger values raise `TypeError`, and later
+  mutation of an integer-like configuration object cannot change the stored limit.
+
+- Require integer capacities for plan and kernel caches, normalizing integer-like
+  values once so later mutation cannot change the configured bound.
+
+- Accept inner async iterators without an `aclose` hook in `merge_map` and
+  `switch_map`. Optional hooks may return an awaitable or a synchronous value;
+  cleanup retains the hook selected when the inner opens.
+
+- Close the owned outer source when `switch_map` cannot submit its first pull
+  task, retaining the submission error and any source cleanup diagnostics.
+  Root ownership also covers unstarted intermediate stages and sync-to-async
+  adapters without consuming an item or repeating source close.
+
+- Drain existing scope tasks before closing upstream resources when a task factory
+  rejects the cleanup task. The original submission error remains observable.
+
+- Preserve JSON Lines record boundaries when disabling the byte limit. Managed
+  paths now use LF/CRLF framing in both modes; borrowed text handles retain the
+  caller's newline handling.
+
+- Require an initial BOM for nonempty JSON Lines input using generic UTF-16/32
+  codecs, consistently across byte-limit modes. Explicit byte-order codecs
+  continue to support data without a BOM.
+
+- Handle UTF-8 signatures consistently across bounded and unbounded JSON Lines
+  sources. A signature before a later record is no longer silently discarded.
+
+- Wait for in-flight asynchronous file operations before completing cancellation
+  or closing their handles, including cancellation during file acquisition.
+
+- Preserve asynchronous file read errors and caller cancellation when file close
+  also fails. Close failures still propagate after exhaustion or early termination.
+
+- Preserve serialization errors when text writer and source cleanup also fail.
+  Atomic CSV, JSON, and JSON Lines exports keep the previous destination on failure.
+
+- Preserve checkpoint callback failures when staging cleanup or lock-file close also
+  fails. Retries verify and reuse entries published before a later cleanup error.
+
+- Clarify how asynchronous `reduce`, `reduce_right`, and `fold_right` resolve
+  reducer results while preserving initial values and singleton items unchanged.
+
+- Preserve operation errors and continue closing owned resources when a cleanup
+  exception raises while formatting its message.
+
+- Preserve element and fallback types for synchronous and asynchronous `first`,
+  `last`, `find`, and `nth` results. Calls without a default retain the element type.
+
+- Retain annotated container Collector results for `Any` input elements and
+  infer awaited callable results in async collection. Optional-collector
+  forwarding and named results keep their existing contracts.
+- Preserve inferred Collector element/result types for direct container factories
+  while retaining explicit `Collectors[int]` construction. Per-key collection
+  keeps the collector state type; input variance reflects consumption.
 - Reject non-real numeric scalars such as NumPy `complex64` before converting
   statistical inputs or quantile ranks to floats. Decimal, Fraction, and real
   NumPy scalar inputs keep their existing support.
+- Concurrent async mapping can emit completed results while the source is still
+  waiting to produce another item. With concurrency above one, a reader task
+  also counts against the query's task limit.
+- `map_async()` normalizes `buffer` through the integer-index protocol when the
+  pipeline is built, rejecting noninteger bounds before opening the source.
+- Python and Rust variance calculations retain small differences in data with a
+  large common offset. Existing nonfinite-input policies remain unchanged.
+- `Flow.to_async()` preserves its item type, and `Flow.pairs()` preserves tuple
+  key and value types. Dynamic pair inputs keep their existing runtime support.
+- Native integer and floating-point range endpoints periodically check Python
+  signals during long scans.
+- Reuse native range bounds for periodic signal checks, avoiding a separate
+  per-item countdown while preserving the 4096-input check interval.
 
 ### Changed
 
+- Retained primitive Arrow sources with a complete compatible columnar prefix
+  collect directly into `to_list()`, preserving conversion and cleanup hooks.
+- Optional field-dependency export reuses each computed-column analysis within
+  its step while preserving opaque-expression short circuiting.
+
+- Keep performance runners and their regression fixtures local to maintainers.
+  Public source distributions and CI retain library checks without benchmark
+  components or hosted timing jobs.
+- Consolidate internal async execution, pair execution, semantic analysis,
+  relational planning, terminal helpers, Arrow planning/execution, pair planning,
+  and I/O into domain packages. Public
+  imports remain unchanged; private implementation paths have moved.
+- Release excess native numeric vector capacity before constructing list, tuple,
+  or set results, reducing overlapping temporary storage.
+- Read row-stage metadata without a shared registry lock. Registration and
+  reclamation remain synchronized, with weak owner and executable-code checks.
 - Reuse expression analysis within each field-dependency export. Spill partition
   writes consume their existing byte buffers without an intermediate copy.
 - Guarded Arrow projections can retain builtin scalar and list columns after
@@ -35,6 +204,15 @@ including changed defaults.
 - Plan reasons distinguish representation selection from terminal execution.
 - Separate Arrow numeric reductions and retained sorting from batch dispatch,
   preserving the existing execution entry points and live callback bindings.
+- Document the existing v2 `compact()` difference between Flow and AsyncFlow;
+  use `filter_none()` to retain falsey values other than `None` in both domains.
+- Correct CSV scan documentation: query projection follows conversion of all
+  caller-visible columns. Explicit Arrow conversion options can restrict the
+  reader's columns.
+- Release qualification reuses CI before building distributions. New Python
+  3.11 adapter jobs exercise `lowest-direct` and `highest` dependency resolutions;
+  Windows and macOS smoke selections include async cancellation and executor
+  ownership paths. Hosted qualification results remain to be established.
 
 ## 2.4.1 - 2026-10-18
 

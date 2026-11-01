@@ -5,10 +5,7 @@ from __future__ import annotations
 from types import BuiltinFunctionType
 from typing import Any
 
-from .._provenance import (
-    builtin_endpoints_are_live,
-    capture_builtin_endpoints,
-)
+from .._provenance import builtin_endpoints_are_live, capture_builtin_endpoints
 from ..physical.plan import CompiledExpressionPhysicalNode, RowPhysicalNode
 from ..physical.relational import (
     GlobalAggregatePhysicalNode,
@@ -660,7 +657,7 @@ _NATIVE_GROUP_MAX = 1 << 3
 
 def _native_numpy_group_endpoints() -> tuple[Any, Any, Any | None, Any, Any] | None:
     """Resolve the optional transactional ABI once for one grouped execution."""
-    from .. import _native
+    from fpstreams import _native
 
     create = getattr(_native, "numpy_group_state_v1", None)
     partial = getattr(_native, "numpy_group_partial_v1", None)
@@ -885,7 +882,7 @@ def _numpy_global_update_endpoints(
     if not needs_mean and not needs_f64_sum:
         return None, None
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return None
 
@@ -1171,10 +1168,7 @@ def _numpy_group_aggregate(
     chunk_rows: int,
 ) -> list[dict[str, Any]] | None:
     """Run one O(chunk + groups) grouped scan over a live retained integer matrix."""
-    from ..tabular.numpy import (
-        _retained_numpy_width,
-        numpy_module,
-    )
+    from ..tabular.numpy import _retained_numpy_width, numpy_module
 
     np = numpy_module("group_by()")
     values = source.array
@@ -1278,15 +1272,9 @@ def try_numpy_group_aggregate(
         or not _CANONICAL_NUMPY_GROUP_BUILTINS_ARE_LIVE()
     ):
         return None
-    from ..tabular.numpy import (
-        NumpyRowSource,
-        guarded_numpy_identity_source,
-    )
+    from ..tabular.numpy import NumpyRowSource, guarded_numpy_identity_source
     from .numpy_prefix import _numpy_prefix_is_live
-    from .relational import (
-        _group_hash_replaced,
-        _retained_aggregations_are_live,
-    )
+    from .relational import _group_hash_replaced, _retained_aggregations_are_live
 
     spec = node.numpy_group
     input_node = node.input

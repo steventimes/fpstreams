@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from operator import index
 from threading import RLock
 from typing import Generic, TypeVar
 
@@ -33,6 +34,7 @@ class PlanCache(Generic[T]):
     __slots__ = ("_entries", "_lock", "_max_entries")
 
     def __init__(self, max_entries: int = 128) -> None:
+        max_entries = index(max_entries)
         if max_entries <= 0:
             raise ValueError("max_entries must be positive")
         self._max_entries = max_entries

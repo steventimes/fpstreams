@@ -13,6 +13,7 @@ from ..errors import FlowConsumedError
 from .semantics import (
     Cardinality,
     OrderingGuarantee,
+    Replayability,
     StreamFacts,
     TerminationEvidence,
     facts_from_capabilities,
@@ -205,6 +206,8 @@ class Source(Generic[T]):
                     "list[Any] | tuple[Any, ...] | range",
                     value,
                 )
+            if not safely_sized:
+                source.facts = replace(source.facts, replayability=Replayability.UNKNOWN)
             return source
         iterator = iter(value)
         return cls(

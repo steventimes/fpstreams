@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, SupportsIndex
 
-from .collecting.reducer import Reducer, merge_reducer_states
-from .runtime.iterators import closing_iterators
+from fpstreams.collecting.reducer import Reducer, merge_reducer_states
+from fpstreams.runtime.iterators import closing_iterators
 
 
 @dataclass(frozen=True, slots=True)
 class ReducerLawReport:
-    """Record sampled associativity, left identity, and partition-equivalence checks."""
+    """Record sampled associativity, two-sided identity, and partition checks."""
 
     associative: bool
     identity: bool
     partition_equivalent: bool
     checked_partitions: tuple[tuple[int, ...], ...]
+    associativity_checked: bool = field(default=False, compare=False)
+    partition_equivalence_checked: bool = field(default=False, compare=False)
 
 
 def check_reducer_laws(
@@ -52,8 +54,12 @@ def check_reducer_laws(
 
     def accumulate(sample: Iterable[Any]) -> Any:
         state = reducer.initializer()
+        completed = reducer.done(state)
         for value in sample:
+            if completed:
+                break
             state = reducer.step(state, value)
+            completed = reducer.done(state)
         return state
 
     reference = reducer.reduce(data)
@@ -61,10 +67,15 @@ def check_reducer_laws(
     if merge is None:
         raise ValueError("reducer must have a merge function")
 
-    identity = equivalent(
+    left_identity = equivalent(
         reducer.finish(merge(reducer.initializer(), accumulate(data))),
         reference,
     )
+    right_identity = equivalent(
+        reducer.finish(merge(accumulate(data), reducer.initializer())),
+        reference,
+    )
+    identity = left_identity and right_identity
 
     checked: list[tuple[int, ...]] = []
     partition_equivalent = True
@@ -91,7 +102,9 @@ def check_reducer_laws(
             merge(other_left, merge(other_middle, other_right)),
         )
 
-    return ReducerLawReport(associative, identity, partition_equivalent, tuple(checked))
+    return ReducerLawReport(
+        associative, identity, partition_equivalent, tuple(checked), len(data) >= 3, bool(checked)
+    )
 
 
 def assert_reducer_laws(

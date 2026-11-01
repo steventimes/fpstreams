@@ -15,7 +15,8 @@ from ...physical.relational import (
     PhysicalRelNode,
     SourcePhysicalNode,
 )
-from ...planning.arrow_source import ArrowBatchSource
+from ...planning.arrow.source import ArrowBatchSource
+from ...runtime._distinct import reraise_key_type_error
 from ...runtime.iterators import closing_iterators
 from ...runtime.query import QueryRuntime
 from ...tabular.join import (
@@ -246,7 +247,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
             try:
                 existing = index.get(key)
             except TypeError:
-                raise TypeError("join keys must be hashable") from None
+                reraise_key_type_error(key, "join keys must be hashable")
             if existing is not None:
                 raise ValueError(
                     f"join validate={validate!r} requires unique right keys; "
@@ -255,7 +256,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
             try:
                 index[key] = record
             except TypeError:
-                raise TypeError("join keys must be hashable") from None
+                reraise_key_type_error(key, "join keys must be hashable")
 
     seen_left: set[Any] | None = set() if validate == "1:1" else None
     target_cache = _JoinTargetCache()
@@ -292,7 +293,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
             try:
                 right = index.get(key)
             except TypeError:
-                raise TypeError("join keys must be hashable") from None
+                reraise_key_type_error(key, "join keys must be hashable")
             if right is None and how != "left":
                 continue
             plan = (

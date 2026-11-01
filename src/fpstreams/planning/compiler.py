@@ -8,9 +8,7 @@ from typing import Any
 from ..collecting.aggregate_program import native_mean_only
 from ..errors import NativeUnsupportedError
 from ..expressions.program import ExprProgram, compile_expression
-from ..expressions.selectors import (
-    _direct_field,
-)
+from ..expressions.selectors import _direct_field
 from ..expressions.typed_ir import Effect, ExpressionSource, lower_expression
 from ..physical.compiled import ProgramFingerprint
 from ..physical.kernel_cache import KernelCache
@@ -23,19 +21,9 @@ from ..physical.plan import (
     SortPhysicalNode,
     SortStrategy,
 )
-from .arrow import (
-    plan_arrow_first_prefix,
-    plan_arrow_prefix,
-    plan_arrow_reduction_prefix,
-)
-from .arrow_source import ArrowBatchSource
-from .logical import (
-    LogicalPlan,
-    Query,
-    TerminalSpec,
-    linear_pipeline,
-    unary_chain,
-)
+from .arrow import plan_arrow_first_prefix, plan_arrow_prefix, plan_arrow_reduction_prefix
+from .arrow.source import ArrowBatchSource
+from .logical import LogicalPlan, Query, TerminalSpec, linear_pipeline, unary_chain
 from .native import (
     EngineDecision,
     select_materializing_engine,
@@ -45,10 +33,8 @@ from .native import (
 from .numpy import plan_numpy_prefix
 from .plan_cache import PhysicalPlanTemplate, PlanCache, PlanCacheKey
 from .relational import _compile_relational_query, _contains_relational
-from .source import (
-    Source,
-)
-from .sync import FilterOp, MapOp, Operation, SortOp
+from .source import Source
+from .sync import FilterOp, MapOp, Operation, SortOp, operation_for_engine
 
 _NATIVE_TERMINALS = frozenset(
     {
@@ -93,7 +79,9 @@ def _compile_streaming_iteration(logical: LogicalPlan) -> PhysicalPlan | None:
     return PhysicalPlan(
         source.source,
         tuple(
-            RowPhysicalNode((index,), "python-row", node.operation)
+            RowPhysicalNode(
+                (index,), "python-row", operation_for_engine(node.operation, logical.engine)
+            )
             for index, node in enumerate(unary_nodes)
         ),
         _ITERATE_TERMINAL,
@@ -126,7 +114,12 @@ def compile_query(query: Query) -> PhysicalPlan:
         # currently Python-owned even when auto selects a guarded native aggregate kernel.
         if query.logical.engine == "native":
             raise NativeUnsupportedError("relational queries are not native-compilable")
-        return _compile_relational_query(query, _compile_relational_stage)
+        return _compile_relational_query(
+            query,
+            lambda index, operation: _compile_relational_stage(
+                index, operation_for_engine(operation, query.logical.engine)
+            ),
+        )
     source, unary_nodes = unary_chain(query.logical.root)
     pipeline = linear_pipeline(query.logical)
     terminal = query.terminal.name
@@ -157,7 +150,8 @@ def compile_query(query: Query) -> PhysicalPlan:
         )
     )
     compiled_nodes = tuple(
-        _compile_node(index, node.operation) for index, node in enumerate(unary_nodes)
+        _compile_node(index, operation_for_engine(node.operation, query.logical.engine))
+        for index, node in enumerate(unary_nodes)
     )
     nodes = _select_direct_arrow_sort(compiled_nodes, source.source, query)
     guards = (
@@ -271,7 +265,9 @@ def _physical_cache_key(
                 "row expressions retain selector, literal, and backend bindings",
             )
         try:
-            expression_fingerprint = ProgramFingerprint.from_expression(node.program).value
+            expression_fingerprint = (
+                node.fingerprint or ProgramFingerprint.from_expression(node.program)
+            ).value
         except ValueError:
             return None, "expression cannot be structurally fingerprinted"
         if isinstance(node.operation, MapOp):
@@ -387,16 +383,17 @@ def _compile_node(
             pass
         else:
             if expression.effect is not Effect.PYTHON_CALLBACK:
-                try:
-                    fingerprint = ProgramFingerprint.from_expression(
-                        ExprProgram(expression.root, {}, expression.effect)
-                    )
-                except ValueError:
+                fingerprint = None
+                if expression.source is ExpressionSource.ROW:
+                    # Row programs retain selector and literal identity, so skip both the
+                    # structural cache and its recursive fingerprint before the bounded compiler.
                     program = compile_expression(expression)
                 else:
-                    if expression.source is ExpressionSource.ROW:
-                        # Row programs close over selector callables and literal identity.  A
-                        # structural cache would bind a later query to the first graph's values.
+                    try:
+                        fingerprint = ProgramFingerprint.from_expression(
+                            ExprProgram(expression.root, {}, expression.effect)
+                        )
+                    except ValueError:
                         program = compile_expression(expression)
                     else:
                         program = _EXPRESSION_PROGRAM_CACHE.get_or_compile(
@@ -409,6 +406,7 @@ def _compile_node(
                     operation,
                     expression,
                     program,
+                    fingerprint,
                 )
                 hit("backend.convert.after")
                 return node

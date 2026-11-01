@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from operator import itemgetter
 from time import perf_counter_ns
 from types import FunctionType
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast, overload
 
 from ..collecting.aggregation import (
     finish_aggregations,
@@ -16,13 +16,14 @@ from ..collecting.aggregation import (
 )
 from ..collecting.collector import Collector
 from ..expressions.row import RowExpr
-from ..planning._pair_stages import (
+from ..planning.pairs import (
     PAIR_KEY_SELECTOR,
     PairFilterDescriptor,
     PairFlatMapDescriptor,
     PairMapDescriptor,
 )
 from ..planning.sync import Engine
+from ..runtime._distinct import reraise_key_type_error
 from ..runtime.iterators import closing_iterators
 from ..runtime.report import (
     ExecutionResult,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 K = TypeVar("K")
 V = TypeVar("V")
 R = TypeVar("R")
+S = TypeVar("S")
 U = TypeVar("U")
 
 _PAIR_KEY = PAIR_KEY_SELECTOR
@@ -367,7 +369,7 @@ class Pairs(Generic[K, V]):
         """
         if on_duplicate not in {"error", "first", "last"}:
             raise ValueError("on_duplicate must be 'error', 'first', or 'last'")
-        from ..execution._pair_dict import PairDictConsumer
+        from ..execution.pairs.dictionary import PairDictConsumer
 
         return cast(dict[K, V], self._consume(PairDictConsumer(on_duplicate)))
 
@@ -385,6 +387,12 @@ class Pairs(Generic[K, V]):
             return result
 
         return self._consume(consume)
+
+    @overload
+    def collect_values(self, collector: Collector[V, S, R]) -> dict[K, R]: ...
+
+    @overload
+    def collect_values(self, collector: Callable[[Iterable[V]], R]) -> dict[K, R]: ...
 
     def collect_values(
         self,
@@ -408,7 +416,7 @@ class Pairs(Generic[K, V]):
                     try:
                         state = states.get(key, missing)
                     except TypeError:
-                        raise TypeError("pair keys must be hashable") from None
+                        reraise_key_type_error(key, "pair keys must be hashable")
                     if state is missing:
                         state = collector.initializer()
                     if not collector.done(state):
@@ -416,7 +424,7 @@ class Pairs(Generic[K, V]):
                     try:
                         states[key] = state
                     except TypeError:
-                        raise TypeError("pair keys must be hashable") from None
+                        reraise_key_type_error(key, "pair keys must be hashable")
                 return states
 
             states = self._consume(consume_streaming)
@@ -431,7 +439,7 @@ class Pairs(Generic[K, V]):
                 try:
                     groups.setdefault(key, []).append(value)
                 except TypeError:
-                    raise TypeError("pair keys must be hashable") from None
+                    reraise_key_type_error(key, "pair keys must be hashable")
             return groups
 
         groups = self._consume(consume_groups)
@@ -454,7 +462,7 @@ class Pairs(Generic[K, V]):
             and _CANONICAL_AGGREGATION_HELPERS_ARE_LIVE()
         )
         direct = self._can_consume_flow_directly()
-        from ..execution._pair_aggregate import compile_closed_pair_aggregations
+        from ..execution.pairs import compile_closed_pair_aggregations
 
         closed = (
             compile_closed_pair_aggregations(items) if direct and canonical_helpers_live else None
@@ -480,14 +488,14 @@ class Pairs(Generic[K, V]):
                 try:
                     states = states_by_key.get(key, missing)
                 except TypeError:
-                    raise TypeError("pair keys must be hashable") from None
+                    reraise_key_type_error(key, "pair keys must be hashable")
                 if states is missing:
                     states = initialize_aggregations(items)
                 step_aggregations(states, items, value)
                 try:
                     states_by_key[key] = states
                 except TypeError:
-                    raise TypeError("pair keys must be hashable") from None
+                    reraise_key_type_error(key, "pair keys must be hashable")
             return states_by_key
 
         states_by_key = self._consume(consume)

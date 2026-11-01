@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from .source import Source
-from .sync import Engine, Operation, ParallelSettings
+from .sync import Engine, Operation, ParallelSettings, operation_for_engine
 
 if TYPE_CHECKING:
     from ..collecting.aggregation import AggregationItems
@@ -158,6 +158,24 @@ class LogicalPlan:
         return replace(self, parallel=settings)
 
 
+def _join_plan(
+    left: LogicalPlan,
+    right: LogicalPlan,
+    spec: JoinSpec,
+    *,
+    row_limits: tuple[int, ...] | None = None,
+) -> LogicalPlan:
+    """Compose validated join inputs while retaining the left execution preferences."""
+    operation = "join" if row_limits is None else "join_sorted"
+    joined = left.with_engine(merge_engine_requests(left.engine, right.engine, operation=operation))
+    root: LogicalNode
+    if row_limits is None:
+        root = JoinNode(left.root, right.root, spec)
+    else:
+        root = SortedJoinNode(left.root, right.root, spec, *row_limits)
+    return joined.with_root(root)
+
+
 @dataclass(frozen=True, slots=True)
 class Pipeline:
     """Canonical linear view consumed by sync backend selection and execution.
@@ -211,7 +229,7 @@ def linear_pipeline(logical: LogicalPlan) -> Pipeline:
     source, nodes = unary_chain(logical.root)
     return Pipeline(
         source.source,
-        tuple(node.operation for node in nodes),
+        tuple(operation_for_engine(node.operation, logical.engine) for node in nodes),
         logical.engine,
         logical.parallel,
     )

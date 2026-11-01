@@ -24,9 +24,18 @@ htmlcov/
 
 .ruff_cache/
 .mypy_cache/
+tests/typing/node_modules/
 .playwright-cli/
 site/
 rust/target/
 artifacts/
 .omx/
 fpstreams/docs/assets/packages/
+
+# Local-only benchmark tools and contracts. Tracked copies require a future tree deletion;
+# keep working files and history intact until an explicitly authorized commit.
+/benchmark.py
+/run_benchmark.sh
+/benchmarks/
+/tests/contracts/test_benchmarks.py
+/skills/fpstreams-benchmark-regression/

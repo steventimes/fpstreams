@@ -53,8 +53,13 @@ class TypedExpr:
 def _row_effect(root: object) -> Effect:
     """Find a Python UDF barrier iteratively without evaluating the expression tree."""
     stack = [root]
+    seen: set[int] = set()
     while stack:
         node = stack.pop()
+        identity = id(node)
+        if identity in seen:
+            continue
+        seen.add(identity)
         if isinstance(node, PythonUDF):
             return Effect.PYTHON_CALLBACK
         stack.extend(_children(node))

@@ -21,13 +21,13 @@ use crate::common::{
     all_exact_dict_rows_v1, direct_dict_field_key_v1, exact_container_extraction_v1,
 };
 use crate::float::{
-    aggregate_f64, aggregate_f64_buffer_masked_v1, aggregate_f64_buffer_masked_v2,
-    aggregate_f64_masked, aggregate_f64_range, aggregate_f64_range_masked, count_f64,
-    count_f64_range, execute_f64, execute_f64_buffer_v1, execute_f64_range, materialize_f64,
-    materialize_f64_buffer_v1, materialize_f64_range, mean_f64, mean_f64_buffer_v1,
-    mean_f64_buffer_v2, mean_f64_range, sequential_f64_aggregate_total_v1, statistics_f64,
-    statistics_f64_range, terminal_f64, terminal_f64_buffer_v1, terminal_f64_buffer_v2,
-    terminal_f64_probe, terminal_f64_range,
+    RollingStatistics, aggregate_f64, aggregate_f64_buffer_masked_v1,
+    aggregate_f64_buffer_masked_v2, aggregate_f64_masked, aggregate_f64_range,
+    aggregate_f64_range_masked, count_f64, count_f64_range, execute_f64, execute_f64_buffer_v1,
+    execute_f64_range, materialize_f64, materialize_f64_buffer_v1, materialize_f64_range, mean_f64,
+    mean_f64_buffer_v1, mean_f64_buffer_v2, mean_f64_range, sequential_f64_aggregate_total_v1,
+    statistics_f64, statistics_f64_range, terminal_f64, terminal_f64_buffer_v1,
+    terminal_f64_buffer_v2, terminal_f64_probe, terminal_f64_range,
 };
 use crate::integer::{
     aggregate_i64, aggregate_i64_buffer_masked_v1, aggregate_i64_buffer_masked_v2,
@@ -105,6 +105,7 @@ macro_rules! register_pyfunctions {
 
 #[pymodule(gil_used = false)]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<RollingStatistics>()?;
     module.add_class::<NumpyGroupState>()?;
     module.add_class::<NumpyGroupPartial>()?;
     register_pyfunctions!(

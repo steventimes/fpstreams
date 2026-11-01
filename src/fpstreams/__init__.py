@@ -1,6 +1,6 @@
 """Expose the fpstreams v2 flow, expression, collection, and value-type APIs."""
 
-from .collecting import (
+from fpstreams.collecting import (
     Aggregator,
     Collector,
     Collectors,
@@ -15,7 +15,7 @@ from .collecting import (
     agg,
     explain_reduction,
 )
-from .errors import (
+from fpstreams.errors import (
     BufferLimitError,
     DuplicateKeyError,
     EmptyFlowError,
@@ -24,13 +24,13 @@ from .errors import (
     NativeUnsupportedError,
     SelectionError,
 )
-from .expressions import Expr, FExpr, RowExpr, coalesce, col, fitem, item, lit, when
-from .functional import curry, pipe, retry
-from .primitives import Err, Ok, Option, Result
-from .runtime.executor import BoundedExecutor
-from .runtime.report import ExecutionEvent, ExecutionReport, ExecutionResult
-from .storage.checkpoint import FileCheckpoint
-from .streams import (
+from fpstreams.expressions import Expr, FExpr, RowExpr, coalesce, col, fitem, item, lit, when
+from fpstreams.functional import curry, pipe, retry
+from fpstreams.primitives import Err, Ok, Option, Result
+from fpstreams.runtime.executor import BoundedExecutor
+from fpstreams.runtime.report import ExecutionEvent, ExecutionReport, ExecutionResult
+from fpstreams.storage.checkpoint import FileCheckpoint
+from fpstreams.streams import (
     AsyncFlow,
     AsyncStream,
     Downstream,
@@ -41,10 +41,10 @@ from .streams import (
     flow,
     pairs,
 )
-from .tabular import Rows, SpillLimits
-from .tabular.factory import rows as rows
+from fpstreams.tabular import Rows, SpillLimits
+from fpstreams.tabular.factory import rows as rows
 
-__version__ = "2.4.1"
+__version__ = "2.5.0"
 Stream = Flow
 ParallelStream = Flow
 

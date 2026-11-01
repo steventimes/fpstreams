@@ -1,18 +1,30 @@
+![fpstreams — Lazy Python pipelines. Explicit resource ownership.](.github/readme/banner.svg)
+
 # fpstreams
+
+[Install](#install) · [Quick start](#quick-start) · [Examples](#what-is-in-v2) · [Engines](#execution-engines) · [Documentation](https://steventimes.github.io/fpstreams/)
+
+| Work with | Start with | Execution |
+| --- | --- | --- |
+| Values and records | `flow()` | Lazy synchronous pipelines |
+| Async inputs and calls | `aflow()` | Bounded concurrent work |
+| Key/value data | `pairs()` | Per-key collection and aggregation |
 
 [![CI](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml/badge.svg)](https://github.com/steventimes/fpstreams/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/fpstreams.svg)](https://pypi.org/project/fpstreams/)
 [![Python](https://img.shields.io/pypi/pyversions/fpstreams.svg)](https://pypi.org/project/fpstreams/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/steventimes/fpstreams/blob/master/LICENSE)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/steventimes/badge.svg)](https://hub.xerj.org/contributors/steventimes)
 
 [Documentation](https://steventimes.github.io/fpstreams/) · [Browser playground](https://steventimes.github.io/fpstreams/playground/) · [Changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) · [Contributing](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)
 
-Lazy Python pipelines for iterables and records, with bounded async concurrency.
+Process Python objects and async inputs with lazy pipelines, bounded concurrent
+work, and explicit resource cleanup.
 
 Python 3.11 or newer is required.
 
-The current stable release is [2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1).
-This maintenance release reorganizes planner and execution internals with no public API changes.
+[Version 2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1)
+reorganizes planner and execution internals with no public API changes.
 Version 2.4.0 added stateful pipeline operations, composed aggregation, shared execution
 limits, file recovery, and versioned execution metadata. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
@@ -20,6 +32,15 @@ limits, file recovery, and versioned execution metadata. See the
 for batch and executor examples. The
 [roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
 lists the next optimization candidates and their acceptance criteria.
+
+Version [2.5.0](CHANGELOG.md#250) includes a static averaging type correction
+with an explicit migration path. It adds
+[typed asynchronous folds](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
+[explicit averaging operations](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250),
+and an opt-in [strict lookup policy for null filtering](fpstreams/docs/reference/rows.md#null-filtering-and-lookup-failures-250).
+These APIs are not in 2.4.1. `Flow.reduce` still returns `Any` to type checkers,
+including with an annotated callback. See the [reduce guide](fpstreams/docs/reference/flow.md#reduce-types)
+for migration examples and [contributor checks](CONTRIBUTING.md#run-the-checks) for validation.
 
 ## Install
 
@@ -42,47 +63,46 @@ python -m pip install "fpstreams[data]"    # NumPy, pandas, and PyArrow
 python -m pip install "fpstreams[polars]"  # Polars and PyArrow
 ~~~
 
-## Editor support
-
-fpstreams includes inline type annotations, docstrings, and the `py.typed` marker.
-Select the Python interpreter where fpstreams is installed in your editor to get
-method completions, parameter hints, and hover documentation.
-
-Version 2.2.1 fixes `rows` factory completion and keeps core
-iterable element types when optional data adapters are absent. For example,
-`flow([1, 2, 3])` is inferred as `Flow[int]`.
-
 ## Quick start
 
-This example filters paid orders, groups them by region, and reports both the
-number of orders and their revenue:
+Pass an iterable to `flow()` and consume the result:
 
 ~~~python
-from fpstreams import agg, col, flow
+from fpstreams import flow
 
-orders = [
-    {"region": "eu", "status": "paid", "amount": 24},
-    {"region": "us", "status": "paid", "amount": 20},
-    {"region": "eu", "status": "cancelled", "amount": 99},
-    {"region": "eu", "status": "paid", "amount": 24},
-]
-
-result = (
-    flow(orders)
-    .filter(col("status") == "paid")
-    .group_by("region")
-    .aggregate(
-        orders=agg.count(),
-        revenue=agg.sum("amount"),
-    )
-    .sort_by("region")
-    .to_list()
-)
-
-print(result)
-# [{'region': 'eu', 'orders': 2, 'revenue': 48},
-#  {'region': 'us', 'orders': 1, 'revenue': 20}]
+result = flow([1, 2, 3]).filter(lambda value: value > 1).map(lambda value: value * 10).to_list()
+assert result == [20, 30]
 ~~~
+
+Use [async pipelines](#asynchronous-pipelines) for asynchronous callbacks and
+[record pipelines](#record-pipelines) for grouping. The
+[engine guide](#execution-engines) helps diagnose execution routes;
+[resource limits](#resource-and-file-safety-controls) apply when processing larger inputs.
+
+### Close an owned iterator
+
+This pipeline takes three matching values and closes its generator before returning.
+The generator prints when its `finally` block runs, so cleanup is visible:
+
+~~~python
+from fpstreams import flow
+
+
+def numbers():
+    try:
+        yield from range(10)
+    finally:
+        print("source closed")
+
+
+result = flow(numbers()).filter(lambda value: value % 2 == 0).take(3).to_list()
+print(result)
+# source closed
+# [0, 2, 4]
+~~~
+
+See [record pipelines](#record-pipelines) for grouped aggregation, or
+[asynchronous pipelines](#asynchronous-pipelines) for concurrent calls.
 
 ## When to use fpstreams
 
@@ -119,10 +139,12 @@ standard Arrow/dataframe protocol routing, retained NumPy execution, and new
 async queue, prefetch, window, and numeric terminal APIs. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for the release summary.
 
-Release testing covers standard CPython 3.11 through 3.14. Free-threaded
-CPython 3.14t is exercised by an experimental, non-blocking job that builds the
-native extension; it is not currently a release-wheel target, and unsupported
-fast paths fall back conservatively.
+The source CI matrix targets standard CPython 3.11 through 3.15. Python 3.15
+compatibility is included in 2.5.0; the 2.4.1 release matrix covered
+3.11 through 3.14. Free-threaded CPython 3.14t and 3.15t are included in an
+experimental, non-blocking CI matrix that builds the native extension and checks
+core concurrency contracts. These builds are not release-wheel targets;
+optional adapter compatibility is outside this matrix.
 
 ### Value pipelines
 
@@ -220,7 +242,9 @@ record column. Explicit Flow factories cover Arrow, equal-length named columns,
 NumPy arrays, dataframe, Polars, typed CSV, and Parquet inputs. The `rows`
 namespace continues to provide compatibility CSV, JSONL, SQLite, DB-API, and
 record-oriented output methods. CSV and JSONL
-inputs accept paths, caller-owned open handles, or replayable opener functions:
+inputs accept paths, caller-owned open handles, or replayable opener functions.
+The following example needs `fpstreams[arrow]` and an `accounts.parquet` file
+with `id`, `status`, and `balance` columns:
 
 ~~~python
 from fpstreams import col, flow
@@ -269,6 +293,8 @@ asyncio.run(main())
 
 Async iterators consumed by a pipeline are closed, and tasks created by the
 pipeline are cancelled, when it finishes, errors, times out, or short-circuits.
+Mappers must cooperate with cancellation so cleanup can finish. Offload blocking
+work explicitly rather than running it directly inside an async mapper.
 
 ### Key/value pipelines
 
@@ -311,8 +337,13 @@ assert plan["data_movement"] == {
 You can request an engine explicitly when testing parity or diagnosing a plan:
 
 ~~~python
+from fpstreams import flow, item
+
+pipeline = flow([1, 2, 3]).map(item * 2)
 python_result = pipeline.with_engine("python").to_list()
 native_result = pipeline.with_engine("native").to_list()
+
+assert python_result == native_result == [2, 4, 6]
 ~~~
 
 Use `run_with_report()` to get a terminal's value, recorded route, and query-owned
@@ -362,11 +393,23 @@ finish. The defaults are 100,000 rows and 64 MiB per partition, 100,000 matches
 per key, 1,000,000 output rows, and three repartition levels.
 
 ~~~python
-from fpstreams import SpillLimits, rows
+from fpstreams import SpillLimits, agg, rows
+
+accounts = [{"id": 1, "account_id": "a"}, {"id": 2, "account_id": "a"}]
+balances = [{"id": 1, "balance": 10}, {"id": 2, "balance": 20}]
 
 limits = SpillLimits(max_output_rows=250_000, max_matches_per_key=10_000)
-result = rows(left).join(right, on="id", partitions=32, limits=limits)
-grouped = rows(records).group_by("account_id").spill(partitions=32, limits=limits)
+joined = rows(accounts).join(balances, on="id", partitions=32, limits=limits).to_list()
+grouped = (
+    rows(accounts)
+    .group_by("account_id")
+    .spill(partitions=32, limits=limits)
+    .aggregate(count=agg.count())
+    .to_list()
+)
+
+assert sorted((row["id"], row["balance"]) for row in joined) == [(1, 10), (2, 20)]
+assert grouped == [{"account_id": "a", "count": 2}]
 ~~~
 
 Exceeding a configured partition, match, state, record, or output limit raises
@@ -391,8 +434,31 @@ only for trusted local input when an unlimited record is intentional.
   once during construction and treated as one-shot; a PyArrow
   `RecordBatchReader` is also one-shot.
 - `flow.defer(factory)` opens a fresh source for every execution.
-- Terminal operations close owned iterators, database cursors, temporary files,
-  and asynchronous tasks, including on errors and early termination.
+- Terminal operations release owned iterators, database cursors, and temporary
+  files, including on errors and early termination. Async execution also cancels
+  and awaits tasks it creates. File adapters distinguish owned resources from
+  caller-owned handles; see the [I/O reference](https://steventimes.github.io/fpstreams/reference/io/).
+
+## Editor support
+
+fpstreams includes inline type annotations, docstrings, and the `py.typed` marker.
+Select the Python interpreter where fpstreams is installed in your editor to get
+method completions, parameter hints, and hover documentation.
+
+Version 2.2.1 fixes `rows` factory completion and keeps core
+iterable element types when optional data adapters are absent. For example,
+`flow([1, 2, 3])` is inferred as `Flow[int]`.
+
+## Coding-agent guidance
+
+The [Flow](fpstreams/docs/reference/flow.md#reduce-types),
+[async Flow](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-unreleased),
+and [Collector](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-unreleased)
+references describe entry points, typed reductions, and migration contracts.
+An independently supplied fpstreams usage skill must match the installed library
+version and its API documentation. The local 2.5.0 candidate skill is separate
+from the PyPI wheel and sdist; neither a package install nor its presence in a
+checkout registers it with an agent. Released 2.4.1 does not include that skill.
 
 ## v1 compatibility
 
@@ -416,25 +482,20 @@ uv sync --extra arrow --extra data --extra polars \
 uv run maturin develop --release
 uv run pytest -W error --cov=src/fpstreams --cov-branch --cov-report=term-missing
 uv run coverage report
-uv run ruff check src tests scripts benchmarks benchmark.py
-uv run ruff format --check src tests scripts benchmarks benchmark.py
+uv run ruff check src tests scripts
+uv run ruff format --check src tests scripts
 uv run mypy src/fpstreams
 cargo test --manifest-path rust/Cargo.toml
 uv run python scripts/build_browser_wheel.py
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 ~~~
 
-Run `./run_benchmark.sh` for the configurable benchmark matrix. Its settings are
-kept at the top of the script, including input size, repeats, presets, case
-filters, and optional JSON output. Competitive mode checks equivalent tasks
-against Python, NumPy, and pandas and prints the percentage difference.
+Performance measurements are maintained locally. Benchmark tools and raw reports
+are not part of the public source distribution or GitHub Actions.
 
 The source tree is organized by domain under `src/fpstreams/`: `streams`,
 `planning`, `execution`, `collecting`, `tabular`, `expressions`, and `primitives`.
 Small top-level modules are compatibility facades, not duplicate implementations.
-The [Chinese code-reading guide](https://github.com/steventimes/fpstreams/blob/master/CODE_READING_GUIDE.zh-CN.md)
-walks through the main sync, relational, spill, native, and async execution paths
-in those domains.
 
 Contributions are welcome. The
 [contributing guide](https://github.com/steventimes/fpstreams/blob/master/CONTRIBUTING.md)

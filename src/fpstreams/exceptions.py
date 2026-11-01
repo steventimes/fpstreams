@@ -1,4 +1,4 @@
-from .errors import EmptyFlowError, FlowError
+from fpstreams.errors import EmptyFlowError, FlowError
 
 StreamError = FlowError
 StreamEmptyError = EmptyFlowError

@@ -12,7 +12,7 @@ from typing import Any, BinaryIO, Generic, Literal, TextIO, TypeVar, cast
 
 from ..collecting.aggregation import prepare_aggregations
 from ..collecting.collector import Collector
-from ..errors import DuplicateKeyError, SelectionError
+from ..errors import DuplicateKeyError, SelectionError, _SelectionTracking, _user_selection_error
 from ..expressions.row import RowExpr, lit
 from ..expressions.row_eval import LazyRowEvaluator, RowProgram, cached_row_program
 from ..expressions.selectors import Selector, _direct_field, compile_selector
@@ -20,11 +20,9 @@ from ..planning.arrow import RowStageDescriptor, _register_row_stage
 from ..planning.explain import PlanExplanation
 from ..planning.logical import (
     GlobalAggregateNode,
-    JoinNode,
     JoinSpec,
-    SortedJoinNode,
     SourceNode,
-    merge_engine_requests,
+    _join_plan,
 )
 from ..planning.native import TerminalName
 from ..planning.source import Source, _function_code
@@ -37,16 +35,12 @@ from ..runtime.report import (
     _stop_recording,
 )
 from ..streams.flow import Flow, flow
-from ._text_sources import CSVRowSource, csv_flow, jsonl_flow
-from .arrow import (
-    arrow_source,
-    columns_source,
-    csv_source,
-    parquet_source,
-)
+from .arrow import arrow_source, columns_source, csv_source, parquet_source
 from .dataframe import dataframe_source
 from .grouped import GroupedRows
 from .io import RowsIOMixin
+from .io.database import ConnectionFactory, DBParameters, db_row_factory, sqlite_row_factory
+from .io.text import CSVRowSource, csv_flow, jsonl_flow
 from .join import (
     _JOIN_MODES,
     _JOIN_VALIDATIONS,
@@ -56,20 +50,9 @@ from .join import (
     _normalize_join_selectors,
 )
 from .polars import polars_source
-from .records import (
-    _as_record,
-    _explode_owned_record,
-    _require_unique_names,
-    _unpivot_owned_record,
-)
+from .records import _as_record, _explode_owned_record, _require_unique_names, _unpivot_owned_record
 from .spill import validate_partitions
 from .spill_limits import SpillLimits
-from .sql import (
-    ConnectionFactory,
-    DBParameters,
-    db_row_factory,
-    sqlite_row_factory,
-)
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -954,7 +937,7 @@ def _try_native_unnest_materialize(
     if cast(Any, source).__length_hint__() < _NATIVE_UNNEST_MIN_ROWS:
         return False, None
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False, None
     raw_endpoint = _BUILTIN_GETATTR(_native, "unnest_exact_dict_prefix_v1", None)
@@ -1266,7 +1249,7 @@ def _try_native_unpivot_materialize(
         if module_globals.get(name, builtin_globals.get(name)) is not canonical:
             return False, None
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return False, None
     raw_endpoint = _BUILTIN_GETATTR(_native, "unpivot_exact_dict_prefix_v1", None)
@@ -1416,7 +1399,7 @@ def _try_native_pivot_materialize(
         if module_globals.get(name, builtin_globals.get(name)) is not canonical:
             return None
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return None
     endpoint = _BUILTIN_GETATTR(_native, "pivot_exact_dict_rows_v1", None)
@@ -1544,14 +1527,15 @@ class Rows(RowsIOMixin[T], Generic[T]):
         convert_options: Any = None,
         memory_pool: Any = None,
     ) -> Rows[dict[str, Any]]:
-        """Lazily scan typed CSV batches with optional query-level column pruning.
+        """Lazily scan typed CSV batches using Arrow conversion.
 
         Unlike [from_csv()][fpstreams.Rows.from_csv], this Arrow reader infers non-string types.
         PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
         The incremental Arrow reader is single-threaded and freezes inferred types after its
         first byte block; use ``read_options`` or ``convert_options`` to control those choices.
-        Query column pruning intentionally avoids conversion work, including conversion errors,
-        in columns the query does not read.
+        Query projection runs after conversion of every caller-visible column. Selecting fewer
+        columns does not suppress conversion errors in other columns. Use ``convert_options``
+        to restrict the reader's columns explicitly when that behavior is intended.
 
         Args:
             path: Local CSV path reopened for each iteration.
@@ -2187,42 +2171,83 @@ class Rows(RowsIOMixin[T], Generic[T]):
         self,
         *selectors: Selector,
         how: Literal["any", "all"] = "any",
+        missing: Literal["legacy", "raise"] = "legacy",
     ) -> Rows[T]:
         """Drop rows according to None values in selected fields or the whole record.
 
         Args:
             *selectors: Fields to inspect; omitted means every field in each record.
             how: "any" drops on one null; "all" requires every inspected value to be null.
+            missing: "legacy" retains historical missing-field handling. "raise"
+                propagates lookup failures; use a callable returning None to define
+                actual absence for custom row protocols. None values remain null.
 
         Returns:
-            Lazy Rows; a missing selected field is treated as None.
+            Lazy Rows using the selected null and lookup-failure policies.
         """
         if how not in {"any", "all"}:
             raise ValueError("drop_nulls how must be 'any' or 'all'")
-        selected = tuple(compile_selector(selector) for selector in selectors)
+        if missing not in {"legacy", "raise"}:
+            raise ValueError("drop_nulls missing must be 'legacy' or 'raise'")
+        selected = tuple((selector, compile_selector(selector)) for selector in selectors)
         direct_fields = (
             cast(tuple[str, ...], selectors)
-            if selectors
+            if missing == "legacy"
+            and selectors
             and all(type(selector) is str and "." not in selector for selector in selectors)
             else None
         )
 
-        def select_or_none(select: Callable[[T], Any], row: T) -> Any:
+        def select_or_none(selector: Selector, select: Callable[[T], Any], row: T) -> Any:
             """Treat a missing selected field as None for null filtering."""
+            if missing == "raise" or (
+                callable(selector)
+                and (
+                    not isinstance(selector, RowExpr)
+                    or (
+                        type(selector) is not RowExpr
+                        and type.__getattribute__(type(selector), "__call__")
+                        is not RowExpr.__call__
+                    )
+                )
+            ):
+                return select(row)
+            state = _SelectionTracking()
+            tracking = _user_selection_error.set(state)
             try:
                 return select(row)
-            except SelectionError:
+            except SelectionError as error:
+                if getattr(error, "_attribute_type_error", False) or state.user is error:
+                    raise
+                if isinstance(selector, RowExpr) and (
+                    state.missing is None or state.missing[0] is not error or state.missing[1] != 1
+                ):
+                    raise
                 return None
+            finally:
+                _user_selection_error.reset(tracking)
 
         def keep_compatible(row: T) -> bool:
             """Retain selector and record protocols outside the exact-dictionary path."""
+            if selected and any is _BUILTIN_ANY and all is _BUILTIN_ALL:
+                drop_when_null = how == "any"
+                for selector, select in selected:
+                    # "any" rejects the first null; "all" retains the first non-null.
+                    try:
+                        is_null = select_or_none(selector, select, row) is None
+                    except StopIteration as error:
+                        # Preserve the former generator expression's PEP 479 boundary.
+                        raise RuntimeError("generator raised StopIteration") from error
+                    if is_null == drop_when_null:
+                        return not drop_when_null
+                return drop_when_null
             values = (
-                (select_or_none(select, row) for select in selected)
+                (select_or_none(selector, select, row) for selector, select in selected)
                 if selected
                 else _as_record(row).values()
             )
-            missing = (value is None for value in values)
-            return not (any(missing) if how == "any" else all(missing))
+            nulls = (value is None for value in values)
+            return not (any(nulls) if how == "any" else all(nulls))
 
         if not selectors:
             return self.filter(_DropNullsPlan(None, how, keep_compatible))
@@ -2713,33 +2738,15 @@ class Rows(RowsIOMixin[T], Generic[T]):
             if isinstance(other, Flow)
             else flow(other)
         )
-        left_logical = self._flow._logical_plan
-        right_logical = right_flow._logical_plan
-        joined = left_logical.with_engine(
-            merge_engine_requests(
-                left_logical.engine,
-                right_logical.engine,
-                operation="join_sorted",
-            )
-        )
         return Rows(
             Flow._from_logical(
-                joined.with_root(
-                    SortedJoinNode(
-                        left_logical.root,
-                        right_logical.root,
-                        JoinSpec(
-                            normalized_left,
-                            normalized_right,
-                            how,
-                            suffix,
-                            validate,
-                            None,
-                            None,
-                            None,
-                        ),
-                        *budgets,
-                    )
+                _join_plan(
+                    self._flow._logical_plan,
+                    right_flow._logical_plan,
+                    JoinSpec(
+                        normalized_left, normalized_right, how, suffix, validate, None, None, None
+                    ),
+                    row_limits=budgets,
                 )
             )
         )
@@ -2810,28 +2817,21 @@ class Rows(RowsIOMixin[T], Generic[T]):
             right_flow = other
         else:
             right_flow = flow(other)
-        left_logical = self._flow._logical_plan
-        right_logical = right_flow._logical_plan
-        joined_logical = left_logical.with_engine(
-            merge_engine_requests(left_logical.engine, right_logical.engine, operation="join")
-        )
         return Rows(
             Flow._from_logical(
-                joined_logical.with_root(
-                    JoinNode(
-                        left_logical.root,
-                        right_logical.root,
-                        JoinSpec(
-                            normalized_left,
-                            normalized_right,
-                            how,
-                            suffix,
-                            validate,
-                            partition_count,
-                            tempdir,
-                            limits,
-                        ),
-                    )
+                _join_plan(
+                    self._flow._logical_plan,
+                    right_flow._logical_plan,
+                    JoinSpec(
+                        normalized_left,
+                        normalized_right,
+                        how,
+                        suffix,
+                        validate,
+                        partition_count,
+                        tempdir,
+                        limits,
+                    ),
                 )
             )
         )

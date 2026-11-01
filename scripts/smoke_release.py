@@ -4,12 +4,64 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import importlib.util
 import json
 from collections.abc import Callable
+from importlib.metadata import distribution
+from importlib.metadata import version as distribution_version
+from pathlib import Path
 from typing import Any
 
 import fpstreams
+
+
+def _installed_versions() -> dict[str, str]:
+    """Require the installed metadata, Python package, and native extension to agree."""
+    from fpstreams import _native
+
+    versions = {
+        "distribution": distribution_version("fpstreams"),
+        "python": fpstreams.__version__,
+        "native": _native.version(),
+    }
+    if len(set(versions.values())) != 1:
+        details = ", ".join(f"{name}={value}" for name, value in versions.items())
+        raise RuntimeError(f"installed release version mismatch: {details}")
+    return versions
+
+
+def _installed_files() -> dict[str, str]:
+    """Check that imported entry points belong to, and match, the installed RECORD."""
+    from fpstreams import _native
+
+    installed = distribution("fpstreams")
+    direct_url = installed.read_text("direct_url.json")
+    if direct_url and json.loads(direct_url).get("dir_info", {}).get("editable", False):
+        raise RuntimeError("installed release is editable")
+    files = installed.files
+    if not files:
+        raise RuntimeError("installed release has no file RECORD")
+    recorded = {Path(entry.locate()).resolve(): entry for entry in files}
+    checked: dict[str, str] = {}
+    for name, module in (("python", fpstreams), ("native", _native)):
+        origin = getattr(module, "__file__", None)
+        if not isinstance(origin, str):
+            raise RuntimeError(f"installed release {name} has no file origin")
+        path = Path(origin).resolve()
+        entry = recorded.get(path)
+        if entry is None:
+            raise RuntimeError(f"installed release {name} is outside its RECORD: {path}")
+        if entry.hash is None:
+            raise RuntimeError(f"installed release {name} has no RECORD hash: {entry}")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, entry.hash.mode).digest()
+        encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        if encoded != entry.hash.value:
+            raise RuntimeError(f"installed release {name} RECORD hash mismatch: {entry}")
+        checked[name] = str(entry)
+    return checked
 
 
 def _expect_missing_extra(module: str, operation: Callable[[], Any], expected_message: str) -> str:
@@ -44,7 +96,10 @@ async def _async_example() -> list[int]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--minimal", action="store_true")
+    parser.add_argument("--require-installed", action="store_true")
     arguments = parser.parse_args()
+    versions = _installed_versions()
+    installed = _installed_files() if arguments.require_installed else None
     pipeline = fpstreams.flow(range(4)).map(fpstreams.item * 2 + 1)
     native = pipeline.with_engine("native").to_list()
     python = pipeline.with_engine("python").to_list()
@@ -79,9 +134,12 @@ def main() -> None:
         "native": native,
         "python": python,
         "version": fpstreams.__version__,
+        "versions": versions,
         "orders": orders,
         "async": asynchronous,
     }
+    if installed is not None:
+        result["installed"] = installed
     if arguments.minimal:
         result["missing_extras"] = {
             "pandas": _expect_missing_extra(

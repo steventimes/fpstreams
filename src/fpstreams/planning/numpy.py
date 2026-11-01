@@ -178,7 +178,7 @@ def _primitive_comparison(
     if (
         type(field) is not _BUILTIN_STR
         or "." in field
-        or type(literal) not in {_BUILTIN_INT, _CANONICAL_BOOL}
+        or (type(literal) is not _BUILTIN_INT and type(literal) is not _CANONICAL_BOOL)
     ):
         return None
     source_field = current_fields.get(field)

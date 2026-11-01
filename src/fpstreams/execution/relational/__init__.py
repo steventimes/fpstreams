@@ -20,10 +20,7 @@ from ...collecting.aggregation import (
     native_group_aggregation,
     project_count_aggregation,
 )
-from ...collecting.program import (
-    collector_program_fast_path_is_live,
-    run_collector_program,
-)
+from ...collecting.program import collector_program_fast_path_is_live, run_collector_program
 from ...expressions.selectors import compile_selector
 from ...physical.plan import (
     CompiledExpressionPhysicalNode,
@@ -48,7 +45,7 @@ from ...physical.relational import (
     SortedJoinPhysicalNode,
     SourcePhysicalNode,
 )
-from ...planning.arrow_source import ArrowBatchSource
+from ...planning.arrow.source import ArrowBatchSource
 from ...planning.logical import LogicalPlan, Pipeline, SourceNode
 from ...planning.source import (
     _CANONICAL_RETAINED_SEQUENCE,
@@ -99,13 +96,8 @@ from .collector_group import (
     execute_collector_group,
 )
 from .join import _execute_join, _try_native_i64_record_join, _try_retained_arrow_unique_join
-from .native_group import (
-    NativeGroupHooks,
-    _encode_native_multi_group_lane,
-)
-from .native_group import (
-    _try_native_group_sum as _try_native_group_sum_impl,
-)
+from .native_group import NativeGroupHooks, _encode_native_multi_group_lane
+from .native_group import _try_native_group_sum as _try_native_group_sum_impl
 
 _RECORD_JOIN_V1_MAX_FIELDS = 64
 _ARROW_GROUP_TABLE_MIN_GROUPS = 4_096
@@ -586,7 +578,7 @@ def try_native_pair_aggregations(
         return None
 
     try:
-        from ... import _native
+        from fpstreams import _native
     except ImportError:
         return None
 
@@ -657,7 +649,7 @@ def try_native_record_join(plan: PhysicalPlan) -> list[dict[str, Any]] | None:
         return None
 
     try:
-        from ... import _native
+        from fpstreams import _native
     except ImportError:
         return None
 
@@ -1263,7 +1255,7 @@ def _try_native_record_global_sum(
     if type(source) not in (list, tuple):
         return None
     try:
-        from ... import _native
+        from fpstreams import _native
     except ImportError:
         return None
     kernel = getattr(_native, "global_sum_i64_dict_rows_v1", None)
@@ -1303,7 +1295,7 @@ def _try_native_global_i64_aggregate(
         ):
             return None
     try:
-        from ... import _native
+        from fpstreams import _native
     except ImportError:
         return None
     kernel_name = (

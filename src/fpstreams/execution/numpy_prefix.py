@@ -648,10 +648,7 @@ def try_numpy_prefix_list(
         return False, None
     from ..runtime.failpoints import hit
     from ..runtime.report import _record_direct_strategy
-    from ..tabular.numpy import (
-        NumpyRowSource,
-        _exact_native_record_assembler,
-    )
+    from ..tabular.numpy import NumpyRowSource, _exact_native_record_assembler
 
     _descriptor, expected_dtype = guarded
     opened = pipeline.source.open_native(NumpyRowSource)

@@ -18,8 +18,8 @@ pub(crate) use endpoints::{
     execute_i64_buffer_v1, execute_i64_range, frequencies_exact_prefix_v1,
     frequencies_i64_exact_v1, frequencies_iter_prefix_v1, materialize_i64,
     materialize_i64_buffer_v1, materialize_i64_range, mean_i64, mean_i64_buffer_v1,
-    mean_i64_buffer_v2, mean_i64_range, statistics_i64, statistics_i64_range, terminal_i64,
-    terminal_i64_probe, terminal_i64_range,
+    mean_i64_buffer_v2, mean_i64_range, run_interruptible_range, statistics_i64,
+    statistics_i64_range, terminal_i64, terminal_i64_probe, terminal_i64_range,
 };
 #[cfg(not(Py_GIL_DISABLED))]
 pub(crate) use endpoints::{

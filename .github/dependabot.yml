@@ -1,5 +1,10 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /tests/typing
+    schedule:
+      interval: monthly
+
   - package-ecosystem: uv
     directory: /
     schedule:

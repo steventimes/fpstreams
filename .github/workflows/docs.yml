@@ -3,6 +3,15 @@ name: Docs
 on:
   push:
     branches: [master]
+    paths:
+      - 'fpstreams/**'
+      - 'src/fpstreams/**'
+      - 'scripts/build_browser_wheel.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'LICENSE'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -15,6 +24,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,6 +45,6 @@ jobs:
         run: python scripts/build_browser_wheel.py
       - name: Deploy to gh-pages
         run: >-
-          uv run mkdocs gh-deploy --force --strict
+          uv run mkdocs gh-deploy --strict --message "Update docs 2.5.0"
           --remote-branch gh-pages
           --config-file fpstreams/mkdocs.yml

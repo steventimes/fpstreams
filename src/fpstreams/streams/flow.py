@@ -10,16 +10,7 @@ from concurrent.futures import Executor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
-from typing import (
-    Any,
-    Generic,
-    Literal,
-    Protocol,
-    SupportsIndex,
-    TypeVar,
-    cast,
-    overload,
-)
+from typing import Any, Generic, Literal, Protocol, SupportsIndex, TypeVar, cast, overload
 
 import fpstreams
 
@@ -91,6 +82,8 @@ from .flow_terminals import FlowTerminalsMixin
 T = TypeVar("T")
 R = TypeVar("R")
 C = TypeVar("C")
+K = TypeVar("K")
+V = TypeVar("V")
 
 
 def _parallel_settings(
@@ -101,8 +94,10 @@ def _parallel_settings(
     executor: Executor | None,
 ) -> ParallelSettings:
     """Resolve the shared bounded-map settings without opening a worker pool."""
-    if workers is not None and workers < 1:
-        raise ValueError("workers must be at least 1")
+    if workers is not None:
+        workers = operator.index(workers)
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
     if backend not in ("thread", "process"):
         raise ValueError("backend must be 'thread' or 'process'")
     if executor is not None:
@@ -110,8 +105,7 @@ def _parallel_settings(
             raise TypeError("executor must be a concurrent.futures.Executor")
         if workers is not None:
             raise ValueError("workers cannot be supplied with executor")
-    if buffer is None:
-        buffer = 2 * (workers or (os.cpu_count() or 1))
+    buffer = 2 * (workers or (os.cpu_count() or 1)) if buffer is None else operator.index(buffer)
     if buffer < 1:
         raise ValueError("buffer must be at least 1")
     return ParallelSettings(workers, backend, ordered, buffer, executor)
@@ -445,7 +439,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         Raises:
             ValueError: If workers or buffer is less than one, backend is unsupported, or
                 workers and executor are both provided.
-            TypeError: If executor is not a `concurrent.futures.Executor`.
+            TypeError: If workers or buffer is not an integer, or executor is not
+                a `concurrent.futures.Executor`.
         """
         settings = _parallel_settings(workers, backend, ordered, buffer, executor)
         return self._append(
@@ -742,23 +737,24 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
             tempdir=tempdir,
         )
 
-    def chunk(self, size: int) -> Flow[tuple[T, ...]]:
+    def chunk(self, size: int, *, strict: bool = False) -> Flow[tuple[T, ...]]:
         """Group consecutive items into fixed-size tuples.
 
         Args:
             size: Maximum number of consecutive items in each tuple.
+            strict: Raise during consumption if the final chunk is shorter than size.
 
         Returns:
-            A flow of non-overlapping tuples, including a final shorter tuple when needed.
+            A flow of non-overlapping tuples. By default, a final shorter tuple is emitted.
 
         Raises:
             TypeError: If size does not support the integer index protocol.
-            ValueError: If size is less than one.
+            ValueError: If size is less than one, or a final chunk is incomplete in strict mode.
         """
         size = operator.index(size)
         if size <= 0:
             raise ValueError("chunk size must be positive")
-        return self._append(ChunkOp(size))
+        return self._append(ChunkOp(size, strict))
 
     batch = chunk
 
@@ -1026,6 +1022,9 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
     def concat(self, *others: Iterable[T]) -> Flow[T]:
         """Emit this flow followed by each supplied iterable.
 
+        Reused cursors are closed once per execution. Cursors that do not support
+        weak references can remain reachable until that execution finishes.
+
         Args:
             *others: Synchronous iterables opened and emitted after this flow, in argument order.
 
@@ -1077,7 +1076,16 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         from ..collecting.statistics import rolling_statistics_step
 
-        return self.map_accum(None, rolling_statistics_step(size, selector, ddof))
+        advance = rolling_statistics_step(size, selector, ddof)
+
+        def gatherer(use_native: bool) -> Gatherer[Any, Any, Any]:
+            def integrate(state: _FoldState[Any], item: T) -> tuple[Any]:
+                state.value, output = advance(state.value, item, use_native=use_native)
+                return (output,)
+
+            return Gatherer(lambda: _FoldState(None), integrate)
+
+        return self._append(GatherOp(gatherer(True), python_gatherer=gatherer(False)))
 
     def scan(self, initial: R, function: Callable[[R, T], R]) -> Flow[R]:
         """Emit each left-to-right accumulator state after consuming one item.
@@ -1174,6 +1182,12 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             A flow that emits exactly one final accumulator, including for an empty source.
+
+        Notes:
+            Annotate the resulting `Flow[R]` to declare the accumulator type and give a
+            lambda step its parameter context. Every source item invokes the step, including
+            the first item. Neither state nor callback results are awaited. `Any` can bypass
+            the static contract; state values are not validated at runtime.
         """
         if not callable(initializer):
             raise TypeError("initializer must be callable")
@@ -1324,7 +1338,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         return explain_query(self._query(terminal))
 
-    def pairs(self) -> Any:
+    @overload
+    def pairs(self: Flow[tuple[K, V]]) -> fpstreams.Pairs[K, V]: ...
+
+    @overload
+    def pairs(self) -> fpstreams.Pairs[Any, Any]: ...
+
+    def pairs(self) -> fpstreams.Pairs[Any, Any]:
         """View a flow of two-tuples as a key/value Pairs pipeline.
 
         Returns:
@@ -1334,7 +1354,7 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         # adapter only at this API boundary so neither module can observe the other
         # while it is still being initialized.
         pairs_type = cast(Any, import_module(".pairs", __package__)).Pairs
-        return pairs_type(cast(Flow[tuple[Any, Any]], self))
+        return cast(fpstreams.Pairs[Any, Any], pairs_type(cast(Flow[tuple[Any, Any]], self)))
 
     def rows(self) -> fpstreams.Rows[T]:
         """View this flow as a lazy record pipeline without inspecting its items.

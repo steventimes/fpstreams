@@ -23,6 +23,85 @@ pub(crate) struct I64Range {
     pub(crate) step: i64,
 }
 
+/// Retain the kernel's iterator and stage state while polling Python between bounded input blocks.
+pub(crate) struct InterruptibleRange<'a> {
+    values: I64Range,
+    polling: &'a mut RangePolling,
+}
+
+struct RangePolling {
+    stop: i64,
+    poll_at_end: bool,
+    error: Option<PyErr>,
+}
+
+#[cold]
+#[inline(never)]
+fn next_range_block(current: i64, step: i64, polling: &mut RangePolling) -> Option<i64> {
+    if !polling.poll_at_end {
+        return None;
+    }
+    polling.poll_at_end = false;
+    if let Err(signal_error) = Python::attach(|py| py.check_signals()) {
+        polling.error = Some(signal_error);
+        return None;
+    }
+
+    let last = i128::from(current) + 4095 * i128::from(step);
+    let end = i128::from(current) + 4096 * i128::from(step);
+    let stop = i128::from(polling.stop);
+    // Count the last input, rather than the next position, for uneven final stops.
+    // Clipping before conversion also preserves the original range's overflow sentinel.
+    if step > 0 {
+        polling.poll_at_end = last < stop;
+        Some(end.min(stop) as i64)
+    } else {
+        polling.poll_at_end = last > stop;
+        Some(end.max(stop) as i64)
+    }
+}
+
+impl Iterator for InterruptibleRange<'_> {
+    type Item = i64;
+
+    #[inline]
+    fn next(&mut self) -> Option<i64> {
+        if let Some(value) = self.values.next() {
+            return Some(value);
+        }
+        self.values.stop = next_range_block(self.values.current, self.values.step, self.polling)?;
+        self.values.next()
+    }
+}
+
+pub(crate) fn run_interruptible_range<R, F>(py: Python<'_>, values: I64Range, run: F) -> PyResult<R>
+where
+    R: Send,
+    F: FnOnce(InterruptibleRange<'_>) -> Result<R, KernelError> + Send,
+{
+    let result = py.detach(move || {
+        let mut polling = RangePolling {
+            stop: values.stop,
+            poll_at_end: true,
+            error: None,
+        };
+        let values = InterruptibleRange {
+            values: I64Range {
+                stop: values.current,
+                ..values
+            },
+            polling: &mut polling,
+        };
+        let result = run(values);
+        match polling.error {
+            Some(error) => Err(error),
+            None => result.map_err(kernel_error),
+        }
+    })?;
+    py.check_signals()?;
+    Ok(result)
+}
+
 struct I64FrequencyGroup {
     first_key: Py<PyAny>,
     count: usize,
@@ -274,8 +353,7 @@ pub(crate) fn execute_i64_range(
         stop,
         step,
     };
-    py.detach(move || run_values(values, program))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| run_values(values, program))
 }
 
 /// Run a fused i64 program detached, then build the requested terminal container once.
@@ -559,9 +637,7 @@ pub(crate) fn materialize_i64_range(
         stop,
         step,
     };
-    let output = py
-        .detach(move || run_values(values, program))
-        .map_err(kernel_error)?;
+    let output = run_interruptible_range(py, values, move |values| run_values(values, program))?;
     materialize_values(py, output, target)
 }
 
@@ -676,8 +752,9 @@ pub(crate) fn terminal_i64_range(
         stop,
         step,
     };
-    py.detach(move || run_terminal(values, program, terminal))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| {
+        run_terminal(values, program, terminal)
+    })
 }
 
 #[pyfunction]
@@ -707,8 +784,9 @@ pub(crate) fn statistics_i64_range(
         stop,
         step,
     };
-    py.detach(move || run_i64_statistics(values, program))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| {
+        run_i64_statistics(values, program)
+    })
 }
 
 #[pyfunction]
@@ -741,8 +819,7 @@ pub(crate) fn mean_i64_range(
         stop,
         step,
     };
-    py.detach(move || run_i64_mean(values, program))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| run_i64_mean(values, program))
 }
 
 /// Reduce an owned snapshot of a validated external i64 buffer through the compensated mean state.
@@ -839,8 +916,7 @@ pub(crate) fn aggregate_i64_range(
         stop,
         step,
     };
-    py.detach(move || run_i64_aggregate(values, program))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| run_i64_aggregate(values, program))
 }
 
 /// Compute only requested aggregate fields while preserving the established snapshot schema.
@@ -967,6 +1043,7 @@ pub(crate) fn aggregate_i64_range_masked(
         stop,
         step,
     };
-    py.detach(move || run_i64_aggregate_masked(values, program, mask))
-        .map_err(kernel_error)
+    run_interruptible_range(py, values, move |values| {
+        run_i64_aggregate_masked(values, program, mask)
+    })
 }

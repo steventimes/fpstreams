@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
+from ..errors import SelectionError, _record_user_selection_error
 from ._row_codegen import compile_row_evaluator
 from .row_eval import _BINARY, _UNARY, _children
 from .row_ir import (
@@ -25,7 +26,7 @@ from .row_ir import (
     Unary,
 )
 from .scalar import Expr, FExpr
-from .selectors import compile_selector
+from .selectors import _call_row_selector, compile_selector
 from .typed_ir import Effect, ExpressionSource, TypedExpr
 
 
@@ -54,21 +55,21 @@ class ExprEvaluator:
 
     def __call__(self, row: Any) -> Any:  # noqa: C901
         """Evaluate all phases inline so rows do not pay one Python call per IR node."""
-        values: dict[int, Any] = {}
+        # One result per occurrence: a shared node can produce a different value each time.
+        values: list[Any] = []
         root = self._program.root
         stack: list[tuple[Any, int]] = [(root, 0)]
         while stack:
             node, phase = stack.pop()
-            key = id(node)
             if phase == 0:
                 if isinstance(node, InputRow):
-                    values[key] = row
+                    values.append(row)
                     continue
                 if isinstance(node, Literal):
-                    values[key] = node.value
+                    values.append(node.value)
                     continue
                 if isinstance(node, (Field, Path, Index)):
-                    values[key] = self._program.selectors[key](row)
+                    values.append(_call_row_selector(self._program.selectors[id(node)], row))
                     continue
                 if isinstance(node, Binary) and node.kind in {"and", "or"}:
                     stack.append((node, 2))
@@ -83,42 +84,40 @@ class ExprEvaluator:
                     stack.append((node.values[0], 0))
                     continue
             if phase == 2:
-                left = values[id(node.left)]
+                left = values.pop()
                 if (node.kind == "and" and not bool(left)) or (node.kind == "or" and bool(left)):
-                    values[key] = node.kind == "or"
+                    values.append(node.kind == "or")
                 else:
                     stack.append((node, 5))
                     stack.append((node.right, 0))
                 continue
             if phase == 3:
-                branch = node.yes if bool(values[id(node.condition)]) else node.no
-                stack.append((node, 6 if branch is node.yes else 7))
+                branch = node.yes if bool(values.pop()) else node.no
                 stack.append((branch, 0))
                 continue
             if phase >= 1000 and isinstance(node, Coalesce):
                 index = phase - 1000
-                result = values[id(node.values[index])]
+                result = values[-1]
                 if result is not None or index == len(node.values) - 1:
-                    values[key] = result
-                else:
-                    stack.append((node, phase + 1))
-                    stack.append((node.values[index + 1], 0))
+                    continue
+                values.pop()
+                stack.append((node, phase + 1))
+                stack.append((node.values[index + 1], 0))
                 continue
             if phase == 5:
-                values[key] = bool(values[id(node.right)])
-                continue
-            if phase == 6:
-                values[key] = values[id(node.yes)]
-                continue
-            if phase == 7:
-                values[key] = values[id(node.no)]
+                values.append(bool(values.pop()))
                 continue
             if phase == 0:
                 children = _children(node)
                 stack.append((node, 1))
                 stack.extend((child, 0) for child in reversed(children))
                 continue
-            arguments = [values[id(child)] for child in _children(node)]
+            count = len(_children(node))
+            if count:
+                arguments = values[-count:]
+                del values[-count:]
+            else:
+                arguments = []
             if isinstance(node, GetItem):
                 result = arguments[0][arguments[1]]
             elif isinstance(node, Unary):
@@ -132,11 +131,15 @@ class ExprEvaluator:
             elif isinstance(node, Call):
                 result = _call(node.kind, arguments)
             elif isinstance(node, PythonUDF):
-                result = node.function(*arguments)
+                try:
+                    result = node.function(*arguments)
+                except SelectionError as error:
+                    _record_user_selection_error(error)
+                    raise
             else:
                 raise TypeError(f"unsupported row node: {type(node).__name__}")
-            values[key] = result
-        return values[id(root)]
+            values.append(result)
+        return values[-1]
 
 
 def _call(kind: str, arguments: list[Any]) -> Any:

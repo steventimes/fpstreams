@@ -1,6 +1,6 @@
 # Execution reports
 
-## Static field dependencies (Unreleased)
+## Static field dependencies (2.5.0)
 
 `Rows.explain().to_dict(include_field_dependencies=True)["field_dependencies"]` describes logical input fields
 without reading a row or evaluating a selector. It exports its own schema version,
@@ -34,7 +34,7 @@ Each export owns its expression-analysis cache, retaining only the most recent
 root. Field states share that cache within the export, including after an
 unknown transformation. Later exports analyze their current expressions again.
 
-## Plan dictionary reference (Unreleased)
+## Plan dictionary reference (2.5.0)
 
 The synchronous Flow and Rows explanation objects share this method.
 `AsyncFlow.explain().to_dict()` keeps its existing signature and does not accept
@@ -119,11 +119,20 @@ its events does not call `explain()` or execute the query again.
 | `events` | Immutable tuple containing the first 64 plan and route observations; 2.4.0 |
 | `events_truncated` | Whether further observations exceeded the 64-event limit; 2.4.0 |
 
+When comparing execution routes, check values, encounter order, source reads,
+and observable callback or error behavior. A pushed-down filter must retain
+fields it needs even if a later projection omits them; applying a limit before
+a residual filter can change which rows are returned. A report of
+`planned:python` does not establish Arrow execution. For example, a nullable
+Boolean expression over an Arrow source may use that strategy, while a supported
+NumPy integer group sum can report `numpy_direct`. Route selection depends on
+the actual source, expression, data, and terminal.
+
 Resource counts cover tasks and spill files owned by the query. Use a system
 profiler to measure process RSS, CPU usage, or resources opened by application
 callbacks.
 
-## Metadata export (2.4.0) {#metadata-export-unreleased}
+## Metadata export (2.4.0) {#metadata-export-250}
 
 Use `report.to_dict()` to copy an execution report into plain metadata for
 JSON storage or a caller-managed integration:
@@ -186,7 +195,7 @@ of the work. The route labels can also change with input shape, installed
 extensions, or fpstreams version; use them for diagnosis, not application
 control flow.
 
-## Plan and route events (2.4.0) {#plan-and-route-events-unreleased}
+## Plan and route events (2.4.0) {#plan-and-route-events-250}
 
 `run_with_report()` collects bounded events from the existing plan and
 direct-route hooks. Read `report.events` when a compound query's outer report

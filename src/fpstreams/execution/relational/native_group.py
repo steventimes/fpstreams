@@ -13,9 +13,7 @@ from ...collecting.aggregation import (
     native_group_aggregation,
     project_count_aggregation,
 )
-from ...collecting.program import (
-    collector_program_fast_path_is_live,
-)
+from ...collecting.program import collector_program_fast_path_is_live
 from ...expressions.selectors import _normalize_direct_row_selector
 from ...physical.relational import (
     CompositeCountSumSpec,
@@ -28,10 +26,7 @@ from ...physical.relational import (
     SimpleGroupSumSpec,
     SourcePhysicalNode,
 )
-from ...planning.pair_i64_expression import (
-    lower_pair_i64_group_key,
-    lower_pair_i64_group_value,
-)
+from ...planning.pairs.i64_expression import lower_pair_i64_group_key, lower_pair_i64_group_value
 
 
 @dataclass(frozen=True)
@@ -378,7 +373,7 @@ def _try_native_group_sum(  # noqa: C901 - guarded source and kernel dispatch
         return None
 
     try:
-        from ... import _native
+        from fpstreams import _native
     except ImportError:
         # The Rust extension is optional. Source data has not been opened yet,
         # so declining this speculative fast path preserves a clean Python run.

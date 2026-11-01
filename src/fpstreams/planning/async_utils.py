@@ -7,13 +7,15 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from ..errors import _cleanup_error_summary
+
 _MISSING = object()
 
 
 def _add_cleanup_error(target: BaseException, error: BaseException) -> None:
     """Attach one cleanup failure and any diagnostics already nested beneath it."""
     nested_notes = tuple(getattr(error, "__notes__", ()))
-    target.add_note(f"cleanup failed with {type(error).__name__}: {error}")
+    target.add_note(_cleanup_error_summary(error, prefix="cleanup failed with"))
     if target is not error:
         for note in nested_notes:
             target.add_note(note)

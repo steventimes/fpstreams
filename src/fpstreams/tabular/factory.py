@@ -8,11 +8,8 @@ from typing import Any, BinaryIO, TextIO, TypeAlias, TypeVar, overload
 
 from ..expressions.selectors import Selector
 from ..streams.flow import Flow, _ArrowCStreamProvider, _DataFrameProvider, _SeriesSource
+from .io.database import ConnectionFactory, DBParameters
 from .rows import Rows
-from .sql import (
-    ConnectionFactory,
-    DBParameters,
-)
 
 T = TypeVar("T")
 JoinSelector: TypeAlias = Selector | tuple[Selector, ...]
@@ -87,14 +84,15 @@ class _RowsFactory:
         convert_options: Any = None,
         memory_pool: Any = None,
     ) -> Rows[dict[str, Any]]:
-        """Lazily scan typed CSV batches with optional query-level column pruning.
+        """Lazily scan typed CSV batches using Arrow conversion.
 
         Unlike :meth:`from_csv`, this explicit Arrow path infers non-string scalar types.
         PyArrow options can fix parsing and conversion behavior when inference is unsuitable.
         The incremental Arrow reader is single-threaded and freezes inferred types after its
         first byte block; use ``read_options`` or ``convert_options`` to control those choices.
-        Query column pruning intentionally avoids conversion work, including conversion errors,
-        in columns the query does not read.
+        Query projection runs after conversion of every caller-visible column. Selecting fewer
+        columns does not suppress conversion errors in other columns. Use ``convert_options``
+        to restrict the reader's columns explicitly when that behavior is intended.
 
         Args:
             path: Local CSV path reopened for each iteration.

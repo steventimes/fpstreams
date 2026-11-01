@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from typing import Any, TypeVar
 
 _AstT = TypeVar("_AstT", bound=ast.AST)
@@ -27,3 +28,22 @@ def locate_generated_ast(tree: _AstT) -> _AstT:
                 if isinstance(child, ast.AST):
                     locate_generated_ast(child)
     return tree
+
+
+def generated_function(
+    name: str, arguments: ast.arguments, body: list[ast.stmt]
+) -> ast.FunctionDef:
+    """Build an unannotated generated function for the running Python grammar."""
+    if sys.version_info >= (3, 12):
+        return ast.FunctionDef(
+            name,
+            arguments,
+            body,
+            decorator_list=[],
+            returns=None,
+            type_comment=None,
+            type_params=[],
+        )
+    return ast.FunctionDef(
+        name, arguments, body, decorator_list=[], returns=None, type_comment=None
+    )

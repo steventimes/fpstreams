@@ -1,0 +1,7 @@
+{
+  "name": "fpstreams-typing-contract",
+  "private": true,
+  "devDependencies": {
+    "pyright": "1.1.414"
+  }
+}

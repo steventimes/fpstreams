@@ -19,27 +19,12 @@ from ..collecting.aggregation import (
 )
 from ..runtime.query import QueryRuntime
 from ..storage import SpillStore
-from .spill_io import (
-    PartitionFile,
-    group_count_partial,
-    group_count_partial_stats,
-    repartition,
-)
-from .spill_io import (
-    SpillLazyWriter as _SpillLazyWriter,
-)
-from .spill_io import (
-    SpillPartitionWriters as _SpillPartitionWriters,
-)
-from .spill_io import (
-    merge_ordered as _merge_ordered,
-)
-from .spill_io import (
-    partition as _partition,
-)
-from .spill_io import (
-    read as _read,
-)
+from .spill_io import PartitionFile, group_count_partial, group_count_partial_stats, repartition
+from .spill_io import SpillLazyWriter as _SpillLazyWriter
+from .spill_io import SpillPartitionWriters as _SpillPartitionWriters
+from .spill_io import merge_ordered as _merge_ordered
+from .spill_io import partition as _partition
+from .spill_io import read as _read
 from .spill_limits import SpillBudget, SpillLimits, raise_spill_limit
 
 _MAX_PARTITIONS = 256

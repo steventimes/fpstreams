@@ -4,13 +4,52 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from types import FunctionType
-from typing import Any, TypeAlias
+from typing import Any, NoReturn, TypeAlias, cast
 
-from ..errors import SelectionError
+from ..errors import (
+    SelectionError,
+    _record_missing_selection_error,
+    _record_user_selection_error,
+    _SelectionTracking,
+    _user_selection_error,
+)
 
 Selector: TypeAlias = Callable[[Any], Any] | str | int
 _DIRECT_FIELD_TOKEN = object()
 _DIRECT_FIELD_ATTRIBUTE = "__fpstreams_direct_field_v1__"
+_TRACKING_ATTRIBUTE = "__fpstreams_selection_origin_v1__"
+
+
+def _raise_lookup_error(
+    error: Exception, selector: str, part: str, *, attribute_access: bool, origin: object
+) -> NoReturn:
+    """Preserve user selection errors and translate generated lookup failures."""
+    if isinstance(error, SelectionError):
+        if attribute_access:
+            _record_user_selection_error(error)
+        else:
+            _record_missing_selection_error(error, origin)
+        raise
+    failure = SelectionError(f"Could not resolve selector {selector!r}; failed at {part!r}")
+    if attribute_access and isinstance(error, TypeError):
+        cast(Any, failure)._attribute_type_error = True
+    else:
+        _record_missing_selection_error(failure, origin)
+    raise failure from error
+
+
+def _call_row_selector(selector: Callable[[Any], Any], row: Any) -> Any:
+    tracking = _user_selection_error.get()
+    if not isinstance(tracking, _SelectionTracking):
+        return selector(row)
+    old = tracking.leaf
+    tracking.leaf = (
+        getattr(selector, _TRACKING_ATTRIBUTE, None) if type(selector) is FunctionType else None
+    )
+    try:
+        return selector(row)
+    finally:
+        tracking.leaf = old
 
 
 def _direct_field(selector: Callable[[Any], Any] | None) -> str | None:
@@ -75,10 +114,16 @@ def compile_selector(selector: Selector) -> Callable[[Any], Any]:
             try:
                 return value[selector]
             except (IndexError, KeyError, TypeError) as error:
-                raise SelectionError(
+                failure = SelectionError(
                     f"Could not resolve index selector {selector!r} on {type(value).__name__}"
-                ) from error
+                )
+                _record_missing_selection_error(failure, selector)
+                raise failure from error
+            except SelectionError as error:
+                _record_missing_selection_error(error, selector)
+                raise
 
+        setattr(select_index, _TRACKING_ATTRIBUTE, selector)
         return select_index
 
     parts = selector.split(".")
@@ -87,17 +132,18 @@ def compile_selector(selector: Selector) -> Callable[[Any], Any]:
 
         def select_field(value: Any) -> Any:
             """Read one field with a fast exact-dict path and full protocol fallback."""
+            attribute_access = False
             try:
-                if type(value) is dict:
-                    return value[selector]
-                return value[selector] if isinstance(value, Mapping) else getattr(value, selector)
-            except (AttributeError, KeyError, TypeError) as error:
-                raise SelectionError(
-                    f"Could not resolve selector {selector!r}; failed at {selector!r}"
-                ) from error
+                attribute_access = type(value) is not dict and not isinstance(value, Mapping)
+                return getattr(value, selector) if attribute_access else value[selector]
+            except (AttributeError, KeyError, TypeError, SelectionError) as error:
+                _raise_lookup_error(
+                    error, selector, selector, attribute_access=attribute_access, origin=selector
+                )
 
         if type(selector) is str:
             setattr(select_field, _DIRECT_FIELD_ATTRIBUTE, (_DIRECT_FIELD_TOKEN, selector))
+        setattr(select_field, _TRACKING_ATTRIBUTE, selector)
         return select_field
 
     def select_path(value: Any) -> Any:
@@ -108,17 +154,18 @@ def compile_selector(selector: Selector) -> Callable[[Any], Any]:
         """
         current = value
         for part in parts:
+            attribute_access = False
             try:
-                if type(current) is dict:
+                if type(current) is dict or isinstance(current, Mapping):
                     current = current[part]
                 else:
-                    current = (
-                        current[part] if isinstance(current, Mapping) else getattr(current, part)
-                    )
-            except (AttributeError, KeyError, TypeError) as error:
-                raise SelectionError(
-                    f"Could not resolve selector {selector!r}; failed at {part!r}"
-                ) from error
+                    attribute_access = True
+                    current = getattr(current, part)
+            except (AttributeError, KeyError, TypeError, SelectionError) as error:
+                _raise_lookup_error(
+                    error, selector, part, attribute_access=attribute_access, origin=selector
+                )
         return current
 
+    setattr(select_path, _TRACKING_ATTRIBUTE, selector)
     return select_path

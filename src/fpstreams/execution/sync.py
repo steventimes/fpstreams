@@ -9,9 +9,9 @@ from operator import length_hint
 from typing import Any, cast
 
 from ..expressions.scalar import _compile_scalar_callable
-from ..planning._pair_stages import PairFilterDescriptor, PairMapDescriptor
+from ..planning.pairs import PairFilterDescriptor, PairMapDescriptor
 from ..planning.sync import FilterOp, GatherOp, MapOp, Operation, TakeOp, TapOp
-from ..runtime.iterators import closing_iterators
+from ..runtime.iterators import _IteratorIdentities, closing_iterators
 from ..runtime.query import QueryRuntime
 from ._rows_fusion import execute_rows_fusion
 from .sync_ops import apply_operation
@@ -357,6 +357,7 @@ def open_operations(
     instrumented = has_active_failpoints()
     iterator: Iterator[Any] = _after_pull(source_iterator) if instrumented else source_iterator
     managed_iterators = [source_iterator]
+    owned_cursors = _IteratorIdentities()
     _remember_iterator(managed_iterators, iterator)
 
     def managed_in_reverse() -> Iterator[Iterator[Any]]:
@@ -400,7 +401,13 @@ def open_operations(
                 _remember_iterator(managed_iterators, iterator)
                 index = end
                 continue
-            iterator = apply_operation(iterator, operation, runtime=runtime)
+            iterator = apply_operation(
+                iterator,
+                operation,
+                runtime=runtime,
+                owned_iterators=managed_iterators,
+                owned_cursors=owned_cursors,
+            )
             _remember_iterator(managed_iterators, iterator)
             index += 1
         yield iterator

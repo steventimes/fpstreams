@@ -3,32 +3,38 @@
 from __future__ import annotations
 
 import operator
+import sys
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, SupportsIndex, TypeVar
+from typing import Any, Generic, Literal, SupportsIndex, TypeVar, overload
 
 from ..errors import DuplicateKeyError
 from ..expressions.selectors import Selector, compile_selector
 from ..runtime.iterators import closing_iterators
-from ._collector_base import (
-    Collector as Collector,
-)
-from ._collector_base import (
-    CollectorItems as CollectorItems,
-)
-from ._collector_base import (
-    _identity as _identity,
-)
-from ._collector_base import (
-    _never_done as _never_done,
-)
+from ._collector_base import Collector as Collector
+from ._collector_base import CollectorItems as CollectorItems
+from ._collector_base import _identity as _identity
+from ._collector_base import _never_done as _never_done
 
+if sys.version_info >= (3, 13):
+    from typing import TypeVar as _DefaultTypeVar
+else:
+    from typing_extensions import TypeVar as _DefaultTypeVar
+
+
+class _Unspecified:
+    """Distinguish an unparameterized namespace from an explicit element type."""
+
+
+_Bound = _DefaultTypeVar("_Bound", default=_Unspecified)
+_Inferred = _DefaultTypeVar("_Inferred", default=Any)
 T = TypeVar("T")
 K = TypeVar("K")
 R = TypeVar("R")
 U = TypeVar("U")
 V = TypeVar("V")
+S = TypeVar("S")
 
 _MISSING = object()
 
@@ -89,6 +95,11 @@ def run_collectors(values: Iterable[Any], items: CollectorItems) -> dict[str, An
 def _append(values: list[Any], value: Any) -> list[Any]:
     """Append one value to list state and return that same mutable list."""
     values.append(value)
+    return values
+
+
+def _count(values: dict[T, int], value: T) -> dict[T, int]:
+    values[value] = values.get(value, 0) + 1
     return values
 
 
@@ -201,12 +212,27 @@ def _collect_columns(values: Iterable[Mapping[str, Any]]) -> dict[str, list[Any]
     return state.columns
 
 
-class Collectors(Generic[T]):
+class Collectors(Generic[_Bound]):
     """Build reusable collectors for containers, grouping, adaptation, and summaries."""
 
-    @staticmethod
+    @overload
+    @classmethod
     def statistics(
-        selector: Selector | None = None, *, ddof: SupportsIndex = 0
+        cls: type[Collectors[_Unspecified]],
+        selector: Selector | None = None,
+        *,
+        ddof: SupportsIndex = 0,
+    ) -> Collector[Any, Any, dict[str, Any]]: ...
+
+    @overload
+    @classmethod
+    def statistics(
+        cls, selector: Selector | None = None, *, ddof: SupportsIndex = 0
+    ) -> Collector[_Bound, Any, dict[str, Any]]: ...
+
+    @classmethod
+    def statistics(
+        cls, selector: Selector | None = None, *, ddof: SupportsIndex = 0
     ) -> Collector[T, Any, dict[str, Any]]:
         """Compute count, mean, variance, and standard deviation with one conversion per value.
 
@@ -243,9 +269,25 @@ class Collectors(Generic[T]):
 
         return Collector(OnlineStatistics, step, finish)
 
-    @staticmethod
+    @overload
+    @classmethod
     def approx_quantiles(
-        ranks: Iterable[float], selector: Selector | None = None, *, k: SupportsIndex = 200
+        cls: type[Collectors[_Unspecified]],
+        ranks: Iterable[float],
+        selector: Selector | None = None,
+        *,
+        k: SupportsIndex = 200,
+    ) -> Collector[Any, Any, tuple[float | None, ...]]: ...
+
+    @overload
+    @classmethod
+    def approx_quantiles(
+        cls, ranks: Iterable[float], selector: Selector | None = None, *, k: SupportsIndex = 200
+    ) -> Collector[_Bound, Any, tuple[float | None, ...]]: ...
+
+    @classmethod
+    def approx_quantiles(
+        cls, ranks: Iterable[float], selector: Selector | None = None, *, k: SupportsIndex = 200
     ) -> Collector[T, Any, tuple[float | None, ...]]:
         """Estimate quantiles using the optional DataSketches double-precision KLL kernel.
 
@@ -269,9 +311,24 @@ class Collectors(Generic[T]):
 
         return quantiles(ranks, selector, k)
 
-    @staticmethod
+    @overload
+    @classmethod
     def approx_count_distinct(
-        selector: Selector | None = None, *, lg_k: SupportsIndex = 12
+        cls: type[Collectors[_Unspecified]],
+        selector: Selector | None = None,
+        *,
+        lg_k: SupportsIndex = 12,
+    ) -> Collector[Any, Any, float]: ...
+
+    @overload
+    @classmethod
+    def approx_count_distinct(
+        cls, selector: Selector | None = None, *, lg_k: SupportsIndex = 12
+    ) -> Collector[_Bound, Any, float]: ...
+
+    @classmethod
+    def approx_count_distinct(
+        cls, selector: Selector | None = None, *, lg_k: SupportsIndex = 12
     ) -> Collector[T, Any, float]:
         """Estimate distinct finite builtin scalars with an optional DataSketches HLL union.
 
@@ -295,8 +352,18 @@ class Collectors(Generic[T]):
 
         return distinct_count(selector, lg_k)
 
-    @staticmethod
-    def to_list() -> Collector[T, list[T], list[T]]:
+    @overload
+    @classmethod
+    def to_list(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, list[_Inferred], list[_Inferred]]: ...
+
+    @overload
+    @classmethod
+    def to_list(cls) -> Collector[_Bound, list[_Bound], list[_Bound]]: ...
+
+    @classmethod
+    def to_list(cls) -> Collector[T, list[T], list[T]]:
         """Build an order-preserving, mergeable collector for all input items.
 
         Returns:
@@ -306,8 +373,18 @@ class Collectors(Generic[T]):
 
         return Reducer(list, _append, merge=_extend, laws=LIST_LAWS)
 
-    @staticmethod
-    def to_set() -> Collector[T, set[T], set[T]]:
+    @overload
+    @classmethod
+    def to_set(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, set[_Inferred], set[_Inferred]]: ...
+
+    @overload
+    @classmethod
+    def to_set(cls) -> Collector[_Bound, set[_Bound], set[_Bound]]: ...
+
+    @classmethod
+    def to_set(cls) -> Collector[T, set[T], set[T]]:
         """Build a collector that retains each distinct hashable input item.
 
         Returns:
@@ -315,8 +392,18 @@ class Collectors(Generic[T]):
         """
         return Collector(set, _add, combine=_update)
 
-    @staticmethod
-    def to_tuple() -> Collector[T, list[T], tuple[T, ...]]:
+    @overload
+    @classmethod
+    def to_tuple(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, list[_Inferred], tuple[_Inferred, ...]]: ...
+
+    @overload
+    @classmethod
+    def to_tuple(cls) -> Collector[_Bound, list[_Bound], tuple[_Bound, ...]]: ...
+
+    @classmethod
+    def to_tuple(cls) -> Collector[T, list[T], tuple[T, ...]]:
         """Build an order-preserving collector that finishes list state as a tuple.
 
         Returns:
@@ -348,8 +435,25 @@ class Collectors(Generic[T]):
             laws=LIST_LAWS,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def grouping_by(
+        cls: type[Collectors[_Unspecified]],
+        classifier: Selector,
+        downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
+    ) -> Collector[T, dict[Any, Any], dict[Any, R | list[T]]]: ...
+
+    @overload
+    @classmethod
+    def grouping_by(
+        cls,
+        classifier: Selector,
+        downstream: Collector[_Bound, Any, R] | Callable[[Iterable[_Bound]], R] | None = None,
+    ) -> Collector[_Bound, dict[Any, Any], dict[Any, R | list[_Bound]]]: ...
+
+    @classmethod
+    def grouping_by(
+        cls,
         classifier: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
     ) -> Collector[T, dict[Any, Any], dict[Any, R | list[T]]]:
@@ -386,8 +490,25 @@ class Collectors(Generic[T]):
 
         return Collector(dict, step, finish)
 
-    @staticmethod
+    @overload
+    @classmethod
     def partitioning_by(
+        cls: type[Collectors[_Unspecified]],
+        predicate: Selector,
+        downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
+    ) -> Collector[T, dict[bool, Any], dict[bool, R | list[T]]]: ...
+
+    @overload
+    @classmethod
+    def partitioning_by(
+        cls,
+        predicate: Selector,
+        downstream: Collector[_Bound, Any, R] | Callable[[Iterable[_Bound]], R] | None = None,
+    ) -> Collector[_Bound, dict[bool, Any], dict[bool, R | list[_Bound]]]: ...
+
+    @classmethod
+    def partitioning_by(
+        cls,
         predicate: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R] | None = None,
     ) -> Collector[T, dict[bool, Any], dict[bool, R | list[T]]]:
@@ -424,10 +545,23 @@ class Collectors(Generic[T]):
 
         return Collector(initialize, step, finish)
 
-    @staticmethod
+    @overload
+    @classmethod
     def mapping(
+        cls: type[Collectors[_Unspecified]],
         mapper: Selector,
         downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R],
+    ) -> Collector[Any, Any, R]: ...
+
+    @overload
+    @classmethod
+    def mapping(
+        cls, mapper: Selector, downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R]
+    ) -> Collector[_Bound, Any, R]: ...
+
+    @classmethod
+    def mapping(
+        cls, mapper: Selector, downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R]
     ) -> Collector[T, Any, R]:
         """Build a collector that selects a new value before each downstream step.
 
@@ -451,8 +585,25 @@ class Collectors(Generic[T]):
             reduction.done,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def filtering(
+        cls: type[Collectors[_Unspecified]],
+        predicate: Selector,
+        downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
+    ) -> Collector[T, Any, R]: ...
+
+    @overload
+    @classmethod
+    def filtering(
+        cls,
+        predicate: Selector,
+        downstream: Collector[_Bound, Any, R] | Callable[[Iterable[_Bound]], R],
+    ) -> Collector[_Bound, Any, R]: ...
+
+    @classmethod
+    def filtering(
+        cls,
         predicate: Selector,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
     ) -> Collector[T, Any, R]:
@@ -483,10 +634,23 @@ class Collectors(Generic[T]):
             reduction.done,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def flat_mapping(
+        cls: type[Collectors[_Unspecified]],
         mapper: Selector,
         downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R],
+    ) -> Collector[Any, Any, R]: ...
+
+    @overload
+    @classmethod
+    def flat_mapping(
+        cls, mapper: Selector, downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R]
+    ) -> Collector[_Bound, Any, R]: ...
+
+    @classmethod
+    def flat_mapping(
+        cls, mapper: Selector, downstream: Collector[U, Any, R] | Callable[[Iterable[U]], R]
     ) -> Collector[T, Any, R]:
         """Build a collector that steps downstream over each item's expanded iterable.
 
@@ -525,8 +689,25 @@ class Collectors(Generic[T]):
             reduction.done,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def collecting_and_then(
+        cls: type[Collectors[_Unspecified]],
+        downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
+        finisher: Callable[[R], U],
+    ) -> Collector[T, Any, U]: ...
+
+    @overload
+    @classmethod
+    def collecting_and_then(
+        cls,
+        downstream: Collector[_Bound, Any, R] | Callable[[Iterable[_Bound]], R],
+        finisher: Callable[[R], U],
+    ) -> Collector[_Bound, Any, U]: ...
+
+    @classmethod
+    def collecting_and_then(
+        cls,
         downstream: Collector[T, Any, R] | Callable[[Iterable[T]], R],
         finisher: Callable[[R], U],
     ) -> Collector[T, Any, U]:
@@ -556,8 +737,27 @@ class Collectors(Generic[T]):
             reduction.done,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def teeing(
+        cls: type[Collectors[_Unspecified]],
+        left: Collector[T, Any, R] | Callable[[Iterable[T]], R],
+        right: Collector[T, Any, U] | Callable[[Iterable[T]], U],
+        merger: Callable[[R, U], V],
+    ) -> Collector[T, _TeeState, V]: ...
+
+    @overload
+    @classmethod
+    def teeing(
+        cls,
+        left: Collector[_Bound, Any, R] | Callable[[Iterable[_Bound]], R],
+        right: Collector[_Bound, Any, U] | Callable[[Iterable[_Bound]], U],
+        merger: Callable[[R, U], V],
+    ) -> Collector[_Bound, _TeeState, V]: ...
+
+    @classmethod
+    def teeing(
+        cls,
         left: Collector[T, Any, R] | Callable[[Iterable[T]], R],
         right: Collector[T, Any, U] | Callable[[Iterable[T]], U],
         merger: Callable[[R, U], V],
@@ -632,8 +832,16 @@ class Collectors(Generic[T]):
             done=done,
         )
 
-    @staticmethod
-    def counting() -> Collector[T, int, int]:
+    @overload
+    @classmethod
+    def counting(cls: type[Collectors[_Unspecified]]) -> Collector[Any, int, int]: ...
+
+    @overload
+    @classmethod
+    def counting(cls) -> Collector[_Bound, int, int]: ...
+
+    @classmethod
+    def counting(cls) -> Collector[T, int, int]:
         """Build a constant-state reducer that increments once per input item.
 
         Returns:
@@ -648,8 +856,56 @@ class Collectors(Generic[T]):
             laws=COUNT_LAWS,
         )
 
-    @staticmethod
-    def summing(selector: Selector | None = None) -> Collector[T, Any, Any]:
+    @overload
+    @classmethod
+    def frequencies(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, dict[_Inferred, int], dict[_Inferred, int]]: ...
+
+    @overload
+    @classmethod
+    def frequencies(cls) -> Collector[_Bound, dict[_Bound, int], dict[_Bound, int]]: ...
+
+    @classmethod
+    def frequencies(cls) -> Collector[T, dict[T, int], dict[T, int]]:
+        """Count hashable inputs in first-encounter order, retaining one entry per value."""
+        return Collector(dict, _count, _identity)
+
+    @overload
+    @classmethod
+    def mode(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, Any, _Inferred | None]: ...
+
+    @overload
+    @classmethod
+    def mode(cls) -> Collector[_Bound, Any, _Bound | None]: ...
+
+    @classmethod
+    def mode(cls) -> Collector[T, Any, T | None]:
+        """Collect the most frequent hashable value, breaking ties by first appearance.
+
+        Empty input returns `None`; `None` is otherwise counted like any other value.
+        State retains one entry per distinct value and has no partial-state combiner.
+        """
+
+        def finish(counts: dict[T, int]) -> T | None:
+            return max(counts, key=counts.__getitem__, default=None)
+
+        return Collector(dict, _count, finish)
+
+    @overload
+    @classmethod
+    def summing(
+        cls: type[Collectors[_Unspecified]], selector: Selector | None = None
+    ) -> Collector[Any, Any, Any]: ...
+
+    @overload
+    @classmethod
+    def summing(cls, selector: Selector | None = None) -> Collector[_Bound, Any, Any]: ...
+
+    @classmethod
+    def summing(cls, selector: Selector | None = None) -> Collector[T, Any, Any]:
         """Build a collector that adds selected values from a zero identity.
 
         Args:
@@ -665,14 +921,26 @@ class Collectors(Generic[T]):
             combine=lambda a, b: a + b,
         )
 
-    @staticmethod
+    @overload
+    @classmethod
     def averaging(
-        selector: Selector | None = None,
-    ) -> Collector[T, tuple[Any, int], float]:
+        cls: type[Collectors[_Unspecified]], selector: Selector | None = None
+    ) -> Collector[Any, tuple[Any, int], object]: ...
+
+    @overload
+    @classmethod
+    def averaging(
+        cls, selector: Selector | None = None
+    ) -> Collector[_Bound, tuple[Any, int], object]: ...
+
+    @classmethod
+    def averaging(cls, selector: Selector | None = None) -> Collector[T, tuple[Any, int], object]:
         """Build a collector that tracks selected-value sum and count for a mean.
 
         Empty input returns `0.0`. Nonempty input divides the accumulated sum by count during
         finishing, and partial `(sum, count)` states can be combined component-wise.
+        The result type is `object` because operands can define arbitrary division results.
+        Use `averaging_with` to specify typed operations and an explicit empty result.
 
         Args:
             selector: Value selector; `None` averages each whole input item.
@@ -688,9 +956,65 @@ class Collectors(Generic[T]):
             lambda a, b: (a[0] + b[0], a[1] + b[1]),
         )
 
-    @staticmethod
+    @classmethod
+    def averaging_with(
+        cls,
+        selector: Callable[[T], V],
+        *,
+        zero: Callable[[], S],
+        add: Callable[[S, V], S],
+        divide: Callable[[S, int], R],
+        empty: Callable[[], R],
+        combine: Callable[[S, S], S] | None = None,
+    ) -> Collector[T, tuple[S, int], R]:
+        """Build a mean collector with explicit accumulator and result contracts.
+
+        Args:
+            selector: Typed value selector, including identity for whole input items.
+            zero: Create an independent initial accumulator for each collection.
+            add: Add a selected value to the accumulator.
+            divide: Produce the nonempty result from the accumulator and count.
+            empty: Produce the result for empty input, without calling `divide`.
+            combine: Optional accumulator merger for partial states.
+
+        Returns:
+            A collector preserving the supplied result type without numeric conversion.
+                Its combiner is absent unless `combine` is supplied. Callers own the
+                arithmetic and merge laws of their callbacks.
+        """
+
+        def initial() -> tuple[S, int]:
+            return zero(), 0
+
+        def step(state: tuple[S, int], value: T) -> tuple[S, int]:
+            return add(state[0], selector(value)), state[1] + 1
+
+        def finish(state: tuple[S, int]) -> R:
+            return divide(state[0], state[1]) if state[1] else empty()
+
+        merge: Callable[[tuple[S, int], tuple[S, int]], tuple[S, int]] | None = None
+        if combine is not None:
+
+            def merge(left: tuple[S, int], right: tuple[S, int]) -> tuple[S, int]:
+                return combine(left[0], right[0]), left[1] + right[1]
+
+        return Collector(initial, step, finish, merge)
+
+    @overload
+    @classmethod
     def summarizing(
-        selector: Selector | None = None,
+        cls: type[Collectors[_Unspecified]], selector: Selector | None = None
+    ) -> Collector[Any, SummaryStatistics, SummaryStatistics]: ...
+
+    @overload
+    @classmethod
+    def summarizing(
+        cls, selector: Selector | None = None
+    ) -> Collector[_Bound, SummaryStatistics, SummaryStatistics]: ...
+
+    @classmethod
+    def summarizing(
+        cls, selector: Selector | None = None
     ) -> Collector[T, SummaryStatistics, SummaryStatistics]:
         """Build a collector returning mutable count, sum, extrema, and average state.
 
@@ -719,8 +1043,18 @@ class Collectors(Generic[T]):
 
         return Collector(SummaryStatistics, step, finish)
 
-    @staticmethod
-    def first() -> Collector[T, Any, T | None]:
+    @overload
+    @classmethod
+    def first(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, Any, _Inferred | None]: ...
+
+    @overload
+    @classmethod
+    def first(cls) -> Collector[_Bound, Any, _Bound | None]: ...
+
+    @classmethod
+    def first(cls) -> Collector[T, Any, T | None]:
         """Build a collector that stops after and returns the first input item.
 
         Empty input returns `None`. A first item whose value is itself `None` is still treated
@@ -736,8 +1070,18 @@ class Collectors(Generic[T]):
             done=lambda value: value is not _MISSING,
         )
 
-    @staticmethod
-    def last() -> Collector[T, Any, T | None]:
+    @overload
+    @classmethod
+    def last(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, Any, _Inferred | None]: ...
+
+    @overload
+    @classmethod
+    def last(cls) -> Collector[_Bound, Any, _Bound | None]: ...
+
+    @classmethod
+    def last(cls) -> Collector[T, Any, T | None]:
         """Build a collector that consumes all input and returns its last item.
 
         Empty input returns `None`.
@@ -751,8 +1095,18 @@ class Collectors(Generic[T]):
             lambda value: None if value is _MISSING else value,
         )
 
-    @staticmethod
-    def head(count: SupportsIndex) -> Collector[T, list[T], list[T]]:
+    @overload
+    @classmethod
+    def head(
+        cls: type[Collectors[_Unspecified]], count: SupportsIndex
+    ) -> Collector[_Inferred, list[_Inferred], list[_Inferred]]: ...
+
+    @overload
+    @classmethod
+    def head(cls, count: SupportsIndex) -> Collector[_Bound, list[_Bound], list[_Bound]]: ...
+
+    @classmethod
+    def head(cls, count: SupportsIndex) -> Collector[T, list[T], list[T]]:
         """Build a collector that stops after retaining the first `count` items.
 
         A zero count completes before pulling from the source.
@@ -779,8 +1133,18 @@ class Collectors(Generic[T]):
 
         return Collector(list, step, done=lambda values: len(values) >= limit)
 
-    @staticmethod
-    def tail(count: SupportsIndex) -> Collector[T, deque[T], list[T]]:
+    @overload
+    @classmethod
+    def tail(
+        cls: type[Collectors[_Unspecified]], count: SupportsIndex
+    ) -> Collector[_Inferred, deque[_Inferred], list[_Inferred]]: ...
+
+    @overload
+    @classmethod
+    def tail(cls, count: SupportsIndex) -> Collector[_Bound, deque[_Bound], list[_Bound]]: ...
+
+    @classmethod
+    def tail(cls, count: SupportsIndex) -> Collector[T, deque[T], list[T]]:
         """Build a bounded-state collector for the final `count` input items.
 
         The source is fully consumed. Once the deque is full, each new item discards the
@@ -805,8 +1169,18 @@ class Collectors(Generic[T]):
             list,
         )
 
-    @staticmethod
-    def only() -> Collector[T, list[T], T | None]:
+    @overload
+    @classmethod
+    def only(
+        cls: type[Collectors[_Unspecified]],
+    ) -> Collector[_Inferred, list[_Inferred], _Inferred | None]: ...
+
+    @overload
+    @classmethod
+    def only(cls) -> Collector[_Bound, list[_Bound], _Bound | None]: ...
+
+    @classmethod
+    def only(cls) -> Collector[T, list[T], T | None]:
         """Build a collector that enforces zero-or-one input cardinality.
 
         Empty input returns `None`, one item is returned directly, and a second item completes
@@ -829,8 +1203,29 @@ class Collectors(Generic[T]):
 
         return Collector(list, _append, finish, done=lambda values: len(values) >= 2)
 
-    @staticmethod
+    @overload
+    @classmethod
     def to_dict(
+        cls: type[Collectors[_Unspecified]],
+        key: Selector,
+        value: Selector,
+        *,
+        on_duplicate: Literal["error", "first", "last"] = "error",
+    ) -> Collector[Any, dict[K, V], dict[K, V]]: ...
+
+    @overload
+    @classmethod
+    def to_dict(
+        cls,
+        key: Selector,
+        value: Selector,
+        *,
+        on_duplicate: Literal["error", "first", "last"] = "error",
+    ) -> Collector[_Bound, dict[K, V], dict[K, V]]: ...
+
+    @classmethod
+    def to_dict(
+        cls,
         key: Selector,
         value: Selector,
         *,

@@ -87,8 +87,11 @@ from fpstreams import col, rows
 paid = rows.scan_csv("orders.csv").where(col("status") == "paid").select("region", "amount")
 ```
 
-Arrow owns CSV type inference and parsing rules. Projection can avoid materializing
-unused columns. Install with `pip install "fpstreams[arrow]"`.
+Arrow owns CSV type inference and parsing rules. A query's `select()` runs after
+conversion of all caller-visible columns, so errors in unselected columns still
+propagate. To restrict the reader's columns, pass
+`convert_options=pyarrow.csv.ConvertOptions(include_columns=[...])` explicitly.
+Install with `pip install "fpstreams[arrow]"`.
 
 ## JSON Lines
 
@@ -105,6 +108,20 @@ events = rows.from_jsonl(
 
 Duplicate object keys are rejected rather than silently choosing one value.
 `max_record_bytes=None` disables the byte limit for trusted input.
+
+Paths and binary handles use the [JSON Lines line terminator](https://jsonlines.org/):
+LF (`\n`), with CRLF (`\r\n`) also accepted. A bare CR (`\r`) does not separate
+records. Borrowed text handles retain the caller's newline handling.
+
+When decoding a path or binary handle with `encoding="utf-8-sig"`, only a
+signature at the start of the input is consumed. A BOM before a later record causes
+a JSON decoding error. BOM characters inside JSON strings are preserved.
+The byte limit counts the initial signature as part of the first record.
+
+For nonempty UTF-16 or UTF-32 input, the generic `utf-16` and `utf-32` codecs
+require an initial BOM to identify the byte order. For data without a BOM,
+specify `utf-16-le`, `utf-16-be`, `utf-32-le`, or `utf-32-be` explicitly.
+This rule applies to paths and binary handles with or without a record byte limit.
 
 Paths, handles, and openers follow the same ownership contract as `from_csv`. JSONL handles may
 yield `bytes` or `str`. `encoding` decodes paths and binary handles; it also defines encoded-byte

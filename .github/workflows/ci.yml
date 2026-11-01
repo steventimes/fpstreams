@@ -1,10 +1,14 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      qualification:
+        type: boolean
+        default: true
   push:
+    branches: [master]
   pull_request:
-  schedule:
-    - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
       suite:
@@ -14,21 +18,100 @@ on:
         type: choice
         options:
           - tests
-          - benchmark
           - free-threaded
           - all
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name }}-${{ (inputs.qualification || github.event_name == 'workflow_dispatch') && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.qualification }}
+
 jobs:
-  test:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python-versions: ${{ steps.route.outputs.python-versions }}
+      platform: ${{ steps.route.outputs.platform }}
+      adapters: ${{ steps.route.outputs.adapters }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - name: Route compatibility checks
+        id: route
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PYROUTE'
+          import fnmatch
+          import json
+          import os
+          import subprocess
+
+          event = os.environ["GITHUB_EVENT_NAME"]
+          base = os.environ["BASE_SHA"]
+          paths = []
+          # New branches have no previous commit. Keep full compatibility there.
+          full = event not in {"push", "pull_request"} or not base.strip("0")
+          if not full:
+              separator = "..." if event == "pull_request" else ".."
+              paths = subprocess.check_output(
+                  ["git", "diff", "--name-only", "--no-renames", "-z",
+                   base + separator + os.environ["HEAD_SHA"]],
+              ).decode().split("\0")
+
+          def changed(*patterns):
+              return any(fnmatch.fnmatchcase(path, pattern)
+                         for path in paths for pattern in patterns)
+
+          full = full or changed("pyproject.toml", "uv.lock", "rust/**", "scripts/**",
+                                 ".github/workflows/**")
+          interpreters = full or changed(
+              "src/fpstreams/__init__.py", "src/fpstreams/async_flow.py",
+              "src/fpstreams/streams/async_flow.py", "src/fpstreams/streams/async_terminals.py",
+              "src/fpstreams/execution/asynchronous/**",
+              "src/fpstreams/runtime/**", "src/fpstreams/storage/**",
+              "src/fpstreams/io_safety.py", "src/fpstreams/tabular/io/**",
+              "src/fpstreams/tabular/_sources.py", "src/fpstreams/tabular/factory.py",
+              "src/fpstreams/execution/native.py", "src/fpstreams/expressions/*codegen*",
+              "tests/execution/test_runtime.py", "tests/contracts/test_core.py",
+              "tests/contracts/test_release.py")
+          platform = full or changed(
+              "src/fpstreams/runtime/**", "src/fpstreams/storage/**",
+              "src/fpstreams/io_safety.py", "src/fpstreams/tabular/io/**",
+              "src/fpstreams/tabular/_sources.py", "src/fpstreams/tabular/factory.py",
+              "src/fpstreams/tabular/spill*", "src/fpstreams/execution/asynchronous/**",
+              "src/fpstreams/execution/native.py", "tests/execution/test_runtime.py",
+              "tests/streams/test_async.py", "tests/tabular/test_sql.py",
+              "tests/tabular/test_rows*.py")
+          adapters = full or changed(
+              "src/fpstreams/streams/flow.py", "src/fpstreams/streams/flow_terminals.py",
+              "src/fpstreams/streams/_terminals/**",
+              "src/fpstreams/tabular/**", "src/fpstreams/collecting/**",
+              "src/fpstreams/planning/**", "src/fpstreams/execution/arrow/**",
+              "src/fpstreams/execution/numpy*", "src/fpstreams/execution/relational/**",
+              "tests/tabular/**", "tests/streams/test_collecting.py")
+          versions = ["3.11", "3.13", "3.14", "3.15"] if interpreters else ["3.11"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("python-versions=" + json.dumps(versions) + "\n")
+              for name, value in (("platform", platform), ("adapters", adapters)):
+                  output.write(name + "=" + str(value).lower() + "\n")
+          PYROUTE
+
+  test:
+    needs: changes
+    if: inputs.qualification || github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.13", "3.14"]
+        python-version: ${{ fromJSON(needs.changes.outputs.python-versions) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -47,8 +130,10 @@ jobs:
         run: uv run pytest -q
 
   minimal:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+    needs: changes
+    if: inputs.qualification || github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -63,18 +148,21 @@ jobs:
           python scripts/smoke_release.py --minimal
 
   platform-smoke:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
-    name: ${{ matrix.os }} smoke
+    needs: changes
+    if: inputs.qualification || ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.platform == 'true') || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+    name: ${{ matrix.os }}${{ matrix.python-version == '3.15' && ' Python 3.15' || '' }} smoke
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        python-version: ["3.12", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           enable-cache: true
@@ -82,11 +170,35 @@ jobs:
         run: |
           uv sync --frozen --group build --group test
           uv run maturin develop --release
-          uv run pytest -q -W error tests/test_release.py tests/test_tabular.py tests/test_flow.py tests/test_runtime.py -k 'spill or sqlite or high_water or atomic'
+          uv run pytest -q -W error tests/contracts/test_release.py tests/tabular tests/streams/test_flow.py tests/streams/test_flow_engines.py tests/streams/test_reports.py tests/execution/test_runtime.py tests/streams/test_async.py tests/execution/test_native_pairs.py tests/execution/test_planning.py tests/execution/test_relational.py tests/execution/test_sorting.py -k 'spill or sqlite or high_water or atomic or cancel or borrowed or spawn or parallel or concurrent_callers or concurrent_queries or concurrent_compilation or cleanup_continues or custom_exception_formatting or file_checkpoint or native_numeric_variance'
+
+  adapter-compatibility:
+    needs: changes
+    if: inputs.qualification || ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.adapters == 'true') || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        resolution: [lowest-direct, highest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - name: Resolve declared adapter bounds in this disposable checkout
+        run: |
+          uv sync --upgrade --resolution ${{ matrix.resolution }} --group build --group test --extra data --extra polars
+          uv run --no-sync maturin develop --release
+      - name: Verify adapter and shared numeric contracts
+        run: uv run --no-sync pytest -q -W error tests/contracts/test_core.py tests/streams/test_collecting.py tests/tabular tests/streams/test_async.py
 
   quality:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
+    needs: changes
+    if: inputs.qualification || github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -103,17 +215,28 @@ jobs:
         run: |
           uv run pytest -W error --cov=src/fpstreams --cov-branch --cov-report=term-missing
           uv run coverage report --fail-under=85
-          uv run coverage report --include='src/fpstreams/planning/*.py' --fail-under=90
+          uv run coverage report --include='src/fpstreams/planning/*.py,src/fpstreams/planning/arrow/*.py,src/fpstreams/planning/pairs/*.py,src/fpstreams/planning/relational/*.py,src/fpstreams/planning/semantics/*.py' --fail-under=90
           uv run coverage report --include='src/fpstreams/execution/native.py' --fail-under=90
           uv run coverage report --include='src/fpstreams/tabular/spill*.py' --fail-under=90
-          uv run coverage report --include='src/fpstreams/execution/async*.py' --fail-under=85
+          uv run coverage report --include='src/fpstreams/execution/asynchronous/*.py' --fail-under=85
       - name: Python quality
         run: |
-          uv run ruff check src tests scripts benchmarks benchmark.py
-          uv run ruff format --check src tests scripts benchmarks benchmark.py
+          uv run ruff check src tests scripts
+          uv run ruff format --check src tests scripts
           uv run mypy src/fpstreams
-          uv run python scripts/check_release_version.py
+          uv run python scripts/check_release_version.py --expected 2.5.0
           uv lock --check
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+      - name: Public consumer type contracts
+        shell: bash
+        run: |
+          npm ci --prefix tests/typing --ignore-scripts --omit=optional
+          for python_version in 3.11 3.12 3.13 3.14 3.15; do
+            uv run python scripts/check_typing.py --python-version "$python_version"
+          done
       - name: Rust quality
         run: |
           cargo fmt --manifest-path rust/Cargo.toml -- --check
@@ -135,125 +258,51 @@ jobs:
           uv run python scripts/build_browser_wheel.py
           uv run mkdocs build --strict --config-file fpstreams/mkdocs.yml --site-dir /tmp/fpstreams-site
 
-  benchmark-quick:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: benchmark-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with:
-          enable-cache: true
-      - name: Build release native extension
-        run: |
-          uv sync --frozen --group build --group test
-          uv run maturin develop --release
-      - name: Run quick benchmark without wall-clock failure
-        run: >-
-          uv run python benchmark.py --size 10000 --repeats 3 --domain int --quick
-          --json benchmark-quick.json
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-quick
-          path: benchmark-quick.json
-          if-no-files-found: warn
-
-  benchmark-full:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'benchmark' || inputs.suite == 'all'))
-    runs-on: ubuntu-latest
-    env:
-      PYTHONHASHSEED: "0"
-      OMP_NUM_THREADS: "1"
-      OPENBLAS_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
-      VECLIB_MAXIMUM_THREADS: "1"
-      NUMEXPR_NUM_THREADS: "1"
-      POLARS_MAX_THREADS: "1"
-    concurrency:
-      group: benchmark-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with:
-          enable-cache: true
-      - name: Build release native extension
-        run: |
-          uv sync --frozen --group build --group test
-          uv run maturin develop --release
-      - name: Select a benchmark CPU from the runner's allowed set
-        run: |
-          benchmark_cpu="$(uv run python -c 'import os; print(min(os.sched_getaffinity(0)))')"
-          printf 'BENCHMARK_CPU=%s\n' "$benchmark_cpu" >> "$GITHUB_ENV"
-      - name: Measure three-run same-host reference
-        run: |
-          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 21 --domain both --json run-1.json
-          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 21 --domain both --json run-2.json
-          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 21 --domain both --json run-3.json
-          uv run python -m benchmarks.regression --create-baseline \
-            --provenance local_one_shot_unreviewed --output scheduled-local-baseline.json \
-            run-1.json run-2.json run-3.json
-      - name: Enforce same-run timing and resource consistency
-        run: |
-          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --size 300000 --repeats 21 --domain both \
-            --fail-on-regression --json benchmark-full.json
-          # A reviewed file enables cross-commit comparison. Until one exists,
-          # this fallback only checks a fourth run against this job's local median.
-          if [ -f benchmarks/baselines/engine-v2.json ]; then
-            uv run python -m benchmarks.regression benchmarks/baselines/engine-v2.json benchmark-full.json
-          else
-            uv run python -m benchmarks.regression scheduled-local-baseline.json benchmark-full.json
-          fi
-      - name: Record NumPy and Pandas comparisons
-        run: >-
-          taskset --cpu-list "$BENCHMARK_CPU" uv run python benchmark.py --competitive --size 300000 --repeats 7
-          --json benchmark-competitive.json
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-full
-          path: |
-            benchmark-full.json
-            benchmark-competitive.json
-            scheduled-local-baseline.json
-            run-1.json
-            run-2.json
-            run-3.json
-          if-no-files-found: warn
-
   free-threaded:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'free-threaded' || inputs.suite == 'all'))
+    if: (github.event_name == 'workflow_dispatch' && (inputs.suite == 'free-threaded' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: true
+    name: ${{ matrix.python-version == '3.15t' && 'free-threaded Python 3.15t' || 'free-threaded' }}
+    strategy:
+      matrix:
+        python-version: ["3.14t", "3.15t"]
+    env:
+      PYTHONWARNINGS: error
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14t"
+          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           enable-cache: true
       - name: Build native extension
         run: |
-          uv sync --frozen --group build --group test
+          uv sync --frozen --group build --group test-core
           uv run maturin develop --release
+      - name: Verify native import keeps the GIL disabled
+        run: >-
+          uv run python -c "import sys, sysconfig; import fpstreams._native;
+          assert sysconfig.get_config_var('Py_GIL_DISABLED') == 1;
+          assert not sys._is_gil_enabled()"
+      - name: Concurrent compilation cache
+        run: uv run pytest -q -W error tests/execution/test_planning.py::test_kernel_cache_coordinates_concurrent_compilation
       - name: Static audit
         run: >-
           uv run pytest -q
-          tests/test_release.py::test_rust_sources_declare_free_threading_without_unsafe_shared_state
+          tests/contracts/test_release.py::test_rust_sources_declare_free_threading_without_unsafe_shared_state
       - name: Guarded NamedTuple adapter stays GIL-only
         run: >-
           uv run pytest -q
-          tests/test_engine.py::test_standard_namedtuple_adapter_stays_disabled_without_the_gil
+          tests/execution/test_relational.py::test_standard_namedtuple_adapter_stays_disabled_without_the_gil
+      - name: Shared row-expression results and concurrent evaluation
+        run: >-
+          uv run pytest -q
+          tests/execution/test_planning.py::test_row_udf_shared_occurrences_keep_each_returned_value
+          tests/execution/test_planning.py::test_row_shared_selector_occurrences_keep_changing_values
+          tests/execution/test_planning.py::test_row_fallback_shared_results_survive_lazy_and_zero_argument_children
+          tests/execution/test_planning.py::test_row_fallback_shared_expression_is_independent_across_threads
       - name: Native snapshot stress
         env:
           FPSTREAMS_FT_JOIN_ITERATIONS: "500000"
@@ -261,12 +310,12 @@ jobs:
           FPSTREAMS_FT_DICT_GROUP_ITERATIONS: "500000"
         run: >-
           uv run pytest -q
-          tests/test_engine.py::test_exact_record_join_snapshot_never_runs_colliding_key_protocol_during_mutation
-          tests/test_engine.py::test_exact_record_join_compact_right_snapshot_is_coherent_during_mutation
-          tests/test_engine.py::test_exact_list_tuple_row_group_sum_uses_a_coherent_snapshot_during_mutation
-          tests/test_engine.py::test_exact_dict_group_sum_locks_shape_before_selector_lookup_during_mutation
+          tests/execution/test_relational.py::test_exact_record_join_snapshot_never_runs_colliding_key_protocol_during_mutation
+          tests/execution/test_relational.py::test_exact_record_join_compact_right_snapshot_is_coherent_during_mutation
+          tests/execution/test_relational.py::test_exact_list_tuple_row_group_sum_uses_a_coherent_snapshot_during_mutation
+          tests/execution/test_relational.py::test_exact_dict_group_sum_locks_shape_before_selector_lookup_during_mutation
       - name: Smoke
         env:
           FPSTREAMS_FT_SMOKE_THREADS: "16"
           FPSTREAMS_FT_SMOKE_ITERATIONS: "20"
-        run: uv run pytest -q tests/test_runtime.py::test_free_threaded_flow_smoke
+        run: uv run pytest -q tests/execution/test_runtime.py::test_free_threaded_flow_smoke

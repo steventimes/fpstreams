@@ -182,7 +182,7 @@ def numpy_identity_columns(source: NumpyRowSource) -> dict[str, list[Any]]:
 def _exact_native_record_assembler() -> Callable[..., list[dict[str, Any]] | None] | None:
     """Return the genuine optional native column-to-record endpoint."""
     try:
-        from .. import _native
+        from fpstreams import _native
     except ImportError:
         return None
     endpoint = _BUILTIN_GETATTR(_native, "records_from_exact_columns_v1", None)

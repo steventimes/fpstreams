@@ -18,8 +18,8 @@ from .native import (
     validate_terminal,
 )
 from .numpy import NumpyPrefixPlan, plan_numpy_prefix
-from .semantic_analyzer import analyze_async_plan, analyze_sync_plan
 from .semantics import AsyncTerminalName
+from .semantics.analysis import analyze_async_plan, analyze_sync_plan
 from .sync import FilterOp, MapOp, Operation, ParallelMapOp, TapOp
 
 _FUSABLE = (MapOp, FilterOp, TapOp)
@@ -482,7 +482,7 @@ class AsyncPlanExplanation:
             "kind": "fpstreams.plan_explanation",
             "mode": "async",
             "terminal": self.terminal,
-            "source": self.plan.source.facts.to_dict(),
+            "source": semantics.source.to_dict(),
             "operations": [item.to_dict() for item in semantics.operations],
             "semantics": semantics.to_dict(include_diagnostics=False),
             "diagnostics": [item.to_dict() for item in semantics.diagnostics],

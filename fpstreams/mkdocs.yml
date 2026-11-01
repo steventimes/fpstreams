@@ -4,6 +4,10 @@ site_url: https://steventimes.github.io/fpstreams/
 repo_url: https://github.com/steventimes/fpstreams
 repo_name: steventimes/fpstreams
 
+validation:
+  links:
+    anchors: warn
+
 theme:
   name: material
   features:

@@ -1,4 +1,4 @@
-# fpstreams v2
+# fpstreams
 
 fpstreams lets you filter, transform, and aggregate data in lazy Python
 pipelines. Start with `flow()` for synchronous values and records, including
@@ -11,9 +11,8 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `rows(source)` | Record operations, relational joins, and record-specific I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-The current stable release is
-[2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1). This maintenance
-release reorganizes planner and execution internals with no public API changes.
+Version 2.5.0 includes the static averaging type correction and explicit migration
+APIs, Python 3.15 compatibility, and resource ownership fixes.
 Version 2.4.0 adds
 stateful pipeline operations, composed aggregation, shared execution limits,
 file recovery, and versioned execution metadata. It includes the batch mapping,
@@ -26,12 +25,20 @@ for shipped changes and the [roadmap](roadmap.md#next-development-steps) for
 upcoming candidates.
 
 Version 2.4.0 also includes
-[state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-unreleased),
-[sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-unreleased),
-and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-unreleased).
-[Versioned report export](user-guide/execution-reports.md#metadata-export-unreleased)
+[state-driven generation and mapping](reference/flow.md#state-driven-generation-and-mapping-250),
+[sliding-window aggregates](reference/flow.md#reuse-sliding-window-aggregates-250),
+and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-with-a-collector-250).
+[Versioned report export](user-guide/execution-reports.md#metadata-export-250)
 supports JSON storage and caller-managed metadata integration. The roadmap
 separates these verified changes from remaining candidates.
+
+This site documents 2.5.0. The static averaging result-type correction has an
+explicit migration path. The references cover
+[typed async folds](reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
+[explicit averaging](reference/collecting.md#explicit-averaging-operations-250),
+and [null-filter lookup policies](reference/rows.md#null-filtering-and-lookup-failures-250).
+The [2.4.1 tagged README](https://github.com/steventimes/fpstreams/blob/v2.4.1/README.md)
+provides a release-specific starting point.
 
 ## Installation
 
@@ -39,9 +46,12 @@ separates these verified changes from remaining candidates.
 pip install fpstreams
 ~~~
 
-Python 3.11 or newer is required. Release testing covers standard CPython 3.11
-through 3.14. Free-threaded 3.14t support is experimental and has no release
-wheels. Install optional integrations as needed:
+Python 3.11 or newer is required. The source CI matrix targets standard CPython
+3.11 through 3.15; Python 3.15 compatibility is included in 2.5.0.
+The 2.4.1 release matrix covered 3.11 through 3.14.
+Free-threaded 3.14t and 3.15t have an experimental core-concurrency CI matrix,
+not release wheels or optional-adapter qualification. Install optional
+integrations as needed:
 
 ~~~bash
 pip install "fpstreams[async]"   # aiofiles for async file adapters

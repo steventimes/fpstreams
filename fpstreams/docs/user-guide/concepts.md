@@ -129,6 +129,23 @@ These entry points construct plans and share source ownership when you switch
 views. Each adapter defines when it imports or converts its input; see the
 [I/O matrix](../reference/io.md).
 
+### Moving between synchronous and asynchronous flows
+
+`Flow.to_async()` retains the item type and source ownership. Most shared
+operators have the same value semantics, but v2 preserves a difference in
+`compact()`: Flow drops only `None`, while AsyncFlow drops every falsey value,
+including `0`, `False`, empty strings, and empty containers. With a selector,
+each version applies its rule to the selected value and retains the original
+item. Use `filter_none()` to drop only `None` in either execution domain.
+
+```python
+from fpstreams import aflow, flow
+
+assert flow([None, 0, False, 1]).filter_none().to_list() == [0, False, 1]
+# Inside an async function:
+# assert await aflow([None, 0, False, 1]).filter_none().to_list() == [0, False, 1]
+```
+
 ## Planning and engines
 
 The default `auto` engine chooses among Python iteration, Rust kernels,
@@ -145,8 +162,17 @@ print(explanation)
 ```
 
 Use `explain()` to inspect the selected engine, stages, data movement,
-materialization boundaries, complexity, and diagnostics. Force an engine only
-for debugging or controlled deployment requirements:
+materialization boundaries, complexity, and diagnostics.
+
+Source replayability describes what is known, not a snapshot of the values. A built-in
+mutable collection can change between evaluations. For a custom iterable that is not
+itself an iterator, explain reports replayability as unknown without opening it: repeated
+`iter()` calls can return the same cursor. A source factory is reopenable, but its returned
+values can still change. `any()`
+tests item truthiness by default, not merely whether an item exists; checking for a first
+item also consumes input and can close a one-shot source.
+
+Force an engine only for debugging or controlled deployment requirements:
 
 ```python
 pipeline.with_engine("python").sum()
@@ -187,6 +213,155 @@ owned according to the adapter's documented contract.
 
 For async concurrency, fpstreams also owns scheduled tasks. A short-circuiting
 terminal cancels outstanding work before it returns or propagates an error.
+
+When manually iterating, the caller owns the returned iterator. Breaking out of
+`for` or `async for` does not itself close it. Use `contextlib.closing` with
+`iter(query)` or `contextlib.aclosing` with `query.__aiter__()` so early exit
+closes the owned chain promptly. This applies to the standard `Flow` and
+`AsyncFlow` iterators; custom iteration overrides must manage what they open.
+
+### Close an owned source after an early result
+
+An opener gives the pipeline ownership of the handle it returns. Here, `take(1)`
+stops before the second CSV record, and the handle is closed before `to_list()`
+returns. The data stays in memory so you can run the example without extra files
+or dependencies:
+
+```python
+from io import StringIO
+
+from fpstreams import rows
+
+opened = []
+
+
+def open_csv():
+    handle = StringIO("id,name\n1,Ada\n2,Grace\n")
+    opened.append(handle)
+    return handle
+
+
+records = rows.from_csv(open_csv)
+assert records.take(1).to_list() == [{"id": "1", "name": "Ada"}]
+assert len(opened) == 1 and opened[0].closed
+
+# Each evaluation calls the opener again.
+assert records.count() == 2
+assert len(opened) == 2 and all(handle.closed for handle in opened)
+
+# A handle passed directly belongs to the caller.
+with StringIO("id,name\n1,Ada\n2,Grace\n") as borrowed:
+    assert rows.from_csv(borrowed).take(1).count() == 1
+    assert not borrowed.closed
+```
+
+### Preserve the callback error while closing the source
+
+Cleanup also runs when a transformation fails. This example checks the exception
+object as well as the handle; a successful close must not replace the original
+callback error:
+
+```python
+from io import StringIO
+
+from fpstreams import rows
+
+opened = []
+failure = ValueError("invalid record")
+
+
+def open_csv():
+    handle = StringIO("id\n1\n2\n")
+    opened.append(handle)
+    return handle
+
+
+def validate(record):
+    if record["id"] == "2":
+        raise failure
+    return record
+
+
+try:
+    rows.from_csv(open_csv).map(validate).to_list()
+except ValueError as error:
+    assert error is failure
+else:
+    raise AssertionError("the callback error was lost")
+assert len(opened) == 1 and opened[0].closed
+```
+
+If closing also fails, the query preserves its original error and attaches
+cleanup diagnostics as exception notes. A close failure after an otherwise
+successful query can itself raise; see the [I/O reference](../reference/io.md).
+
+### Cancel a query and await its cleanup
+
+Cancel the task running the terminal, then await that task. The terminal returns
+control only after its owned source and cooperative mapper tasks have finished
+cleanup. The events below coordinate real cancellation without timing sleeps:
+
+```python
+import asyncio
+
+from fpstreams import aflow
+
+
+async def main():
+    started = asyncio.Event()
+    hold = asyncio.Event()
+    unrelated = asyncio.Event()
+    active = set()
+    closed = []
+
+    async def source():
+        try:
+            yield 1
+            yield 2
+        finally:
+            closed.append(True)
+
+    async def mapper(value):
+        active.add(value)
+        started.set()
+        try:
+            await hold.wait()
+            return value
+        finally:
+            active.remove(value)
+
+    # This task belongs to the application, outside the query.
+    application_task = asyncio.create_task(unrelated.wait())
+    before = set(asyncio.all_tasks())
+    query = asyncio.create_task(
+        aflow(source()).map_async(mapper, concurrency=2).to_list()
+    )
+    try:
+        await started.wait()
+        query.cancel()
+        try:
+            await query
+        except asyncio.CancelledError:
+            pass  # This application intentionally requested cancellation.
+        else:
+            raise AssertionError("cancellation did not propagate")
+        assert closed == [True]
+        assert not active
+        assert set(asyncio.all_tasks()) == before
+        assert not application_task.done()
+    finally:
+        unrelated.set()
+        await application_task
+
+
+asyncio.run(main())
+```
+
+Mappers must cooperate with cancellation. These checks cover tasks owned by the
+query; cancellation cannot guarantee that an already-running thread, process,
+remote request, or external side effect has stopped. In application code,
+propagate `CancelledError` after cleanup unless the caller intentionally handles
+it at the task boundary, as this example does.
 
 ## Stable semantics before acceleration
 

@@ -31,6 +31,7 @@ from ..errors import BufferLimitError, EmptyFlowError
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.async_utils import _MISSING, _resolve, closing_async_iterators
 from ..primitives.result import Err, Ok
+from ..runtime._distinct import reraise_key_type_error
 from ..runtime.report import ExecutionResult, _start_recording, _stop_recording
 
 T = TypeVar("T")
@@ -239,6 +240,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                     raise TypeError("partition_results() requires Result values")
         return successes, failures
 
+    @overload
+    async def first(self) -> T: ...
+
+    @overload
+    async def first(self, default: R) -> T | R: ...
+
     async def first(self, default: Any = _MISSING) -> T | Any:
         """Return the first item and close the async source immediately.
 
@@ -259,6 +266,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                 if default is _MISSING:
                     raise EmptyFlowError("first() called on an empty async flow") from None
                 return default
+
+    @overload
+    async def last(self) -> T: ...
+
+    @overload
+    async def last(self, default: R) -> T | R: ...
 
     async def last(self, default: Any = _MISSING) -> T | Any:
         """Return the last item, or default when the flow is empty.
@@ -281,6 +294,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             return default
         return result
 
+    @overload
+    async def find(self, predicate: Callable[[T], bool | Awaitable[bool]]) -> T: ...
+
+    @overload
+    async def find(self, predicate: Callable[[T], bool | Awaitable[bool]], default: R) -> T | R: ...
+
     async def find(
         self,
         predicate: Callable[[T], bool | Awaitable[bool]],
@@ -301,10 +320,11 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         matches = self.filter(predicate)
         if default is not _MISSING:
             return await matches.first(default)
-        try:
-            return await matches.first()
-        except EmptyFlowError:
-            raise EmptyFlowError("find() found no matching item") from None
+        missing = object()
+        result = await matches.first(missing)
+        if result is missing:
+            raise EmptyFlowError("find() found no matching item")
+        return result
 
     async def find_index(self, predicate: Callable[[T], bool | Awaitable[bool]]) -> int | None:
         """Return the index of the first matching item, or None.
@@ -337,6 +357,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """
         return await self.find_index(lambda item: item == value)
 
+    @overload
+    async def nth(self, index: int) -> T: ...
+
+    @overload
+    async def nth(self, index: int, default: R) -> T | R: ...
+
     async def nth(self, index: int, default: Any = _MISSING) -> T | Any:
         """Return the item at a positive or negative index.
 
@@ -355,17 +381,19 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             candidate = self.drop(position)
             if default is not _MISSING:
                 return await candidate.first(default)
-            try:
-                return await candidate.first()
-            except EmptyFlowError:
-                raise EmptyFlowError(f"nth({position}) is out of range") from None
+            missing = object()
+            result = await candidate.first(missing)
+            if result is missing:
+                raise EmptyFlowError(f"nth({position}) is out of range")
+            return result
         if position == -1:
             if default is not _MISSING:
                 return await self.last(default)
-            try:
-                return await self.last()
-            except EmptyFlowError:
-                raise EmptyFlowError("nth(-1) is out of range") from None
+            missing = object()
+            result = await self.last(missing)
+            if result is missing:
+                raise EmptyFlowError("nth(-1) is out of range")
+            return result
 
         width = -position
         tail: deque[T] = deque(maxlen=width)
@@ -487,7 +515,28 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             return minimum, maximum
 
     @overload
-    async def collect(self, collector: Collector[T, S, C], /) -> C: ...
+    async def collect(
+        self,
+        collector: Collector[T, S, C],
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C: ...
+
+    @overload
+    async def collect(
+        self,
+        collector: Callable[[Iterable[T]], Awaitable[C]],
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C: ...
+
+    @overload
+    async def collect(
+        self,
+        collector: Callable[[Iterable[T]], C | Awaitable[C]],
+        /,
+        **collectors: Collector[T, Any, Any],
+    ) -> C: ...
 
     @overload
     async def collect(
@@ -496,14 +545,6 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         /,
         **collectors: Collector[T, Any, Any],
     ) -> dict[str, Any]: ...
-
-    @overload
-    async def collect(
-        self,
-        collector: (Callable[[Iterable[T]], C | Awaitable[C]] | Collector[T, Any, C] | None) = None,
-        /,
-        **collectors: Collector[T, Any, Any],
-    ) -> C | dict[str, Any]: ...
 
     async def collect(
         self,
@@ -610,6 +651,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
     ) -> Any:
         """Combine items from left to right with an optional initial value.
 
+        Reducer return values are resolved once when awaitable. An empty flow returns a
+        supplied initial value unchanged; an unseeded singleton returns its item unchanged,
+        even when that initial value or item is awaitable.
+
         Args:
             function: Sync or async callback invoked as `function(accumulator, item)` from left to
                 right.
@@ -641,6 +686,10 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         max_items: int | None = None,
     ) -> Any:
         """Combine buffered items from right to left.
+
+        Reducer return values are resolved once when awaitable. An empty flow returns a
+        supplied initial value unchanged; an unseeded singleton returns its item unchanged,
+        even when that initial value or item is awaitable.
 
         Args:
             function: Sync or async callback invoked as `function(item, accumulator)` from right
@@ -710,7 +759,7 @@ class AsyncFlowTerminalsMixin(Generic[T]):
                 try:
                     state = states.get(group, missing)
                 except TypeError:
-                    raise TypeError("reduce_by() keys must be hashable") from None
+                    reraise_key_type_error(group, "reduce_by() keys must be hashable")
                 if state is missing:
                     state = cast(R, await _resolve(initializer()))
                 states[group] = cast(R, await _resolve(function(state, item)))

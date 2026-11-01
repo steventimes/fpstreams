@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+<title id="title">fpstreams</title><desc id="desc">Lazy Python pipelines. Explicit resource ownership. Decorative project artwork.</desc>
+<rect width="1200" height="280" rx="20" fill="#101820"/>
+<rect x="44" y="44" width="6" height="24" rx="3" fill="#77bdfb"/>
+<text x="64" y="62" fill="#77bdfb" font-family="Arial, sans-serif" font-size="14" letter-spacing="3">PYTHON LIBRARY</text>
+<text x="44" y="135" fill="#f0f4f8" font-family="Arial, sans-serif" font-size="44" font-weight="700">fpstreams</text>
+<text x="44" y="180" fill="#bac7d2" font-family="Arial, sans-serif" font-size="19">Lazy Python pipelines. Explicit resource ownership.</text>
+<path d="M44 225h745" stroke="#34424e"/>
+<g fill="none" stroke="#77bdfb" stroke-width="2" opacity="0.65"><path d="M906 80h46l36 58h68l36-58h56M906 194h46l36-56M1056 138l36 56h56"/><circle cx="906" cy="80" r="11" fill="#77bdfb"/><circle cx="906" cy="194" r="11" fill="#77bdfb"/><circle cx="1022" cy="138" r="11" fill="#77bdfb"/><circle cx="1148" cy="80" r="11" fill="#77bdfb"/><circle cx="1148" cy="194" r="11" fill="#77bdfb"/></g>
+</svg>

@@ -3,31 +3,90 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
+from types import FunctionType
 from typing import Any, Generic, TypeVar, cast
 
 from ..errors import FlowConsumedError
 from ..runtime.iterators import closing_iterators
-from .semantics import StreamFacts, facts_from_capabilities
+from .semantics import (
+    Cardinality,
+    OrderingGuarantee,
+    Replayability,
+    StreamFacts,
+    TerminationEvidence,
+    facts_from_capabilities,
+)
 from .source import _range_size
 
 T = TypeVar("T")
 _NO_RETAINED_SEQUENCE = object()
 
 
-async def _from_sync(iterator: Iterator[T]) -> AsyncIterator[T]:
-    """Adapt a synchronous iterator to async iteration and close it on every exit path."""
-    with closing_iterators((iterator,)):
-        for item in iterator:
-            yield item
+class _SyncAsyncIterator(AsyncIterator[T]):
+    """Own a synchronous iterator before its first asynchronous pull."""
+
+    __slots__ = ("_active", "_iterator", "_owns_iterator")
+
+    def __init__(self, iterator: Iterator[T]) -> None:
+        self._iterator: Iterator[T] | None = iterator
+        self._active: Iterator[T] | None = None
+        self._owns_iterator = True
+
+    def __aiter__(self) -> _SyncAsyncIterator[T]:
+        return self
+
+    async def __anext__(self) -> T:
+        iterator = self._iterator
+        if iterator is None:
+            raise StopAsyncIteration
+        try:
+            if self._active is None:
+                self._active = iter(iterator)
+            try:
+                return next(self._active)
+            except StopIteration:
+                pass
+        except BaseException as error:
+            self._close(error)
+            raise
+        self._close()
+        del iterator
+        raise StopAsyncIteration
+
+    def _close(self, active_error: BaseException | None = None) -> None:
+        iterator = self._iterator
+        if iterator is None and active_error is None:
+            return
+        self._iterator = None
+        self._active = None
+        try:
+            # Retain the generator context's conversion of a close-hook StopIteration.
+            with closing_iterators(
+                () if iterator is None or not self._owns_iterator else (iterator,)
+            ):
+                if active_error is not None:
+                    raise active_error
+        except StopIteration as error:
+            raise RuntimeError("async generator raised StopIteration") from error
+        except StopAsyncIteration as error:
+            # The former async generator could not expose this as normal exhaustion.
+            raise RuntimeError("async generator raised StopAsyncIteration") from error
+
+    async def aclose(self) -> None:
+        """Close once, including when no item has been requested."""
+        try:
+            self._close()
+        except GeneratorExit:
+            return
 
 
 def _to_async_iterator(source: AsyncIterable[T] | Iterable[T]) -> AsyncIterator[T]:
     """Open an async iterable directly or wrap a synchronous iterable in the async adapter."""
     if isinstance(source, AsyncIterable):
         return source.__aiter__()
-    return _from_sync(iter(source))
+    return _SyncAsyncIterator(iter(source))
 
 
 class _AsyncSource(Generic[T]):
@@ -35,6 +94,7 @@ class _AsyncSource(Generic[T]):
 
     __slots__ = (
         "_claimed",
+        "_live_size_data",
         "_lock",
         "_opener",
         "_retained_opener",
@@ -54,6 +114,7 @@ class _AsyncSource(Generic[T]):
         self._opener = opener
         self._retained_opener: Callable[[], AsyncIterator[T]] | None = None
         self._retained_sequence: object = _NO_RETAINED_SEQUENCE
+        self._live_size_data: object = _NO_RETAINED_SEQUENCE
         self.reiterable = reiterable
         self._claimed = False
         self._lock = Lock()
@@ -69,8 +130,8 @@ class _AsyncSource(Generic[T]):
         one_shot = isinstance(source, (AsyncIterator, Iterator))
         source_type = type(source)
         native_sequence = source_type is list or source_type is tuple or source_type is range
-        safely_sized = (
-            native_sequence or source_type is str or source_type is bytes or source_type is dict
+        safely_sized = native_sequence or any(
+            source_type is kind for kind in (str, bytes, dict, set, frozenset)
         )
         try:
             exact_size = len(source) if safely_sized else None  # type: ignore[arg-type]
@@ -89,9 +150,15 @@ class _AsyncSource(Generic[T]):
             """Adapt the retained construction-time source on each evaluation."""
             return _to_async_iterator(source)
 
+        if one_shot:
+            opener.__dict__["_one_shot_value"] = source
         result = cls(opener, reiterable=not one_shot, facts=facts)
-        if native_sequence:
+        if not one_shot and not safely_sized:
+            result.facts = replace(result.facts, replayability=Replayability.UNKNOWN)
+        if safely_sized:
             result._retained_opener = opener
+            result._live_size_data = source
+        if native_sequence:
             result._retained_sequence = source
         return result
 
@@ -124,6 +191,13 @@ class _AsyncSource(Generic[T]):
                 self._claimed = True
         return self._opener()
 
+    def one_shot_value(self) -> object:
+        """Return a one-shot value retained by the current canonical opener, if any."""
+        opener = self._opener
+        if type(opener) is FunctionType:
+            return opener.__dict__.get("_one_shot_value", _NO_RETAINED_SEQUENCE)
+        return _NO_RETAINED_SEQUENCE
+
     def retained_sequence(self) -> list[Any] | tuple[Any, ...] | range | None:
         """Return a still-canonical exact synchronous sequence retained by this source."""
         retained = self._retained_sequence
@@ -143,6 +217,29 @@ class _AsyncSource(Generic[T]):
             if type(retained) is not range:
                 raise
             return _range_size(retained)
+
+    def current_facts(self) -> StreamFacts:
+        """Refresh trusted built-in sizes without consuming or opening the source."""
+        if self._retained_opener is not None and self._opener is not self._retained_opener:
+            return replace(
+                self.facts,
+                termination=TerminationEvidence.UNKNOWN,
+                cardinality=Cardinality.unknown(),
+                ordering=OrderingGuarantee.UNKNOWN,
+            )
+        if self._live_size_data is _NO_RETAINED_SEQUENCE:
+            return self.facts
+        try:
+            size = len(self._live_size_data)  # type: ignore[arg-type]
+        except OverflowError:
+            if type(self._live_size_data) is not range:
+                raise
+            size = _range_size(self._live_size_data)
+        return replace(
+            self.facts,
+            termination=TerminationEvidence.PROVEN_FINITE,
+            cardinality=Cardinality.exact(size),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +402,7 @@ class _Chunk:
     """Group consecutive items into non-overlapping tuples of at most ``size`` values."""
 
     size: int
+    strict: bool = False
 
 
 @dataclass(frozen=True, slots=True)
