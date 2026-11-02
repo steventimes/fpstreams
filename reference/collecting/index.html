@@ -1911,7 +1911,7 @@ and spill groups. Every group receives fresh state from its initializer.</p>
 <code>collect(collector)</code>. Collector callbacks keep their usual synchronous contract
 when used with AsyncFlow. Composing a collector does not grant native execution
 or reducer laws; those still require their existing proofs and declarations.
-See the <a href="../../user-guide/analytics/#compose-a-weighted-collector-250">weighted collector recipe</a>.</p>
+See the <a href="../../user-guide/analytics/#compose-a-weighted-collector-unreleased">weighted collector recipe</a>.</p>
 <p><code>grouping_by</code> groups all matching keys, even when they are not adjacent;
 <code>group_runs</code> instead emits consecutive runs. The grouping classifier receives
 each item, including <code>None</code>, and <code>None</code> itself can also be a group key. A group's
@@ -5115,7 +5115,7 @@ normalization yourself when missing or incomparable values need a policy.</p>
 <p>These factories work with <code>Flow.aggregate</code>, <code>AsyncFlow.aggregate</code>, and global,
 grouped, sorted, or spilled row aggregation. Spill restores serialized records
 under its existing contract. The factories do not declare merge laws for
-arbitrary Python keys. See the <a href="../../user-guide/analytics/#select-records-by-version-250">latest-record recipe</a>.</p>
+arbitrary Python keys. See the <a href="../../user-guide/analytics/#select-records-by-version-unreleased">latest-record recipe</a>.</p>
 <p><code>top</code> and <code>bottom</code> return lists, retain at most <code>count</code> items per state, and
 keep input order for equal keys. The key runs once per item; payloads are never
 compared. Count must be a non-negative integer. Empty input and zero count
@@ -5123,7 +5123,7 @@ return <code>[]</code>; zero count skips key calls and does not pull an independ
 Grouped aggregation still reads the source to discover groups. Use consistently
 ordered keys: Python heap and sorting comparisons determine the result and
 propagate comparison errors. These aggregators declare no merge laws. See the
-<a href="../../user-guide/analytics/#rank-records-within-each-group-250">per-group ranking recipe</a>.</p>
+<a href="../../user-guide/analytics/#rank-records-within-each-group-unreleased">per-group ranking recipe</a>.</p>
 
 
 <div class="doc doc-object doc-class">

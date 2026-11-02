@@ -669,7 +669,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#october-18-completed-review-and-adopted-changes-250" class="md-nav__link">
+  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         October 18: completed review and adopted changes (2.4.0)
@@ -1223,7 +1223,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#october-18-completed-review-and-adopted-changes-250" class="md-nav__link">
+  <a href="#october-18-completed-review-and-adopted-changes-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         October 18: completed review and adopted changes (2.4.0)
@@ -1785,7 +1785,7 @@ is a terminal operation that includes the seed in its result list. fpstreams
 <code>scan(initial, function)</code> is lazy and emits only states produced from input items.
 Copying the Java name would obscure that difference.</p>
 <p>These are API comparisons, not a claim of semantic equivalence or measured
-performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-250">2.4.0 Collector overload</a>
+performance. The <a href="../reference/flow/#reduce-adjacent-runs-with-a-collector-unreleased">2.4.0 Collector overload</a>
 preserves the existing binary merger form without adding a new method name. Java
 parallel streams do not establish fpstreams support for distributed execution,
 event-time windows, or watermarks.</p>
@@ -1832,7 +1832,7 @@ rejected the corresponding floating-point counterexample. This does not prove
 integer laws for arbitrary user reducers. DABA remains a candidate requiring an
 explicit algebraic contract; it cannot silently replace arbitrary window
 callbacks or change initial partial-window behavior.</p>
-<h3 id="october-18-completed-review-and-adopted-changes-250">October 18: completed review and adopted changes (2.4.0)</h3>
+<h3 id="october-18-completed-review-and-adopted-changes-unreleased">October 18: completed review and adopted changes (2.4.0)</h3>
 <p>All 25 papers in this catalog were read in full. The project, specification,
 and commercial references were reviewed through relevant architecture documents,
 public documentation, and selected core implementations. Earlier links in the
@@ -1845,7 +1845,7 @@ every upstream repository or inspection of closed-source engine internals.</p>
 <li>Synchronous <code>filter_map()</code> removes tuple adaptation while preserving iterator
   boundaries. Async <code>filter_map()</code> uses the existing serial fusion stage. Both
   call the mapper once per input and discard only <code>None</code>.</li>
-<li><a href="../user-guide/execution-reports/#metadata-export-250">Report metadata export</a>
+<li><a href="../user-guide/execution-reports/#metadata-export-unreleased">Report metadata export</a>
   adds a schema version, metric units, resource scope, and event limits. Plan
   dictionaries also carry a schema version and execution mode. These are
   fpstreams schemas, not OpenLineage RunEvents or executable Substrait plans.</li>

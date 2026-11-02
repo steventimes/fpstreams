@@ -798,7 +798,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#thread-state-through-async-callbacks-250" class="md-nav__link">
+  <a href="#thread-state-through-async-callbacks-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Thread state through async callbacks (2.4.0)
@@ -809,7 +809,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -820,7 +820,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -2336,7 +2336,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#thread-state-through-async-callbacks-250" class="md-nav__link">
+  <a href="#thread-state-through-async-callbacks-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Thread state through async callbacks (2.4.0)
@@ -2347,7 +2347,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -2358,7 +2358,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -3749,7 +3749,7 @@ functions when the Future object itself is the intended state.</p>
 Execution reuses <code>fold</code>; it does not add runtime checks for hook awaitability
 or state types, and nested <code>Any</code> remains unknown. Use a
 caller-owned runtime check when accepting untrusted dynamic callback results.</p>
-<h2 id="thread-state-through-async-callbacks-250">Thread state through async callbacks (2.4.0)</h2>
+<h2 id="thread-state-through-async-callbacks-unreleased">Thread state through async callbacks (2.4.0)</h2>
 <p><code>AsyncFlow.unfold</code> and <code>aflow.unfold</code> accept synchronous, asynchronous, or mixed
 callbacks. Each call resolves before the next transition starts. Returning
 <code>(None, next_state)</code> emits <code>None</code>; returning <code>None</code> ends the source.</p>
@@ -3784,11 +3784,11 @@ from this cancellation. Other cancellation sources can still cancel it.</p>
 Cancellation propagates to the active callback and closes the owned iterator
 chain. Each evaluation begins with the supplied seed by reference; use
 <code>aflow.defer</code> when mutable state needs a new instance. See the
-<a href="../flow/#state-driven-generation-and-mapping-250">synchronous state examples</a>
+<a href="../flow/#state-driven-generation-and-mapping-unreleased">synchronous state examples</a>
 for tuple ordering and empty-input behavior.</p>
-<h2 id="reuse-sliding-window-aggregates-250">Reuse sliding-window aggregates (2.4.0)</h2>
+<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (2.4.0)</h2>
 <p><code>AsyncFlow.window_reduce(size, combine, step=1)</code> uses the same ordered aggregation
-strategies and <a href="../flow/#reuse-sliding-window-aggregates-250">algebraic contract</a>
+strategies and <a href="../flow/#reuse-sliding-window-aggregates-unreleased">algebraic contract</a>
 as the synchronous operation. The combine function is synchronous. It must be
 associative and must not modify its arguments; source values and emitted
 aggregates must remain unchanged during iteration. Awaitable combine functions
@@ -3805,9 +3805,9 @@ The operation creates no background task or prefetch buffer. Cancellation while
 waiting for the next source item propagates upstream and closes the iterator
 chain. A stack transfer runs synchronously and can take linear work in the
 window size; this operation adds no scheduling checkpoint inside a combine call.</p>
-<h2 id="reduce-adjacent-runs-with-a-collector-250">Reduce adjacent runs with a Collector (2.4.0)</h2>
+<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (2.4.0)</h2>
 <p><code>AsyncFlow.collapse(predicate, collector)</code> follows the same
-<a href="../flow/#reduce-adjacent-runs-with-a-collector-250">run and Collector rules</a>.
+<a href="../flow/#reduce-adjacent-runs-with-a-collector-unreleased">run and Collector rules</a>.
 The adjacent predicate may be synchronous or awaitable:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fpstreams</span><span class="w"> </span><span class="kn">import</span> <span class="n">Collectors</span><span class="p">,</span> <span class="n">aflow</span>

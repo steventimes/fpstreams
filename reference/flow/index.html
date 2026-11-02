@@ -753,7 +753,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#state-driven-generation-and-mapping-250" class="md-nav__link">
+  <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         State-driven generation and mapping (2.4.0)
@@ -764,7 +764,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -775,7 +775,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -2522,7 +2522,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#state-driven-generation-and-mapping-250" class="md-nav__link">
+  <a href="#state-driven-generation-and-mapping-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         State-driven generation and mapping (2.4.0)
@@ -2533,7 +2533,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reuse-sliding-window-aggregates-250" class="md-nav__link">
+  <a href="#reuse-sliding-window-aggregates-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reuse sliding-window aggregates (2.4.0)
@@ -2544,7 +2544,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#reduce-adjacent-runs-with-a-collector-250" class="md-nav__link">
+  <a href="#reduce-adjacent-runs-with-a-collector-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Reduce adjacent runs with a Collector (2.4.0)
@@ -4161,7 +4161,7 @@ raise <code>ValueError</code>. Each evaluation starts with fresh window state.</
 for Collector input policies and optional sketches, and the
 <a href="../../user-guide/analytics/#rolling-numerical-statistics-250">rolling recipe</a>
 for state bounds and rebuilding costs. These additions require the source version.</p>
-<h2 id="state-driven-generation-and-mapping-250">State-driven generation and mapping (2.4.0)</h2>
+<h2 id="state-driven-generation-and-mapping-unreleased">State-driven generation and mapping (2.4.0)</h2>
 <p><code>unfold</code> builds a source from state, while <code>map_accum</code> transforms an existing
 source with state. They use different tuple orders:</p>
 <table>
@@ -4217,7 +4217,7 @@ reused by reference, following <code>scan</code>. Use <code>flow.defer</code> to
 mutable state for each evaluation. The operation keeps the source's replay
 and cleanup rules and runs its state transitions sequentially even with
 parallel map defaults.</p>
-<h2 id="reuse-sliding-window-aggregates-250">Reuse sliding-window aggregates (2.4.0)</h2>
+<h2 id="reuse-sliding-window-aggregates-unreleased">Reuse sliding-window aggregates (2.4.0)</h2>
 <p><code>window_reduce(size, combine, step=1)</code> combines each count-based window without
 building a tuple and folding every overlapping value again:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">add</span>
@@ -4248,7 +4248,7 @@ Combine calls are amortized constant per input item; transferring a stack can
 take linear work in <code>size</code>. This does not provide DABA's worst-case constant
 operation bound. Small windows and windows without overlap may cost more than
 an ordinary fold; compare against <code>window(...).map(...)</code> for those workloads.</p>
-<h2 id="reduce-adjacent-runs-with-a-collector-250">Reduce adjacent runs with a Collector (2.4.0)</h2>
+<h2 id="reduce-adjacent-runs-with-a-collector-unreleased">Reduce adjacent runs with a Collector (2.4.0)</h2>
 <p><code>collapse(predicate, collector)</code> feeds each nonempty adjacent run into fresh
 <a href="../collecting/">Collector</a> state. The predicate sees neighboring input items,
 including when it is not transitive:</p>

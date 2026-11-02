@@ -747,7 +747,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bounded-ranking-and-python-collector-dispatch-250" class="md-nav__link">
+  <a href="#bounded-ranking-and-python-collector-dispatch-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Bounded ranking and Python collector dispatch (2.4.0)
@@ -830,7 +830,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completed-research-follow-up-on-october-18-250" class="md-nav__link">
+  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Completed research follow-up on October 18 (2.4.0)
@@ -841,7 +841,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#functional-programming-source-follow-up-250" class="md-nav__link">
+  <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Functional-programming source follow-up (2.4.0)
@@ -1538,7 +1538,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#bounded-ranking-and-python-collector-dispatch-250" class="md-nav__link">
+  <a href="#bounded-ranking-and-python-collector-dispatch-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Bounded ranking and Python collector dispatch (2.4.0)
@@ -1621,7 +1621,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completed-research-follow-up-on-october-18-250" class="md-nav__link">
+  <a href="#completed-research-follow-up-on-october-18-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Completed research follow-up on October 18 (2.4.0)
@@ -1632,7 +1632,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#functional-programming-source-follow-up-250" class="md-nav__link">
+  <a href="#functional-programming-source-follow-up-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Functional-programming source follow-up (2.4.0)
@@ -1690,11 +1690,9 @@
 
 
 <h1 id="status-and-roadmap">Status and roadmap</h1>
-<p>This page describes 2.5.0. It includes the static
-averaging type correction; runtime arithmetic is unchanged.
-Use the explicit averaging and async fold migration examples in the reference
-pages. This version assignment does not establish publication or completion of
-the remote release qualification matrix.</p>
+<p>Version 2.5.0 includes a static averaging type correction. Runtime arithmetic
+is unchanged. It preserves custom-key hash errors on Python 3.14 and 3.15.
+The reference pages provide explicit averaging and async fold migration examples.</p>
 <p><a href="https://github.com/steventimes/fpstreams/releases/tag/v2.4.1">Version 2.4.1</a>
 separates relational planning, grouping, and synchronous terminal helpers into
 dedicated modules. It preserves the public API, live callback bindings, source
@@ -1704,7 +1702,7 @@ ownership, and fallback rules. The internal module map is in
 adds stateful pipeline operations, composed collectors, shared execution limits,
 file recovery, and versioned report export. It also improves guarded Arrow
 execution and preserves conversion errors across optimized source paths. The
-<a href="#completed-research-follow-up-on-october-18-250">completed research follow-up</a>
+<a href="#completed-research-follow-up-on-october-18-unreleased">completed research follow-up</a>
 records the implementation scope and its local verification.</p>
 <p>Earlier release checkpoints and failed experiments below retain their original
 measurement dates, references, and limits.</p>
@@ -2230,12 +2228,12 @@ Python allocation peaks exclude prepared data and native heaps. These are local
 export-path measurements, not application speedups or a reviewed historical
 baseline. Zero-column Arrow and Polars output preserves row counts; Parquet
 writes reject nonempty rows without columns before publishing a destination.</p>
-<h3 id="bounded-ranking-and-python-collector-dispatch-250">Bounded ranking and Python collector dispatch (2.4.0)</h3>
+<h3 id="bounded-ranking-and-python-collector-dispatch-unreleased">Bounded ranking and Python collector dispatch (2.4.0)</h3>
 <p><code>agg.top(count, key=...)</code> and <code>agg.bottom(count, key=...)</code> retain at most K whole
 items per state, keep equal keys in input order, and compose with existing
 global, async, hash, sorted, and spill aggregation. A heap entry is allocated
 only for a retained candidate. Keys run once per item, and payloads are never
-compared. The <a href="../user-guide/analytics/#rank-records-within-each-group-250">ranking recipe</a>
+compared. The <a href="../user-guide/analytics/#rank-records-within-each-group-unreleased">ranking recipe</a>
 shows their use alongside a count.</p>
 <p>Three alternating local rounds at K=5 measured 92%–99% lower Python allocation
 peaks than collect-then-rank on 100,000 input records split into one or 60
@@ -2265,7 +2263,7 @@ collecting and sorting each group. <a href="https://trino.io/docs/current/functi
 and <a href="https://hudi.apache.org/docs/record_merger/">Hudi's record-merging model</a>
 supplied comparisons. fpstreams uses Python comparisons and keeps the first
 item on ties. It provides no persistent table, partial-update reconciliation,
-or event-time watermark. The <a href="../user-guide/analytics/#select-records-by-version-250">versioned-record recipe</a>
+or event-time watermark. The <a href="../user-guide/analytics/#select-records-by-version-unreleased">versioned-record recipe</a>
 applies deletion markers after selecting the winning version.</p>
 <p><a href="https://beam.apache.org/documentation/programming-guide/">Beam's accumulator lifecycle</a>
 maps to existing collectors and reducers. Further partial aggregation needs
@@ -2454,8 +2452,8 @@ local state access, and skip repeated iterator-initialization calls remain
 excluded: the first changed lifecycle behavior, and the others did not meet
 their declared performance thresholds. Keep those results when choosing a
 new experiment. The goals above do not promise throughput or memory gains.</p>
-<h3 id="completed-research-follow-up-on-october-18-250">Completed research follow-up on October 18 (2.4.0)</h3>
-<p>The <a href="../research-references/#october-18-completed-review-and-adopted-changes-250">reference review</a>
+<h3 id="completed-research-follow-up-on-october-18-unreleased">Completed research follow-up on October 18 (2.4.0)</h3>
+<p>The <a href="../research-references/#october-18-completed-review-and-adopted-changes-unreleased">reference review</a>
 is complete for all 25 papers and the selected documentation and implementation
 scope of the non-paper references. The adopted changes are implemented and
 verified:</p>
@@ -2463,7 +2461,7 @@ verified:</p>
 <li>integer-index validation before acquiring task and file resources;</li>
 <li>direct synchronous <code>filter_map()</code> execution and integration with async serial
   fusion, preserving one mapper call per input and all results except <code>None</code>;</li>
-<li>versioned plan dictionaries and <a href="../user-guide/execution-reports/#metadata-export-250">report export</a>,
+<li>versioned plan dictionaries and <a href="../user-guide/execution-reports/#metadata-export-unreleased">report export</a>,
   with reports recording metric units, resource scope, and event limits;</li>
 <li>a shared selection mask for proven primitive Arrow comparison chains;</li>
 <li>earlier release of encoded buffers and completed decoded frames during spilling.</li>
@@ -2483,7 +2481,7 @@ adopted in that review. Later 2.5.0 sketch collectors are documented in the
 A completed reference review does not schedule other capabilities.</p>
 <p>Further optimization candidates remain below. Start from the verified source
 and profile a concrete workload before choosing another implementation change.</p>
-<h3 id="functional-programming-source-follow-up-250">Functional-programming source follow-up (2.4.0)</h3>
+<h3 id="functional-programming-source-follow-up-unreleased">Functional-programming source follow-up (2.4.0)</h3>
 <p>The <a href="https://github.com/hemanth/functional-programming-jargon/blob/a362b3a6117eeaa6042fc21e032afa30bab8b5d6/readme.md#anamorphism">FP jargon glossary's unfold example</a>
 motivates <code>flow.unfold</code> and <code>aflow.unfold</code>: a callback returns <code>(value, next_state)</code>
 or <code>None</code> to stop. fpstreams uses a lazy iterative source, permits <code>None</code> values
@@ -2498,7 +2496,7 @@ namespace is required. State starts from the supplied object on each execution;
 mutable objects are not cloned. These APIs add capability, with no speedup claim.</p>
 <p>FunctionalPlus's <a href="https://github.com/Dobiasd/FunctionalPlus/blob/462d2a2508360e982f08cda7b37a90617189d636/include/fplus/container_properties.hpp#L433">median implementation</a>
 and the consumer report's speed-percentile use case motivate the
-<a href="../user-guide/analytics/#exact-grouped-percentiles-250">exact grouped-percentile recipe</a>.
+<a href="../user-guide/analytics/#exact-grouped-percentiles-unreleased">exact grouped-percentile recipe</a>.
 It composes existing collectors with the standard library, calculates p50 and
 p90 together, and defines missing-value and small-group policies. Exact results
 retain the valid observations in each active group.</p>

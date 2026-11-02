@@ -508,7 +508,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#share-a-submission-budget-250" class="md-nav__link">
+  <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Share a submission budget (2.4.0)
@@ -1339,7 +1339,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#share-a-submission-budget-250" class="md-nav__link">
+  <a href="#share-a-submission-budget-unreleased" class="md-nav__link">
     <span class="md-ellipsis">
       
         Share a submission budget (2.4.0)
@@ -1724,7 +1724,7 @@ working set is not acceptable. Configure limits from an operational budget:</p>
 <p>If a limit is exceeded, inspect key skew, row size, and join fan-out before
 raising it. Spill processing can still fail when a single partition remains
 too large after repartitioning.</p>
-<h2 id="share-a-submission-budget-250">Share a submission budget (2.4.0)</h2>
+<h2 id="share-a-submission-budget-unreleased">Share a submission budget (2.4.0)</h2>
 <p>Several queries can reuse one executor while keeping their own <code>buffer</code> limits.
 To cap their combined unfinished work, give them the same <code>BoundedExecutor</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
