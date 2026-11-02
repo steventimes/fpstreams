@@ -174,17 +174,17 @@ pub(crate) fn terminal_f64_buffer_v2(
     {
         let result = match acquire_f64_buffer(values)? {
             Some(buffer) => {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
-                })?;
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native f64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
                 if program.is_empty() {
-                    run_f64_identity_terminal(slice.iter().map(|value| value.get()), terminal)
+                    run_f64_identity_terminal(slice, terminal)
                 } else {
-                    run_f64_terminal_state::<_, true>(
-                        slice.iter().map(|value| value.get()),
-                        program,
-                        terminal,
-                    )
+                    run_f64_terminal_state::<_, true>(slice, program, terminal)
                 }
             }
             None if program.is_empty() => run_f64_identity_terminal(std::iter::empty(), terminal),
@@ -380,10 +380,11 @@ fn mean_f64_staged_buffer(
 ) -> PyResult<Option<f64>> {
     let result = match acquire_f64_buffer(values)? {
         Some(buffer) => {
-            let slice = buffer.as_slice(py).ok_or_else(|| {
-                PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
-            })?;
-            run_f64_mean(slice.iter().map(|value| value.get()), program)
+            let slice =
+                crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(|| {
+                    PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
+                })?;
+            run_f64_mean(slice, program)
         }
         None => run_f64_mean(std::iter::empty(), program),
     };
@@ -402,12 +403,13 @@ pub(crate) fn mean_f64_buffer_v2(
         if program.is_empty() {
             let result = match acquire_f64_buffer(values)? {
                 Some(buffer) => {
-                    let slice = buffer.as_slice(py).ok_or_else(|| {
-                        PyTypeError::new_err(
-                            "native f64 buffers require one C-contiguous dimension",
-                        )
-                    })?;
-                    run_f64_identity_mean(slice.iter().map(|value| value.get()))
+                    let slice = crate::common::contiguous_buffer_values(Some(&buffer), py)
+                        .ok_or_else(|| {
+                            PyTypeError::new_err(
+                                "native f64 buffers require one C-contiguous dimension",
+                            )
+                        })?;
+                    run_f64_identity_mean(slice)
                 }
                 None => run_f64_identity_mean(std::iter::empty()),
             };
@@ -523,10 +525,14 @@ pub(crate) fn aggregate_f64_buffer_masked_v2(
     if program.is_empty() {
         let result = match acquire_f64_buffer(values)? {
             Some(buffer) => {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
-                })?;
-                run_f64_identity_aggregate_masked(slice.iter().map(|value| value.get()), mask)
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native f64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                run_f64_identity_aggregate_masked(slice, mask)
             }
             None => run_f64_identity_aggregate_masked(std::iter::empty(), mask),
         };

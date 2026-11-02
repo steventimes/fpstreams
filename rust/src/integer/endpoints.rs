@@ -858,12 +858,13 @@ pub(crate) fn mean_i64_buffer_v2(
                 if buffer.item_count() == 0 {
                     run_i64_identity_mean(std::iter::empty())
                 } else {
-                    let slice = buffer.as_slice(py).ok_or_else(|| {
-                        PyTypeError::new_err(
-                            "native i64 buffers require one C-contiguous dimension",
-                        )
-                    })?;
-                    run_i64_identity_mean_by(slice, |value| value.get())
+                    let slice = crate::common::contiguous_buffer_values(Some(&buffer), py)
+                        .ok_or_else(|| {
+                            PyTypeError::new_err(
+                                "native i64 buffers require one C-contiguous dimension",
+                            )
+                        })?;
+                    run_i64_identity_mean(slice)
                 }
             };
             py.check_signals()?;
@@ -874,10 +875,14 @@ pub(crate) fn mean_i64_buffer_v2(
             if buffer.item_count() == 0 {
                 run_i64_mean(std::iter::empty(), program)
             } else {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native i64 buffers require one C-contiguous dimension")
-                })?;
-                run_i64_mean(slice.iter().map(|value| value.get()), program)
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native i64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                run_i64_mean(slice, program)
             }
         };
         py.check_signals()?;
@@ -969,36 +974,20 @@ pub(crate) fn aggregate_i64_buffer_masked_v2(
                 if buffer.item_count() == 0 {
                     run_i64_identity_aggregate_masked(std::iter::empty(), mask)
                 } else {
-                    let slice = buffer.as_slice(py).ok_or_else(|| {
-                        PyTypeError::new_err(
-                            "native i64 buffers require one C-contiguous dimension",
-                        )
-                    })?;
+                    let slice = crate::common::contiguous_buffer_values(Some(&buffer), py)
+                        .ok_or_else(|| {
+                            PyTypeError::new_err(
+                                "native i64 buffers require one C-contiguous dimension",
+                            )
+                        })?;
                     match mask {
-                        AGGREGATE_MINIMUM => Ok((
-                            0,
-                            0,
-                            reduce_i64_min_by(slice, |value| value.get()),
-                            None,
-                            None,
-                            None,
-                            0.0,
-                            0.0,
-                        )),
-                        AGGREGATE_MAXIMUM => Ok((
-                            0,
-                            0,
-                            None,
-                            reduce_i64_max_by(slice, |value| value.get()),
-                            None,
-                            None,
-                            0.0,
-                            0.0,
-                        )),
-                        _ => run_i64_identity_aggregate_masked(
-                            slice.iter().map(|value| value.get()),
-                            mask,
-                        ),
+                        AGGREGATE_MINIMUM => {
+                            Ok((0, 0, reduce_i64_min_by(slice), None, None, None, 0.0, 0.0))
+                        }
+                        AGGREGATE_MAXIMUM => {
+                            Ok((0, 0, None, reduce_i64_max_by(slice), None, None, 0.0, 0.0))
+                        }
+                        _ => run_i64_identity_aggregate_masked(slice, mask),
                     }
                 }
             };
@@ -1010,10 +999,14 @@ pub(crate) fn aggregate_i64_buffer_masked_v2(
             if buffer.item_count() == 0 {
                 run_i64_aggregate_masked(std::iter::empty(), program, mask)
             } else {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native i64 buffers require one C-contiguous dimension")
-                })?;
-                run_i64_aggregate_masked(slice.iter().map(|value| value.get()), program, mask)
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native i64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                run_i64_aggregate_masked(slice, program, mask)
             }
         };
         py.check_signals()?;

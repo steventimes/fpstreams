@@ -12,6 +12,30 @@ use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyFloat, PyInt, PyList, PySet, PyString, PyTuple};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+/// Read a contiguous exported buffer without forming a Rust reference to its contents.
+///
+/// The export remains borrowed for the iterator lifetime. Callers keep Python attached and
+/// consume the iterator in their callback-free scan before releasing the export or checking
+/// signals, just as for strided buffer scans. No element references escape to Python.
+pub(crate) fn contiguous_buffer_values<'a, T: Element>(
+    buffer: Option<&'a PyBuffer<T>>,
+    _py: Python<'a>,
+) -> Option<impl ExactSizeIterator<Item = T> + 'a> {
+    let (pointer, count) = match buffer {
+        Some(buffer) => (
+            buffer.as_slice_ptr()?.as_ptr().cast::<T>(),
+            buffer.item_count(),
+        ),
+        None => (std::ptr::NonNull::<T>::dangling().as_ptr(), 0),
+    };
+    Some((0..count).map(move |index| {
+        // SAFETY: PyBuffer validated element size, format and alignment; the live export
+        // retains the contiguous allocation, and index is below its fixed element count.
+        // Read a value through the raw pointer instead of borrowing Python-owned memory.
+        unsafe { pointer.add(index).read() }
+    }))
+}
+
 // Keep these bit positions synchronized with ``NativeAggregateField`` in
 // ``collecting/aggregate_program.py``.  The masked ABI still returns the
 // established eight-slot snapshot; unrequested slots contain their empty

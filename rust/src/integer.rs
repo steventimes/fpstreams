@@ -736,25 +736,23 @@ fn select_i64_extreme<const MAXIMUM: bool>(left: i64, right: i64) -> i64 {
 
 #[cfg(not(Py_GIL_DISABLED))]
 #[inline]
-fn reduce_i64_extreme_by<T, F, const MAXIMUM: bool>(values: &[T], value: F) -> Option<i64>
+fn reduce_i64_extreme_by<I, const MAXIMUM: bool>(mut values: I) -> Option<i64>
 where
-    F: Fn(&T) -> i64,
+    I: ExactSizeIterator<Item = i64>,
 {
-    let (first, remaining) = values.split_first()?;
-    let first = value(first);
+    let first = values.next()?;
     let mut lane_0 = first;
     let mut lane_1 = first;
     let mut lane_2 = first;
     let mut lane_3 = first;
-    let mut chunks = remaining.chunks_exact(4);
-    for chunk in &mut chunks {
-        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, value(&chunk[0]));
-        lane_1 = select_i64_extreme::<MAXIMUM>(lane_1, value(&chunk[1]));
-        lane_2 = select_i64_extreme::<MAXIMUM>(lane_2, value(&chunk[2]));
-        lane_3 = select_i64_extreme::<MAXIMUM>(lane_3, value(&chunk[3]));
+    while values.len() >= 4 {
+        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, values.next().unwrap());
+        lane_1 = select_i64_extreme::<MAXIMUM>(lane_1, values.next().unwrap());
+        lane_2 = select_i64_extreme::<MAXIMUM>(lane_2, values.next().unwrap());
+        lane_3 = select_i64_extreme::<MAXIMUM>(lane_3, values.next().unwrap());
     }
-    for item in chunks.remainder() {
-        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, value(item));
+    for item in values {
+        lane_0 = select_i64_extreme::<MAXIMUM>(lane_0, item);
     }
     Some(select_i64_extreme::<MAXIMUM>(
         select_i64_extreme::<MAXIMUM>(lane_0, lane_1),
@@ -764,20 +762,14 @@ where
 
 #[cfg(not(Py_GIL_DISABLED))]
 #[inline]
-pub(crate) fn reduce_i64_min_by<T, F>(values: &[T], value: F) -> Option<i64>
-where
-    F: Fn(&T) -> i64,
-{
-    reduce_i64_extreme_by::<_, _, false>(values, value)
+pub(crate) fn reduce_i64_min_by<I: ExactSizeIterator<Item = i64>>(values: I) -> Option<i64> {
+    reduce_i64_extreme_by::<_, false>(values)
 }
 
 #[cfg(not(Py_GIL_DISABLED))]
 #[inline]
-pub(crate) fn reduce_i64_max_by<T, F>(values: &[T], value: F) -> Option<i64>
-where
-    F: Fn(&T) -> i64,
-{
-    reduce_i64_extreme_by::<_, _, true>(values, value)
+pub(crate) fn reduce_i64_max_by<I: ExactSizeIterator<Item = i64>>(values: I) -> Option<i64> {
+    reduce_i64_extreme_by::<_, true>(values)
 }
 
 pub(crate) fn run_i64_identity_aggregate_masked<I>(

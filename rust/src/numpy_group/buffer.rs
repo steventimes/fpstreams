@@ -2,7 +2,9 @@
 
 use super::{GroupData, TypedGroupData};
 use crate::common::{AGGREGATE_MAXIMUM, AGGREGATE_MINIMUM, AGGREGATE_TOTAL};
-use pyo3::buffer::{Element, ElementType, PyBuffer, PyUntypedBuffer, ReadOnlyCell};
+#[cfg(not(Py_GIL_DISABLED))]
+use pyo3::buffer::ReadOnlyCell;
+use pyo3::buffer::{Element, ElementType, PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 use std::ffi::CStr;
@@ -291,40 +293,12 @@ fn acquire_strided_numeric_buffer(
     }
 }
 
-fn bool_slice<'a>(
-    buffer: &'a Option<PyBuffer<BufferBool>>,
+fn buffer_values<'a, T: Element>(
+    buffer: &'a Option<PyBuffer<T>>,
     py: Python<'a>,
-) -> &'a [ReadOnlyCell<BufferBool>] {
-    buffer
-        .as_ref()
-        .map(|buffer| {
-            buffer
-                .as_slice(py)
-                .expect("a validated one-dimensional C buffer has a typed slice")
-        })
-        .unwrap_or(&[])
-}
-
-fn i64_slice<'a>(buffer: &'a Option<PyBuffer<i64>>, py: Python<'a>) -> &'a [ReadOnlyCell<i64>] {
-    buffer
-        .as_ref()
-        .map(|buffer| {
-            buffer
-                .as_slice(py)
-                .expect("a validated one-dimensional C buffer has a typed slice")
-        })
-        .unwrap_or(&[])
-}
-
-fn u64_slice<'a>(buffer: &'a Option<PyBuffer<u64>>, py: Python<'a>) -> &'a [ReadOnlyCell<u64>] {
-    buffer
-        .as_ref()
-        .map(|buffer| {
-            buffer
-                .as_slice(py)
-                .expect("a validated one-dimensional C buffer has a typed slice")
-        })
-        .unwrap_or(&[])
+) -> impl ExactSizeIterator<Item = T> + 'a {
+    crate::common::contiguous_buffer_values(buffer.as_ref(), py)
+        .expect("a validated one-dimensional C buffer has contiguous values")
 }
 
 fn build_partial(
@@ -343,42 +317,34 @@ fn build_partial(
     }
     match (keys, values) {
         (NumericBuffer::Bool(keys), Some(NumericBuffer::Bool(values))) => {
-            let keys = bool_slice(&keys, py);
-            let values = bool_slice(&values, py);
+            let keys = buffer_values(&keys, py);
+            let values = buffer_values(&values, py);
             GroupData::from_iterators(
-                keys.iter().map(|value| value.get().0 != 0),
-                Some(values.iter().map(|value| value.get().0 != 0)),
+                keys.map(|value| value.0 != 0),
+                Some(values.map(|value| value.0 != 0)),
                 mask,
             )
             .map(TypedGroupData::Bool)
             .map(Some)
         }
         (NumericBuffer::I64(keys), Some(NumericBuffer::I64(values))) => {
-            let keys = i64_slice(&keys, py);
-            let values = i64_slice(&values, py);
-            GroupData::from_iterators(
-                keys.iter().map(ReadOnlyCell::get),
-                Some(values.iter().map(ReadOnlyCell::get)),
-                mask,
-            )
-            .map(TypedGroupData::I64)
-            .map(Some)
+            let keys = buffer_values(&keys, py);
+            let values = buffer_values(&values, py);
+            GroupData::from_iterators(keys, Some(values), mask)
+                .map(TypedGroupData::I64)
+                .map(Some)
         }
         (NumericBuffer::U64(keys), Some(NumericBuffer::U64(values))) => {
-            let keys = u64_slice(&keys, py);
-            let values = u64_slice(&values, py);
-            GroupData::from_iterators(
-                keys.iter().map(ReadOnlyCell::get),
-                Some(values.iter().map(ReadOnlyCell::get)),
-                mask,
-            )
-            .map(TypedGroupData::U64)
-            .map(Some)
+            let keys = buffer_values(&keys, py);
+            let values = buffer_values(&values, py);
+            GroupData::from_iterators(keys, Some(values), mask)
+                .map(TypedGroupData::U64)
+                .map(Some)
         }
         (NumericBuffer::Bool(keys), None) => {
-            let keys = bool_slice(&keys, py);
+            let keys = buffer_values(&keys, py);
             GroupData::from_iterators(
-                keys.iter().map(|value| value.get().0 != 0),
+                keys.map(|value| value.0 != 0),
                 None::<std::iter::Empty<bool>>,
                 mask,
             )
@@ -386,24 +352,16 @@ fn build_partial(
             .map(Some)
         }
         (NumericBuffer::I64(keys), None) => {
-            let keys = i64_slice(&keys, py);
-            GroupData::from_iterators(
-                keys.iter().map(ReadOnlyCell::get),
-                None::<std::iter::Empty<i64>>,
-                mask,
-            )
-            .map(TypedGroupData::I64)
-            .map(Some)
+            let keys = buffer_values(&keys, py);
+            GroupData::from_iterators(keys, None::<std::iter::Empty<i64>>, mask)
+                .map(TypedGroupData::I64)
+                .map(Some)
         }
         (NumericBuffer::U64(keys), None) => {
-            let keys = u64_slice(&keys, py);
-            GroupData::from_iterators(
-                keys.iter().map(ReadOnlyCell::get),
-                None::<std::iter::Empty<u64>>,
-                mask,
-            )
-            .map(TypedGroupData::U64)
-            .map(Some)
+            let keys = buffer_values(&keys, py);
+            GroupData::from_iterators(keys, None::<std::iter::Empty<u64>>, mask)
+                .map(TypedGroupData::U64)
+                .map(Some)
         }
         _ => Ok(None),
     }

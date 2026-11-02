@@ -151,11 +151,11 @@ fn i64_slice_extrema_preserve_empty_singleton_order_remainders_and_boundaries() 
 
     for &(values, expected_minimum, expected_maximum) in cases {
         assert_eq!(
-            crate::integer::reduce_i64_min_by(values, |value| *value),
+            crate::integer::reduce_i64_min_by(values.iter().copied()),
             expected_minimum,
         );
         assert_eq!(
-            crate::integer::reduce_i64_max_by(values, |value| *value),
+            crate::integer::reduce_i64_max_by(values.iter().copied()),
             expected_maximum,
         );
     }

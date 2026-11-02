@@ -345,15 +345,14 @@ pub(crate) fn update_mean_i64_buffer_v1(
             if buffer.item_count() == 0 {
                 update_i64_mean_state(count, total, compensation, std::iter::empty())
             } else {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native i64 buffers require one C-contiguous dimension")
-                })?;
-                update_i64_mean_state(
-                    count,
-                    total,
-                    compensation,
-                    slice.iter().map(|value| value.get()),
-                )
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native i64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                update_i64_mean_state(count, total, compensation, slice)
             }
         };
         py.check_signals()?;
@@ -384,15 +383,14 @@ pub(crate) fn update_mean_f64_buffer_v1(
     {
         let result = match acquire_f64_buffer(values)? {
             Some(buffer) => {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
-                })?;
-                update_mean_state(
-                    count,
-                    total,
-                    compensation,
-                    slice.iter().map(|value| value.get()),
-                )
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native f64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                update_mean_state(count, total, compensation, slice)
             }
             None => update_mean_state(count, total, compensation, std::iter::empty()),
         };
@@ -424,10 +422,14 @@ pub(crate) fn update_sum_f64_buffer_v1(
     {
         let result = match acquire_f64_buffer(values)? {
             Some(buffer) => {
-                let slice = buffer.as_slice(py).ok_or_else(|| {
-                    PyTypeError::new_err("native f64 buffers require one C-contiguous dimension")
-                })?;
-                update_f64_sum_state(total, slice.iter().map(|value| value.get()))
+                let slice = crate::common::contiguous_buffer_values(Some(&buffer), py).ok_or_else(
+                    || {
+                        PyTypeError::new_err(
+                            "native f64 buffers require one C-contiguous dimension",
+                        )
+                    },
+                )?;
+                update_f64_sum_state(total, slice)
             }
             None => total,
         };
