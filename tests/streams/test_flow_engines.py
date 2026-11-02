@@ -45,6 +45,13 @@ def _track_evaluator_calls(monkeypatch, owner, attribute):
     return calls
 
 
+def _assert_signal_script_succeeds(code: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False, timeout=10
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def _engine_square(value: int) -> int:
     return value * value
 
@@ -3671,15 +3678,7 @@ assert handled_signal
 assert values.size == 1
 """
 
-    completed = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-
-    assert completed.returncode == 0, completed.stderr
+    _assert_signal_script_succeeds(code)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
@@ -3743,44 +3742,7 @@ else:
 
 """
 
-    completed = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
-@pytest.mark.parametrize("kind", ["i64", "f64"])
-def test_borrowed_numeric_buffer_delivers_pending_keyboard_interrupt(kind: str) -> None:
-    """The v2 scan releases its export before delivering a pending signal exception."""
-    import signal
-
-    from fpstreams import _native
-
-    np = pytest.importorskip("numpy")
-    dtype = np.int64 if kind == "i64" else np.float64
-    endpoint = _native.mean_i64_buffer_v2 if kind == "i64" else _native.mean_f64_buffer_v2
-    values = np.arange(4_000_000, dtype=dtype)
-    previous = signal.getsignal(signal.SIGALRM)
-
-    def interrupt(_signum: int, _frame: object) -> None:
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGALRM, interrupt)
-    signal.setitimer(signal.ITIMER_REAL, 0.0005, 0)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            endpoint(values, [])
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
-
-    values.resize(1, refcheck=False)
+    _assert_signal_script_succeeds(code)
 
 
 def test_flow_mean_dispatches_to_the_exact_mean_only_kernel(
@@ -3812,11 +3774,9 @@ def test_flow_mean_dispatches_to_the_exact_mean_only_kernel(
 
 @pytest.mark.parametrize("container", [list, tuple], ids=["list", "tuple"])
 @pytest.mark.parametrize(
-    "first",
-    [2**100, True, 0.5],
-    ids=["bigint", "bool", "float"],
+    "first", [2**100, True, 0.5, "not numeric"], ids=["bigint", "bool", "float", "unsupported"]
 )
-def test_flow_mean_exact_container_candidate_does_not_require_an_i64_first_item(
+def test_flow_mean_exact_container_item_validation_preserves_results_and_errors(
     monkeypatch: pytest.MonkeyPatch,
     container: type[list[object]] | type[tuple[object, ...]],
     first: object,
@@ -3837,8 +3797,12 @@ def test_flow_mean_exact_container_candidate_does_not_require_an_i64_first_item(
     monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = container([first, *range(1, 32)])
 
-    assert fpstreams.flow(values).explain("mean").to_dict()["selected_engine"] == "native"
-    assert fpstreams.flow(values).mean() == compensated_mean(values)
+    if isinstance(first, str):
+        with pytest.raises(TypeError, match="real numeric values"):
+            fpstreams.flow(values).mean()
+    else:
+        assert fpstreams.flow(values).explain("mean").to_dict()["selected_engine"] == "native"
+        assert fpstreams.flow(values).mean() == compensated_mean(values)
     assert calls == 1
 
 
@@ -3874,31 +3838,6 @@ def test_flow_mean_exact_container_decline_replays_python_once(
 
     assert fpstreams.flow(values).mean() == pytest.approx((10.0 + sum(range(1, 32))) / 32)
     assert endpoint_calls == protocol_calls == 1
-
-
-@pytest.mark.parametrize("container", [list, tuple], ids=["list", "tuple"])
-def test_flow_mean_exact_container_decline_preserves_non_numeric_error(
-    monkeypatch: pytest.MonkeyPatch,
-    container: type[list[object]] | type[tuple[object, ...]],
-) -> None:
-    """Unsupported objects are untouched by Rust and rejected by the canonical reducer."""
-    from fpstreams.execution import native
-
-    extension = native._native
-    calls = 0
-
-    class TrackedNative(_NativeProxy):
-        def mean_exact_numbers_v1(self, source: object) -> object:
-            nonlocal calls
-            calls += 1
-            return extension.mean_exact_numbers_v1(source)
-
-    monkeypatch.setattr(native, "_native", TrackedNative(extension))
-    values = container(["not numeric", *range(1, 32)])
-
-    with pytest.raises(TypeError, match="real numeric values"):
-        fpstreams.flow(values).mean()
-    assert calls == 1
 
 
 @pytest.mark.parametrize("container", [list, tuple], ids=["list", "tuple"])

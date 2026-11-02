@@ -172,6 +172,12 @@ jobs:
           uv run maturin develop --release
           uv run pytest -q -W error tests/contracts/test_release.py tests/tabular tests/streams/test_flow.py tests/streams/test_flow_engines.py tests/streams/test_reports.py tests/execution/test_runtime.py tests/streams/test_async.py tests/execution/test_native_pairs.py tests/execution/test_planning.py tests/execution/test_relational.py tests/execution/test_sorting.py -k 'spill or sqlite or high_water or atomic or cancel or borrowed or spawn or parallel or concurrent_callers or concurrent_queries or concurrent_compilation or cleanup_continues or custom_exception_formatting or file_checkpoint or native_numeric_variance'
 
+      - name: Deterministic pending interrupt and borrowed export release
+        if: runner.os == 'macOS'
+        run: >-
+          uv run --no-sync cargo test --manifest-path rust/Cargo.toml buffer_pending_interrupt
+          -- --exact tests::numeric::buffers::buffer_pending_interrupt
+
   adapter-compatibility:
     needs: changes
     if: inputs.qualification || ((github.event_name == 'push' || github.event_name == 'pull_request') && needs.changes.outputs.adapters == 'true') || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'tests' || inputs.suite == 'all'))

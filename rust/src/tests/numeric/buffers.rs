@@ -690,3 +690,48 @@ fn f64_buffer_identity_reducers_match_the_generic_identity_stage_on_numeric_edge
         assert_eq!(extrema.3.unwrap().to_bits(), (-0.0_f64).to_bits());
     });
 }
+
+#[test]
+#[cfg(not(Py_GIL_DISABLED))]
+fn buffer_pending_interrupt() {
+    use pyo3::exceptions::PyKeyboardInterrupt;
+    let name = "tests::numeric::buffers::buffer_pending_interrupt";
+    if std::env::var_os("FPSTREAMS_PENDING_INTERRUPT_CHILD").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1"])
+            .env("FPSTREAMS_PENDING_INTERRUPT_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    // A fresh process makes this CPython's main thread, regardless of harness order.
+    Python::initialize();
+    Python::attach(|py| {
+        let handler = PyModule::from_code(
+            py,
+            c"import signal\ndef interrupt(*args):\n    values.append(4)\n    raise KeyboardInterrupt\nsignal.signal(signal.SIGINT, interrupt)\n",
+            c"pending_interrupt.py",
+            c"pending_interrupt",
+        ).unwrap();
+        let cases = [i64_array(py, vec![1]), f64_array(py, vec![1.0])];
+        for (index, values) in cases.into_iter().enumerate() {
+            handler.setattr("values", &values).unwrap();
+            // Queue in C with no Python bytecode before the actual endpoint call.
+            unsafe {
+                pyo3::ffi::PyErr_SetInterrupt();
+                assert!(pyo3::ffi::PyErr_Occurred().is_null());
+            }
+            let result = if index == 0 {
+                mean_i64_buffer_v2(py, &values, Vec::new())
+            } else {
+                mean_f64_buffer_v2(py, &values, Vec::new())
+            };
+            let error = result.expect_err("the endpoint must deliver the queued interrupt");
+            assert!(error.is_instance_of::<PyKeyboardInterrupt>(py));
+            values.call_method1("append", (5,)).unwrap();
+            assert_eq!(values.len().unwrap(), 3);
+            assert!(py.check_signals().is_ok());
+        }
+    });
+}
