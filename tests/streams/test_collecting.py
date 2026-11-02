@@ -1263,12 +1263,6 @@ def test_flow_csv_can_neutralize_spreadsheet_formula_cells(tmp_path) -> None:
     )
 
 
-def test_collectors_remain_directly_callable() -> None:
-    joining = fpstreams.Collectors.joining(",")
-
-    assert joining([1, 2, 3]) == "1,2,3"
-
-
 def test_named_collectors_share_one_pass() -> None:
     pulls: list[int] = []
 

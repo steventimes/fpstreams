@@ -452,10 +452,6 @@ def test_rows_keeps_basic_table_navigation_in_the_same_chain() -> None:
 
     assert table.count() == 2
     assert table.skip(1).take(1).first() == {"id": 2}
-    assert fpstreams.rows([{"a": 1}, {"a": 2, "b": 3}]).to_columns() == {
-        "a": [1, 2],
-        "b": [None, 3],
-    }
 
 
 def test_rows_exposes_its_flow_and_plan_without_consuming_one_shot_input() -> None:

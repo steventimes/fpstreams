@@ -4779,16 +4779,6 @@ def test_arrow_group_sum_closes_its_retained_batch_iterator() -> None:
     assert events == ["batch", "close"]
 
 
-def test_arrow_reader_stays_one_shot_and_closes_after_short_circuit() -> None:
-    batch = pa.RecordBatch.from_pydict({"id": [1, 2, 3]})
-    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    source = fpstreams.rows.from_arrow(reader, batch_size=1)
-
-    assert source.take(1).to_list() == [{"id": 1}]
-    with pytest.raises(fpstreams.FlowConsumedError):
-        source.to_list()
-
-
 @pytest.mark.parametrize("kind", ["table", "record_batch"])
 def test_rows_arrow_c_stream_defers_known_native_batches_until_pull(kind: Any) -> None:
     """Importing a known-schema in-memory stream must not request its first batch."""
@@ -5100,7 +5090,11 @@ def test_arrow_record_batches_honor_batch_size_before_row_conversion(
     assert fpstreams.rows.from_arrow(batch, batch_size=2).take(1).to_list() == [{"id": 0}]
     assert converted_sizes == [2]
     converted_sizes.clear()
-    assert fpstreams.rows.from_arrow(reader, batch_size=2).take(1).to_list() == [{"id": 0}]
+    source = fpstreams.rows.from_arrow(reader, batch_size=2)
+    assert source.take(1).to_list() == [{"id": 0}]
+    assert converted_sizes == [2]
+    with pytest.raises(fpstreams.FlowConsumedError):
+        source.to_list()
     assert converted_sizes == [2]
 
 

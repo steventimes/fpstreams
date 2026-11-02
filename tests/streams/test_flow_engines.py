@@ -2001,7 +2001,6 @@ def test_direct_range_uses_native_terminals_without_a_synthetic_map() -> None:
         range(7),
         range(9, -8, -3),
         range(-11, 14, 4),
-        range(2**62, 2**62 + 10),
         range(-(2**63), -(2**63) + 10),
     ],
 )

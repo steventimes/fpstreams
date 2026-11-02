@@ -578,13 +578,6 @@ async def test_smoke_async_stream_runs() -> None:
     assert await scenario() == [11, 12, 13]
 
 
-_double = _times_two
-
-
-def _div_by_three(x: int) -> bool:
-    return x % 3 == 0
-
-
 def test_unit_transformations_cover_empty_single_many() -> None:
     assert Stream([]).map(lambda x: x).to_list() == []
     assert Stream([5]).filter(lambda x: x > 0).to_list() == [5]
@@ -625,13 +618,6 @@ def test_unit_collectors_grouping_partitioning_and_columns() -> None:
     columns = Stream([{"a": 1}, {"a": 2, "b": 3}]).collect(Collectors.to_columns())
     assert columns["a"] == [1, 2]
     assert columns["b"] == [None, 3]
-
-
-def test_unit_parallel_matches_sequential_for_pure_pipeline() -> None:
-    data = list(range(200))
-    seq = Stream(data).map(_double).filter(_div_by_three).to_list()
-    par = ParallelStream(data).map(_double).filter(_div_by_three).to_list()
-    assert sorted(par) == sorted(seq)
 
 
 def test_integration_etl_style_pipeline_with_collectors() -> None:

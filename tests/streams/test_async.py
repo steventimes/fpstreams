@@ -1000,6 +1000,9 @@ async def test_async_flow_from_queue_consumes_lazily_in_fifo_order_until_identit
     assert queue.get_calls == 0
     assert await values.to_list() == [3, equal_but_not_identical, 1]
     assert queue.get_calls == 4
+    with pytest.raises(fpstreams.FlowConsumedError):
+        await values.to_list()
+    assert queue.get_calls == 4
 
 
 def test_async_flow_from_queue_exposes_precise_one_shot_source_facts() -> None:
@@ -1034,19 +1037,6 @@ async def test_async_flow_from_queue_treats_queue_shutdown_as_source_end(
     monkeypatch.setattr(asyncio, "QueueShutDown", FakeQueueShutDown, raising=False)
 
     assert await fpstreams.aflow.from_queue(ShutdownQueue()).to_list() == []
-
-
-@pytest.mark.asyncio
-async def test_async_flow_from_queue_preserves_one_shot_consumption() -> None:
-    stop = object()
-    queue: asyncio.Queue[object] = asyncio.Queue()
-    queue.put_nowait(1)
-    queue.put_nowait(stop)
-    values = fpstreams.aflow.from_queue(queue, stop=stop)
-
-    assert await values.to_list() == [1]
-    with pytest.raises(fpstreams.FlowConsumedError):
-        await values.to_list()
 
 
 @pytest.mark.asyncio

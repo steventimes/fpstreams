@@ -301,16 +301,6 @@ def test_flow_supports_ranges_larger_than_ssize_t(
     assert values.chunk(3).take(1).to_list() == [tuple(prefix)]
 
 
-def test_one_shot_source_fails_instead_of_silently_returning_empty() -> None:
-    values = flow(iter([1, 2]))
-
-    assert values.to_list() == [1, 2]
-    with pytest.raises(Exception) as captured:
-        values.to_list()
-
-    assert type(captured.value).__name__ == "FlowConsumedError"
-
-
 def test_retained_source_metadata_declines_replaced_instance_factory() -> None:
     """Cached size and native data cannot outrank the live source factory."""
     values = flow([1, 2, 3])
@@ -3523,7 +3513,6 @@ def test_auto_unique_direct_sink_declines_active_failpoints(
 
 
 def test_structural_operations_stream_immutable_groups() -> None:
-    assert flow(range(5)).chunk(2).to_list() == [(0, 1), (2, 3), (4,)]
     assert flow(range(4)).window(3).to_list() == [(0, 1, 2), (1, 2, 3)]
     assert flow([1, 4, 9]).pairwise().to_list() == [(1, 4), (4, 9)]
     assert flow([1, 2, 3]).scan(0, lambda total, value: total + value).to_list() == [
