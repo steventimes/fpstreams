@@ -1,10 +1,8 @@
 # Status and roadmap
 
-This page describes 2.5.0. It includes the static
-averaging type correction; runtime arithmetic is unchanged.
-Use the explicit averaging and async fold migration examples in the reference
-pages. This version assignment does not establish publication or completion of
-the remote release qualification matrix.
+Version 2.5.0 includes a static averaging type correction. Runtime arithmetic
+is unchanged. It preserves custom-key hash errors on Python 3.14 and 3.15.
+The reference pages provide explicit averaging and async fold migration examples.
 
 [Version 2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1)
 separates relational planning, grouping, and synchronous terminal helpers into

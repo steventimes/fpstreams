@@ -10,6 +10,23 @@ import pytest
 
 import fpstreams
 
+
+class _AsyncCloseFailureSource(AsyncIterator[int]):
+    def __init__(self) -> None:
+        self.emitted = False
+        self.close_calls = 0
+
+    async def __anext__(self) -> int:
+        if self.emitted:
+            raise StopAsyncIteration
+        self.emitted = True
+        return 1
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        raise OSError("source close failed")
+
+
 # --- Statistics, sketches, and cancellation ---
 
 
@@ -53,16 +70,33 @@ async def test_async_grouping_preserves_hash_and_source_errors() -> None:
     source_failure = TypeError("source failed")
 
     class Key:
+        calls = 0
+
         def __hash__(self) -> int:
-            raise failure
+            self.calls += 1
+            if self.calls == failing_call:
+                raise failure
+            return 0
 
     async def source():
         yield "first"
         raise source_failure
 
-    with pytest.raises(TypeError) as captured:
-        await fpstreams.aflow([Key()]).frequencies()
-    assert captured.value is failure
+    for failing_call in (1, 2):
+        key = Key()
+        closed = []
+
+        async def keys(value=key, close_log=closed):
+            try:
+                yield value
+            finally:
+                close_log.append(True)
+
+        with pytest.raises(TypeError) as captured:
+            await fpstreams.aflow(keys()).frequencies()
+        assert captured.value is failure
+        assert key.calls == failing_call
+        assert closed == [True]
     with pytest.raises(TypeError) as captured:
         await fpstreams.aflow(source()).frequencies()
     assert captured.value is source_failure
@@ -1433,9 +1467,12 @@ async def test_async_prefetch_explicit_aclose_cancels_and_closes_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_prefetch_consumer_cancellation_cancels_and_closes_once() -> None:
-    source = _PrefetchBlockingSource(block_first=True)
-    task = asyncio.create_task(fpstreams.aflow(source).prefetch(1).to_list())
+@pytest.mark.parametrize("operation", ["prefetch", "session_window"])
+async def test_async_consumer_cancellation_closes_pending_work(operation) -> None:
+    source = _PrefetchBlockingSource(block_first=operation == "prefetch")
+    query = fpstreams.aflow(source)
+    query = query.prefetch(1) if operation == "prefetch" else query.session_window(10, max_count=10)
+    task = asyncio.create_task(query.to_list())
     await source.pull_started.wait()
 
     task.cancel()
@@ -2874,11 +2911,13 @@ async def test_async_concat_short_circuit_reused_source_closes_once(
 
 
 @pytest.mark.asyncio
-async def test_async_concat_releases_deferred_root_before_next_source() -> None:
+@pytest.mark.parametrize("operation", ["concat", "append"])
+async def test_async_root_cleanup_continues_without_retaining_closed_source(operation) -> None:
     import gc
     import weakref
 
     references = []
+    closed = []
 
     class Source:
         def __init__(self):
@@ -2894,17 +2933,20 @@ async def test_async_concat_releases_deferred_root_before_next_source() -> None:
             return 1
 
         async def aclose(self):
-            pass
+            closed.append(True)
 
     def factory():
         source = Source()
         references.append(weakref.ref(source))
         return source
 
-    iterator = fpstreams.aflow.defer(factory).map(lambda value: value).concat([2]).__aiter__()
+    query = fpstreams.aflow.defer(factory).map(lambda value: value)
+    query = query.concat([2]) if operation == "concat" else query.append(2)
+    iterator = query.__aiter__()
     try:
         assert await anext(iterator) == 1
         assert await anext(iterator) == 2
+        assert closed == [True]
         gc.collect()
         assert references[0]() is None
     finally:
@@ -3598,22 +3640,7 @@ async def test_async_callable_terminals_keep_primary_failure_when_source_close_f
     """Action and predicate failures stay primary while their source is closed once."""
     primary = ValueError("callback failed")
 
-    class Source(AsyncIterator[int]):
-        def __init__(self) -> None:
-            self.emitted = False
-            self.close_calls = 0
-
-        async def __anext__(self) -> int:
-            if self.emitted:
-                raise StopAsyncIteration
-            self.emitted = True
-            return 1
-
-        async def aclose(self) -> None:
-            self.close_calls += 1
-            raise OSError("source close failed")
-
-    source = Source()
+    source = _AsyncCloseFailureSource()
 
     def fail(_value: int) -> bool:
         raise primary
@@ -3635,22 +3662,7 @@ async def test_async_terminal_cleanup_failure_is_not_hidden_by_an_outer_exceptio
     """A normally completing terminal must not treat an ambient handler as its own failure."""
     outer = RuntimeError("outer failure")
 
-    class Source(AsyncIterator[int]):
-        def __init__(self) -> None:
-            self.emitted = False
-            self.close_calls = 0
-
-        async def __anext__(self) -> int:
-            if self.emitted:
-                raise StopAsyncIteration
-            self.emitted = True
-            return 1
-
-        async def aclose(self) -> None:
-            self.close_calls += 1
-            raise OSError("source close failed")
-
-    source = Source()
+    source = _AsyncCloseFailureSource()
     try:
         raise outer
     except RuntimeError:
@@ -4227,45 +4239,6 @@ async def test_async_sync_adapter_cleanup_continues_releasing_traversal_before_o
 
 
 @pytest.mark.asyncio
-async def test_async_root_cleanup_continues_without_retaining_closed_source() -> None:
-    import gc
-    import weakref
-
-    references = []
-    closed = []
-
-    class Source:
-        emitted = False
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if self.emitted:
-                raise StopAsyncIteration
-            self.emitted = True
-            return 1
-
-        async def aclose(self):
-            closed.append(True)
-
-    def factory():
-        source = Source()
-        references.append(weakref.ref(source))
-        return source
-
-    iterator = fpstreams.aflow.defer(factory).map(lambda value: value).append(2).__aiter__()
-    try:
-        assert await anext(iterator) == 1
-        assert await anext(iterator) == 2
-        assert closed == [True]
-        gc.collect()
-        assert references[0]() is None
-    finally:
-        await iterator.aclose()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["iter", "next", "close-eof", "close-explicit"])
 @pytest.mark.parametrize("error_type", ["stop", "async-stop", "exit", "cancel", "group"])
 async def test_async_sync_adapter_cancellation_and_stop_errors_keep_cleanup(
@@ -4609,20 +4582,6 @@ async def test_session_window_short_circuit_cancels_pull_and_closes_upstream() -
 
     assert result == [(1,)]
     assert source.pull_started.is_set()
-    assert source.pull_cancelled.is_set()
-    assert source.close_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_session_window_consumer_cancellation_closes_pending_work() -> None:
-    source = _PrefetchBlockingSource()
-    task = asyncio.create_task(fpstreams.aflow(source).session_window(10, max_count=10).to_list())
-    await source.pull_started.wait()
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
     assert source.pull_cancelled.is_set()
     assert source.close_calls == 1
 

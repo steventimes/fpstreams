@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import pickle
+import sys
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Event
 from typing import Any
 
 import pytest
 
+import fpstreams
 from fpstreams import flow
 from fpstreams.execution.asynchronous.concurrent import (
     Completion,
@@ -39,6 +45,7 @@ from fpstreams.runtime.failpoints import failpoint
 from fpstreams.runtime.metrics import QueryMetrics
 from fpstreams.runtime.tasks import TaskRole, TaskRuntime
 from fpstreams.storage import SpillFormatError, SpillGeneration, SpillStore
+from fpstreams.tabular import spill
 from fpstreams.tabular.spill_io import (
     PartitionFile,
     SpillLazyWriter,
@@ -54,9 +61,6 @@ from fpstreams.tabular.spill_io import (
 @pytest.mark.parametrize("shared_plan", [False, True])
 def test_free_threaded_flow_smoke(shared_plan: bool) -> None:
     """Exercise independent and concurrently reused plans with the GIL disabled."""
-    import os
-    import sys
-    from concurrent.futures import ThreadPoolExecutor
 
     import fpstreams
 
@@ -1135,7 +1139,6 @@ def test_file_registration_failure_returns_descriptor_lease(tmp_path) -> None:
 
 def test_file_manager_serializes_concurrent_limit_admission(tmp_path, monkeypatch) -> None:
     """Two simultaneous opens cannot both pass a one-descriptor query limit."""
-    from concurrent.futures import ThreadPoolExecutor
     from contextlib import suppress
     from pathlib import Path
     from threading import Barrier, BrokenBarrierError
@@ -1557,9 +1560,6 @@ def test_execute_physical_invalid_backend_payload_closes_runtime() -> None:
 
 def test_spilled_count_preaggregation_planner_accepts_only_the_closed_count_shape() -> None:
     """A broader selector or collector must never acquire the count-only spill strategy."""
-    import pickle
-
-    import fpstreams
 
     class OutputName(str):
         pass
@@ -1648,7 +1648,6 @@ def _execute_spilled_count(
     instrumented: bool,
 ) -> tuple[list[dict[str, Any]], int]:
     """Execute one real spill-count plan and return its result and physical bytes."""
-    import fpstreams
 
     grouped = (
         fpstreams.rows(records)
@@ -1704,8 +1703,6 @@ def test_spilled_count_gate_rejects_many_shallow_repeats_without_a_hot_key(
     monkeypatch,
 ) -> None:
     """Aggregate repeat evidence alone must not admit hundreds of one-row partials."""
-    import fpstreams
-    from fpstreams.tabular import spill
 
     keys = [key for _round in range(2) for key in range(128)]
     keys.extend(key for _round in range(6) for key in range(128))
@@ -1785,8 +1782,6 @@ def test_spilled_count_gate_rechecks_a_cold_prefix_for_later_hot_data() -> None:
 
 def test_spilled_count_gate_retires_after_a_hot_prefix_turns_cold(monkeypatch) -> None:
     """A stale prefix signal must not keep scanning an arbitrarily long unique tail."""
-    import fpstreams
-    from fpstreams.tabular import spill
 
     keys = [*([0] * 230), *range(1, 27), *range(1_000, 5_096)]
     records = [
@@ -1822,8 +1817,6 @@ def test_spilled_count_gate_retires_after_a_hot_prefix_turns_cold(monkeypatch) -
 
 def test_spilled_count_gate_stops_rechecking_a_still_unique_stream(monkeypatch) -> None:
     """A second cold window is enough when recurrence evidence remains absent."""
-    import fpstreams
-    from fpstreams.tabular import spill
 
     records = [
         {
@@ -1856,8 +1849,6 @@ def test_spilled_count_gate_stops_rechecking_a_still_unique_stream(monkeypatch) 
 
 def test_spilled_count_type_guard_keeps_custom_serialization_calls(monkeypatch) -> None:
     """A class equating itself to int must still flush the hot cache before pickling."""
-    import fpstreams
-    from fpstreams.tabular import spill
 
     calls: list[str] = []
 
@@ -1953,8 +1944,6 @@ class _SpillStatefulFieldKey:
 def test_spilled_count_preaggregation_keeps_mixed_protocol_and_key_semantics() -> None:
     """Only pure exact rows compact; cold rows and numeric aliases merge canonically."""
     import math
-
-    import fpstreams
 
     _SpillPickleObserved.calls = 0
     nan = float("nan")
@@ -2155,7 +2144,6 @@ def test_spilled_count_preaggregation_does_not_retain_unbounded_primitive_keys()
 
 def test_spilled_count_preaggregation_uses_exact_virtual_partition_limits(tmp_path) -> None:
     """Hot partials retain canonical raw row and framed-byte limits through repartition."""
-    import fpstreams
     from fpstreams.storage.codec import SpillCodec
 
     records = [{"id": "hot", "payload": "x" * 64} for _position in range(512)]
@@ -2212,7 +2200,6 @@ def test_spilled_count_preaggregation_uses_exact_virtual_partition_limits(tmp_pa
 
 def test_spilled_count_preaggregation_keeps_repartition_bytes_canonical(tmp_path) -> None:
     """Nested built-ins stay raw when pickle roundtrips change their framed byte size."""
-    import pickle
     from contextlib import nullcontext
 
     import fpstreams
@@ -2256,7 +2243,6 @@ def test_spilled_count_preaggregation_keeps_repartition_bytes_canonical(tmp_path
 
 def test_spilled_count_preaggregation_colds_distinct_equal_flat_strings_and_bytes() -> None:
     """Identity-sensitive flat values stay raw before pickle can canonicalize aliases."""
-    import pickle
 
     import fpstreams
     from fpstreams.storage.codec import SpillCodec
@@ -2311,8 +2297,6 @@ def test_active_failpoint_keeps_spilled_count_on_canonical_source_and_cleanup_pa
     tmp_path, monkeypatch
 ) -> None:
     """Instrumentation disables partial creation before the one-shot source is opened."""
-    import fpstreams
-    from fpstreams.tabular import spill
 
     opened = False
     specialized = False
@@ -2748,7 +2732,6 @@ def test_ordered_spill_merge_early_close_surfaces_reader_cleanup_failures(
 
 def test_nested_join_and_group_spills_compose_under_one_file_budget() -> None:
     """A downstream spill may consume an upstream spill without descriptor deadlock."""
-    import fpstreams
 
     left = [{"id": position % 8, "left": position} for position in range(64)]
     right = [{"id": position, "right": position * 10} for position in range(8)]
@@ -2774,7 +2757,6 @@ def test_nested_join_and_group_spills_compose_under_one_file_budget() -> None:
 
 def test_spilled_relational_file_minimum_is_checked_before_one_shot_input(tmp_path) -> None:
     """An unusable file budget fails before claiming or advancing a source generator."""
-    import fpstreams
 
     opened = False
 
@@ -3007,7 +2989,6 @@ def test_sorted_cursor_preserves_failures_and_record_identity() -> None:
 
 
 def test_sorted_group_cleanup_and_retention() -> None:
-    import fpstreams
 
     class Row(dict):
         live = 0
@@ -3227,7 +3208,6 @@ def test_sorted_join_failure_matrix(engine) -> None:
 
 
 def test_atomic_path_publication_contract(tmp_path, monkeypatch) -> None:
-    import os
 
     from fpstreams.io_safety import atomic_output_path
 
@@ -3355,7 +3335,6 @@ def test_sorted_keys_reject_custom_types_before_comparison(operation, compound) 
 def test_concurrent_callers_share_statistics_description_and_readonly_inputs(
     record_property,
 ) -> None:
-    from concurrent.futures import ThreadPoolExecutor
     from fractions import Fraction
     from threading import Barrier, Lock, get_ident
 
@@ -3420,7 +3399,6 @@ def test_concurrent_callers_share_statistics_description_and_readonly_inputs(
 def test_concurrent_queries_share_bounded_pool_across_failure_and_early_exit(
     record_property,
 ) -> None:
-    from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, Event, Lock, get_ident
 
     from fpstreams import BoundedExecutor
@@ -3503,7 +3481,6 @@ def test_concurrent_queries_share_bounded_pool_across_failure_and_early_exit(
 def test_bounded_executor_shares_admission_and_releases_cancelled_futures() -> None:
     """Independent submitters share one cap without transferring pool ownership."""
     from concurrent.futures import Executor, Future, ThreadPoolExecutor
-    from threading import Event
 
     from fpstreams import BoundedExecutor
 
@@ -3564,7 +3541,6 @@ def test_bounded_executor_submit_failure_and_immediate_completion_release_capaci
 
 def test_bounded_executor_shutdown_wakes_blocked_submitters() -> None:
     from concurrent.futures import Executor, Future, ThreadPoolExecutor
-    from threading import Event
 
     from fpstreams import BoundedExecutor
 
@@ -3593,7 +3569,6 @@ def test_bounded_executor_shutdown_wakes_blocked_submitters() -> None:
 
 def test_bounded_executor_shutdown_cancels_work_being_submitted() -> None:
     from concurrent.futures import Executor, Future, ThreadPoolExecutor
-    from threading import Event
 
     from fpstreams import BoundedExecutor
 
@@ -3646,7 +3621,6 @@ def test_bounded_executor_interrupted_admission_does_not_block_later_callers(mon
 
 @pytest.mark.parametrize("limit", [0, -1, 1.5])
 def test_bounded_executor_rejects_invalid_capacity(limit) -> None:
-    from concurrent.futures import ThreadPoolExecutor
 
     from fpstreams import BoundedExecutor
 
@@ -3656,7 +3630,6 @@ def test_bounded_executor_rejects_invalid_capacity(limit) -> None:
 
 @pytest.mark.parametrize("ordered", [False, True])
 def test_bounded_executor_integrates_with_parallel_flows_and_keeps_pool_open(ordered) -> None:
-    from concurrent.futures import ThreadPoolExecutor
 
     from fpstreams import BoundedExecutor, flow
 
@@ -3762,8 +3735,6 @@ def test_file_checkpoint_rejects_source_mutation_and_missing_output(tmp_path) ->
 
 
 def test_file_checkpoint_concurrent_same_partition_is_not_computed_twice(tmp_path) -> None:
-    from concurrent.futures import ThreadPoolExecutor
-    from threading import Event
 
     from fpstreams import FileCheckpoint
 
@@ -3794,7 +3765,6 @@ def test_file_checkpoint_process_exit_releases_lock_without_publishing_partial_o
 ) -> None:
     """A killed worker must not leave a stale ownership claim or a reusable partial result."""
     import subprocess
-    import sys
 
     from fpstreams import FileCheckpoint
 
@@ -3851,7 +3821,6 @@ def test_file_checkpoint_rejects_symlinked_completed_entries(tmp_path, target) -
 
 
 def test_file_checkpoint_runs_distinct_partitions_in_parallel(tmp_path) -> None:
-    from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
     from fpstreams import FileCheckpoint, flow

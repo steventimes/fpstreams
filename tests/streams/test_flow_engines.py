@@ -18,6 +18,33 @@ import fpstreams
 from fpstreams import flow
 
 
+class _NativeProxy:
+    """Delegate untouched native bindings while each test overrides its own ABI seam."""
+
+    def __init__(self, extension):
+        self.extension = extension
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.extension, name)
+
+
+def _track_evaluator_calls(monkeypatch, owner, attribute):
+    calls = [0]
+    original = getattr(owner, attribute)
+
+    def tracked_evaluator(self):
+        evaluator = original(self)
+
+        def evaluate(value: object) -> object:
+            calls[0] += 1
+            return evaluator(value)
+
+        return evaluate
+
+    monkeypatch.setattr(owner, attribute, tracked_evaluator)
+    return calls
+
+
 def _engine_square(value: int) -> int:
     return value * value
 
@@ -964,38 +991,27 @@ def test_python_executor_unwraps_compiled_expression_once(monkeypatch) -> None:
     assert result == [4, 10, 16, 22, 28]
 
 
-def test_exact_container_python_scalar_materialization_bypasses_stage_callbacks(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("size", "expected_calls"), [(4_096, 0), (2_048, 4_096)], ids=["fused", "cold-boundary"]
+)
+def test_python_scalar_materialization_respects_fusion_boundary(
+    monkeypatch: pytest.MonkeyPatch, size, expected_calls
 ) -> None:
-    """A large closed scalar program must execute as one callback-free Python loop."""
     from fpstreams.expressions.program import ExprProgram
 
-    evaluator_calls = 0
-    original_evaluator = ExprProgram.evaluator
-
-    def tracked_evaluator(self: ExprProgram):
-        evaluator = original_evaluator(self)
-
-        def evaluate(value: object) -> object:
-            nonlocal evaluator_calls
-            evaluator_calls += 1
-            return evaluator(value)
-
-        return evaluate
-
-    monkeypatch.setattr(ExprProgram, "evaluator", tracked_evaluator)
+    evaluator_calls = _track_evaluator_calls(monkeypatch, ExprProgram, "evaluator")
     result = (
-        fpstreams.flow(range(4_096))
+        fpstreams.flow(range(size))
         .map(fpstreams.item * 3 + 1)
         .filter(fpstreams.item % 2 == 0)
         .with_engine("python")
         .to_list()
     )
 
-    assert len(result) == 2_048
+    assert len(result) == size // 2
     assert result[:3] == [4, 10, 16]
-    assert result[-1] == 12_286
-    assert evaluator_calls == 0
+    assert result[-1] == (size - 1) * 3 + 1
+    assert evaluator_calls[0] == expected_calls
 
 
 def test_auto_selected_python_scalar_materialization_bypasses_stage_callbacks(
@@ -1004,20 +1020,7 @@ def test_auto_selected_python_scalar_materialization_bypasses_stage_callbacks(
     """Auto plans kept in Python must reuse the closed scalar loop."""
     from fpstreams.expressions.program import ExprProgram
 
-    evaluator_calls = 0
-    original_evaluator = ExprProgram.evaluator
-
-    def tracked_evaluator(self: ExprProgram):
-        evaluator = original_evaluator(self)
-
-        def evaluate(value: object) -> object:
-            nonlocal evaluator_calls
-            evaluator_calls += 1
-            return evaluator(value)
-
-        return evaluate
-
-    monkeypatch.setattr(ExprProgram, "evaluator", tracked_evaluator)
+    evaluator_calls = _track_evaluator_calls(monkeypatch, ExprProgram, "evaluator")
     query = fpstreams.flow(range(4_096)).filter(fpstreams.fitem >= 2.0).map(fpstreams.fitem * 0.5)
 
     assert query.explain(terminal="list").to_dict()["selected_engine"] == "python"
@@ -1026,39 +1029,7 @@ def test_auto_selected_python_scalar_materialization_bypasses_stage_callbacks(
     assert len(result) == 4_094
     assert result[:3] == [1.0, 1.5, 2.0]
     assert result[-1] == 2_047.5
-    assert evaluator_calls == 0
-
-
-def test_python_scalar_fusion_keeps_cold_break_even_boundary_canonical(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A unique 2K query must not pay AST compilation before it can amortize it."""
-    from fpstreams.expressions.program import ExprProgram
-
-    evaluator_calls = 0
-    original_evaluator = ExprProgram.evaluator
-
-    def tracked_evaluator(self: ExprProgram):
-        evaluator = original_evaluator(self)
-
-        def evaluate(value: object) -> object:
-            nonlocal evaluator_calls
-            evaluator_calls += 1
-            return evaluator(value)
-
-        return evaluate
-
-    monkeypatch.setattr(ExprProgram, "evaluator", tracked_evaluator)
-    result = (
-        fpstreams.flow(range(2_048))
-        .map(fpstreams.item * 3 + 1)
-        .filter(fpstreams.item % 2 == 0)
-        .with_engine("python")
-        .to_list()
-    )
-
-    assert len(result) == 1_024
-    assert evaluator_calls == 4_096
+    assert evaluator_calls[0] == 0
 
 
 def test_exact_container_python_scalar_sum_bypasses_stage_callbacks(
@@ -1067,20 +1038,7 @@ def test_exact_container_python_scalar_sum_bypasses_stage_callbacks(
     """Scalar sum must fuse stages while retaining the built-in reducer semantics."""
     from fpstreams.expressions.scalar import Expr
 
-    evaluator_calls = 0
-    original_evaluator = Expr._python_evaluator
-
-    def tracked_evaluator(self: Expr):
-        evaluator = original_evaluator(self)
-
-        def evaluate(value: object) -> object:
-            nonlocal evaluator_calls
-            evaluator_calls += 1
-            return evaluator(value)
-
-        return evaluate
-
-    monkeypatch.setattr(Expr, "_python_evaluator", tracked_evaluator)
+    evaluator_calls = _track_evaluator_calls(monkeypatch, Expr, "_python_evaluator")
     result = (
         fpstreams.flow(range(4_096))
         .map(fpstreams.item * 3 + 1)
@@ -1090,7 +1048,7 @@ def test_exact_container_python_scalar_sum_bypasses_stage_callbacks(
     )
 
     assert result == 12_584_967
-    assert evaluator_calls == 0
+    assert evaluator_calls[0] == 0
 
 
 @pytest.mark.parametrize("coerce", [False, True])
@@ -1139,20 +1097,7 @@ def test_large_float_scalar_python_fusion_preserves_closed_expression_semantics(
 ) -> None:
     from fpstreams.expressions.program import ExprProgram
 
-    evaluator_calls = 0
-    original_evaluator = ExprProgram.evaluator
-
-    def tracked_evaluator(self: ExprProgram):
-        evaluator = original_evaluator(self)
-
-        def evaluate(value: object) -> object:
-            nonlocal evaluator_calls
-            evaluator_calls += 1
-            return evaluator(value)
-
-        return evaluate
-
-    monkeypatch.setattr(ExprProgram, "evaluator", tracked_evaluator)
+    evaluator_calls = _track_evaluator_calls(monkeypatch, ExprProgram, "evaluator")
     transformed = abs(-(fpstreams.fitem / 2.0) + 1.5)
     result = (
         fpstreams.flow([0, 1, 2, 3] * 1_024)
@@ -1165,7 +1110,7 @@ def test_large_float_scalar_python_fusion_preserves_closed_expression_semantics(
     assert len(result) == 2_048
     assert result[:4] == [1.0, 0.5, 1.0, 0.5]
     assert result[-1] == 0.5
-    assert evaluator_calls == 0
+    assert evaluator_calls[0] == 0
 
 
 def test_large_integer_scalar_python_fusion_preserves_reject_and_boolean_order() -> None:
@@ -2090,7 +2035,7 @@ def test_identity_range_metadata_terminals_do_not_enter_the_linear_rust_loop(
     linear_calls = 0
     aggregate_calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def terminal_i64_range(self, *args: object) -> object:
             nonlocal linear_calls
             linear_calls += 1
@@ -2101,10 +2046,7 @@ def test_identity_range_metadata_terminals_do_not_enter_the_linear_rust_loop(
             aggregate_calls += 1
             return extension.aggregate_i64_range_masked(*args)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     source = range(2**62, 2**62 + 10)
 
     for engine in ("auto", "native"):
@@ -2149,16 +2091,13 @@ def test_range_metadata_terminal_leaves_transformed_and_instrumented_plans_canon
     extension = native._native
     linear_calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def terminal_i64_range(self, *args: object) -> object:
             nonlocal linear_calls
             linear_calls += 1
             return extension.terminal_i64_range(*args)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
 
     transformed = fpstreams.flow(range(16)).map(fpstreams.item + 1)
     assert transformed.sum() == sum(range(1, 17))
@@ -2179,17 +2118,14 @@ def test_minmax_uses_the_masked_native_extrema_snapshot_and_truthful_explain(
     extension = native._native
     masks: list[int] = []
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def aggregate_i64_range_masked(self, *arguments: object) -> object:
             mask = arguments[-1]
             assert isinstance(mask, int)
             masks.append(mask)
             return extension.aggregate_i64_range_masked(*arguments)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = fpstreams.flow(range(32))
 
     explanation = values.explain("minmax").to_dict()
@@ -2235,16 +2171,13 @@ def test_minmax_container_identity_guard_opens_the_python_source_once(
             calls["open"] += 1
         return original_open(self)
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def aggregate_i64_masked(self, *arguments: object) -> object:
             calls["endpoint"] += 1
             return extension.aggregate_i64_masked(*arguments)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
     monkeypatch.setattr(Source, "open", tracked_open)
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
 
     assert values.minmax() == (2, 16)
     assert calls == {"endpoint": 0, "index": 0, "add": 1, "open": 1}
@@ -2268,16 +2201,13 @@ def test_minmax_range_native_decline_opens_the_untouched_source_once(
             calls["open"] += 1
         return original_open(self)
 
-    class RejectingNative:
+    class RejectingNative(_NativeProxy):
         def aggregate_i64_range_masked(self, *_arguments: object) -> object:
             calls["endpoint"] += 1
             raise TypeError("decline")
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
     monkeypatch.setattr(Source, "open", tracked_open)
-    monkeypatch.setattr(native, "_native", RejectingNative())
+    monkeypatch.setattr(native, "_native", RejectingNative(extension))
 
     assert values.minmax() == (2, 16)
     assert calls == {"endpoint": 1, "open": 1}
@@ -2435,16 +2365,13 @@ def test_large_identity_i64_container_sum_uses_the_native_terminal(
     extension = native._native
     calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def terminal_i64(self, *arguments: object) -> object:
             nonlocal calls
             calls += 1
             return extension.terminal_i64(*arguments)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     source = container(range(100_000))
     values = fpstreams.flow(source)
     explanation = values.explain("sum").to_dict()
@@ -2481,21 +2408,18 @@ def test_auto_identity_i64_container_sum_replays_after_a_late_exact_type_decline
     native_calls = 0
     subclass_additions: list[int] = []
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def terminal_i64(self, *arguments: object) -> object:
             nonlocal native_calls
             native_calls += 1
             return extension.terminal_i64(*arguments)
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
 
     class IntegerSubclass(int):
         def __radd__(self, other: int) -> int:
             subclass_additions.append(other)
             return other + int(self)
 
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     prefix_size = 65_536
     cases = (
         (2.5, 65_539.5),
@@ -2523,17 +2447,14 @@ def test_auto_identity_i64_container_sum_rejects_incompatible_boundary_items_bef
 
     extension = native._native
 
-    class RejectingNative:
+    class RejectingNative(_NativeProxy):
         def terminal_i64(self, *_arguments: object) -> object:
             raise AssertionError("a known-incompatible boundary item reached Rust")
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
 
     class IntegerSubclass(int):
         pass
 
-    monkeypatch.setattr(native, "_native", RejectingNative())
+    monkeypatch.setattr(native, "_native", RejectingNative(extension))
     cases = (
         (2.5, 65_538.5),
         (True, 65_537),
@@ -2561,14 +2482,11 @@ def test_large_identity_i64_container_sum_with_start_stays_in_python(
 
     extension = native._native
 
-    class RejectingNative:
+    class RejectingNative(_NativeProxy):
         def terminal_i64(self, *_arguments: object) -> object:
             raise AssertionError("a nonzero start reached the zero-start native sum")
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", RejectingNative())
+    monkeypatch.setattr(native, "_native", RejectingNative(extension))
 
     assert fpstreams.flow(container([1] * 65_536)).sum(7) == 65_543
 
@@ -2621,7 +2539,8 @@ def test_terminal_explain_matches_forced_native_and_range_execution() -> None:
     assert ranged["complexity"] == "O(1)"
 
 
-def test_exact_size_count_does_not_open_an_identity_source() -> None:
+@pytest.mark.parametrize("named", [False, True], ids=["count", "named-count"])
+def test_exact_size_count_does_not_open_an_identity_source(named: bool) -> None:
     from fpstreams.planning.source import Source, SourceCapabilities
 
     def fail_if_opened() -> Iterator[int]:
@@ -2632,8 +2551,11 @@ def test_exact_size_count_does_not_open_an_identity_source() -> None:
         fail_if_opened,
         SourceCapabilities(reiterable=True, exact_size=7),
     )
-
-    assert fpstreams.Flow(source).count() == 7
+    query = fpstreams.Flow(source)
+    if named:
+        assert query.aggregate(rows=fpstreams.agg.count()) == {"rows": 7}
+    else:
+        assert query.count() == 7
 
 
 @pytest.mark.parametrize(
@@ -2775,22 +2697,6 @@ def test_identity_exact_count_preserves_active_source_failpoints(engine: str) ->
             fpstreams.flow(source).with_engine(engine).aggregate(rows=fpstreams.agg.count())
 
         assert aggregate_captured.value is aggregate_failure
-
-
-def test_exact_size_named_count_does_not_open_an_identity_source() -> None:
-    """The named count aggregate shares the terminal count's exact-cardinality shortcut."""
-    from fpstreams.planning.source import Source, SourceCapabilities
-
-    def fail_if_opened() -> Iterator[int]:
-        raise AssertionError("exact-size source was opened")
-        yield
-
-    source = Source(
-        fail_if_opened,
-        SourceCapabilities(reiterable=True, exact_size=7),
-    )
-
-    assert fpstreams.Flow(source).aggregate(rows=fpstreams.agg.count()) == {"rows": 7}
 
 
 def test_cardinality_changing_plan_does_not_use_source_exact_size() -> None:
@@ -3202,16 +3108,13 @@ def test_one_shot_flow_mean_uses_one_consuming_native_loop_and_closes_on_errors(
     extension = native._native
     calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_iterator_chunk_v1(self, *arguments: object) -> object:
             nonlocal calls
             calls += 1
             return extension.mean_exact_iterator_chunk_v1(*arguments)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     assert fpstreams.flow(iter(range(1_000))).mean() == 499.5
     large_start = 1 << 100
     assert fpstreams.flow(iter(range(large_start, large_start + 1_000))).mean() == pytest.approx(
@@ -3272,7 +3175,7 @@ def test_numeric_iterator_mean_rechecks_live_continuation_between_chunks(
     def replacement(*_arguments: object) -> float:
         return -12_345.0
 
-    class MutatingNative:
+    class MutatingNative(_NativeProxy):
         def mean_exact_iterator_chunk_v1(self, *arguments: object) -> object:
             nonlocal calls
             calls += 1
@@ -3284,10 +3187,7 @@ def test_numeric_iterator_mean_rechecks_live_continuation_between_chunks(
                     canonical.__code__ = replacement.__code__
             return outcome
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", MutatingNative())
+    monkeypatch.setattr(native, "_native", MutatingNative(extension))
     values = list(range(5_000))
     try:
         execution = fpstreams.flow(iter(values)).run_with_report("mean")
@@ -3500,7 +3400,7 @@ def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
         if instruction.opname in {"PRECALL", "CALL"}
     }
 
-    class AlarmNative:
+    class AlarmNative(_NativeProxy):
         def mean_exact_numbers_v1(self, source: object) -> object:
             assert source is values
             signal.setitimer(signal.ITIMER_REAL, delay, 0)
@@ -3511,9 +3411,6 @@ def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
                 signal.setitimer(signal.ITIMER_REAL, 0)
             assert outcome == (False, None)
             return outcome
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
 
     def shrink_front_and_replace_late_value(_signum: int, frame: FrameType | None) -> None:
         nonlocal handled_signal
@@ -3528,7 +3425,7 @@ def test_exact_numeric_mean_decline_is_atomic_before_signal_mutation(
         values[300_000] = 7
 
     signal.signal(signal.SIGALRM, shrink_front_and_replace_late_value)
-    monkeypatch.setattr(native, "_native", AlarmNative())
+    monkeypatch.setattr(native, "_native", AlarmNative(extension))
     try:
         for attempt in range(10):
             values = original.copy()
@@ -3656,7 +3553,7 @@ def test_numpy_f64_identity_terminals_prefer_borrowed_v2_endpoints(
     extension = native._native
     calls: list[str] = []
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def terminal_f64_buffer_v2(self, *args: object) -> object:
             calls.append("terminal")
             return extension.terminal_f64_buffer_v2(*args)
@@ -3669,10 +3566,7 @@ def test_numpy_f64_identity_terminals_prefer_borrowed_v2_endpoints(
             calls.append("aggregate")
             return extension.aggregate_f64_buffer_masked_v2(*args)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = fpstreams.flow.from_numpy(np.arange(32, dtype=np.float64))
 
     assert values.sum() == 496.0
@@ -3898,7 +3792,7 @@ def test_flow_mean_dispatches_to_the_exact_mean_only_kernel(
     extension = native._native
     calls: list[str] = []
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_numbers_v1(self, *args: object) -> object:
             calls.append("mean_exact_numbers_v1")
             return extension.mean_exact_numbers_v1(*args)
@@ -3909,10 +3803,7 @@ def test_flow_mean_dispatches_to_the_exact_mean_only_kernel(
         def mean_i64(self, *_args: object) -> object:
             raise AssertionError("identity mean must not copy into the typed bulk kernel")
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
 
     values: list[int | float] = [*range(31), 31.5]
     assert fpstreams.flow(values).mean() == pytest.approx(sum(values) / len(values))
@@ -3937,16 +3828,13 @@ def test_flow_mean_exact_container_candidate_does_not_require_an_i64_first_item(
     extension = native._native
     calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_numbers_v1(self, source: object) -> object:
             nonlocal calls
             calls += 1
             return extension.mean_exact_numbers_v1(source)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = container([first, *range(1, 32)])
 
     assert fpstreams.flow(values).explain("mean").to_dict()["selected_engine"] == "native"
@@ -3972,7 +3860,7 @@ def test_flow_mean_exact_container_decline_replays_python_once(
             protocol_calls += 1
             return 10.0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_numbers_v1(self, source: object) -> object:
             nonlocal endpoint_calls
             endpoint_calls += 1
@@ -3981,10 +3869,7 @@ def test_flow_mean_exact_container_decline_replays_python_once(
         def mean_i64(self, *_arguments: object) -> object:
             raise AssertionError("an exact-number decline must not retry the typed i64 adapter")
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = container([IntegerSubclass(1), *range(1, 32)])
 
     assert fpstreams.flow(values).mean() == pytest.approx((10.0 + sum(range(1, 32))) / 32)
@@ -4002,16 +3887,13 @@ def test_flow_mean_exact_container_decline_preserves_non_numeric_error(
     extension = native._native
     calls = 0
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_numbers_v1(self, source: object) -> object:
             nonlocal calls
             calls += 1
             return extension.mean_exact_numbers_v1(source)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
     values = container(["not numeric", *range(1, 32)])
 
     with pytest.raises(TypeError, match="real numeric values"):
@@ -4034,17 +3916,14 @@ def test_flow_mean_exact_container_overflow_is_not_replayed_in_python(
     def reject_replay(_values: object) -> None:
         pytest.fail("exact-container overflow must not replay Python")
 
-    class TrackedNative:
+    class TrackedNative(_NativeProxy):
         def mean_exact_numbers_v1(self, source: object) -> object:
             nonlocal calls
             calls += 1
             monkeypatch.setattr(flow_terminals, "compensated_mean", reject_replay)
             return extension.mean_exact_numbers_v1(source)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", TrackedNative())
+    monkeypatch.setattr(native, "_native", TrackedNative(extension))
 
     with pytest.raises(OverflowError, match="too large to convert to float"):
         fpstreams.flow(container([2**2000, *range(1, 32)])).mean()
@@ -4084,7 +3963,7 @@ def test_named_aggregate_prefers_scalar_and_masked_kernels_over_the_full_snapsho
 
     extension = native._native
 
-    class NoFullSnapshot:
+    class NoFullSnapshot(_NativeProxy):
         def aggregate_i64(self, *_args: object) -> object:
             raise AssertionError("container aggregate must use its field mask")
 
@@ -4098,10 +3977,7 @@ def test_named_aggregate_prefers_scalar_and_masked_kernels_over_the_full_snapsho
                 raise AssertionError("statistics-only aggregates must use the statistics kernel")
             return extension.aggregate_i64_range_masked(*args)
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", NoFullSnapshot())
+    monkeypatch.setattr(native, "_native", NoFullSnapshot(extension))
     values = fpstreams.flow(range(1, 6)).with_engine("native")
 
     assert values.aggregate(rows=fpstreams.agg.count()) == {"rows": 5}
@@ -4218,14 +4094,11 @@ def test_float_single_sum_preserves_the_sequential_aggregate_contract(
 
     extension = native._native
 
-    class NoScalarTotal:
+    class NoScalarTotal(_NativeProxy):
         def terminal_f64(self, *_args: object) -> object:
             raise AssertionError("f64 aggregate totals must not reuse scalar compensated sum")
 
-        def __getattr__(self, name: str) -> object:
-            return getattr(extension, name)
-
-    monkeypatch.setattr(native, "_native", NoScalarTotal())
+    monkeypatch.setattr(native, "_native", NoScalarTotal(extension))
     values = fpstreams.flow([1e16, 1.0, -1e16]).map(fpstreams.fitem + 0.0).with_engine("native")
 
     assert values.aggregate(total=fpstreams.agg.sum()) == {"total": 0.0}
@@ -4254,67 +4127,44 @@ def test_float_aggregate_total_requires_the_sequential_native_capability(
         automatic.with_engine("native").aggregate(total=fpstreams.agg.sum())
 
 
-def test_statistics_aggregate_failure_falls_back_without_a_second_native_attempt(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("attempt", "forbidden", "aggregations", "expected"),
+    [
+        (
+            "try_native_statistics",
+            ("try_native_aggregate",),
+            {"rows": fpstreams.agg.count(), "mean": fpstreams.agg.mean()},
+            {"rows": 3, "mean": 2.0},
+        ),
+        (
+            "try_native_mean",
+            ("try_native_statistics", "try_native_aggregate"),
+            {"mean": fpstreams.agg.mean()},
+            {"mean": 2.0},
+        ),
+        (
+            "try_native_terminal",
+            ("try_native_aggregate",),
+            {"low": fpstreams.agg.min()},
+            {"low": 1},
+        ),
+    ],
+    ids=["statistics", "mean-only", "scalar"],
+)
+def test_aggregate_failure_falls_back_without_a_second_native_attempt(
+    monkeypatch, attempt, forbidden, aggregations, expected
 ) -> None:
-    """One failed conversion enters Python directly instead of invoking another Rust ABI."""
     from fpstreams.streams import flow_terminals
 
-    monkeypatch.setattr(
-        flow_terminals,
-        "try_native_statistics",
-        lambda *_args, **_kwargs: (False, None),
-    )
+    monkeypatch.setattr(flow_terminals, attempt, lambda *_args, **_kwargs: (False, None))
 
     def reject_retry(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("statistics failure must not retry native conversion")
+        raise AssertionError("failed conversion must not retry another native ABI")
 
-    monkeypatch.setattr(flow_terminals, "try_native_aggregate", reject_retry)
+    for endpoint in forbidden:
+        monkeypatch.setattr(flow_terminals, endpoint, reject_retry)
 
-    assert fpstreams.flow(range(1, 4)).aggregate(
-        rows=fpstreams.agg.count(), mean=fpstreams.agg.mean()
-    ) == {"rows": 3, "mean": 2.0}
-
-
-def test_mean_only_aggregate_failure_falls_back_without_another_native_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A rejected mean-only conversion enters its canonical collector exactly once."""
-    from fpstreams.streams import flow_terminals
-
-    monkeypatch.setattr(
-        flow_terminals,
-        "try_native_mean",
-        lambda *_args, **_kwargs: (False, None),
-    )
-
-    def reject_retry(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("mean-only failure must not retry another native ABI")
-
-    monkeypatch.setattr(flow_terminals, "try_native_statistics", reject_retry)
-    monkeypatch.setattr(flow_terminals, "try_native_aggregate", reject_retry)
-
-    assert fpstreams.flow(range(1, 4)).aggregate(mean=fpstreams.agg.mean()) == {"mean": 2.0}
-
-
-def test_scalar_aggregate_failure_falls_back_without_a_second_native_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A rejected scalar aggregate never retries conversion through the snapshot ABI."""
-    from fpstreams.streams import flow_terminals
-
-    monkeypatch.setattr(
-        flow_terminals,
-        "try_native_terminal",
-        lambda *_args, **_kwargs: (False, None),
-    )
-
-    def reject_retry(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("scalar failure must not retry native conversion")
-
-    monkeypatch.setattr(flow_terminals, "try_native_aggregate", reject_retry)
-
-    assert fpstreams.flow(range(1, 4)).aggregate(low=fpstreams.agg.min()) == {"low": 1}
+    assert fpstreams.flow(range(1, 4)).aggregate(**aggregations) == expected
 
 
 def test_legacy_native_extension_falls_back_to_the_full_aggregate_snapshot(
@@ -4475,49 +4325,29 @@ def test_native_probe_preserves_forced_errors_and_auto_python_fallback() -> None
     assert fpstreams.flow(values).filter(fpstreams.item > 0).any() is True
 
 
-def test_auto_terminal_avoids_a_legacy_extension_without_container_probes(monkeypatch) -> None:
-    """Old wheels must not make auto short-circuit terminals copy a large container."""
-    from fpstreams.planning import native
-
-    real_extension = fpstreams._native
-
-    class LegacyExtension:
-        def __getattr__(self, name: str) -> object:
-            if name == "terminal_i64_probe":
-                raise AttributeError(name)
-            return getattr(real_extension, name)
-
-    monkeypatch.setattr(fpstreams, "_native", LegacyExtension())
-    native._EXTENSION_CAPABILITY_CACHE.clear()
-    native._PROBE_CAPABILITY_CACHE.clear()
-    decision = native.select_terminal_engine(
-        fpstreams.flow(list(range(300))).map(fpstreams.item + 1)._pipeline,
-        "first",
-    )
-    assert decision.engine == "python"
-
-
-def test_auto_float_terminal_avoids_a_legacy_extension_without_container_probes(
-    monkeypatch,
+@pytest.mark.parametrize("kind", ["i64", "f64"])
+def test_auto_terminal_avoids_a_legacy_extension_without_container_probes(
+    monkeypatch, kind
 ) -> None:
-    """The old-wheel guard applies to f64 containers as well as i64 ones."""
     from fpstreams.planning import native
 
     real_extension = fpstreams._native
 
     class LegacyExtension:
         def __getattr__(self, name: str) -> object:
-            if name == "terminal_f64_probe":
+            if name == f"terminal_{kind}_probe":
                 raise AttributeError(name)
             return getattr(real_extension, name)
 
     monkeypatch.setattr(fpstreams, "_native", LegacyExtension())
     native._EXTENSION_CAPABILITY_CACHE.clear()
     native._PROBE_CAPABILITY_CACHE.clear()
-    decision = native.select_terminal_engine(
-        fpstreams.flow([float(value) for value in range(300)]).map(fpstreams.fitem + 1.0)._pipeline,
-        "first",
+    query = (
+        fpstreams.flow(list(range(300))).map(fpstreams.item + 1)
+        if kind == "i64"
+        else fpstreams.flow([float(value) for value in range(300)]).map(fpstreams.fitem + 1.0)
     )
+    decision = native.select_terminal_engine(query._pipeline, "first")
     assert decision.engine == "python"
 
 
@@ -4793,13 +4623,15 @@ def test_direct_i64_map_list_endpoint_has_a_closed_phase_a_admission(
     assert getattr(pipeline, terminal)() == expected
 
 
-def test_direct_i64_map_list_none_and_late_bigint_replay_python(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("tail", "expected_tail"), [(2**100, 2**100 + 1), (2.5, 3.5)], ids=["bigint", "mixed"]
+)
+def test_direct_i64_map_list_late_decline_replays_python(
+    monkeypatch: pytest.MonkeyPatch, tail, expected_tail
 ) -> None:
-    """A late atomic decline never enters the legacy generic native adapter."""
     from fpstreams import _native
 
-    values = [*range(15), 2**100]
+    values = [*range(15), tail]
     calls = 0
 
     def decline(source: object, _instructions: object) -> None:
@@ -4811,45 +4643,12 @@ def test_direct_i64_map_list_none_and_late_bigint_replay_python(
     def reject_generic(*_arguments: object) -> object:
         raise AssertionError("a direct-endpoint decline must replay Python")
 
-    monkeypatch.setattr(
-        _native,
-        "materialize_i64_map_exact_list_v1",
-        decline,
-        raising=False,
-    )
+    monkeypatch.setattr(_native, "materialize_i64_map_exact_list_v1", decline, raising=False)
     monkeypatch.setattr(_native, "materialize_i64", reject_generic)
 
     assert fpstreams.flow(values).map(fpstreams.item + 1).to_list() == [
         *range(1, 16),
-        2**100 + 1,
-    ]
-    assert calls == 1
-
-
-def test_direct_i64_map_list_late_mixed_value_replays_python(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from fpstreams import _native
-
-    values: list[object] = [*range(15), 2.5]
-
-    calls = 0
-
-    def decline(_source: object, _instructions: object) -> None:
-        nonlocal calls
-        calls += 1
-        return None
-
-    monkeypatch.setattr(
-        _native,
-        "materialize_i64_map_exact_list_v1",
-        decline,
-        raising=False,
-    )
-
-    assert fpstreams.flow(values).map(fpstreams.item + 1).to_list() == [
-        *range(1, 16),
-        3.5,
+        expected_tail,
     ]
     assert calls == 1
 

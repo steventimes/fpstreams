@@ -15,6 +15,45 @@ import fpstreams
 from fpstreams import flow
 
 
+@pytest.fixture
+def observe_native(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], list[int]]:
+    """Observe real native calls without replacing their behavior."""
+    from fpstreams import _native
+
+    def observe(name: str) -> list[int]:
+        endpoint = getattr(_native, name)
+        calls: list[int] = []
+
+        def observed(*arguments: object) -> object:
+            calls.append(1)
+            return endpoint(*arguments)
+
+        monkeypatch.setattr(_native, name, observed)
+        return calls
+
+    return observe
+
+
+def _reject_pair_iterator(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    from fpstreams.execution import sync
+
+    def unexpected(*_arguments: object) -> Iterator[object]:
+        raise AssertionError("the final structured pair tail must be consumed directly")
+
+    monkeypatch.setattr(sync, name, unexpected)
+
+
+def _scaled_sum_step() -> Callable[[int, int], int]:
+    # Match the original sum step's selector closure for in-place code replacement.
+    def select(value: int) -> int:
+        return value
+
+    def replacement(current: int, value: int) -> int:
+        return current + select(value) * 10
+
+    return replacement
+
+
 def test_frequencies_collector_order_errors_and_close() -> None:
     collector = fpstreams.Collectors.frequencies()
     assert list(flow(["b", "a", "b", None]).collect(collector).items()) == [
@@ -23,11 +62,16 @@ def test_frequencies_collector_order_errors_and_close() -> None:
         (None, 1),
     ]
     assert flow([]).collect(collector) == {}
+
+
+@pytest.mark.parametrize("name,invalid", [("frequencies", []), ("mode", [1])])
+def test_hashing_collectors_preserve_errors_and_close(name: str, invalid: list[int]) -> None:
+    collector = getattr(fpstreams.Collectors, name)()
     closed = []
 
     def source():
         try:
-            yield []
+            yield invalid
         finally:
             closed.append(True)
 
@@ -80,27 +124,6 @@ def test_mode_collector_counts_values_and_keeps_first_tie() -> None:
     assert flow(["b", "a", "a", "b"]).collect(collector) == "b"
     assert flow([]).collect(collector) is None
     assert flow([None, "a", None]).collect(collector) is None
-    closed = []
-
-    def values():
-        try:
-            yield [1]
-        finally:
-            closed.append(True)
-
-    with pytest.raises(TypeError, match="unhashable"):
-        flow(values()).collect(fpstreams.Collectors.mode())
-    assert closed == [True]
-
-    failure = ValueError("hash failed")
-
-    class BadHash:
-        def __hash__(self) -> int:
-            raise failure
-
-    with pytest.raises(ValueError) as caught:
-        flow([BadHash()]).collect(fpstreams.Collectors.mode())
-    assert caught.value is failure
 
 
 @pytest.mark.parametrize("strategy", ["hash", "sorted", "spill"])
@@ -1289,21 +1312,28 @@ def test_named_collectors_stop_and_close_when_every_result_is_complete() -> None
     assert closed
 
 
-def test_grouping_by_steps_its_downstream_while_the_source_is_consumed() -> None:
+@pytest.mark.parametrize("adapter", ["grouping", "pairs"])
+def test_group_collectors_step_downstream_while_consuming_source(adapter: str) -> None:
     events: list[tuple[str, int]] = []
 
     def classifier(value: int) -> int:
         events.append(("source", value))
         return value % 2
 
+    def source() -> Iterator[tuple[str, int]]:
+        for key, value in (("a", 1), ("b", 2), ("a", 3)):
+            events.append(("source", value))
+            yield key, value
+
     def add(total: int, value: int) -> int:
         events.append(("step", value))
         return total + value
 
     downstream = fpstreams.Collector(lambda: 0, add)
-    grouped = fpstreams.Collectors.grouping_by(classifier, downstream)([1, 2, 3])
-
-    assert grouped == {1: 4, 0: 2}
+    if adapter == "grouping":
+        assert fpstreams.Collectors.grouping_by(classifier, downstream)([1, 2, 3]) == {1: 4, 0: 2}
+    else:
+        assert fpstreams.pairs(source()).collect_values(downstream) == {"a": 4, "b": 2}
     assert events == [
         ("source", 1),
         ("step", 1),
@@ -1847,12 +1877,7 @@ def test_pair_side_map_to_dict_consumes_the_structured_tail_directly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pair key/value maps can feed every dictionary policy without an intermediate tuple."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair map must be consumed directly")
-
-    monkeypatch.setattr(sync, "_map_pair_side", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_map_pair_side")
 
     values = (
         fpstreams.pairs([("a", 1), ("skip", 2), ("b", 3)])
@@ -1887,12 +1912,7 @@ def test_pair_map_to_dict_consumes_first_and_last_directly(
     policy: str,
 ) -> None:
     """A final map_pairs callback feeds common dictionary policies once per source item."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair map must be consumed directly")
-
-    monkeypatch.setattr(sync, "_map_pair_side", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_map_pair_side")
     events: list[object] = []
 
     def source() -> Iterator[tuple[str, int]]:
@@ -1923,12 +1943,7 @@ def test_pair_map_to_dict_preserves_callback_and_pair_failures(
     failure: str,
 ) -> None:
     """Direct map_pairs collection validates output pairs and always closes its source."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair map must be consumed directly")
-
-    monkeypatch.setattr(sync, "_map_pair_side", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_map_pair_side")
     events: list[object] = []
     primary = RuntimeError("mapping failed")
 
@@ -1964,26 +1979,35 @@ def test_pair_map_to_dict_preserves_callback_and_pair_failures(
     assert events == [("a", 1), ("b", 2), "closed"]
 
 
-def test_pair_map_to_dict_error_keeps_the_canonical_iterator(
+@pytest.mark.parametrize("target", ["pair", "key", "value"])
+def test_pair_tail_to_dict_error_keeps_the_canonical_iterator(
     monkeypatch: pytest.MonkeyPatch,
+    target: str,
 ) -> None:
-    """Duplicate-error map_pairs collection retains the established iterator path."""
+    """Duplicate-error collection retains each structured tail's canonical iterator."""
     from fpstreams.execution import sync
 
-    original = sync._map_pair_side
+    helper = "_map_pair_side" if target == "pair" else "_filter_pair_target"
+    original = getattr(sync, helper)
     observed: list[str] = []
 
-    def observe_pair_iterator(*arguments: object) -> Iterator[tuple[object, object]]:
+    def observe_pair_iterator(*arguments: object) -> Iterator[object]:
         descriptor = arguments[1]
-        observed.append(descriptor.side)  # type: ignore[attr-defined]
-        return original(*arguments)  # type: ignore[arg-type]
+        observed.append(getattr(descriptor, "side" if target == "pair" else "target"))
+        return original(*arguments)
 
-    monkeypatch.setattr(sync, "_map_pair_side", observe_pair_iterator)
-    mapped = fpstreams.pairs([("a", 1), ("a", 2)]).map_pairs(lambda key, value: (key, value))
+    monkeypatch.setattr(sync, helper, observe_pair_iterator)
+    entries = fpstreams.pairs([("a", 1), ("a", 2)])
+    if target == "pair":
+        pipeline = entries.map_pairs(lambda key, value: (key, value))
+    elif target == "key":
+        pipeline = entries.filter_keys(lambda _key: True)
+    else:
+        pipeline = entries.filter_values(lambda _value: True)
 
     with pytest.raises(fpstreams.DuplicateKeyError, match=r"^Duplicate key: 'a'$"):
-        mapped.to_dict()
-    assert observed == ["pair"]
+        pipeline.to_dict()
+    assert observed == [target]
 
 
 @pytest.mark.parametrize("tail", ["map", "filter"])
@@ -2069,12 +2093,7 @@ def test_pair_filter_to_dict_consumes_the_structured_tail_directly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A final two-argument pair filter feeds each dictionary policy directly."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair filter must be consumed directly")
-
-    monkeypatch.setattr(sync, "_filter_pair_target", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_filter_pair_target")
     calls: list[int] = []
 
     def accepted(_key: str, value: int) -> bool:
@@ -2102,12 +2121,7 @@ def test_pair_side_filter_to_dict_consumes_first_and_last_directly(
     policy: str,
 ) -> None:
     """Final key/value filters feed common dictionary policies without a generator layer."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair filter must be consumed directly")
-
-    monkeypatch.setattr(sync, "_filter_pair_target", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_filter_pair_target")
     events: list[object] = []
 
     def source() -> Iterator[tuple[str, int]]:
@@ -2154,12 +2168,7 @@ def test_pair_side_filter_to_dict_preserves_callback_exhaustion(
     boundary: object,
 ) -> None:
     """Direct key/value filter collection returns its prefix and closes on StopIteration."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the final structured pair filter must be consumed directly")
-
-    monkeypatch.setattr(sync, "_filter_pair_target", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_filter_pair_target")
     events: list[object] = []
 
     def source() -> Iterator[tuple[str, int]]:
@@ -2183,45 +2192,11 @@ def test_pair_side_filter_to_dict_preserves_callback_exhaustion(
     assert events == (["a", "b", "closed"] if target == "key" else [1, 2, "closed"])
 
 
-@pytest.mark.parametrize("target", ["key", "value"])
-def test_pair_side_filter_to_dict_error_keeps_the_canonical_iterator(
-    monkeypatch: pytest.MonkeyPatch,
-    target: str,
-) -> None:
-    """Duplicate-error collection retains the established structured iterator path."""
-    from fpstreams.execution import sync
-
-    original = sync._filter_pair_target
-    observed: list[str] = []
-
-    def observe_pair_iterator(*arguments: object) -> Iterator[object]:
-        descriptor = arguments[1]
-        observed.append(descriptor.target)  # type: ignore[attr-defined]
-        return original(*arguments)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(sync, "_filter_pair_target", observe_pair_iterator)
-    entries = fpstreams.pairs([("a", 1), ("a", 2)])
-    filtered = (
-        entries.filter_keys(lambda _key: True)
-        if target == "key"
-        else entries.filter_values(lambda _value: True)
-    )
-
-    with pytest.raises(fpstreams.DuplicateKeyError, match=r"^Duplicate key: 'a'$"):
-        filtered.to_dict()
-    assert observed == [target]
-
-
 def test_pair_filter_to_dict_truth_exhaustion_closes_the_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Truth-test exhaustion returns the accepted prefix and closes a one-shot source."""
-    from fpstreams.execution import sync
-
-    def unexpected_pair_iterator(*_arguments: object) -> Iterator[object]:
-        raise AssertionError("the structured filter iterator must stay fused")
-
-    monkeypatch.setattr(sync, "_filter_pair_target", unexpected_pair_iterator)
+    _reject_pair_iterator(monkeypatch, "_filter_pair_target")
     closed = False
 
     def source() -> Iterator[tuple[str, int]]:
@@ -2320,7 +2295,8 @@ def test_pair_structured_to_dict_rechecks_failpoints_activated_while_opening_sou
     assert closed
 
 
-def test_pair_materializers_preserve_custom_iteration() -> None:
+@pytest.mark.parametrize("owner", ["pairs", "flow"])
+def test_pair_materializers_preserve_custom_iteration(owner: str) -> None:
     """Only canonical Pairs may bypass the public iterator forwarding layer."""
     from fpstreams.streams.flow import Flow
     from fpstreams.streams.pairs import Pairs
@@ -2329,28 +2305,25 @@ def test_pair_materializers_preserve_custom_iteration() -> None:
         def __iter__(self) -> Iterator[tuple[int, int]]:
             return iter(((9, 9),))
 
-    values = CustomPairs(fpstreams.flow([(1, 2)]))
+    class CustomFlow(Flow[tuple[int, int]]):
+        def __iter__(self) -> Iterator[tuple[int, int]]:
+            return iter(((9, 9),))
 
+    values = (
+        CustomPairs(fpstreams.flow([(1, 2)])) if owner == "pairs" else Pairs(CustomFlow([(1, 2)]))
+    )
     assert values.to_dict() == {9: 9}
     assert values.group_values() == {9: [9]}
     assert values.collect_values(sum) == {9: 9}
     assert values.aggregate_values(total=fpstreams.agg.sum()) == {9: {"total": 9}}
 
-    class CustomFlow(Flow[tuple[int, int]]):
-        def __iter__(self) -> Iterator[tuple[int, int]]:
-            return iter(((9, 9),))
 
-    flow_values = Pairs(CustomFlow([(1, 2)]))
-    assert flow_values.to_dict() == {9: 9}
-    assert flow_values.group_values() == {9: [9]}
-    assert flow_values.collect_values(sum) == {9: 9}
-    assert flow_values.aggregate_values(total=fpstreams.agg.sum()) == {9: {"total": 9}}
-
-
-def test_pair_value_expr_filter_to_dict_uses_the_retained_native_prefix(
+@pytest.mark.parametrize("kind", ["i64", "f64"])
+def test_pair_value_filter_uses_the_retained_native_prefix(
     monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
-    """A large retained Expr value filter reaches the native prefix endpoint."""
+    """Both large retained numeric expression types reach their native prefix endpoint."""
     from fpstreams import _native
 
     calls: list[int] = []
@@ -2360,38 +2333,33 @@ def test_pair_value_expr_filter_to_dict_uses_the_retained_native_prefix(
         return None
 
     monkeypatch.setattr(
-        _native,
-        "pair_i64_value_filter_to_dict_exact_prefix_v1",
-        observed,
-        raising=False,
+        _native, f"pair_{kind}_value_filter_to_dict_exact_prefix_v1", observed, raising=False
     )
-    values = _sequential_native_pairs()
+    if kind == "i64":
+        values = _sequential_native_pairs()
+        expression = fpstreams.item % 2 == 0
+        policy = "first"
+        expected = {index: index for index in range(0, 140_000, 2)}
+    else:
+        values = [(str(index % 32), index + 0.5) for index in range(140_000)]
+        expression = fpstreams.fitem >= 139_990.0
+        policy = "last"
+        expected = {str(index % 32): index + 0.5 for index in range(139_990, 140_000)}
 
-    result = (
-        fpstreams.pairs(values).filter_values(fpstreams.item % 2 == 0).to_dict(on_duplicate="first")
-    )
+    result = fpstreams.pairs(values).filter_values(expression).to_dict(on_duplicate=policy)
 
-    assert result == {index: index for index in range(0, 140_000, 2)}
+    assert result == expected
     assert calls == [1]
 
 
 @pytest.mark.parametrize("policy", ["first", "last"])
 def test_pair_row_expression_filter_to_dict_uses_the_native_prefix(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
     policy: str,
 ) -> None:
     """A retained i64 pair expression should fuse filtering with dictionary collection."""
-    from fpstreams import _native
+    calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
 
-    endpoint = _native.pair_i64_row_filter_to_dict_exact_prefix_v1
-    calls = 0
-
-    def observed(*arguments: object) -> object:
-        nonlocal calls
-        calls += 1
-        return endpoint(*arguments)
-
-    monkeypatch.setattr(_native, "pair_i64_row_filter_to_dict_exact_prefix_v1", observed)
     values = [(index % 10_007, index) for index in range(140_000)]
     expression = (fpstreams.col(0) + fpstreams.col(1)) % 3 == 0
     expected: dict[int, int] = {}
@@ -2412,24 +2380,15 @@ def test_pair_row_expression_filter_to_dict_uses_the_native_prefix(
     )
 
     assert result == expected
-    assert calls == 1
+    assert calls == [1]
 
 
 def test_pair_row_expression_filter_reuses_a_trusted_python_program(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
 ) -> None:
     """A canonical RowProgram remains eligible after the same expression runs in Python."""
-    from fpstreams import _native
+    calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
 
-    endpoint = _native.pair_i64_row_filter_to_dict_exact_prefix_v1
-    calls = 0
-
-    def observed(*arguments: object) -> object:
-        nonlocal calls
-        calls += 1
-        return endpoint(*arguments)
-
-    monkeypatch.setattr(_native, "pair_i64_row_filter_to_dict_exact_prefix_v1", observed)
     values = [(index % 37, index) for index in range(256)]
     expression = (fpstreams.col(0) + fpstreams.col(1)) % 3 == 0
     filtered = fpstreams.pairs(values).filter_pairs(expression)
@@ -2438,7 +2397,7 @@ def test_pair_row_expression_filter_reuses_a_trusted_python_program(
     result = filtered.to_dict(on_duplicate="last")
 
     assert result == expected
-    assert calls == 1
+    assert calls == [1]
 
 
 @pytest.mark.parametrize(
@@ -2453,21 +2412,12 @@ def test_pair_row_expression_filter_reuses_a_trusted_python_program(
     ids=("no_hits", "one_hit", "dense", "negative_floor_mod", "unary_single_column"),
 )
 def test_pair_row_expression_filter_matches_python_across_general_shapes(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
     expression_factory: Callable[[], Any],
 ) -> None:
     """Native pair filtering is not tied to the competitive benchmark expression."""
-    from fpstreams import _native
+    calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
 
-    endpoint = _native.pair_i64_row_filter_to_dict_exact_prefix_v1
-    calls = 0
-
-    def observed(*arguments: object) -> object:
-        nonlocal calls
-        calls += 1
-        return endpoint(*arguments)
-
-    monkeypatch.setattr(_native, "pair_i64_row_filter_to_dict_exact_prefix_v1", observed)
     values = [(index - 128, index - 192) for index in range(257)]
     expression = expression_factory()
     filtered = fpstreams.pairs(values).filter_pairs(expression)
@@ -2476,7 +2426,7 @@ def test_pair_row_expression_filter_matches_python_across_general_shapes(
     actual = filtered.to_dict(on_duplicate="last")
 
     assert actual == expected
-    assert calls == 1
+    assert calls == [1]
 
 
 @pytest.mark.parametrize("source_kind", ["list", "tuple"])
@@ -2630,36 +2580,6 @@ def test_pair_row_expression_rechecks_source_methods_before_live_retained_lookup
     }
 
 
-def test_pair_value_fexpr_filter_to_dict_uses_the_retained_native_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A large retained FExpr value filter reaches its native prefix endpoint."""
-    from fpstreams import _native
-
-    calls: list[int] = []
-
-    def observed(*_arguments: object) -> None:
-        calls.append(1)
-        return None
-
-    monkeypatch.setattr(
-        _native,
-        "pair_f64_value_filter_to_dict_exact_prefix_v1",
-        observed,
-        raising=False,
-    )
-    values = [(str(index % 32), index + 0.5) for index in range(140_000)]
-
-    result = (
-        fpstreams.pairs(values)
-        .filter_values(fpstreams.fitem >= 139_990.0)
-        .to_dict(on_duplicate="last")
-    )
-
-    assert result == {str(index % 32): index + 0.5 for index in range(139_990, 140_000)}
-    assert calls == [1]
-
-
 def test_pair_value_filter_rechecks_source_methods_after_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2756,25 +2676,12 @@ def test_pair_value_filter_reuses_the_predicate_snapshotted_before_native_entry(
 
 @pytest.mark.parametrize("policy", ["first", "last"])
 def test_pair_value_filter_native_preserves_first_key_and_selected_value_identity(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
     policy: str,
 ) -> None:
     """Native duplicate handling retains the canonical key and selected value objects."""
-    from fpstreams import _native
+    calls = observe_native("pair_i64_value_filter_to_dict_exact_prefix_v1")
 
-    endpoint = _native.pair_i64_value_filter_to_dict_exact_prefix_v1
-    calls = 0
-
-    def observed(*arguments: object) -> object:
-        nonlocal calls
-        calls += 1
-        return endpoint(*arguments)
-
-    monkeypatch.setattr(
-        _native,
-        "pair_i64_value_filter_to_dict_exact_prefix_v1",
-        observed,
-    )
     first_key = "".join(("identity-", "key"))
     equal_key = "".join(("identity", "-key"))
     assert first_key == equal_key and first_key is not equal_key
@@ -2793,17 +2700,15 @@ def test_pair_value_filter_native_preserves_first_key_and_selected_value_identit
     retained_key, retained_value = next(iter(result.items()))
     assert retained_key is first_key
     assert retained_value is (first_value if policy == "first" else last_value)
-    assert calls == 1
+    assert calls == [1]
 
 
 def test_pair_value_filter_native_boundary_resumes_bool_subclass_and_bigint_once(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
 ) -> None:
     """An incompatible value starts one Python suffix without replaying its row."""
-    from fpstreams import _native
+    calls = observe_native("pair_i64_value_filter_to_dict_exact_prefix_v1")
 
-    endpoint = _native.pair_i64_value_filter_to_dict_exact_prefix_v1
-    calls = 0
     events: list[str] = []
 
     class IntSubclass(int):
@@ -2821,16 +2726,6 @@ def test_pair_value_filter_native_boundary_resumes_bool_subclass_and_bigint_once
         ("tail", 8),
     ]
 
-    def observed(*arguments: object) -> object:
-        nonlocal calls
-        calls += 1
-        return endpoint(*arguments)
-
-    monkeypatch.setattr(
-        _native,
-        "pair_i64_value_filter_to_dict_exact_prefix_v1",
-        observed,
-    )
     result = (
         fpstreams.pairs(values).filter_values(fpstreams.item % 2 == 0).to_dict(on_duplicate="last")
     )
@@ -2840,7 +2735,7 @@ def test_pair_value_filter_native_boundary_resumes_bool_subclass_and_bigint_once
     assert result["bigint"] is bigint_value
     assert result["tail"] == 8
     assert events == ["mod"]
-    assert calls == 1
+    assert calls == [1]
 
 
 def test_pair_value_filter_native_arithmetic_boundaries_preserve_python_errors() -> None:
@@ -3085,19 +2980,11 @@ def test_pair_value_filter_native_sink_stays_off_for_unsupported_paths(
 
 
 def test_pair_unique_to_dict_adapts_only_high_cardinality_auto_sources(
-    monkeypatch: pytest.MonkeyPatch,
+    observe_native: Callable[[str], list[int]],
 ) -> None:
     """The retained Rust sink stays off for low cardinality and explicit engines."""
-    from fpstreams import _native
+    calls = observe_native("pair_unique_exact_prefix_v1")
 
-    endpoint = _native.pair_unique_exact_prefix_v1
-    calls: list[int] = []
-
-    def observed(output: dict[object, object], source: Iterator[object]) -> object:
-        calls.append(1)
-        return endpoint(output, source)
-
-    monkeypatch.setattr(_native, "pair_unique_exact_prefix_v1", observed)
     high = _sequential_native_pairs()
     low = [(index % 16, index) for index in range(140_000)]
 
@@ -3659,31 +3546,6 @@ def test_pair_transforms_stay_lazy_and_close_after_downstream_short_circuit() ->
     ]
 
 
-def test_collect_values_steps_each_key_downstream_as_pairs_arrive() -> None:
-    events: list[tuple[str, int]] = []
-
-    def source() -> Iterator[tuple[str, int]]:
-        for key, value in (("a", 1), ("b", 2), ("a", 3)):
-            events.append(("source", value))
-            yield key, value
-
-    def add(total: int, value: int) -> int:
-        events.append(("step", value))
-        return total + value
-
-    result = fpstreams.pairs(source()).collect_values(fpstreams.Collector(lambda: 0, add))
-
-    assert result == {"a": 4, "b": 2}
-    assert events == [
-        ("source", 1),
-        ("step", 1),
-        ("source", 2),
-        ("step", 2),
-        ("source", 3),
-        ("step", 3),
-    ]
-
-
 def test_collect_values_tracks_completion_per_key_and_accepts_legacy_callables() -> None:
     steps: list[int] = []
     first = fpstreams.Collector(
@@ -3752,15 +3614,20 @@ def test_collect_values_closes_the_source_when_a_downstream_step_fails() -> None
     assert closed
 
 
-def test_pair_reducer_keeps_step_error_primary_when_source_close_fails() -> None:
-    """Reducer failure remains primary while source cleanup is recorded as a note."""
-    primary = ValueError("step failed")
+@pytest.mark.parametrize("operation", ["collect", "aggregate"])
+def test_pair_reducers_keep_step_error_primary_when_source_close_fails(operation: str) -> None:
+    """Both generic collectors and closed arithmetic lanes retain the primary failure."""
+    primary = ValueError("step failed" if operation == "collect" else "addition failed")
     close_calls = 0
 
-    def source() -> Iterator[tuple[str, int]]:
+    class BrokenValue:
+        def __radd__(self, _other: object) -> object:
+            raise primary
+
+    def source() -> Iterator[tuple[str, object]]:
         nonlocal close_calls
         try:
-            yield "a", 1
+            yield "a", 1 if operation == "collect" else BrokenValue()
         finally:
             close_calls += 1
             raise OSError("source close failed")
@@ -3769,7 +3636,11 @@ def test_pair_reducer_keeps_step_error_primary_when_source_close_fails() -> None
         raise primary
 
     with pytest.raises(ValueError) as captured:
-        fpstreams.pairs(source()).collect_values(fpstreams.Collector(lambda: None, fail))
+        pairs = fpstreams.pairs(source())
+        if operation == "collect":
+            pairs.collect_values(fpstreams.Collector(lambda: None, fail))
+        else:
+            pairs.aggregate_values(total=fpstreams.agg.sum())
 
     assert captured.value is primary
     assert captured.value.__notes__ == ["cleanup failed with OSError: source close failed"]
@@ -3815,23 +3686,20 @@ def test_aggregate_values_validates_before_opening_the_source() -> None:
     assert not opened
 
 
-def test_aggregate_values_revalidates_closed_lanes_after_source_open(
+@pytest.mark.parametrize("boundary", ["open", "first_pull"])
+def test_aggregate_values_revalidates_lanes_at_source_boundary(
     monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
 ) -> None:
-    """Source-open mutations must deopt on the same, still-unconsumed iterator."""
+    """Direct opening and the first lazy pull can replace a retained lifecycle."""
     total = fpstreams.agg.sum()
-
-    def replacement_factory() -> Callable[[int, int], int]:
-        def select(value: int) -> int:
-            return value
-
-        def replacement(current: int, value: int) -> int:
-            return current + select(value) * 10
-
-        return replacement
-
-    replacement = replacement_factory()
+    replacement = _scaled_sum_step()
     opens = 0
+
+    def lazy_source() -> Iterator[tuple[str, int]]:
+        monkeypatch.setattr(total.step, "__code__", replacement.__code__)
+        yield "a", 1
+        yield "a", 2
 
     class Source:
         def __iter__(self) -> Iterator[tuple[str, int]]:
@@ -3840,8 +3708,9 @@ def test_aggregate_values_revalidates_closed_lanes_after_source_open(
             monkeypatch.setattr(total.step, "__code__", replacement.__code__)
             return iter((("a", 1), ("a", 2)))
 
-    assert fpstreams.pairs(Source()).aggregate_values(total=total) == {"a": {"total": 30}}
-    assert opens == 1
+    source = Source() if boundary == "open" else lazy_source()
+    assert fpstreams.pairs(source).aggregate_values(total=total) == {"a": {"total": 30}}
+    assert opens == (1 if boundary == "open" else 0)
 
 
 @pytest.mark.parametrize("guard", ["helpers", "closed"])
@@ -3859,15 +3728,6 @@ def test_aggregate_values_freezes_guards_before_direct_source_open(
         for name, _aggregation in items:
             states[name] += value * 10
 
-    def replacement_factory() -> Callable[[int, int], int]:
-        def select(value: int) -> int:
-            return value
-
-        def replacement(current: int, value: int) -> int:
-            return current + select(value) * 10
-
-        return replacement
-
     class Source:
         def __iter__(self) -> Iterator[tuple[str, int]]:
             if guard == "helpers":
@@ -3880,34 +3740,11 @@ def test_aggregate_values_freezes_guards_before_direct_source_open(
                 monkeypatch.setattr(
                     total.step,
                     "__code__",
-                    replacement_factory().__code__,
+                    _scaled_sum_step().__code__,
                 )
             return iter((("a", 1), ("a", 2)))
 
     assert fpstreams.pairs(Source()).aggregate_values(total=total) == {"a": {"total": 30}}
-
-
-def test_aggregate_values_revalidates_after_the_first_lazy_source_pull(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A generator body can change a retained lane before yielding its first pair."""
-    total = fpstreams.agg.sum()
-
-    def replacement_factory() -> Callable[[int, int], int]:
-        def select(value: int) -> int:
-            return value
-
-        def replacement(current: int, value: int) -> int:
-            return current + select(value) * 10
-
-        return replacement
-
-    def source() -> Iterator[tuple[str, int]]:
-        monkeypatch.setattr(total.step, "__code__", replacement_factory().__code__)
-        yield "a", 1
-        yield "a", 2
-
-    assert fpstreams.pairs(source()).aggregate_values(total=total) == {"a": {"total": 30}}
 
 
 def test_aggregate_values_revalidates_helpers_after_the_first_lazy_pull(
@@ -4111,31 +3948,6 @@ def test_aggregate_values_closes_source_before_live_finish() -> None:
 
     assert fpstreams.pairs(source()).aggregate_values(total=total) == {"a": {"total": 103}}
     assert observed == [True]
-
-
-def test_aggregate_values_keeps_step_error_primary_when_source_close_fails() -> None:
-    """A closed-lane arithmetic error stays primary when source cleanup also fails."""
-    primary = ValueError("addition failed")
-    close_calls = 0
-
-    class BrokenValue:
-        def __radd__(self, _other: object) -> object:
-            raise primary
-
-    def source() -> Iterator[tuple[str, BrokenValue]]:
-        nonlocal close_calls
-        try:
-            yield "a", BrokenValue()
-        finally:
-            close_calls += 1
-            raise OSError("source close failed")
-
-    with pytest.raises(ValueError) as captured:
-        fpstreams.pairs(source()).aggregate_values(total=fpstreams.agg.sum())
-
-    assert captured.value is primary
-    assert captured.value.__notes__ == ["cleanup failed with OSError: source close failed"]
-    assert close_calls == 1
 
 
 def test_reducer_metadata_and_partitioned_execution_are_observable() -> None:
@@ -4535,30 +4347,9 @@ def test_count_distinct_handles_equal_mixed_hashability(reverse):
     }
 
 
-def test_count_distinct_keeps_hash_failure_before_mixed_equality():
-    failure = ValueError("hash failed")
-    calls = []
-
-    class Previous:
-        __hash__ = None
-
-        def __eq__(self, other):
-            calls.append("eq")
-            return True
-
-    class Key:
-        def __hash__(self):
-            calls.append("hash")
-            raise failure
-
-    with pytest.raises(ValueError) as caught:
-        fpstreams.flow([Previous(), Key()]).aggregate(n=fpstreams.agg.count_distinct())
-    assert caught.value is failure
-    assert calls == ["hash"]
-
-
-def test_count_distinct_mixed_preserves_user_hash_and_equality_error():
-    failure = ValueError("comparison failed")
+@pytest.mark.parametrize("hook", ["hash", "equality"])
+def test_count_distinct_mixed_preserves_protocol_error_order(hook):
+    failure = ValueError("hash failed" if hook == "hash" else "comparison failed")
     events = []
 
     class Previous:
@@ -4566,17 +4357,21 @@ def test_count_distinct_mixed_preserves_user_hash_and_equality_error():
 
         def __eq__(self, other):
             events.append("eq")
-            raise failure
+            if hook == "equality":
+                raise failure
+            return True
 
     class Key:
         def __hash__(self):
             events.append("hash")
+            if hook == "hash":
+                raise failure
             return 1
 
     with pytest.raises(ValueError) as caught:
         fpstreams.flow([Previous(), Key()]).aggregate(n=fpstreams.agg.count_distinct())
     assert caught.value is failure
-    assert events == ["hash", "eq"]
+    assert events == (["hash"] if hook == "hash" else ["hash", "eq"])
 
 
 def test_count_distinct_mixed_preserves_hash_count_and_stored_key_equality_direction():
@@ -4674,7 +4469,15 @@ def test_pair_unique_native_suffix_propagates_equality_failure(policy, monkeypat
 @pytest.mark.parametrize("hook", ["hash", "equality"])
 @pytest.mark.parametrize(
     "terminal",
-    ["reduce", "frequency", "frequency_key", "group_collect", "pair_collect", "pair_aggregate"],
+    [
+        "reduce",
+        "frequency",
+        "frequency_key",
+        "group_collect",
+        "pair_collect",
+        "pair_callable",
+        "pair_aggregate",
+    ],
 )
 def test_group_lookup_does_not_treat_user_key_error_as_missing(hook, terminal):
     failure = KeyError("user key protocol failed")
@@ -4715,6 +4518,8 @@ def test_group_lookup_does_not_treat_user_key_error_as_missing(hook, terminal):
             query.collect(fpstreams.Collectors.grouping_by(lambda p: p[0]))
         elif terminal == "pair_collect":
             query.pairs().collect_values(fpstreams.Collectors.summing())
+        elif terminal == "pair_callable":
+            query.pairs().collect_values(list)
         else:
             query.pairs().aggregate_values(total=fpstreams.agg.sum())
     assert caught.value is failure
@@ -4891,18 +4696,10 @@ def test_sorted_aggregate_streaming_contract() -> None:
 @pytest.mark.parametrize(
     "kind", ["normal", "row_global", "selector_global", "row_code", "selector_code"]
 )
-def test_native_tracking_provenance(monkeypatch, cached, kind):
-    from fpstreams import _native
+def test_native_tracking_provenance(monkeypatch, observe_native, cached, kind):
+    calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
     from fpstreams.expressions import row, selectors
 
-    calls = []
-    endpoint = _native.pair_i64_row_filter_to_dict_exact_prefix_v1
-
-    def observed(*args):
-        calls.append(1)
-        return endpoint(*args)
-
-    monkeypatch.setattr(_native, "pair_i64_row_filter_to_dict_exact_prefix_v1", observed)
     expr = (fpstreams.col(0) + fpstreams.col(1)) % 3 == 0
     pipeline = fpstreams.pairs([(index % 37, index) for index in range(256)]).filter_pairs(expr)
     if cached:
@@ -4939,18 +4736,10 @@ def test_native_tracking_provenance(monkeypatch, cached, kind):
 
 
 @pytest.mark.parametrize("cached", [False, True])
-def test_codegen_binding_after_creation(monkeypatch, cached):
-    from fpstreams import _native
+def test_codegen_binding_after_creation(monkeypatch, observe_native, cached):
+    calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
     from fpstreams.expressions import _row_codegen
 
-    calls = []
-    endpoint = _native.pair_i64_row_filter_to_dict_exact_prefix_v1
-
-    def observed(*args):
-        calls.append(1)
-        return endpoint(*args)
-
-    monkeypatch.setattr(_native, "pair_i64_row_filter_to_dict_exact_prefix_v1", observed)
     expr = (fpstreams.col(0) + fpstreams.col(1)) % 3 == 0
     pipeline = fpstreams.pairs([(index % 37, index) for index in range(256)]).filter_pairs(expr)
     if cached:
@@ -5088,3 +4877,44 @@ def test_legacy_average_preserves_dynamic_result_and_empty_float() -> None:
             return "custom result"
 
     assert average([Custom()]) == "custom result"
+
+
+@pytest.mark.parametrize("operation", ["collector", "callable", "aggregate"])
+def test_pair_collection_preserves_hash_type_error_and_source_close(operation):
+    failure = TypeError("pair hash failed")
+    cause = ValueError("domain cause")
+    for failing_call in range(1, 3 if operation == "callable" else 4):
+        closed = []
+
+        class Key:
+            calls = 0
+            fail_at = failing_call
+
+            def __hash__(self):
+                self.calls += 1
+                if self.calls == self.fail_at:
+                    raise failure from cause
+                return 0
+
+        key = Key()
+
+        def source(value=key, close_log=closed):
+            try:
+                yield value, 1
+            finally:
+                close_log.append(True)
+
+        query = fpstreams.pairs(source()).with_engine("python")
+        with pytest.raises(TypeError) as caught:
+            if operation == "collector":
+                query.collect_values(fpstreams.Collectors.to_list())
+            elif operation == "callable":
+                query.collect_values(list)
+            else:
+                query.aggregate_values(total=fpstreams.Collectors.counting())
+        assert caught.value is failure
+        assert failure.__cause__ is cause
+        assert failure.__suppress_context__ is True
+        assert failure.__context__ is None
+        assert key.calls == failing_call
+        assert closed == [True]

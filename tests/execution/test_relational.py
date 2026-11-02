@@ -4294,8 +4294,9 @@ def test_callable_group_hash_tail_translates_late_unhashable_key_and_closes() ->
     assert events[-1] == "close"
 
 
-def test_callable_key_group_exact_tuple_value_index_preserves_subclass_protocol() -> None:
-    """Tuple subclasses remain on compiled accessors with their live subscription callbacks."""
+@pytest.mark.parametrize("callback_side", ["key", "value"])
+def test_callable_group_exact_tuple_index_preserves_subclass_protocol(callback_side: str) -> None:
+    """Tuple subclasses keep subscription callbacks for either selector direction."""
     events: list[int] = []
 
     class Row(tuple[int, int]):
@@ -4303,63 +4304,21 @@ def test_callable_key_group_exact_tuple_value_index_preserves_subclass_protocol(
             events.append(index)
             return super().__getitem__(index)
 
-    records = [Row((1, 2)), Row((1, 3))]
+    key = (lambda row: row[0]) if callback_side == "key" else 0
+    value = 1 if callback_side == "key" else (lambda row: row[1])
     query = (
-        fpstreams.rows(records)
-        .group_by(key=lambda row: row[0])
-        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(1))
+        fpstreams.rows([Row((1, 2)), Row((1, 3))])
+        .group_by(key=key)
+        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(value))
     )
 
     assert query.to_list() == [{"key": 1, "count": 2, "total": 5}]
     assert events == [0, 1, 0, 1]
 
 
-def test_callable_value_group_exact_tuple_key_index_preserves_subclass_protocol() -> None:
-    """Tuple subclasses keep compiled key access and their live subscription callbacks."""
-    events: list[int] = []
-
-    class Row(tuple[int, int]):
-        def __getitem__(self, index: int) -> int:
-            events.append(index)
-            return super().__getitem__(index)
-
-    records = [Row((1, 2)), Row((1, 3))]
-    query = (
-        fpstreams.rows(records)
-        .group_by(key=0)
-        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(lambda row: row[1]))
-    )
-
-    assert query.to_list() == [{"key": 1, "count": 2, "total": 5}]
-    assert events == [0, 1, 0, 1]
-
-
-def test_callable_key_group_exact_tuple_value_index_translates_errors_and_closes() -> None:
-    """An out-of-range direct tuple selector retains SelectionError chaining and cleanup."""
-    events: list[str] = []
-
-    def source() -> Iterator[tuple[int]]:
-        try:
-            events.append("pull")
-            yield (1,)
-        finally:
-            events.append("close")
-
-    query = (
-        fpstreams.rows(source())
-        .group_by(key=lambda row: row[0])
-        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(1))
-    )
-
-    with pytest.raises(fpstreams.SelectionError, match="index selector 1 on tuple") as captured:
-        query.to_list()
-
-    assert isinstance(captured.value.__cause__, IndexError)
-    assert events == ["pull", "close"]
-
-
-def test_callable_value_group_exact_tuple_key_index_translates_errors_and_closes() -> None:
-    """A failing direct tuple key is translated before the callback and closes its source."""
+@pytest.mark.parametrize("callback_side", ["key", "value"])
+def test_callable_group_exact_tuple_index_translates_errors_and_closes(callback_side: str) -> None:
+    """A direct selector failure chains IndexError and closes before later callbacks."""
     events: list[str] = []
 
     def source() -> Iterator[tuple[int]]:
@@ -4373,12 +4332,13 @@ def test_callable_value_group_exact_tuple_key_index_translates_errors_and_closes
         events.append("value")
         return 1
 
+    key = (lambda row: row[0]) if callback_side == "key" else 1
+    selector = 1 if callback_side == "key" else value
     query = (
         fpstreams.rows(source())
-        .group_by(key=1)
-        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(value))
+        .group_by(key=key)
+        .aggregate(count=fpstreams.agg.count(), total=fpstreams.agg.sum(selector))
     )
-
     with pytest.raises(fpstreams.SelectionError, match="index selector 1 on tuple") as captured:
         query.to_list()
 
@@ -4631,21 +4591,28 @@ def test_tuple_group_sum_falls_back_to_the_old_pair_abi_for_an_older_wheel(
 
 
 @pytest.mark.parametrize("container", [list, tuple])
-def test_tuple_row_group_sum_preserves_first_key_identity_and_encounter_order(container) -> None:
-    """Both exact retained containers return the first equal key object in source order."""
+@pytest.mark.parametrize("row_kind", ["tuple", "record"])
+def test_group_sum_preserves_first_key_identity_and_encounter_order(
+    container, row_kind: str
+) -> None:
+    """Exact retained row shapes return the first equal key in encounter order."""
     first_key = int("1000000")
     equal_key = int("1000000")
     assert type(first_key) is type(equal_key) is int
     later_key = int("2000")
     assert first_key == equal_key and first_key is not equal_key
-    source = container(((first_key, 2), (later_key, 7), (equal_key, 3)))
+    pairs = ((first_key, 2), (later_key, 7), (equal_key, 3))
+    if row_kind == "tuple":
+        source = container(pairs)
+        key, value = 0, 1
+    else:
+        source = container({"key": key, "value": value} for key, value in pairs)
+        key, value = "key", "value"
+    result = (
+        fpstreams.rows(source).group_by(key=key).aggregate(total=fpstreams.agg.sum(value)).to_list()
+    )
 
-    result = fpstreams.rows(source).group_by(key=0).aggregate(total=fpstreams.agg.sum(1)).to_list()
-
-    assert result == [
-        {"key": first_key, "total": 5},
-        {"key": later_key, "total": 7},
-    ]
+    assert result == [{"key": first_key, "total": 5}, {"key": later_key, "total": 7}]
     assert result[0]["key"] is first_key
     assert result[1]["key"] is later_key
 
@@ -4761,34 +4728,6 @@ def test_exact_record_group_sum_materializes_small_v1_pair_payloads(monkeypatch,
     assert calls == [(source, "key", "value", "key", "total")]
 
 
-@pytest.mark.parametrize("container", [list, tuple])
-def test_record_group_sum_preserves_first_key_identity_and_encounter_order(container) -> None:
-    """The public native path returns the first equal key object in first-seen order."""
-    first_key = int("1000000")
-    equal_key = int("1000000")
-    assert type(first_key) is type(equal_key) is int
-    later_key = int("2000")
-    assert first_key == equal_key and first_key is not equal_key
-    source = container(
-        (
-            {"key": first_key, "value": 2},
-            {"key": later_key, "value": 7},
-            {"key": equal_key, "value": 3},
-        )
-    )
-
-    result = (
-        fpstreams.rows(source).group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list()
-    )
-
-    assert result == [
-        {"key": first_key, "total": 5},
-        {"key": later_key, "total": 7},
-    ]
-    assert result[0]["key"] is first_key
-    assert result[1]["key"] is later_key
-
-
 def test_record_group_sum_guard_rejections_preserve_python_numeric_and_mapping_semantics() -> None:
     """Bool, bigint, and non-exact records restart through the selected Python sum."""
 
@@ -4861,8 +4800,11 @@ def test_record_group_sum_non_string_dict_key_does_not_repeat_collision_equality
 
 
 @pytest.mark.parametrize("container_type", [list, tuple])
-def test_record_group_sum_container_subclasses_bypass_native(monkeypatch, container_type) -> None:
-    """Only exact retained containers may cross the native ABI boundary."""
+@pytest.mark.parametrize("row_kind", ["tuple", "record"])
+def test_group_sum_container_subclasses_bypass_native(
+    monkeypatch, container_type, row_kind: str
+) -> None:
+    """Container subclasses stay on Python before any speculative ABI call."""
     from fpstreams import _native
 
     class Container(container_type):
@@ -4871,17 +4813,18 @@ def test_record_group_sum_container_subclasses_bypass_native(monkeypatch, contai
     def unexpected_native(*_arguments: object) -> object:
         raise AssertionError("container subclasses must remain on Python")
 
-    monkeypatch.setattr(
-        _native,
-        "group_sum_i64_dict_rows_v1",
-        unexpected_native,
-        raising=False,
-    )
-    monkeypatch.setattr(_native, "group_sum_i64_dict_rows", unexpected_native)
-    source = Container(({"key": 1, "value": 2}, {"key": 1, "value": 3}))
-
+    if row_kind == "tuple":
+        symbols = ("group_sum_i64_rows_v1", "group_sum_i64_pairs")
+        source = Container(((1, 2), (1, 3)))
+        key, value = 0, 1
+    else:
+        symbols = ("group_sum_i64_dict_rows_v1", "group_sum_i64_dict_rows")
+        source = Container(({"key": 1, "value": 2}, {"key": 1, "value": 3}))
+        key, value = "key", "value"
+    monkeypatch.setattr(_native, symbols[0], unexpected_native, raising=False)
+    monkeypatch.setattr(_native, symbols[1], unexpected_native)
     result = (
-        fpstreams.rows(source).group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list()
+        fpstreams.rows(source).group_by(key=key).aggregate(total=fpstreams.agg.sum(value)).to_list()
     )
 
     assert result == [{"key": 1, "total": 5}]
@@ -5270,28 +5213,6 @@ def test_tuple_group_sum_v1_memory_error_propagates_without_old_abi_retry(monkey
         fpstreams.rows([(1, 2)]).group_by(key=0).aggregate(total=fpstreams.agg.sum(1)).to_list()
 
 
-@pytest.mark.parametrize("container_type", [list, tuple])
-def test_tuple_row_group_sum_container_subclasses_bypass_native(
-    monkeypatch, container_type
-) -> None:
-    """Container subclasses stay on Python before any speculative ABI call."""
-    from fpstreams import _native
-
-    class Container(container_type):
-        pass
-
-    def unexpected_native(*_arguments: object) -> object:
-        raise AssertionError("container subclasses must remain on Python")
-
-    monkeypatch.setattr(_native, "group_sum_i64_rows_v1", unexpected_native, raising=False)
-    monkeypatch.setattr(_native, "group_sum_i64_pairs", unexpected_native)
-    source = Container(((1, 2), (1, 3)))
-
-    assert fpstreams.rows(source).group_by(key=0).aggregate(
-        total=fpstreams.agg.sum(1)
-    ).to_list() == [{"key": 1, "total": 5}]
-
-
 def test_tuple_row_group_sum_native_guards_do_not_call_subclass_protocols() -> None:
     """A failed native probe observes neither tuple nor int subclass methods."""
     from fpstreams import _native
@@ -5349,40 +5270,30 @@ def test_record_group_sum_falls_back_when_an_older_extension_lacks_the_symbol(
     assert result == [{"key": 1, "total": 5}]
 
 
-def test_record_group_sum_bypasses_native_while_any_failpoint_is_active(monkeypatch) -> None:
-    """Instrumented runs retain Python transition coverage instead of skipping source.open."""
+@pytest.mark.parametrize("row_kind", ["tuple", "record"])
+def test_group_sum_bypasses_native_while_any_failpoint_is_active(
+    monkeypatch, row_kind: str
+) -> None:
+    """Instrumented runs retain Python transitions for both retained row shapes."""
     from fpstreams import _native
 
     def unexpected_native(*_arguments: object) -> object:
-        raise AssertionError("active failpoints must disable native record grouping")
+        raise AssertionError("active failpoints must disable native grouping")
 
-    monkeypatch.setattr(
-        _native,
-        "group_sum_i64_dict_rows_v1",
-        unexpected_native,
-        raising=False,
-    )
-    monkeypatch.setattr(_native, "group_sum_i64_dict_rows", unexpected_native)
-    grouped = (
-        fpstreams.rows([{"key": 1, "value": 2}, {"key": 1, "value": 3}])
-        .group_by("key")
-        .aggregate(total=fpstreams.agg.sum("value"))
-    )
-
-    with failpoint("unrelated.transition", RuntimeError("unused")):
-        assert grouped.to_list() == [{"key": 1, "total": 5}]
-
-
-def test_tuple_row_group_sum_bypasses_native_while_any_failpoint_is_active(monkeypatch) -> None:
-    """Instrumented tuple-row runs must keep their ordinary Python transition coverage."""
-    from fpstreams import _native
-
-    def unexpected_native(*_arguments: object) -> object:
-        raise AssertionError("active failpoints must disable native tuple-row grouping")
-
-    monkeypatch.setattr(_native, "group_sum_i64_rows_v1", unexpected_native, raising=False)
-    monkeypatch.setattr(_native, "group_sum_i64_pairs", unexpected_native)
-    grouped = fpstreams.rows([(1, 2), (1, 3)]).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
+    if row_kind == "tuple":
+        symbols = ("group_sum_i64_rows_v1", "group_sum_i64_pairs")
+        grouped = (
+            fpstreams.rows([(1, 2), (1, 3)]).group_by(key=0).aggregate(total=fpstreams.agg.sum(1))
+        )
+    else:
+        symbols = ("group_sum_i64_dict_rows_v1", "group_sum_i64_dict_rows")
+        grouped = (
+            fpstreams.rows([{"key": 1, "value": 2}, {"key": 1, "value": 3}])
+            .group_by("key")
+            .aggregate(total=fpstreams.agg.sum("value"))
+        )
+    monkeypatch.setattr(_native, symbols[0], unexpected_native, raising=False)
+    monkeypatch.setattr(_native, symbols[1], unexpected_native)
 
     with failpoint("unrelated.transition", RuntimeError("unused")):
         assert grouped.to_list() == [{"key": 1, "total": 5}]
@@ -6480,11 +6391,27 @@ def test_callable_mapping_join_preserves_dict_constructor_dispatch() -> None:
     )
 
 
-def test_mapping_many_native_paths_preserve_canonical_unhashable_key_error() -> None:
+@pytest.mark.parametrize("key_kind", ["list", "dict", "set", "bytearray", "disabled", "inherited"])
+def test_mapping_many_native_paths_preserve_canonical_unhashable_key_error(key_kind: str) -> None:
     """Native callable and generated direct keys retain the m:m Python error boundary."""
     from collections.abc import Mapping
 
     events: list[str] = []
+
+    class DisabledHash:
+        __hash__ = None
+
+    class InheritedDisabledHash(DisabledHash):
+        pass
+
+    unhashable = {
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "bytearray": bytearray,
+        "disabled": DisabledHash,
+        "inherited": InheritedDisabledHash,
+    }[key_kind]()
 
     class Record(Mapping[str, object]):
         def __init__(self, label: str, values: dict[str, object]) -> None:
@@ -6508,7 +6435,7 @@ def test_mapping_many_native_paths_preserve_canonical_unhashable_key_error() -> 
         left = [Record("left", {"id": 1, "left": True})]
         right = (
             Record("right-ok", {"id": 1, "right": "matched"}),
-            Record("right-bad", {"id": [], "right": "unhashable"}),
+            Record("right-bad", {"id": unhashable, "right": "unhashable"}),
         )
         rows = fpstreams.rows(left)
         if mode == "python":
@@ -6537,7 +6464,7 @@ def test_mapping_many_native_paths_preserve_canonical_unhashable_key_error() -> 
     direct_error, direct_events = run("direct")
 
     assert canonical_error[0] is TypeError
-    assert "unhashable type: 'list'" in canonical_error[1]
+    assert f"unhashable type: '{type(unhashable).__name__}'" in canonical_error[1]
     assert canonical_error[2] is None
     assert canonical_events == [
         "iter:right-ok",
@@ -6584,8 +6511,9 @@ def test_direct_field_mapping_hashable_path_declines_mixed_exact_dict_fields() -
     assert hash_calls == []
 
 
-def test_eager_callable_unique_join_is_visible_to_the_guarded_planner() -> None:
-    """Only an eager direct callable/callable m:1 join earns the callback ABI marker."""
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+def test_eager_callable_join_is_visible_to_the_guarded_planner(validate: str) -> None:
+    """Eager callable joins select only their cardinality-specific native marker."""
 
     def left_key(row: dict[str, int]) -> int:
         return row["left_id"]
@@ -6593,47 +6521,16 @@ def test_eager_callable_unique_join_is_visible_to_the_guarded_planner() -> None:
     def right_key(row: dict[str, int]) -> int:
         return row["right_id"]
 
+    right = ({"right_id": 1},) if validate == "m:1" else ({"right_id": 1}, {"right_id": 1})
     joined = fpstreams.rows([{"left_id": 1}]).join(
-        ({"right_id": 1},),
-        left_on=left_key,
-        right_on=right_key,
-        validate="m:1",
+        right, left_on=left_key, right_on=right_key, validate=validate
     )
-
     eager = compile_query(joined._flow._query("list"))
     streaming = compile_query(joined._flow._query("iterate"))
 
     assert isinstance(eager.root, JoinPhysicalNode)
-    assert eager.root.native_callable_unique is True
-    assert eager.root.native_callable_many is False
-    assert eager.root.native_record_i64 is None
-    assert isinstance(streaming.root, JoinPhysicalNode)
-    assert streaming.root.native_callable_unique is False
-    assert streaming.root.native_callable_many is False
-
-
-def test_eager_callable_many_join_is_visible_to_the_guarded_planner() -> None:
-    """An eager callable/callable m:m join earns only the many-right ABI marker."""
-
-    def left_key(row: dict[str, int]) -> int:
-        return row["left_id"]
-
-    def right_key(row: dict[str, int]) -> int:
-        return row["right_id"]
-
-    joined = fpstreams.rows([{"left_id": 1}]).join(
-        ({"right_id": 1}, {"right_id": 1}),
-        left_on=left_key,
-        right_on=right_key,
-        validate="m:m",
-    )
-
-    eager = compile_query(joined._flow._query("list"))
-    streaming = compile_query(joined._flow._query("iterate"))
-
-    assert isinstance(eager.root, JoinPhysicalNode)
-    assert eager.root.native_callable_unique is False
-    assert eager.root.native_callable_many is True
+    assert eager.root.native_callable_unique is (validate == "m:1")
+    assert eager.root.native_callable_many is (validate == "m:m")
     assert eager.root.native_record_i64 is None
     assert isinstance(streaming.root, JoinPhysicalNode)
     assert streaming.root.native_callable_unique is False
@@ -6681,15 +6578,17 @@ def test_callable_many_join_versions_are_exported_by_current_native_module() -> 
     assert callable(getattr(_native, "join_hashable_many_records_v2", None))
 
 
-def test_callable_many_join_to_list_runs_the_native_kernel(monkeypatch) -> None:
-    """A successful many callback ABI bypasses unique ABI and canonical source iterators."""
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+def test_callable_join_to_list_runs_the_native_kernel(monkeypatch, validate: str) -> None:
+    """The selected callback ABI bypasses canonical iterators and alternative ABIs."""
     from fpstreams import _native
-    from fpstreams.planning.source import Source
     from fpstreams.tabular.records import _as_record
 
     left = [{"left_id": 1, "left": "a"}]
-    right = ({"right_id": 1, "right": "A"}, {"right_id": 1, "right": "B"})
-    expected = [{"native_many": True}]
+    right = ({"right_id": 1, "right": "A"},)
+    if validate == "m:m":
+        right += ({"right_id": 1, "right": "B"},)
+    expected = [{"native_many" if validate == "m:m" else "native": True}]
     calls: list[tuple[object, ...]] = []
 
     def left_key(row: dict[str, object]) -> object:
@@ -6702,25 +6601,18 @@ def test_callable_many_join_to_list_runs_the_native_kernel(monkeypatch) -> None:
         calls.append(arguments)
         return expected
 
-    def unexpected_unique(*_arguments: object) -> None:
-        raise AssertionError("an m:m marker must never call the unique-right ABI")
+    def forbidden(*_arguments: object) -> None:
+        raise AssertionError("a successful callable join must not enter another ABI or source")
 
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a successful callable many ABI must not open Python sources")
-
-    monkeypatch.setattr(Source, "open", opened)
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_many_records_v1",
-        native_result,
-        raising=False,
+    monkeypatch.setattr(Source, "open", forbidden)
+    kind = "many" if validate == "m:m" else "unique"
+    monkeypatch.setattr(_native, f"join_hashable_{kind}_records_v1", native_result, raising=False)
+    alternative = (
+        "join_hashable_unique_records_v1"
+        if validate == "m:m"
+        else "join_hashable_unique_records_v2"
     )
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_unique_records_v1",
-        unexpected_unique,
-    )
-
+    monkeypatch.setattr(_native, alternative, forbidden, raising=False)
     result = (
         fpstreams.rows(left)
         .join(
@@ -6729,7 +6621,7 @@ def test_callable_many_join_to_list_runs_the_native_kernel(monkeypatch) -> None:
             right_on=right_key,
             how="left",
             suffix="_lookup",
-            validate="m:m",
+            validate=validate,
         )
         .to_list()
     )
@@ -6778,42 +6670,68 @@ def test_callable_many_join_old_native_falls_back_without_selector_replay(
     assert events == ["right:1", "right:1", "left:1"]
 
 
-def test_callable_many_join_mappingproxy_uses_v2_exact_type_token(monkeypatch) -> None:
-    """Mapping many joins use v2 with the proven builtin adapter and exact type token."""
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+def test_callable_join_mappingproxy_uses_v2_exact_type_token(monkeypatch, validate: str) -> None:
+    """Mappingproxy joins admit only the selected v2 ABI with its exact type token."""
     from types import MappingProxyType
 
     from fpstreams import _native
     from fpstreams.tabular.records import _as_record
 
-    left = [MappingProxyType({"id": 1, "left": "L"})]
-    right = (
-        MappingProxyType({"id": 1, "right": "R1"}),
-        MappingProxyType({"id": 1, "right": "R2"}),
-    )
-    expected = [{"native_many_v2": True}]
+    if validate == "m:1":
+        left = [MappingProxyType({"left_id": 1, "left": "a"})]
+        right = (MappingProxyType({"right_id": 1, "right": "A"}),)
+        left_field, right_field = "left_id", "right_id"
+    else:
+        left = [MappingProxyType({"id": 1, "left": "L"})]
+        right = (
+            MappingProxyType({"id": 1, "right": "R1"}),
+            MappingProxyType({"id": 1, "right": "R2"}),
+        )
+        left_field = right_field = "id"
+    expected = [{"native_many_v2" if validate == "m:m" else "native_v2": True}]
     calls: list[tuple[object, ...]] = []
 
-    def select(row: object) -> object:
-        return row["id"]  # type: ignore[index]
+    def left_key(row: object) -> object:
+        return row[left_field]  # type: ignore[index]
+
+    def right_key(row: object) -> object:
+        return row[right_field]  # type: ignore[index]
+
+    if validate == "m:m":
+        right_key = left_key
 
     def native_v2(*arguments: object) -> list[dict[str, bool]]:
         calls.append(arguments)
         return expected
 
     def forbidden(*_arguments: object) -> None:
-        raise AssertionError("the v2 many shape must not call another callable ABI")
+        raise AssertionError("mapping joins must not call another callable ABI")
 
-    monkeypatch.setattr(_native, "join_hashable_many_records_v1", forbidden)
-    monkeypatch.setattr(_native, "join_hashable_unique_records_v1", forbidden)
-    monkeypatch.setattr(_native, "join_hashable_unique_records_v2", forbidden)
-    monkeypatch.setattr(_native, "join_hashable_many_records_v2", native_v2)
-
+    kind = "many" if validate == "m:m" else "unique"
+    monkeypatch.setattr(_native, f"join_hashable_{kind}_records_v1", forbidden)
+    if validate == "m:m":
+        monkeypatch.setattr(_native, "join_hashable_unique_records_v1", forbidden)
+        monkeypatch.setattr(_native, "join_hashable_unique_records_v2", forbidden)
+    monkeypatch.setattr(_native, f"join_hashable_{kind}_records_v2", native_v2, raising=False)
     result = (
-        fpstreams.rows(left).join(right, left_on=select, right_on=select, validate="m:m").to_list()
+        fpstreams.rows(left)
+        .join(right, left_on=left_key, right_on=right_key, validate=validate)
+        .to_list()
     )
 
     assert result is expected
     assert len(calls) == 1
+    assert calls[0][:8] == (
+        left,
+        right,
+        left_key,
+        right_key,
+        (dict, _as_record),
+        False,
+        "_right",
+        frozenset(),
+    )
     assert calls[0][4] == (dict, _as_record)
     assert calls[0][8] == (MappingProxyType,)
 
@@ -8412,12 +8330,11 @@ def test_namedtuple_snapshot_empty_closure_cell_uses_canonical_name_error() -> N
         cell.cell_contents = dict
 
 
-def test_callable_many_join_v2_unlisted_type_declines_before_callbacks(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("validate", ["m:1", "m:m"])
+def test_callable_join_v2_unlisted_type_declines_before_callbacks(
+    monkeypatch, validate: str
 ) -> None:
-    """A later unlisted Mapping type makes v2 fall back before selector ownership."""
-    from collections.abc import Mapping
-
+    """A later unlisted nominal Mapping type declines before selector ownership."""
     from fpstreams import _native
 
     class Record(Mapping[str, object]):
@@ -8438,35 +8355,42 @@ def test_callable_many_join_v2_unlisted_type_declines_before_callbacks(
 
     events: list[str] = []
     native_calls = 0
-    native_v2 = _native.join_hashable_many_records_v2
+    kind = "many" if validate == "m:m" else "unique"
+    symbol = f"join_hashable_{kind}_records_v2"
+    native_v2 = getattr(_native, symbol)
 
     def select(row: Mapping[str, object]) -> object:
-        events.append(f"select:{row['id']}")
-        return row["id"]
+        if validate == "m:m":
+            events.append(f"select:{row['id']}")
+            return row["id"]
+        value = row["id"]
+        events.append(f"select:{value}")
+        return value
 
     def tracked_v2(*arguments: object) -> object:
         nonlocal native_calls
         native_calls += 1
         return native_v2(*arguments)
 
-    monkeypatch.setattr(_native, "join_hashable_many_records_v2", tracked_v2)
+    monkeypatch.setattr(_native, symbol, tracked_v2)
+    right = (
+        (Record({"id": 1, "right": "first"}), Unlisted({"id": 1, "right": "second"}))
+        if validate == "m:m"
+        else (Record({"id": 1, "right": True}), Unlisted({"id": 2, "right": False}))
+    )
     result = (
         fpstreams.rows([Record({"id": 1, "left": True})])
-        .join(
-            (
-                Record({"id": 1, "right": "first"}),
-                Unlisted({"id": 1, "right": "second"}),
-            ),
-            left_on=select,
-            right_on=select,
-            validate="m:m",
-        )
+        .join(right, left_on=select, right_on=select, validate=validate)
         .to_list()
     )
 
-    assert [row["right"] for row in result] == ["first", "second"]
+    if validate == "m:m":
+        assert [row["right"] for row in result] == ["first", "second"]
+        assert events == ["select:1", "select:1", "select:1"]
+    else:
+        assert result == [{"id": 1, "left": True, "id_right": 1, "right": True}]
+        assert events == ["select:1", "select:2", "select:1"]
     assert native_calls == 1
-    assert events == ["select:1", "select:1", "select:1"]
 
 
 def test_callable_many_join_native_decline_runs_canonical_selectors_once(monkeypatch) -> None:
@@ -8510,36 +8434,54 @@ def test_callable_many_join_native_decline_runs_canonical_selectors_once(monkeyp
     assert events == ["right:1", "right:1", "left:1"]
 
 
-def test_callable_many_join_native_error_propagates_without_opening_sources(monkeypatch) -> None:
-    """Once the chosen ABI raises, execution must not replay either source in Python."""
+@pytest.mark.parametrize(
+    ("selector_kind", "validate", "message"),
+    [
+        ("callable", "m:m", "many callback failure"),
+        ("callable", "m:1", "callable join failed"),
+        ("direct", "m:1", "native join failed"),
+        ("direct", "m:m", "native many join failed"),
+    ],
+)
+def test_join_native_errors_propagate_without_opening_sources(
+    monkeypatch, selector_kind: str, validate: str, message: str
+) -> None:
+    """ABI ownership errors preserve identity without opening sources or retrying."""
     from fpstreams import _native
-    from fpstreams.planning.source import Source
 
-    failure = RuntimeError("many callback failure")
+    error = RuntimeError(message)
 
-    def select(row: dict[str, int]) -> int:
+    def key(row: dict[str, int]) -> int:
         return row["id"]
 
-    def explode(*_arguments: object) -> None:
-        raise failure
+    def fail(*_arguments: object) -> None:
+        raise error
 
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a native error must not open canonical Python sources")
+    def forbidden(*_arguments: object) -> None:
+        raise AssertionError("a real native error must not enter another join path")
 
-    monkeypatch.setattr(_native, "join_hashable_many_records_v1", explode)
-    monkeypatch.setattr(Source, "open", opened)
-    with pytest.raises(RuntimeError, match="many callback failure") as captured:
-        (
-            fpstreams.rows([{"id": 1}])
-            .join(
-                ({"id": 1}, {"id": 1}),
-                left_on=select,
-                right_on=select,
-                validate="m:m",
-            )
-            .to_list()
+    monkeypatch.setattr(Source, "open", forbidden)
+    if selector_kind == "callable":
+        kind = "many" if validate == "m:m" else "unique"
+        monkeypatch.setattr(_native, f"join_hashable_{kind}_records_v1", fail, raising=False)
+        right = ({"id": 1}, {"id": 1}) if validate == "m:m" else ({"id": 1},)
+        joined = fpstreams.rows([{"id": 1}]).join(
+            right, left_on=key, right_on=key, validate=validate
         )
-    assert captured.value is failure
+    else:
+        monkeypatch.setattr(_native, "record_join_v1_max_fields", 64, raising=False)
+        if validate == "m:1":
+            monkeypatch.setattr(_native, "join_i64_unique_dict_rows_v2", fail, raising=False)
+            monkeypatch.setattr(_native, "join_i64_unique_dict_rows_v1", fail, raising=False)
+            joined = fpstreams.rows([{"id": 1}]).join(({"id": 1},), on="id", validate=validate)
+        else:
+            monkeypatch.setattr(_native, "join_i64_many_dict_rows_v1", fail, raising=False)
+            monkeypatch.setattr(_native, "join_i64_unique_dict_rows_v1", forbidden, raising=False)
+            joined = fpstreams.rows([{"id": 1}]).join(({"id": 1},), on="id")
+
+    with pytest.raises(RuntimeError, match=message) as captured:
+        joined.to_list()
+    assert captured.value is error
 
 
 def test_callable_many_join_native_preserves_callbacks_snapshots_and_output_order() -> None:
@@ -8646,129 +8588,6 @@ def test_callable_many_join_native_matches_python_hash_and_equality_trace() -> N
     assert [row["right"] for row in python_result] == [1, 2]
 
 
-def test_callable_unique_join_to_list_runs_the_native_kernel(monkeypatch) -> None:
-    """A successful callback ABI result bypasses both canonical source iterators."""
-    from fpstreams import _native
-    from fpstreams.planning.source import Source
-    from fpstreams.tabular.records import _as_record
-
-    left = [{"left_id": 1, "left": "a"}]
-    right = ({"right_id": 1, "right": "A"},)
-    expected = [{"native": True}]
-    calls: list[tuple[object, ...]] = []
-
-    def left_key(row: dict[str, object]) -> object:
-        return row["left_id"]
-
-    def right_key(row: dict[str, object]) -> object:
-        return row["right_id"]
-
-    def native_result(*arguments: object) -> list[dict[str, bool]]:
-        calls.append(arguments)
-        return expected
-
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a successful callable join ABI must not open Python sources")
-
-    monkeypatch.setattr(Source, "open", opened)
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_unique_records_v1",
-        native_result,
-        raising=False,
-    )
-
-    def unexpected_v2(*_arguments: object) -> None:
-        raise AssertionError("all-exact-dict joins must retain the v1 ABI")
-
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_unique_records_v2",
-        unexpected_v2,
-        raising=False,
-    )
-
-    result = (
-        fpstreams.rows(left)
-        .join(
-            right,
-            left_on=left_key,
-            right_on=right_key,
-            how="left",
-            suffix="_lookup",
-            validate="m:1",
-        )
-        .to_list()
-    )
-
-    assert result is expected
-    assert len(calls) == 1
-    arguments = calls[0]
-    assert arguments[:4] == (left, right, left_key, right_key)
-    assert arguments[4] == (dict, _as_record)
-    assert arguments[5:] == (True, "_lookup", frozenset())
-
-
-def test_callable_unique_join_mappingproxy_uses_v2_exact_type_token(monkeypatch) -> None:
-    """Initial mappingproxy rows use v2 without broad Mapping protocol admission."""
-    from types import MappingProxyType
-
-    from fpstreams import _native
-    from fpstreams.tabular.records import _as_record
-
-    left = [MappingProxyType({"left_id": 1, "left": "a"})]
-    right = (MappingProxyType({"right_id": 1, "right": "A"}),)
-    expected = [{"native_v2": True}]
-    calls: list[tuple[object, ...]] = []
-
-    def left_key(row: object) -> object:
-        return row["left_id"]  # type: ignore[index]
-
-    def right_key(row: object) -> object:
-        return row["right_id"]  # type: ignore[index]
-
-    def unexpected_v1(*_arguments: object) -> None:
-        raise AssertionError("mapping rows must not be sent to the exact-dict v1 ABI")
-
-    def native_v2(*arguments: object) -> list[dict[str, bool]]:
-        calls.append(arguments)
-        return expected
-
-    monkeypatch.setattr(_native, "join_hashable_unique_records_v1", unexpected_v1)
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_unique_records_v2",
-        native_v2,
-        raising=False,
-    )
-
-    result = (
-        fpstreams.rows(left)
-        .join(
-            right,
-            left_on=left_key,
-            right_on=right_key,
-            validate="m:1",
-        )
-        .to_list()
-    )
-
-    assert result is expected
-    assert len(calls) == 1
-    assert calls[0][:8] == (
-        left,
-        right,
-        left_key,
-        right_key,
-        calls[0][4],
-        False,
-        "_right",
-        frozenset(),
-    )
-    assert calls[0][4] == (dict, _as_record)
-    assert calls[0][8] == (MappingProxyType,)
-
-
 def test_callable_unique_join_nominal_mapping_uses_observed_v2_mro_capability(monkeypatch) -> None:
     """A nominal Mapping delegates both its exact type and retained MRO to v2."""
     from collections.abc import Mapping
@@ -8865,65 +8684,6 @@ def test_callable_unique_join_old_native_falls_back_for_mapping_without_calling_
     assert events == ["select:1", "select:1"]
 
 
-def test_callable_unique_join_v2_unlisted_later_type_falls_back_without_selector_replay(
-    monkeypatch,
-) -> None:
-    """A heterogeneous type missed by the head token declines before selector ownership."""
-    from collections.abc import Mapping
-
-    from fpstreams import _native
-
-    class Record(Mapping[str, object]):
-        def __init__(self, values: dict[str, object]) -> None:
-            self.values = values
-
-        def __getitem__(self, name: str) -> object:
-            return self.values[name]
-
-        def __iter__(self) -> Iterator[str]:
-            return iter(self.values)
-
-        def __len__(self) -> int:
-            return len(self.values)
-
-    class Unlisted(Record):
-        pass
-
-    events: list[str] = []
-    native_calls = 0
-    native_v2 = _native.join_hashable_unique_records_v2
-
-    def select(row: Mapping[str, object]) -> object:
-        value = row["id"]
-        events.append(f"select:{value}")
-        return value
-
-    def tracked_v2(*arguments: object) -> object:
-        nonlocal native_calls
-        native_calls += 1
-        return native_v2(*arguments)
-
-    monkeypatch.setattr(_native, "join_hashable_unique_records_v2", tracked_v2)
-
-    result = (
-        fpstreams.rows([Record({"id": 1, "left": True})])
-        .join(
-            (
-                Record({"id": 1, "right": True}),
-                Unlisted({"id": 2, "right": False}),
-            ),
-            left_on=select,
-            right_on=select,
-            validate="m:1",
-        )
-        .to_list()
-    )
-
-    assert result == [{"id": 1, "left": True, "id_right": 1, "right": True}]
-    assert native_calls == 1
-    assert events == ["select:1", "select:2", "select:1"]
-
-
 def test_callable_unique_join_native_decline_invokes_each_selector_only_once(monkeypatch) -> None:
     """A pre-callback ABI decline may replay sources but must not replay selector effects."""
     from fpstreams import _native
@@ -8964,41 +8724,6 @@ def test_callable_unique_join_native_decline_invokes_each_selector_only_once(mon
     assert result == [{"left_id": 1, "right_id": 1}]
     assert native_calls == 1
     assert events == ["right:1", "left:1"]
-
-
-def test_callable_unique_join_native_error_propagates_without_fallback(monkeypatch) -> None:
-    """An ABI error after callback ownership transfers cannot reopen canonical sources."""
-    from fpstreams import _native
-    from fpstreams.planning.source import Source
-
-    error = RuntimeError("callable join failed")
-
-    def key(row: dict[str, int]) -> int:
-        return row["id"]
-
-    def fail(*_arguments: object) -> None:
-        raise error
-
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a callable native error must not enter source fallback")
-
-    monkeypatch.setattr(Source, "open", opened)
-    monkeypatch.setattr(
-        _native,
-        "join_hashable_unique_records_v1",
-        fail,
-        raising=False,
-    )
-    joined = fpstreams.rows([{"id": 1}]).join(
-        ({"id": 1},),
-        left_on=key,
-        right_on=key,
-        validate="m:1",
-    )
-
-    with pytest.raises(RuntimeError) as captured:
-        joined.to_list()
-    assert captured.value is error
 
 
 def test_callable_unique_join_real_kernel_preserves_order_and_snapshots(monkeypatch) -> None:
@@ -9834,62 +9559,6 @@ def test_exact_record_join_i64_decline_uses_direct_kernel_without_opening_source
     ]
     assert native_calls == ["i64", "direct"]
     assert opened == []
-
-
-def test_exact_record_join_native_errors_propagate_without_opening_sources(monkeypatch) -> None:
-    """A real ABI failure is not an unsupported-shape signal and must remain the active error."""
-    from fpstreams import _native
-    from fpstreams.planning.source import Source
-
-    error = RuntimeError("native join failed")
-
-    def fail(*_arguments: object) -> None:
-        raise error
-
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a real native error must not enter source fallback")
-
-    monkeypatch.setattr(Source, "open", opened)
-    monkeypatch.setattr(_native, "record_join_v1_max_fields", 64, raising=False)
-    monkeypatch.setattr(_native, "join_i64_unique_dict_rows_v2", fail, raising=False)
-    monkeypatch.setattr(_native, "join_i64_unique_dict_rows_v1", fail, raising=False)
-
-    joined = fpstreams.rows([{"id": 1}]).join(({"id": 1},), on="id", validate="m:1")
-    with pytest.raises(RuntimeError) as captured:
-        joined.to_list()
-    assert captured.value is error
-
-
-def test_many_record_join_native_errors_propagate_without_opening_sources(monkeypatch) -> None:
-    """A real many-ABI failure propagates without probing unique or opening sources."""
-    from fpstreams import _native
-    from fpstreams.planning.source import Source
-
-    error = RuntimeError("native many join failed")
-
-    def fail(*_arguments: object) -> None:
-        raise error
-
-    def forbidden(*_arguments: object) -> None:
-        raise AssertionError("a real many-ABI error must not enter another join path")
-
-    def opened(_source: Source[object]) -> object:
-        raise AssertionError("a real many-ABI error must not enter source fallback")
-
-    monkeypatch.setattr(Source, "open", opened)
-    monkeypatch.setattr(_native, "record_join_v1_max_fields", 64, raising=False)
-    monkeypatch.setattr(_native, "join_i64_many_dict_rows_v1", fail, raising=False)
-    monkeypatch.setattr(
-        _native,
-        "join_i64_unique_dict_rows_v1",
-        forbidden,
-        raising=False,
-    )
-
-    joined = fpstreams.rows([{"id": 1}]).join(({"id": 1},), on="id")
-    with pytest.raises(RuntimeError) as captured:
-        joined.to_list()
-    assert captured.value is error
 
 
 def test_exact_record_join_falls_back_for_old_wheels_and_active_failpoints(monkeypatch) -> None:

@@ -31,7 +31,7 @@ from ..errors import BufferLimitError, EmptyFlowError
 from ..expressions.selectors import Selector, compile_selector
 from ..planning.async_utils import _MISSING, _resolve, closing_async_iterators
 from ..primitives.result import Err, Ok
-from ..runtime._distinct import reraise_key_type_error
+from ..runtime._distinct import dict_get, dict_set, reraise_key_type_error
 from ..runtime.report import ExecutionResult, _start_recording, _stop_recording
 
 T = TypeVar("T")
@@ -757,12 +757,12 @@ class AsyncFlowTerminalsMixin(Generic[T]):
             async for item in iterator:
                 group = await _resolve(select(item))
                 try:
-                    state = states.get(group, missing)
+                    state = dict_get(states, group, missing)
                 except TypeError:
                     reraise_key_type_error(group, "reduce_by() keys must be hashable")
                 if state is missing:
                     state = cast(R, await _resolve(initializer()))
-                states[group] = cast(R, await _resolve(function(state, item)))
+                dict_set(states, group, cast(R, await _resolve(function(state, item))))
         return states
 
     fold_by = reduce_by

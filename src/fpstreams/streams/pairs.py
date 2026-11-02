@@ -23,7 +23,7 @@ from ..planning.pairs import (
     PairMapDescriptor,
 )
 from ..planning.sync import Engine
-from ..runtime._distinct import reraise_key_type_error
+from ..runtime._distinct import DistinctKey, HashFailure, dict_get, dict_set, reraise_key_type_error
 from ..runtime.iterators import closing_iterators
 from ..runtime.report import (
     ExecutionResult,
@@ -414,7 +414,7 @@ class Pairs(Generic[K, V]):
                 missing = object()
                 for key, value in iterator:
                     try:
-                        state = states.get(key, missing)
+                        state = dict_get(states, key, missing)
                     except TypeError:
                         reraise_key_type_error(key, "pair keys must be hashable")
                     if state is missing:
@@ -422,28 +422,44 @@ class Pairs(Generic[K, V]):
                     if not collector.done(state):
                         state = collector.step(state, value)
                     try:
-                        states[key] = state
+                        dict_set(states, key, state)
                     except TypeError:
                         reraise_key_type_error(key, "pair keys must be hashable")
                 return states
 
             states = self._consume(consume_streaming)
-            return {key: collector.finish(state) for key, state in states.items()}
+            result: dict[K, R] = {}
+            for key, state in states.items():
+                dict_set(result, key, collector.finish(state))
+            return result
 
         if not callable(collector):
             raise TypeError("collector must be a Collector or callable")
 
-        def consume_groups(iterator: Iterator[tuple[K, V]]) -> dict[K, list[V]]:
-            groups: dict[K, list[V]] = {}
+        def consume_groups(iterator: Iterator[tuple[K, V]]) -> dict[DistinctKey, list[V]]:
+            # Wrap every intermediate key, so equality always receives raw values.
+            # setdefault keeps its single hash and single collision lookup.
+            groups: dict[DistinctKey, list[V]] = {}
             for key, value in iterator:
                 try:
-                    groups.setdefault(key, []).append(value)
+                    try:
+                        groups.setdefault(DistinctKey(key), []).append(value)
+                    except HashFailure as error:
+                        failure = cast(TypeError, error.__cause__)
+                        context = failure.__context__
+                        try:
+                            raise failure
+                        finally:
+                            failure.__context__ = context
                 except TypeError:
                     reraise_key_type_error(key, "pair keys must be hashable")
             return groups
 
         groups = self._consume(consume_groups)
-        return {key: collector(values) for key, values in groups.items()}
+        finished: dict[K, R] = {}
+        for wrapped_key, values in groups.items():
+            dict_set(finished, wrapped_key.value, collector(values))
+        return finished
 
     def aggregate_values(self, **aggregations: Collector[Any, Any, Any]) -> dict[K, dict[str, Any]]:
         """Run named collectors independently for every key.
@@ -486,20 +502,23 @@ class Pairs(Generic[K, V]):
             missing: dict[str, Any] = {}
             for key, value in iterator:
                 try:
-                    states = states_by_key.get(key, missing)
+                    states = dict_get(states_by_key, key, missing)
                 except TypeError:
                     reraise_key_type_error(key, "pair keys must be hashable")
                 if states is missing:
                     states = initialize_aggregations(items)
                 step_aggregations(states, items, value)
                 try:
-                    states_by_key[key] = states
+                    dict_set(states_by_key, key, states)
                 except TypeError:
                     reraise_key_type_error(key, "pair keys must be hashable")
             return states_by_key
 
         states_by_key = self._consume(consume)
-        return {key: finish_aggregations(states, items) for key, states in states_by_key.items()}
+        result: dict[K, dict[str, Any]] = {}
+        for key, states in states_by_key.items():
+            dict_set(result, key, finish_aggregations(states, items))
+        return result
 
 
 def pairs(source: Mapping[K, V] | Iterable[tuple[K, V]]) -> Pairs[K, V]:

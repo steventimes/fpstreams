@@ -11,8 +11,8 @@ supported Arrow tables and dataframes. Use `aflow()` for async work:
 | `rows(source)` | Record operations, relational joins, and record-specific I/O |
 | `pairs(source)` | Key/value transformations and per-key aggregation |
 
-Version 2.5.0 includes the static averaging type correction and explicit migration
-APIs, Python 3.15 compatibility, and resource ownership fixes.
+Version 2.5.0 preserves custom-key hash errors in per-key reductions, Pair
+collection, and in-memory Python joins and grouping on Python 3.14 and 3.15.
 Version 2.4.0 adds
 stateful pipeline operations, composed aggregation, shared execution limits,
 file recovery, and versioned execution metadata. It includes the batch mapping,
@@ -32,7 +32,7 @@ and [adjacent-run Collector reduction](reference/flow.md#reduce-adjacent-runs-wi
 supports JSON storage and caller-managed metadata integration. The roadmap
 separates these verified changes from remaining candidates.
 
-This site documents 2.5.0. The static averaging result-type correction has an
+Version 2.5.0 includes a static averaging result-type correction with an
 explicit migration path. The references cover
 [typed async folds](reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
 [explicit averaging](reference/collecting.md#explicit-averaging-operations-250),
@@ -42,13 +42,14 @@ provides a release-specific starting point.
 
 ## Installation
 
+Install fpstreams from PyPI:
+
 ~~~bash
-pip install fpstreams
+python -m pip install fpstreams
 ~~~
 
 Python 3.11 or newer is required. The source CI matrix targets standard CPython
-3.11 through 3.15; Python 3.15 compatibility is included in 2.5.0.
-The 2.4.1 release matrix covered 3.11 through 3.14.
+3.11 through 3.15.
 Free-threaded 3.14t and 3.15t have an experimental core-concurrency CI matrix,
 not release wheels or optional-adapter qualification. Install optional
 integrations as needed:

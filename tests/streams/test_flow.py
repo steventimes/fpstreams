@@ -1283,10 +1283,23 @@ def test_direct_materialization_preserves_close_failure_boundaries(
     assert closes == 1
 
 
-def test_non_retained_set_materialization_stays_on_the_canonical_executor(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("size", "consume", "expected"),
+    [
+        (4, lambda values: values.map(lambda value: value % 2).to_set(), {0, 1}),
+        (
+            8,
+            lambda values: values.map_parallel(
+                lambda value: value + 1, workers=2, backend="thread", buffer=2
+            ).to_list(),
+            list(range(1, 9)),
+        ),
+    ],
+    ids=["nonretained-set", "parallel-list"],
+)
+def test_materialization_preserves_canonical_executor_routes(
+    monkeypatch: pytest.MonkeyPatch, size, consume, expected
 ) -> None:
-    """The generalized linear source sink is intentionally limited to list and tuple."""
     from fpstreams.streams import flow_terminals
 
     executions = 0
@@ -1299,35 +1312,7 @@ def test_non_retained_set_materialization_stays_on_the_canonical_executor(
 
     monkeypatch.setattr(flow_terminals, "execute_physical", tracked_executor)
 
-    assert flow(value for value in range(4)).with_engine("python").map(
-        lambda value: value % 2
-    ).to_set() == {0, 1}
-    assert executions == 1
-
-
-def test_direct_linear_materialization_leaves_parallel_scheduling_to_the_executor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Removing forwarding frames must not alter explicit worker scheduling semantics."""
-    from fpstreams.streams import flow_terminals
-
-    executions = 0
-    execute_physical = flow_terminals.execute_physical
-
-    def tracked_executor(plan: object) -> Iterator[Any]:
-        nonlocal executions
-        executions += 1
-        return execute_physical(plan)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(flow_terminals, "execute_physical", tracked_executor)
-    result = (
-        flow(value for value in range(8))
-        .with_engine("python")
-        .map_parallel(lambda value: value + 1, workers=2, backend="thread", buffer=2)
-        .to_list()
-    )
-
-    assert result == list(range(1, 9))
+    assert consume(flow(value for value in range(size)).with_engine("python")) == expected
     assert executions == 1
 
 
@@ -1396,44 +1381,21 @@ def test_retained_sequence_windows_leave_active_failpoints_observable(terminal: 
     assert captured.value is failure
 
 
-@pytest.mark.parametrize("terminal", ["to_list", "to_tuple"])
-def test_retained_sequence_windows_use_custom_source_factory(terminal: str) -> None:
-    """Native data alone cannot replace the factory owned by a custom Source."""
-    from fpstreams.planning.source import Source, SourceCapabilities
-
-    opens = 0
-
-    def open_source() -> Iterator[int]:
-        nonlocal opens
-        opens += 1
-        return iter((7, 8, 9))
-
-    retained = [1, 2, 3]
-    source = Source(
-        open_source,
-        SourceCapabilities(reiterable=True, exact_size=3),
-        native_data=retained,
-        live_size_data=retained,
-    )
-    pipeline = fpstreams.Flow(source).with_engine("python").drop(1).take(1)
-
-    assert getattr(pipeline, terminal)() == ([8] if terminal == "to_list" else (8,))
-    assert opens == 1
-
-
 @pytest.mark.parametrize(
-    ("build", "expected"),
+    ("actual_values", "build", "terminal", "expected"),
     [
-        (lambda values: values.chunk(2), [(9, 7), (8,)]),
-        (lambda values: values.window(2), [(9, 7), (7, 8)]),
-        (lambda values: values.sorted(), [7, 8, 9]),
+        ((7, 8, 9), lambda values: values.drop(1).take(1), "to_list", [8]),
+        ((7, 8, 9), lambda values: values.drop(1).take(1), "to_tuple", (8,)),
+        ((9, 7, 8), lambda values: values.chunk(2), "to_list", [(9, 7), (8,)]),
+        ((9, 7, 8), lambda values: values.window(2), "to_list", [(9, 7), (7, 8)]),
+        ((9, 7, 8), lambda values: values.sorted(), "to_list", [7, 8, 9]),
     ],
+    ids=["slice-list", "slice-tuple", "chunk", "window", "sort"],
 )
 def test_retained_structural_routes_use_custom_source_factory(
-    build: Callable[[Any], Any],
-    expected: list[Any],
+    actual_values, build, terminal, expected
 ) -> None:
-    """Every structural fast path requires from_iterable provenance, not native metadata."""
+    """Structural shortcuts must honor the custom factory despite retained metadata."""
     from fpstreams.planning.source import Source, SourceCapabilities
 
     opens = 0
@@ -1441,7 +1403,7 @@ def test_retained_structural_routes_use_custom_source_factory(
     def open_source() -> Iterator[int]:
         nonlocal opens
         opens += 1
-        return iter((9, 7, 8))
+        return iter(actual_values)
 
     retained = [1, 2, 3]
     source = Source(
@@ -1450,8 +1412,9 @@ def test_retained_structural_routes_use_custom_source_factory(
         native_data=retained,
         live_size_data=retained,
     )
+    query = build(fpstreams.Flow(source).with_engine("python"))
 
-    assert build(fpstreams.Flow(source).with_engine("python")).to_list() == expected
+    assert getattr(query, terminal)() == expected
     assert opens == 1
 
 
@@ -1834,7 +1797,8 @@ def test_flow_factory_keeps_vendor_scalar_vectors_as_ordinary_iterables(vendor: 
     assert pipeline.to_list() == list(source)
 
 
-def test_flow_factory_prefers_custom_arrow_stream_over_dataframe_protocol() -> None:
+@pytest.mark.parametrize("factory", [flow, fpstreams.rows], ids=["flow", "rows"])
+def test_factories_prefer_custom_arrow_stream_over_dataframe_protocol(factory) -> None:
     pa = pytest.importorskip("pyarrow")
     from fpstreams.planning.arrow.source import ArrowBatchSource
 
@@ -1853,43 +1817,15 @@ def test_flow_factory_prefers_custom_arrow_stream_over_dataframe_protocol() -> N
             raise AssertionError("the dataframe protocol must not win")
 
     provider = Provider()
-    pipeline = flow(provider)
+    query = factory(provider)
+    pipeline = query if factory is flow else query._flow
     descriptor = pipeline._pipeline.source.native_data
 
     assert isinstance(descriptor, ArrowBatchSource)
     assert descriptor.kind == "reader"
     assert provider.arrow_calls == 1
     assert provider.dataframe_calls == 0
-    assert pipeline.to_list() == [{"id": 1}, {"id": 2}]
-
-
-def test_rows_factory_reuses_flow_dual_protocol_priority() -> None:
-    pa = pytest.importorskip("pyarrow")
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-
-    table = pa.table({"id": [1, 2]})
-
-    class Provider:
-        arrow_calls = 0
-        dataframe_calls = 0
-
-        def __arrow_c_stream__(self, requested_schema: Any = None) -> Any:
-            self.arrow_calls += 1
-            return table.__arrow_c_stream__(requested_schema)
-
-        def __dataframe__(self, **_options: Any) -> Any:
-            self.dataframe_calls += 1
-            raise AssertionError("Arrow must keep priority through the Rows compatibility factory")
-
-    provider = Provider()
-    row_view = fpstreams.rows(provider)
-    descriptor = row_view._flow._pipeline.source.native_data
-
-    assert isinstance(descriptor, ArrowBatchSource)
-    assert descriptor.kind == "reader"
-    assert provider.arrow_calls == 1
-    assert provider.dataframe_calls == 0
-    assert row_view.to_list() == [{"id": 1}, {"id": 2}]
+    assert query.to_list() == [{"id": 1}, {"id": 2}]
 
 
 def test_rows_factory_preserves_instance_level_dataframe_provider() -> None:
@@ -3889,13 +3825,45 @@ def test_grouping_preserves_custom_hash_type_error() -> None:
     failure = TypeError("hash failed")
     source_failure = TypeError("source failed")
 
-    class Key:
-        def __hash__(self) -> int:
-            raise failure
+    class Meta(type):
+        @property
+        def __mro__(cls):
+            raise AssertionError("user metaclass MRO property must not run")
 
-    with pytest.raises(TypeError) as captured:
-        flow([Key()]).frequencies()
-    assert captured.value is failure
+        @property
+        def __dict__(cls):
+            raise AssertionError("user metaclass namespace property must not run")
+
+    class Key(metaclass=Meta):
+        calls = 0
+
+        def __hash__(self) -> int:
+            self.calls += 1
+            if self.calls == failing_call:
+                raise failure
+            return 0
+
+    for failing_call in (1, 2):
+        key = Key()
+        closed = []
+
+        def keys(value=key, close_log=closed):
+            try:
+                yield value
+            finally:
+                close_log.append(True)
+
+        with pytest.raises(TypeError) as captured:
+            flow(keys()).frequencies()
+        assert captured.value is failure
+        assert key.calls == failing_call
+        assert closed == [True]
+    failing_call = 0
+    key = Key()
+    result = flow([key]).with_engine("python").frequencies()
+    assert next(iter(result)) is key
+    assert list(result.values()) == [1]
+    assert key.calls == 2
     with pytest.raises(TypeError, match="unhashable"):
         flow([([],)]).frequencies()
 
@@ -4385,34 +4353,9 @@ def test_concat_closes_each_opened_source_once(left_values, limit) -> None:
         assert events == ["right", "unused", "left"]
 
 
-@pytest.mark.parametrize("transformed", [False, True])
-def test_concat_does_not_close_aliased_upstream_twice(transformed: bool) -> None:
-    class Source:
-        def __init__(self):
-            self.values = iter([1, 2])
-            self.calls = 0
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            return next(self.values)
-
-        def close(self):
-            self.calls += 1
-            if self.calls > 1:
-                raise RuntimeError("closed twice")
-
-    source = Source()
-    values = flow(source)
-    if transformed:
-        values = values.map(lambda value: value)
-    assert values.concat(source).to_list() == [1, 2]
-    assert source.calls == 1
-
-
 @pytest.mark.parametrize(
-    "mode", ["same", "cross", "mapped-cross", "short-cross", "mapped-short-cross"]
+    "mode",
+    ["alias", "mapped-alias", "same", "cross", "mapped-cross", "short-cross", "mapped-short-cross"],
 )
 def test_concat_does_not_close_repeated_one_shot_source_twice(mode: str) -> None:
     class Source:
@@ -4432,7 +4375,7 @@ def test_concat_does_not_close_repeated_one_shot_source_twice(mode: str) -> None
                 raise RuntimeError("closed twice")
 
     source = Source()
-    query = flow([]).concat(source)
+    query = flow(source) if "alias" in mode else flow([]).concat(source)
     if "short" in mode:
         query = query.take(1)
     if "mapped" in mode:

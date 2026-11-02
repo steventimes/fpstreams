@@ -5,8 +5,7 @@ including changed defaults.
 
 ## 2.5.0
 
-Version 2.5.0 includes an
-intentional static typing incompatibility: `Collectors.averaging()` now
+Version 2.5.0 includes an intentional static typing incompatibility: `Collectors.averaging()` now
 returns `object` in type annotations rather than incorrectly promising `float`.
 Runtime arithmetic is unchanged. Use `Collectors.averaging_with()` for explicit
 accumulator and result types, or narrow the legacy result before use.
@@ -68,6 +67,10 @@ The migration examples are in the collecting and async flow reference pages;
   extensions without this capability retain the reference implementation.
 
 ### Fixed
+
+- Preserve the original custom-key hash exception in synchronous and asynchronous
+  per-key reductions, frequency counts, Pair collection, and in-memory Python
+  joins and grouping on CPython 3.14 and 3.15. Keep hash calls, raw key identity, and source cleanup unchanged.
 
 - Reuse each compiled scalar stage's validated fingerprint for the physical-plan
   cache instead of encoding the same expression again. Row expressions remain

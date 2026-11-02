@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import gc
 import math
+import struct
 import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing
+from dataclasses import replace
+from math import isnan
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -19,6 +23,38 @@ import pyarrow.parquet as pq
 import pytest
 
 import fpstreams
+from fpstreams.execution import arrow as arrow_execution
+from fpstreams.execution import arrow as execution
+from fpstreams.execution import relational as relational_execution
+from fpstreams.tabular import arrow
+from fpstreams.tabular import arrow as adapter
+from fpstreams.tabular import arrow as arrow_adapter
+
+
+def _observe_row_batches(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    sizes: list[int] = []
+    convert_rows = arrow_adapter.batch_to_rows
+
+    def tracked(batch: Any) -> list[dict[str, object]]:
+        sizes.append(batch.num_rows)
+        return convert_rows(batch)
+
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    return sizes
+
+
+def _forbid_row_boxing(_batch: object) -> list[dict[str, object]]:
+    raise AssertionError("the columnar path must not box or reopen Python rows")
+
+
+class _ArrowStreamProvider:
+    def __init__(self, table: pa.Table) -> None:
+        self.table = table
+        self.calls = 0
+
+    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+        self.calls += 1
+        return self.table.__arrow_c_stream__(requested_schema)
 
 
 class _TrackedArrowBatches(Iterator[pa.RecordBatch]):
@@ -47,6 +83,36 @@ class _TrackedArrowBatches(Iterator[pa.RecordBatch]):
             return
         self._closed = True
         self._events.append("close")
+
+
+def _arrow_reader_source(
+    open_batches: Callable[[], Any],
+    schema: Any,
+    *,
+    batch_size: int = 65_536,
+    row_converter: Callable[[Any], Any] | None = None,
+):
+    """Build one-shot Arrow ownership with forbidden or explicitly controlled row fallback."""
+    from fpstreams.planning.arrow.source import ArrowBatchSource
+    from fpstreams.planning.source import Source, SourceCapabilities
+
+    descriptor = ArrowBatchSource(open_batches, "reader", batch_size, schema, False)
+
+    def rows():
+        if row_converter is None:
+            raise AssertionError("the guarded Arrow reader must not reopen Python rows")
+        batches = descriptor.open_batches()
+        try:
+            for batch in batches:
+                yield from row_converter(batch)
+        finally:
+            batches.close()
+
+    return Source(
+        rows,
+        SourceCapabilities(reiterable=False, exact_size=None),
+        native_data=descriptor,
+    )
 
 
 def test_process_parallel_is_safe_after_arrow_initializes_threads(tmp_path: Path) -> None:
@@ -100,8 +166,6 @@ def test_safe_arrow_batches_never_box_or_rebuild_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A complete safe Arrow plan should emit native batches without Python records."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     def reject_projected_rows(*_args: object) -> Iterator[dict[str, object]]:
         raise AssertionError("native arrow_batches must not box projected rows")
@@ -215,14 +279,9 @@ def test_rows_exports_arrow_c_stream_and_honors_requested_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """PyArrow should consume a safe Rows plan directly and negotiate matching field types."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("Rows C Stream export must not box a safe Arrow plan")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     query = (
         fpstreams.rows.from_arrow(pa.table({"value": [1, 3], "unused": [10, 30]}))
         .where(fpstreams.col("value") >= 2)
@@ -238,30 +297,15 @@ def test_rows_exports_arrow_c_stream_and_honors_requested_schema(
 
 def test_rows_arrow_c_stream_closes_and_spends_one_shot_source() -> None:
     """Export claims a one-shot source once and closes its native iterator on completion."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     events: list[str] = []
     batches = [
         pa.record_batch({"value": pa.array([1], type=pa.int64())}),
         pa.record_batch({"value": pa.array([2], type=pa.int64())}),
     ]
-    descriptor = ArrowBatchSource(
-        lambda: _TrackedArrowBatches(batches, events),
-        "reader",
-        1,
-        batches[0].schema,
-        False,
-    )
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("Rows C Stream export must not open the row source")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+    source = _arrow_reader_source(
+        lambda: _TrackedArrowBatches(batches, events), batches[0].schema, batch_size=1
     )
     query = fpstreams.Rows(fpstreams.Flow(source)).select("value")
 
@@ -277,14 +321,9 @@ def test_complete_arrow_filter_projection_to_arrow_never_boxes_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A proven complete batch program should return an Arrow table without Python records."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("batch-native to_arrow must not box input or projected rows")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     source = fpstreams.rows.from_arrow(
         pa.table({"value": [1, 3, 5, 2], "payload": [10, 30, 50, 20]}),
         batch_size=1,
@@ -305,14 +344,9 @@ def test_complete_arrow_filter_only_to_arrow_never_boxes_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A proven primitive filter should keep every source column in Arrow form."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("batch-native filter-only to_arrow must not box rows")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     source = fpstreams.rows.from_arrow(
         pa.table(
             {
@@ -338,14 +372,9 @@ def test_complete_arrow_multiple_direct_filters_never_box_input_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A proven primitive filter sequence stays columnar for count and Arrow output."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("batch-native multiple filters must not box input rows")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     source = fpstreams.rows.from_arrow(
         pa.table(
             {
@@ -440,7 +469,6 @@ def test_batch_native_to_arrow_backend_decline_falls_back_without_reopening(
     monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
 ) -> None:
     """Recoverable lowering errors finish from the already-opened batch iterator."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.source import Source
 
     source = fpstreams.rows.from_arrow(pa.table({"value": [1, 3]}))
@@ -467,16 +495,12 @@ def test_batch_native_to_arrow_unexpected_errors_propagate_without_row_fallback(
     monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
 ) -> None:
     """Resource and unexpected backend failures are never hidden by row materialization."""
-    from fpstreams.execution import arrow as arrow_execution
 
     def fail_lowering(_node: object, _batch: object) -> object:
         raise error_type("table backend")
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("unexpected failure must not box rows")
-
     monkeypatch.setattr(arrow_execution, "lower_row_expression", fail_lowering)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     query = (
         fpstreams.rows.from_arrow(pa.table({"value": [1]}))
         .where(fpstreams.col("value") >= 1)
@@ -507,8 +531,6 @@ def test_batch_native_file_to_arrow_uses_projection_without_boxing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: str
 ) -> None:
     """Typed file scans keep predicate pushdown and projected output in Arrow batches."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / f"values.{storage}"
     if storage == "csv":
@@ -521,11 +543,8 @@ def test_batch_native_file_to_arrow_uses_projection_without_boxing(
         )
         source = fpstreams.rows.from_parquet(target, batch_size=1)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe file to_arrow must not box rows")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", forbidden_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     result = (
         source.where(fpstreams.col("value") >= 3).select("value", "payload").to_arrow(batch_size=2)
     )
@@ -619,17 +638,13 @@ def test_batch_native_to_arrow_keeps_later_nulls_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Once the first terminal chunk anchors a type, later nulls need no row fallback."""
-    from fpstreams.execution import arrow as arrow_execution
 
     source = fpstreams.rows.from_arrow(
         pa.table({"value": [1, 2], "payload": pa.array(["first", None], pa.string())}),
         batch_size=1,
     )
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("later nulls must remain batch-native")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     result = source.where(fpstreams.col("value") >= 1).select("payload").to_arrow(batch_size=1)
 
     assert result.to_pylist() == [{"payload": "first"}, {"payload": None}]
@@ -693,77 +708,47 @@ def test_native_identity_to_arrow_observes_active_failpoints(name: str) -> None:
         query.to_arrow()
 
 
-def test_native_to_arrow_backend_initialization_fails_before_reader_claim(
+@pytest.mark.parametrize(
+    ("hook", "terminal", "filtered", "message", "expected"),
+    [
+        ("_arrow_modules", "to_arrow", False, "backend setup", [{"value": 1}]),
+        ("execute_operations", "to_list", True, "suffix setup", [{"value": 1}]),
+        ("_count_scan_columns", "count", True, "count scan setup", 1),
+    ],
+)
+def test_arrow_setup_failure_preserves_reader_for_later_evaluation(
     monkeypatch: pytest.MonkeyPatch,
+    hook: str,
+    terminal: str,
+    filtered: bool,
+    message: str,
+    expected: object,
 ) -> None:
-    """Backend setup failure leaves a one-shot reader available for one later evaluation."""
-    from fpstreams.execution import arrow as arrow_execution
+    """Backend, suffix and count planning failures must precede one-shot reader claims."""
 
     batch = pa.record_batch({"value": [1]})
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
     query = fpstreams.rows.from_arrow(reader)
-    arrow_modules = arrow_execution._arrow_modules
+    if filtered:
+        query = query.where(fpstreams.col("value") == 1)
+    original = getattr(arrow_execution, hook)
 
-    def fail_modules() -> tuple[object, object]:
-        raise MemoryError("backend setup")
+    def fail_setup(*_args: object, **_kwargs: object) -> object:
+        raise MemoryError(message)
 
-    monkeypatch.setattr(arrow_execution, "_arrow_modules", fail_modules)
-    with pytest.raises(MemoryError, match="backend setup"):
-        query.to_arrow()
+    monkeypatch.setattr(arrow_execution, hook, fail_setup)
+    with pytest.raises(MemoryError, match=message):
+        getattr(query, terminal)()
 
-    monkeypatch.setattr(arrow_execution, "_arrow_modules", arrow_modules)
-    assert query.to_arrow().to_pylist() == [{"value": 1}]
-
-
-def test_arrow_prefix_suffix_setup_fails_before_reader_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A suffix setup failure leaves a lazy one-shot prefix available for one later run."""
-    from fpstreams.execution import arrow as arrow_execution
-
-    batch = pa.record_batch({"value": [1]})
-    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    query = fpstreams.rows.from_arrow(reader).where(fpstreams.col("value") == 1)
-    execute_operations = arrow_execution.execute_operations
-
-    def fail_suffix(*_args: object, **_kwargs: object) -> Iterator[object]:
-        raise MemoryError("suffix setup")
-
-    monkeypatch.setattr(arrow_execution, "execute_operations", fail_suffix)
-    with pytest.raises(MemoryError, match="suffix setup"):
-        query.to_list()
-
-    monkeypatch.setattr(arrow_execution, "execute_operations", execute_operations)
-    assert query.to_list() == [{"value": 1}]
-
-
-def test_arrow_count_scan_setup_fails_before_reader_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Count scan planning can fail without consuming its one-shot Arrow source."""
-    from fpstreams.execution import arrow as arrow_execution
-
-    batch = pa.record_batch({"value": [1]})
-    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    query = fpstreams.rows.from_arrow(reader).where(fpstreams.col("value") == 1)
-    count_columns = arrow_execution._count_scan_columns
-
-    def fail_columns(_prefix: object, *, descriptor: object = None) -> tuple[str, ...] | None:
-        raise MemoryError("count scan setup")
-
-    monkeypatch.setattr(arrow_execution, "_count_scan_columns", fail_columns)
-    with pytest.raises(MemoryError, match="count scan setup"):
-        query.count()
-
-    monkeypatch.setattr(arrow_execution, "_count_scan_columns", count_columns)
-    assert query.count() == 1
+    monkeypatch.setattr(arrow_execution, hook, original)
+    result = getattr(query, terminal)()
+    assert (result.to_pylist() if terminal == "to_arrow" else result) == expected
 
 
 def test_from_arrow_closes_reader_when_schema_validation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Construction failure releases a one-shot reader before ownership can be returned."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     batch = pa.RecordBatch.from_arrays([pa.array([1]), pa.array([2])], names=["id", "id"])
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
@@ -1163,7 +1148,6 @@ def test_parquet_global_count_declines_unbound_metadata_openers(
     replacement: str,
 ) -> None:
     """A metadata counter must remain bound to the same canonical local-path source."""
-    from dataclasses import replace
 
     from fpstreams.planning.arrow.source import ArrowBatchSource
 
@@ -1202,7 +1186,6 @@ def test_direct_parquet_global_count_uses_metadata_terminal(
     """A direct aggregate count should share the source's metadata-aware terminal."""
     from fpstreams.physical.relational import GlobalAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / "aggregate-count.parquet"
     pq.write_table(pa.table({"id": list(range(10))}), target, row_group_size=2)
@@ -1215,10 +1198,7 @@ def test_direct_parquet_global_count_uses_metadata_terminal(
     assert isinstance(physical.root, GlobalAggregatePhysicalNode)
     assert getattr(physical.root, "arrow_count_name", None) == "rows"
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("direct Parquet aggregate count must not box rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert aggregated.to_list() == [{"rows": 5}]
 
@@ -1293,7 +1273,6 @@ def test_arrow_reader_global_sum_streams_without_boxing_and_consumes_once(
     """A direct reader sum should consume its imported C stream exactly once as columns."""
     from fpstreams.physical.relational import GlobalAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.tabular import arrow as arrow_adapter
 
     table = pa.table(
         {
@@ -1302,19 +1281,8 @@ def test_arrow_reader_global_sum_streams_without_boxing_and_consumes_once(
         }
     )
 
-    class StreamProvider:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def __arrow_c_stream__(self, requested_schema: object = None) -> object:
-            self.calls += 1
-            return table.__arrow_c_stream__(requested_schema)
-
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("Arrow reader global sum must not box rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
-    provider = StreamProvider()
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
+    provider = _ArrowStreamProvider(table)
     aggregated = fpstreams.rows.from_arrow(provider, batch_size=1).aggregate(
         total=fpstreams.agg.sum("value")
     )
@@ -1334,7 +1302,6 @@ def test_arrow_c_stream_global_multi_aggregate_never_boxes_rows(
     """A one-shot C stream should reduce closed global lanes directly from its batches."""
     from fpstreams.physical.relational import GlobalAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.tabular import arrow as arrow_adapter
 
     table = pa.table(
         {
@@ -1343,19 +1310,8 @@ def test_arrow_c_stream_global_multi_aggregate_never_boxes_rows(
         }
     )
 
-    class StreamProvider:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def __arrow_c_stream__(self, requested_schema: object = None) -> object:
-            self.calls += 1
-            return table.__arrow_c_stream__(requested_schema)
-
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("Arrow reader global multi aggregate must not box rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
-    provider = StreamProvider()
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
+    provider = _ArrowStreamProvider(table)
     aggregated = fpstreams.rows.from_arrow(provider, batch_size=2).aggregate(
         rows=fpstreams.agg.count(),
         total=fpstreams.agg.sum("value"),
@@ -1374,8 +1330,6 @@ def test_arrow_c_stream_global_multi_aggregate_never_boxes_rows(
 
 def test_arrow_reader_global_multi_owns_batches_and_merges_wide_values() -> None:
     """One-shot global lanes skip empty batches, merge bigints, close, and consume once."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     maximum = 2**63 - 1
     empty = pa.record_batch(
@@ -1393,23 +1347,7 @@ def test_arrow_reader_global_multi_owns_batches_and_merges_wide_values() -> None
         events.append("open")
         return batches
 
-    descriptor = ArrowBatchSource(
-        open_batches,
-        "reader",
-        65_536,
-        first.schema,
-        False,
-    )
-
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("Arrow reader global multi must not open Python rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    source = _arrow_reader_source(open_batches, first.schema, batch_size=65536)
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
         rows=fpstreams.agg.count(),
         total=fpstreams.agg.sum("value"),
@@ -1428,10 +1366,6 @@ def test_arrow_reader_global_multi_compute_decline_keeps_claimed_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A late kernel decline folds only that batch and continues the claimed reader."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
@@ -1463,26 +1397,7 @@ def test_arrow_reader_global_multi_compute_decline_keeps_claimed_batches(
         events.append("open")
         return batches
 
-    descriptor = ArrowBatchSource(
-        open_batches,
-        "reader",
-        65_536,
-        record_batches[0].schema,
-        False,
-    )
-
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("claimed Arrow reader must not reopen Python rows")
-        yield
-
-    def reject_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("claimed Arrow reader fallback must not box whole rows")
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    source = _arrow_reader_source(open_batches, record_batches[0].schema, batch_size=65536)
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
         rows=fpstreams.agg.count(),
         total=fpstreams.agg.sum("value"),
@@ -1490,7 +1405,7 @@ def test_arrow_reader_global_multi_compute_decline_keeps_claimed_batches(
         high=fpstreams.agg.max("value"),
     )
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert aggregated.to_list() == [{"rows": 5, "total": 16, "low": -1, "high": 7}]
     assert min_max_calls == 3
@@ -1513,7 +1428,6 @@ def test_direct_arrow_extrema_and_last_never_box_rows(
     expected: int,
 ) -> None:
     """Direct int64 extrema and last-value reductions should stay columnar."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     batches = [
         pa.record_batch({"value": pa.array([4, -2], type=pa.int64())}),
@@ -1536,77 +1450,30 @@ def test_direct_arrow_extrema_and_last_never_box_rows(
     assert source.aggregate(result=aggregation).to_list() == [{"result": expected}]
 
 
-def test_arrow_reader_global_first_reads_one_batch_and_closes_without_boxing() -> None:
-    """A selected first reduction should close immediately after the first nonempty batch."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-
+@pytest.mark.parametrize(
+    ("kind", "items", "expected_events"),
+    [
+        ("first", [[], [None, 7], [9]], ["pull:0", "pull:1", "close"]),
+        ("last", [[4], [], [9, None]], ["pull:0", "pull:1", "pull:2", "stop", "close"]),
+    ],
+)
+def test_arrow_reader_global_endpoint_preserves_nulls_and_batch_consumption(
+    kind: str, items: list[list[int | None]], expected_events: list[str]
+) -> None:
+    """First short-circuits and last scans to EOF, both retaining a selected null."""
     events: list[str] = []
-    empty = pa.record_batch({"value": pa.array([], type=pa.int64())})
-    first = pa.record_batch({"value": pa.array([None, 7], type=pa.int64())})
-    unpulled = pa.record_batch({"value": pa.array([9], type=pa.int64())})
-    descriptor = ArrowBatchSource(
-        lambda: _TrackedArrowBatches([empty, first, unpulled], events),
-        "reader",
-        65_536,
-        first.schema,
-        False,
-    )
-
-    def forbidden_rows() -> Iterator[dict[str, int | None]]:
-        raise AssertionError("Arrow first must not open rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+    batches = [pa.record_batch({"value": pa.array(values, type=pa.int64())}) for values in items]
+    source = _arrow_reader_source(
+        lambda: _TrackedArrowBatches(batches, events), batches[0].schema, batch_size=65536
     )
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
-        result=fpstreams.agg.first("value")
+        result=getattr(fpstreams.agg, kind)("value")
     )
-
     assert aggregated.to_list() == [{"result": None}]
-    assert events == ["pull:0", "pull:1", "close"]
+    assert events == expected_events
     with pytest.raises(fpstreams.FlowConsumedError):
         aggregated.to_list()
-    assert events == ["pull:0", "pull:1", "close"]
-
-
-def test_arrow_reader_global_last_scans_to_stop_and_retains_a_final_null() -> None:
-    """Selected last consumes every batch and treats a final null as a real value."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-
-    events: list[str] = []
-    first = pa.record_batch({"value": pa.array([4], type=pa.int64())})
-    empty = pa.record_batch({"value": pa.array([], type=pa.int64())})
-    final = pa.record_batch({"value": pa.array([9, None], type=pa.int64())})
-    descriptor = ArrowBatchSource(
-        lambda: _TrackedArrowBatches([first, empty, final], events),
-        "reader",
-        65_536,
-        first.schema,
-        False,
-    )
-
-    def forbidden_rows() -> Iterator[dict[str, int | None]]:
-        raise AssertionError("Arrow last must not open rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
-    aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
-        result=fpstreams.agg.last("value")
-    )
-
-    assert aggregated.to_list() == [{"result": None}]
-    assert events == ["pull:0", "pull:1", "pull:2", "stop", "close"]
-    with pytest.raises(fpstreams.FlowConsumedError):
-        aggregated.to_list()
+    assert events == expected_events
 
 
 @pytest.mark.parametrize(
@@ -1662,7 +1529,6 @@ def test_arrow_extrema_preserve_null_comparison_order_without_row_boxing(
     adapter: str,
 ) -> None:
     """Null extrema should match the canonical ordered Python comparisons column-wise."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     def reject_rows(_batch: object) -> list[dict[str, object]]:
         raise AssertionError(f"Arrow {kind} null handling must not box rows")
@@ -1693,7 +1559,6 @@ def test_arrow_reader_short_extrema_avoid_per_batch_compute_dispatch(
     expected: int,
 ) -> None:
     """Tiny reader batches fold selected scalars without one kernel call per batch."""
-    from fpstreams.execution import relational as relational_execution
 
     imported = relational_execution.import_module
     batches = [
@@ -1752,7 +1617,6 @@ def test_arrow_reader_global_sum_preserves_null_type_error_without_boxing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A later null should raise the same Python sum error after closing the reader."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     converted: list[int] = []
     closed: list[object] = []
@@ -1789,12 +1653,8 @@ def test_arrow_reader_global_sum_preserves_wide_integer_totals_without_boxing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per-batch and cross-batch overflow must retain Python's exact integer result."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("Arrow reader wide sum must not box rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     maximum = 2**63 - 1
     minimum = -(2**63)
     positive_batches = [
@@ -1829,16 +1689,8 @@ def test_arrow_reader_global_reduction_declines_before_claim_for_noncanonical_dt
     expected: int,
 ) -> None:
     """An unsupported reader dtype should still get exactly one canonical row evaluation."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     batch = pa.record_batch({"value": pa.array([2, 3], type=pa.int32())})
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
     aggregated = fpstreams.rows.from_arrow(reader).aggregate(
@@ -1862,16 +1714,8 @@ def test_arrow_reader_global_reduction_failpoint_keeps_the_canonical_row_path(
 ) -> None:
     """Instrumentation must continue observing row conversion and source transitions."""
     from fpstreams.runtime.failpoints import failpoint
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     batch = pa.record_batch({"value": pa.array([2, 3], type=pa.int64())})
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
     aggregated = fpstreams.rows.from_arrow(reader).aggregate(
@@ -1885,27 +1729,12 @@ def test_arrow_reader_global_reduction_failpoint_keeps_the_canonical_row_path(
 
 def test_arrow_reader_global_sum_closes_custom_batches_before_rejecting_second_run() -> None:
     """Successful native consumption closes its iterator and atomically spends the source."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     events: list[str] = []
     batch = pa.record_batch({"value": pa.array([2, 3], type=pa.int64())})
-    descriptor = ArrowBatchSource(
-        lambda: _TrackedArrowBatches([batch], events),
-        "reader",
-        65_536,
-        batch.schema,
-        False,
-    )
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("custom Arrow reader sum must not open rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+    source = _arrow_reader_source(
+        lambda: _TrackedArrowBatches([batch], events), batch.schema, batch_size=65536
     )
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(total=fpstreams.agg.sum("value"))
 
@@ -1921,29 +1750,16 @@ def test_arrow_reader_global_reduction_closes_custom_batches_on_null_error(
     kind: str,
 ) -> None:
     """A terminal null error closes the claimed iterator without pulling a later batch."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     events: list[str] = []
     first = pa.record_batch({"value": pa.array([2, 3], type=pa.int64())})
     null = pa.record_batch({"value": pa.array([None], type=pa.int64())})
     unpulled = pa.record_batch({"value": pa.array([5], type=pa.int64())})
-    descriptor = ArrowBatchSource(
+
+    source = _arrow_reader_source(
         lambda: _TrackedArrowBatches([first, null, unpulled], events),
-        "reader",
-        65_536,
         first.schema,
-        False,
-    )
-
-    def forbidden_rows() -> Iterator[dict[str, int | None]]:
-        raise AssertionError("custom Arrow reader null handling must not open rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+        batch_size=65536,
     )
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
         result=getattr(fpstreams.agg, kind)("value")
@@ -1963,28 +1779,12 @@ def test_arrow_reader_global_reduction_closes_custom_batches_on_compute_error(
     kind: str,
 ) -> None:
     """A backend failure after claim closes the iterator and cannot speculatively replay it."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     events: list[str] = []
     batch = pa.record_batch({"value": pa.array(range(129), type=pa.int64())})
-    descriptor = ArrowBatchSource(
-        lambda: _TrackedArrowBatches([batch], events),
-        "reader",
-        65_536,
-        batch.schema,
-        False,
-    )
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("claimed Arrow compute failure must not reopen rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+    source = _arrow_reader_source(
+        lambda: _TrackedArrowBatches([batch], events), batch.schema, batch_size=65536
     )
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
         result=getattr(fpstreams.agg, kind)("value")
@@ -2011,33 +1811,17 @@ def test_arrow_reader_global_reduction_closes_custom_batches_on_compute_error(
 
 def test_arrow_reader_missing_sum_pulls_empty_then_nonempty_and_closes() -> None:
     """Missing-field fallback preserves batch pull order and closes at the first row error."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     events: list[str] = []
     empty = pa.record_batch({"present": pa.array([], type=pa.int64())})
     present = pa.record_batch({"present": pa.array([1], type=pa.int64())})
     unpulled = pa.record_batch({"present": pa.array([2], type=pa.int64())})
-    descriptor = ArrowBatchSource(
+
+    source = _arrow_reader_source(
         lambda: _TrackedArrowBatches([empty, present, unpulled], events),
-        "reader",
-        65_536,
         empty.schema,
-        False,
-    )
-
-    def rows() -> Iterator[dict[str, int]]:
-        batches = descriptor.open_batches()
-        try:
-            for batch in batches:
-                yield from batch.to_pylist()
-        finally:
-            batches.close()
-
-    source = Source(
-        rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
+        batch_size=65536,
+        row_converter=lambda batch: batch.to_pylist(),
     )
     aggregated = fpstreams.Rows(fpstreams.Flow(source)).aggregate(
         total=fpstreams.agg.sum("missing")
@@ -2185,58 +1969,25 @@ def test_direct_arrow_global_sum_bigints_do_not_reopen_python_rows(
 @pytest.mark.parametrize(
     "error_type", [ArithmeticError, NotImplementedError, TypeError, ValueError]
 )
-def test_direct_arrow_global_sum_backend_decline_reopens_canonical_rows(
-    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
-) -> None:
-    """Expected Arrow compute rejections leave the replayable row fallback clean."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    imported = relational_execution.import_module
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    class RejectingCompute:
-        @staticmethod
-        def min_max(_values: object) -> object:
-            raise error_type("decline")
-
-    def import_backend(name: str) -> object:
-        return RejectingCompute if name == "pyarrow.compute" else imported(name)
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
-    result = (
-        fpstreams.rows.from_arrow(pa.table({"value": [2, 3]}))
-        .aggregate(total=fpstreams.agg.sum("value"))
-        .to_list()
-    )
-
-    assert result == [{"total": 5}]
-    assert converted == [2]
-
-
 @pytest.mark.parametrize(
-    "error_type", [ArithmeticError, NotImplementedError, TypeError, ValueError]
+    ("kind", "values", "output_name", "expected"),
+    [
+        ("sum", [2, 3], "total", 5),
+        ("min", list(range(256)), "result", 0),
+        ("max", list(range(256)), "result", 255),
+    ],
 )
-@pytest.mark.parametrize(("kind", "expected"), [("min", 0), ("max", 255)])
-def test_direct_arrow_extrema_backend_decline_reopens_canonical_rows(
+def test_direct_arrow_global_backend_decline_reopens_canonical_rows(
     monkeypatch: pytest.MonkeyPatch,
     error_type: type[Exception],
     kind: str,
     expected: int,
+    values: list[int],
+    output_name: str,
 ) -> None:
     """Replayable extrema fall back only for an expected Arrow kernel rejection."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
 
     class RejectingCompute:
         @staticmethod
@@ -2246,79 +1997,46 @@ def test_direct_arrow_extrema_backend_decline_reopens_canonical_rows(
     def import_backend(name: str) -> object:
         return RejectingCompute if name == "pyarrow.compute" else imported(name)
 
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     result = (
-        fpstreams.rows.from_arrow(pa.table({"value": range(256)}))
-        .aggregate(result=getattr(fpstreams.agg, kind)("value"))
+        fpstreams.rows.from_arrow(pa.table({"value": values}))
+        .aggregate(**{output_name: getattr(fpstreams.agg, kind)("value")})
         .to_list()
     )
 
-    assert result == [{"result": expected}]
-    assert converted == [256]
+    assert result == [{output_name: expected}]
+    assert converted == [len(values)]
 
 
-def test_direct_arrow_global_sum_memory_error_propagates_without_row_fallback(
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    [(MemoryError, "global allocation"), (RuntimeError, "global backend")],
+)
+def test_direct_arrow_global_sum_error_propagates_without_row_fallback(
     monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+    message: str,
 ) -> None:
-    """Allocation failure must not be hidden by a second canonical scan."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
+    """Allocation and unexpected backend errors must not reopen canonical rows."""
 
     imported = relational_execution.import_module
 
     class FailingCompute:
         @staticmethod
         def min_max(_values: object) -> object:
-            raise MemoryError("global allocation")
+            raise error_type(message)
 
     def import_backend(name: str) -> object:
         return FailingCompute if name == "pyarrow.compute" else imported(name)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("MemoryError must not reopen the canonical row source")
-
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     aggregated = fpstreams.rows.from_arrow(pa.table({"value": [2]})).aggregate(
         total=fpstreams.agg.sum("value")
     )
 
-    with pytest.raises(MemoryError, match="global allocation"):
-        aggregated.to_list()
-
-
-def test_direct_arrow_global_sum_unexpected_error_propagates_without_row_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Unexpected backend failure is not silently reclassified as an unsupported kernel."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    imported = relational_execution.import_module
-
-    class FailingCompute:
-        @staticmethod
-        def min_max(_values: object) -> object:
-            raise RuntimeError("global backend")
-
-    def import_backend(name: str) -> object:
-        return FailingCompute if name == "pyarrow.compute" else imported(name)
-
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("unexpected backend error must not reopen rows")
-
-    monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
-    aggregated = fpstreams.rows.from_arrow(pa.table({"value": [2]})).aggregate(
-        total=fpstreams.agg.sum("value")
-    )
-
-    with pytest.raises(RuntimeError, match="global backend"):
+    with pytest.raises(error_type, match=message):
         aggregated.to_list()
 
 
@@ -2367,7 +2085,6 @@ def test_safe_arrow_prefix_global_count_never_opens_python_input_rows(
     expected: int,
 ) -> None:
     """A closed count should reuse every table-safe retained Arrow prefix."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.physical.relational import GlobalAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
     from fpstreams.planning.source import Source
@@ -2400,14 +2117,11 @@ def test_safe_arrow_prefix_global_count_never_opens_python_input_rows(
             raise AssertionError("safe Arrow prefix/global count opened Python input rows")
         return open_source(candidate)
 
-    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe Arrow prefix/global count boxed a Python input row")
-
     def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
         raise AssertionError("safe Arrow prefix/global count boxed projected Python rows")
 
     monkeypatch.setattr(Source, "open", reject_arrow_row_open)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
 
     assert aggregated.to_list() == [{"rows": expected}]
@@ -2460,7 +2174,6 @@ def test_safe_arrow_prefix_global_reduction_never_opens_python_input_rows(
     expected: int,
 ) -> None:
     """Total int64 reductions should consume a safe retained prefix columnarly."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.physical.relational import GlobalAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
     from fpstreams.planning.source import Source
@@ -2491,20 +2204,18 @@ def test_safe_arrow_prefix_global_reduction_never_opens_python_input_rows(
             raise AssertionError("safe Arrow prefix/global reduction opened Python input rows")
         return open_source(candidate)
 
-    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe Arrow prefix/global reduction boxed a Python input row")
-
     def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
         raise AssertionError("safe Arrow prefix/global reduction boxed projected Python rows")
 
     monkeypatch.setattr(Source, "open", reject_arrow_row_open)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
 
     assert aggregated.to_list() == [{"result": expected}]
 
 
-def test_arrow_prefix_global_reduction_preserves_earlier_aggregate_error() -> None:
+@pytest.mark.parametrize("grouped", [False, True])
+def test_arrow_prefix_preserves_earlier_aggregate_error(grouped: bool) -> None:
     """A later prefix error must not replace an earlier streaming reduction error."""
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
@@ -2524,6 +2235,11 @@ def test_arrow_prefix_global_reduction_preserves_earlier_aggregate_error() -> No
             }
         ),
     )
+    if grouped:
+        batches = tuple(
+            batch.append_column("key", pa.array([index + 1], type=pa.int64()))
+            for index, batch in enumerate(batches)
+        )
     table = pa.Table.from_batches(batches)
 
     def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], list[str]]:
@@ -2558,7 +2274,8 @@ def test_arrow_prefix_global_reduction_preserves_earlier_aggregate_error() -> No
         values = fpstreams.Rows(fpstreams.Flow(source)).where(fpstreams.col("flag") >= 0)
         if engine == "python":
             values = values.with_engine("python")
-        return values.aggregate(total=fpstreams.agg.sum("value")), events
+        aggregate = values.group_by("key") if grouped else values
+        return aggregate.aggregate(total=fpstreams.agg.sum("value")), events
 
     canonical, canonical_events = build("python")
     with pytest.raises(TypeError) as canonical_error:
@@ -2577,7 +2294,6 @@ def test_arrow_prefix_global_reduction_falls_back_on_its_claimed_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A late kernel decline must not reopen an already materialized prefix."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.planning.source import Source
 
     source = fpstreams.rows.from_arrow(pa.table({"value": [2, 3, 4], "flag": [True, False, True]}))
@@ -2650,7 +2366,6 @@ def test_guarded_columnar_count_backend_decline_falls_back_per_batch(
     monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
 ) -> None:
     """Recoverable compute errors convert only that batch and never reopen the source."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.source import Source
 
     lowered = arrow_execution.lower_row_expression
@@ -2677,16 +2392,12 @@ def test_guarded_columnar_count_memory_error_propagates_without_row_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Allocation failure is not mistaken for an unsupported batch kernel."""
-    from fpstreams.execution import arrow as arrow_execution
 
     def fail_lowering(_node: object, _batch: object) -> object:
         raise MemoryError("count allocation")
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("MemoryError must not materialize rows")
-
     monkeypatch.setattr(arrow_execution, "lower_row_expression", fail_lowering)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     filtered = fpstreams.rows.from_arrow(pa.table({"value": [1]})).where(
         fpstreams.col("value") >= 1
     )
@@ -2700,7 +2411,6 @@ def test_guarded_file_filter_count_stays_columnar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: str
 ) -> None:
     """CSV and Parquet scans reuse their guarded projection and predicate request path."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / f"values.{storage}"
     if storage == "csv":
@@ -2710,10 +2420,7 @@ def test_guarded_file_filter_count_stays_columnar(
         pq.write_table(pa.table({"value": [1, 3, 5, 2], "unused": [10, 20, 30, 40]}), target)
         source = fpstreams.rows.from_parquet(target, batch_size=1)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe file count must not materialize rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert source.where(fpstreams.col("value") >= 3).count() == 2
 
@@ -2740,7 +2447,6 @@ def test_safe_arrow_prefix_group_never_opens_python_input_rows(
     expected: list[dict[str, int]],
 ) -> None:
     """Every table-safe Arrow prefix should hand columns directly to grouping."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.source import Source
 
     table = pa.table(
@@ -2768,14 +2474,11 @@ def test_safe_arrow_prefix_group_never_opens_python_input_rows(
             raise AssertionError("safe Arrow filter/select/group opened Python input rows")
         return open_source(candidate)
 
-    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe Arrow filter/select/group boxed a Python input row")
-
     def reject_projected_rows(_batch: object, _projection: object) -> Iterator[object]:
         raise AssertionError("safe Arrow select/group boxed projected Python rows")
 
     monkeypatch.setattr(Source, "open", reject_arrow_row_open)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     monkeypatch.setattr(arrow_execution, "_project_batch_rows", reject_projected_rows)
 
     assert grouped.to_list() == expected
@@ -2785,7 +2488,6 @@ def test_safe_arrow_prefix_group_keeps_closed_aggregate_lanes_columnar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Count, sum, min, and max should consume a safe filtered table without row boxing."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.source import Source
 
     source = fpstreams.rows.from_arrow(
@@ -2816,88 +2518,13 @@ def test_safe_arrow_prefix_group_keeps_closed_aggregate_lanes_columnar(
             raise AssertionError("safe Arrow aggregate opened Python input rows")
         return open_source(candidate)
 
-    def reject_batch_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe Arrow aggregate boxed a Python input row")
-
     monkeypatch.setattr(Source, "open", reject_arrow_row_open)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_batch_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
 
     assert grouped.to_list() == [
         {"key": 2, "rows": 2, "total": 7, "minimum": 3, "maximum": 4},
         {"key": 1, "rows": 2, "total": 9, "minimum": 2, "maximum": 7},
     ]
-
-
-def test_arrow_prefix_group_preserves_earlier_group_error_and_source_boundary() -> None:
-    """A later prefix error must not replace an earlier streaming aggregate error."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    batches = (
-        pa.record_batch(
-            {
-                "key": pa.array([1], type=pa.int64()),
-                "value": pa.array([None], type=pa.int64()),
-                "flag": pa.array([1], type=pa.int64()),
-            }
-        ),
-        pa.record_batch(
-            {
-                "key": pa.array([2], type=pa.int64()),
-                "value": pa.array([1], type=pa.int64()),
-                "flag": pa.array([None], type=pa.int64()),
-            }
-        ),
-    )
-    table = pa.Table.from_batches(batches)
-
-    def build(engine: str) -> tuple[fpstreams.Rows[dict[str, object]], list[str]]:
-        events: list[str] = []
-
-        def open_batches() -> Iterator[pa.RecordBatch]:
-            events.append("open")
-            return _TrackedArrowBatches(batches, events)
-
-        descriptor = ArrowBatchSource(
-            open_batches,
-            "table",
-            1,
-            table.schema,
-            True,
-            materialized_data=table,
-        )
-
-        def rows() -> Iterator[dict[str, object]]:
-            opened = descriptor.open_batches()
-            try:
-                for batch in opened:
-                    yield from arrow_adapter.batch_to_rows(batch)
-            finally:
-                opened.close()  # type: ignore[attr-defined]
-
-        source = Source(
-            rows,
-            SourceCapabilities(reiterable=True, exact_size=2),
-            native_data=descriptor,
-        )
-        values = fpstreams.Rows(fpstreams.Flow(source)).where(fpstreams.col("flag") >= 0)
-        if engine == "python":
-            values = values.with_engine("python")
-        grouped = values.group_by("key").aggregate(total=fpstreams.agg.sum("value"))
-        return grouped, events
-
-    canonical, canonical_events = build("python")
-    with pytest.raises(TypeError) as canonical_error:
-        canonical.to_list()
-
-    automatic, automatic_events = build("auto")
-    with pytest.raises(TypeError) as automatic_error:
-        automatic.to_list()
-
-    assert str(automatic_error.value) == str(canonical_error.value)
-    assert canonical_events == ["open", "pull:0", "close"]
-    assert automatic_events == canonical_events
 
 
 def test_arrow_prefix_group_declines_noncanonical_key_schema_before_claim() -> None:
@@ -3207,7 +2834,6 @@ def test_file_arrow_group_sum_streams_supported_fields_without_row_boxing(
     storage: str,
 ) -> None:
     """Direct file fields should aggregate by batch while retaining first-seen order."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / f"group-sum.{storage}"
     keys = [2, 1, 2, 3, 1]
@@ -3229,10 +2855,7 @@ def test_file_arrow_group_sum_streams_supported_fields_without_row_boxing(
         )
         source = fpstreams.rows.from_parquet(target, batch_size=2)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded file grouping must not box row dictionaries")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert source.group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list() == [
         {"key": 2, "total": 16},
@@ -3289,7 +2912,6 @@ def test_file_arrow_group_sum_preserves_null_keys_and_cross_batch_bigints(
     storage: str,
 ) -> None:
     """File batches keep Python null grouping and unbounded integer addition."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     maximum = 2**63 - 1
     target = tmp_path / f"wide-group-sum.{storage}"
@@ -3316,10 +2938,7 @@ def test_file_arrow_group_sum_preserves_null_keys_and_cross_batch_bigints(
         )
         source = fpstreams.rows.from_parquet(target, batch_size=1)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("overflow-safe file grouping must remain columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert source.group_by("key").aggregate(total=fpstreams.agg.sum("value")).to_list() == [
         {"key": None, "total": maximum + 1},
@@ -3367,10 +2986,7 @@ def test_file_arrow_group_sum_null_stops_before_later_batches_and_closes(
         .aggregate(total=fpstreams.agg.sum("value"))
     )
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded file grouping must not box null rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     with pytest.raises(TypeError, match="unsupported operand type"):
         grouped.to_list()
     assert events == ["open", "pull:0", "pull:1", "close"]
@@ -3380,7 +2996,6 @@ def test_file_arrow_group_sum_memory_error_closes_without_reopening(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Allocation failure propagates unchanged and releases the claimed file iterator."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
 
@@ -3483,23 +3098,15 @@ def test_file_arrow_group_sum_active_failpoint_uses_the_canonical_row_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Instrumentation bypasses the file specialization before it can claim a native stream."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.runtime.failpoints import failpoint
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / "instrumented-group.csv"
     target.write_text("key,value\n1,2\n1,3\n", encoding="utf-8")
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
 
     def forbidden_native(*_arguments: object, **_options: object) -> object:
         raise AssertionError("an active failpoint must bypass file Arrow grouping")
 
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     monkeypatch.setattr(relational_execution, "_try_arrow_file_group_sum", forbidden_native)
     grouped = (
         fpstreams.rows.scan_csv(target, batch_size=1)
@@ -3517,22 +3124,14 @@ def test_file_arrow_group_sum_tiny_csv_declines_before_native_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A tiny default CSV avoids both the schema probe and native kernel dispatch."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / "tiny-group.csv"
     target.write_text("key,value,unused\n1,2,a\n1,3,b\n", encoding="utf-8")
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
 
     def forbidden_native(*_arguments: object, **_options: object) -> object:
         raise AssertionError("tiny CSV grouping must decline before native file execution")
 
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     monkeypatch.setattr(relational_execution, "_try_arrow_file_group_sum", forbidden_native)
     result = (
         fpstreams.rows.scan_csv(target, batch_size=1)
@@ -3551,7 +3150,6 @@ def test_file_arrow_group_sum_small_inputs_skip_arrow_kernel_setup(
     kind: str,
 ) -> None:
     """Small files fold the already-opened projected stream without hash-kernel overhead."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
 
@@ -3597,7 +3195,6 @@ def test_file_arrow_group_sum_many_tiny_batches_skip_arrow_kernel_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A large row count cannot make a one-row batch pay one hash kernel per row."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
 
@@ -3638,8 +3235,6 @@ def test_file_arrow_group_sum_many_tiny_batches_skip_arrow_kernel_setup(
 
 def test_arrow_reader_group_sum_merges_batches_without_boxing_and_closes() -> None:
     """A one-shot reader keeps global first-seen order and closes its batch iterator."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     batches = (
         pa.record_batch({"key": [2, 1, 2], "value": [5, 7, 11]}),
@@ -3647,23 +3242,8 @@ def test_arrow_reader_group_sum_merges_batches_without_boxing_and_closes() -> No
     )
     events: list[str] = []
     opened = _TrackedArrowBatches(batches, events)
-    descriptor = ArrowBatchSource(
-        lambda: opened,
-        "reader",
-        65_536,
-        batches[0].schema,
-        False,
-    )
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("guarded reader grouping must not box rows")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    source = _arrow_reader_source(lambda: opened, batches[0].schema, batch_size=65536)
     grouped = (
         fpstreams.Rows(fpstreams.Flow(source))
         .group_by("key")
@@ -3685,12 +3265,8 @@ def test_arrow_reader_group_multi_merges_batches_without_boxing_and_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Closed reader lanes merge exact partials in global first-seen order."""
-    from fpstreams.execution import relational as relational_execution
     from fpstreams.physical.relational import ArrowGroupAggregateSpec, GroupAggregatePhysicalNode
-    from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.planning.source import Source, SourceCapabilities
-    from fpstreams.tabular import arrow as arrow_adapter
 
     monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
     maximum = 2**63 - 1
@@ -3712,27 +3288,9 @@ def test_arrow_reader_group_multi_merges_batches_without_boxing_and_closes(
     )
     events: list[str] = []
     opened = _TrackedArrowBatches(batches, events)
-    descriptor = ArrowBatchSource(
-        lambda: opened,
-        "reader",
-        65_536,
-        batches[0].schema,
-        False,
-    )
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("guarded reader multi-group must not open Python rows")
-        yield
-
-    def forbidden_batch_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded reader multi-group must not box Arrow rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_batch_rows)
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
+    source = _arrow_reader_source(lambda: opened, batches[0].schema, batch_size=65536)
     grouped = (
         fpstreams.Rows(fpstreams.Flow(source))
         .group_by("key")
@@ -3758,16 +3316,16 @@ def test_arrow_reader_group_multi_merges_batches_without_boxing_and_closes(
         grouped.to_list()
 
 
-def test_arrow_reader_group_multi_null_stops_before_later_batches_and_closes(
+@pytest.mark.parametrize("multi_lane", [False, True])
+def test_arrow_reader_group_null_stops_before_later_batches_and_closes(
     monkeypatch: pytest.MonkeyPatch,
+    multi_lane: bool,
 ) -> None:
     """A claimed nullable batch keeps row-major lane errors and stops pulling."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
     from fpstreams.tabular import arrow as arrow_adapter
 
-    monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
+    if multi_lane:
+        monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
     batches = (
         pa.record_batch({"key": [1, 2], "value": [2, 3]}),
         pa.record_batch({"key": [1, 1], "value": pa.array([4, None], type=pa.int64())}),
@@ -3775,41 +3333,23 @@ def test_arrow_reader_group_multi_null_stops_before_later_batches_and_closes(
     )
     events: list[str] = []
     opened = _TrackedArrowBatches(batches, events)
-    descriptor = ArrowBatchSource(
+
+    source = _arrow_reader_source(
         lambda: opened,
-        "reader",
-        65_536,
         batches[0].schema,
-        False,
+        batch_size=65536,
+        row_converter=lambda batch: arrow_adapter.batch_to_rows(batch),
     )
+    collectors = {"total": fpstreams.agg.sum("value")}
+    if multi_lane:
+        collectors = {
+            "rows": fpstreams.agg.count(),
+            **collectors,
+            "low": fpstreams.agg.min("value"),
+        }
+    grouped = fpstreams.Rows(fpstreams.Flow(source)).group_by("key").aggregate(**collectors)
 
-    def rows() -> Iterator[dict[str, object]]:
-        iterator = descriptor.open_batches()
-        try:
-            for batch in iterator:
-                yield from arrow_adapter.batch_to_rows(batch)
-        finally:
-            iterator.close()
-
-    source = Source(
-        rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
-    grouped = (
-        fpstreams.Rows(fpstreams.Flow(source))
-        .group_by("key")
-        .aggregate(
-            rows=fpstreams.agg.count(),
-            total=fpstreams.agg.sum("value"),
-            low=fpstreams.agg.min("value"),
-        )
-    )
-
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("nullable reader multi-group must stay inside its claimed batch")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     with pytest.raises(TypeError, match="unsupported operand type"):
         grouped.to_list()
     assert events == ["pull:0", "pull:1", "close"]
@@ -3821,8 +3361,6 @@ def test_arrow_reader_group_multi_compute_decline_continues_from_claimed_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A recoverable multi-lane kernel decline switches the same reader to scalar folding."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
     batches = (
@@ -3841,15 +3379,12 @@ def test_arrow_reader_group_multi_compute_decline_continues_from_claimed_batch(
             return None
         return original(*args, **kwargs)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("claimed reader decline must not reopen Python rows")
-
     monkeypatch.setattr(
         relational_execution,
         "_try_arrow_retained_group_aggregate",
         decline_second,
     )
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     grouped = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -3874,10 +3409,6 @@ def test_arrow_reader_group_multi_high_cardinality_resumes_canonical_claimed_row
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A costly partial-group shape falls back without reopening its one-shot source."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-    from fpstreams.tabular import arrow as arrow_adapter
 
     monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_MULTI_MIN_ROWS", 0)
     monkeypatch.setattr(relational_execution, "_ARROW_READER_GROUP_CARDINALITY_SAMPLE_ROWS", 1)
@@ -3888,38 +3419,17 @@ def test_arrow_reader_group_multi_high_cardinality_resumes_canonical_claimed_row
     )
     events: list[str] = []
     opened = _TrackedArrowBatches(batches, events)
-    descriptor = ArrowBatchSource(
-        lambda: opened,
-        "reader",
-        65_536,
-        batches[0].schema,
-        False,
-    )
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
 
     def forbidden_partial(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("high-cardinality reader must skip Arrow partial grouping")
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("claimed reader fallback must not reopen its source")
-        yield
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     monkeypatch.setattr(
         relational_execution,
         "_try_arrow_retained_group_aggregate",
         forbidden_partial,
     )
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    source = _arrow_reader_source(lambda: opened, batches[0].schema, batch_size=65536)
     grouped = (
         fpstreams.Rows(fpstreams.Flow(source))
         .group_by("key")
@@ -3946,7 +3456,6 @@ def test_arrow_reader_group_multi_unsupported_schema_falls_back_before_claim(
     """A non-int64 value lane is rejected before the one-shot reader is opened natively."""
     from fpstreams.physical.relational import GroupAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.tabular import arrow as arrow_adapter
 
     batch = pa.record_batch(
         {
@@ -3955,14 +3464,8 @@ def test_arrow_reader_group_multi_unsupported_schema_falls_back_before_claim(
         }
     )
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
 
-    def tracked(current: object) -> list[dict[str, object]]:
-        converted.append(current.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(current)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     grouped = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -3984,7 +3487,6 @@ def test_arrow_reader_group_sum_preserves_cross_batch_python_bigints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Batch-local Arrow sums merge into unbounded Python integers."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     maximum = 2**63 - 1
     batches = (
@@ -3993,10 +3495,7 @@ def test_arrow_reader_group_sum_preserves_cross_batch_python_bigints(
     )
     reader = pa.RecordBatchReader.from_batches(batches[0].schema, batches)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("overflow-safe reader grouping must remain columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     grouped = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -4011,65 +3510,10 @@ def test_arrow_reader_group_sum_preserves_cross_batch_python_bigints(
         grouped.to_list()
 
 
-def test_arrow_reader_group_sum_null_stops_before_later_batches_and_closes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The first null sum value raises canonically without pulling another batch."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    batches = (
-        pa.record_batch({"key": [1, 2], "value": [2, 3]}),
-        pa.record_batch({"key": [1, 1], "value": pa.array([4, None], type=pa.int64())}),
-        pa.record_batch({"key": [1], "value": [99]}),
-    )
-    events: list[str] = []
-    opened = _TrackedArrowBatches(batches, events)
-    descriptor = ArrowBatchSource(
-        lambda: opened,
-        "reader",
-        65_536,
-        batches[0].schema,
-        False,
-    )
-
-    def rows() -> Iterator[dict[str, object]]:
-        iterator = descriptor.open_batches()
-        try:
-            for batch in iterator:
-                yield from arrow_adapter.batch_to_rows(batch)
-        finally:
-            iterator.close()
-
-    source = Source(
-        rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
-    grouped = (
-        fpstreams.Rows(fpstreams.Flow(source))
-        .group_by("key")
-        .aggregate(total=fpstreams.agg.sum("value"))
-    )
-
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded reader grouping must not box null rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
-    with pytest.raises(TypeError, match="unsupported operand type"):
-        grouped.to_list()
-    assert events == ["pull:0", "pull:1", "close"]
-    with pytest.raises(fpstreams.FlowConsumedError):
-        grouped.to_list()
-
-
 def test_arrow_reader_group_sum_compute_decline_continues_from_claimed_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A recoverable Arrow kernel decline falls back inside the claimed reader."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
@@ -4097,11 +3541,8 @@ def test_arrow_reader_group_sum_compute_decline_continues_from_claimed_batches(
     def import_backend(name: str) -> object:
         return RejectingCompute() if name == "pyarrow.compute" else imported(name)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("claimed reader fallback must not reopen Python rows")
-
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     grouped = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -4123,9 +3564,6 @@ def test_arrow_reader_group_sum_memory_error_closes_without_reopening(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Allocation failure propagates from the claimed batch and still closes ownership."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
@@ -4133,13 +3571,6 @@ def test_arrow_reader_group_sum_memory_error_closes_without_reopening(
     batch = pa.record_batch({"key": [1, 1], "value": [2, 3]})
     events: list[str] = []
     opened = _TrackedArrowBatches((batch,), events)
-    descriptor = ArrowBatchSource(
-        lambda: opened,
-        "reader",
-        65_536,
-        batch.schema,
-        False,
-    )
 
     class FailingCompute:
         @staticmethod
@@ -4152,15 +3583,7 @@ def test_arrow_reader_group_sum_memory_error_closes_without_reopening(
     def import_backend(name: str) -> object:
         return FailingCompute() if name == "pyarrow.compute" else imported(name)
 
-    def forbidden_rows() -> Iterator[dict[str, int]]:
-        raise AssertionError("MemoryError must not reopen the claimed row source")
-        yield
-
-    source = Source(
-        forbidden_rows,
-        SourceCapabilities(reiterable=False, exact_size=None),
-        native_data=descriptor,
-    )
+    source = _arrow_reader_source(lambda: opened, batch.schema, batch_size=65536)
     grouped = (
         fpstreams.Rows(fpstreams.Flow(source))
         .group_by("key")
@@ -4204,7 +3627,6 @@ def test_arrow_reader_group_sum_preserves_supported_key_values_and_order(
     expected: list[dict[str, object]],
 ) -> None:
     """Supported nullable and textual scalars merge by Python value and first ordinal."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     split = len(first_keys)
     batches = (
@@ -4223,10 +3645,7 @@ def test_arrow_reader_group_sum_preserves_supported_key_values_and_order(
     )
     reader = pa.RecordBatchReader.from_batches(batches[0].schema, batches)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("supported reader keys must not materialize row dictionaries")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     result = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -4241,8 +3660,6 @@ def test_arrow_reader_group_sum_uses_true_first_seen_order_not_hash_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stable Arrow hash order is not necessarily Python's insertion order."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     monkeypatch.setattr(relational_execution, "_ARROW_GROUP_BATCH_SCALAR_MAX_ROWS", 0)
 
@@ -4251,10 +3668,7 @@ def test_arrow_reader_group_sum_uses_true_first_seen_order_not_hash_order(
     batch = pa.record_batch({"key": keys, "value": [1] * len(keys)})
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("first-seen reader grouping must stay columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     result = (
         fpstreams.rows.from_arrow(reader)
         .group_by("key")
@@ -4299,16 +3713,8 @@ def test_arrow_reader_group_sum_unsupported_shapes_fall_back_before_claim(
     """Missing, float, dictionary, and non-int64 schemas retain row execution."""
     from fpstreams.physical.relational import GroupAggregatePhysicalNode
     from fpstreams.planning.compiler import compile_query
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     dictionary = pa.DictionaryArray.from_arrays(pa.array([0, 1]), pa.array(["a", "b"]))
     inputs = (
         pa.record_batch({"present": [1]}),
@@ -4346,16 +3752,8 @@ def test_arrow_reader_group_sum_failpoint_and_forced_python_keep_row_boundaries(
 ) -> None:
     """Instrumentation and explicit engine choice bypass the reader specialization."""
     from fpstreams.runtime.failpoints import failpoint
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     batch = pa.record_batch({"key": [1, 1], "value": [2, 3]})
     forced_reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
     forced = (
@@ -4574,15 +3972,25 @@ def test_eager_pandas_missing_global_selector_reuses_one_arrow_conversion(
 
 
 @pytest.mark.parametrize("multi_lane", [False, True])
-def test_eager_pandas_nested_group_decline_reuses_one_arrow_conversion(
+@pytest.mark.parametrize(
+    ("key", "unused_values", "unused_type"),
+    [
+        pytest.param(1, [[1], [2]], pa.list_(pa.int64()), id="nested-column"),
+        pytest.param(1.5, [1, 2], pa.int64(), id="post-guard"),
+    ],
+)
+def test_eager_pandas_group_decline_reuses_one_arrow_conversion(
     monkeypatch: pytest.MonkeyPatch,
     multi_lane: bool,
+    key: float,
+    unused_values: list[object],
+    unused_type: pa.DataType,
 ) -> None:
     """Both pandas group plans must retain the first converted table snapshot."""
-    unused = pd.arrays.ArrowExtensionArray(pa.array([[1], [2]], type=pa.list_(pa.int64())))
+    unused = pd.arrays.ArrowExtensionArray(pa.array(unused_values, type=unused_type))
     frame = pd.DataFrame(
         {
-            "key": [1, 1],
+            "key": [key, key],
             "value": [2, 3],
             "unused": pd.Series(unused),
         }
@@ -4604,45 +4012,7 @@ def test_eager_pandas_nested_group_decline_reuses_one_arrow_conversion(
         else grouped.aggregate(total=fpstreams.agg.sum("value"))
     ).to_list()
 
-    expected = {"key": 1, "total": 5}
-    if multi_lane:
-        expected["rows"] = 2
-    assert result == [expected]
-    assert calls == 1
-
-
-@pytest.mark.parametrize("multi_lane", [False, True])
-def test_eager_pandas_post_guard_group_decline_reuses_one_arrow_conversion(
-    monkeypatch: pytest.MonkeyPatch,
-    multi_lane: bool,
-) -> None:
-    """A supported table snapshot remains canonical after a later group guard declines."""
-    unused = pd.arrays.ArrowExtensionArray(pa.array([1, 2], type=pa.int64()))
-    frame = pd.DataFrame(
-        {
-            "key": [1.5, 1.5],
-            "value": [2, 3],
-            "unused": pd.Series(unused),
-        }
-    )
-    array_type = type(unused)
-    arrow_array = array_type.__arrow_array__
-    calls = 0
-
-    def tracked(self: object, type: object = None) -> object:
-        nonlocal calls
-        calls += 1
-        return arrow_array(self, type=type)
-
-    monkeypatch.setattr(array_type, "__arrow_array__", tracked)
-    grouped = fpstreams.rows.from_dataframe(frame).group_by("key")
-    result = (
-        grouped.aggregate(rows=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
-        if multi_lane
-        else grouped.aggregate(total=fpstreams.agg.sum("value"))
-    ).to_list()
-
-    expected = {"key": 1.5, "total": 5}
+    expected = {"key": key, "total": 5}
     if multi_lane:
         expected["rows"] = 2
     assert result == [expected]
@@ -4652,7 +4022,6 @@ def test_eager_pandas_post_guard_group_decline_reuses_one_arrow_conversion(
 @pytest.mark.parametrize("adapter", ["dataframe", "polars"])
 def test_eager_columnar_frame_group_sum_preserves_float_key_adapter_semantics(adapter: str) -> None:
     """Unsupported float keys retain each adapter's established NaN/null conversion."""
-    from math import isnan
 
     data = {"key": [float("nan"), float("nan")], "value": [1, 2]}
     if adapter == "dataframe":
@@ -4675,12 +4044,8 @@ def test_arrow_i64_group_sum_stays_columnar_and_preserves_first_seen_order(
     monkeypatch: pytest.MonkeyPatch, as_batch: bool
 ) -> None:
     """A supported Table or RecordBatch reaches Arrow aggregation without row boxing."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded Arrow grouping must not materialize input rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     table = pa.table({"key": [3, 1, 3, 2, 1], "value": [5, 7, 11, -4, 2]})
     source = table.to_batches()[0] if as_batch else table
 
@@ -4701,12 +4066,8 @@ def test_arrow_i64_group_multi_aggregate_stays_columnar_and_preserves_order(
     monkeypatch: pytest.MonkeyPatch, as_batch: bool
 ) -> None:
     """Removing multi-lane Arrow grouping must expose forbidden input-row boxing."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded Arrow multi-aggregation must not materialize input rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     table = pa.table(
         {
             "key": [3, 1, 3, 2, 1],
@@ -4776,12 +4137,8 @@ def test_arrow_group_multi_aggregate_empty_input_skips_missing_selectors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An empty retained table must finish before schema validation or row conversion."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("empty Arrow multi-aggregation opened Python rows")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     empty = pa.table({"present": pa.array([], type=pa.int64())})
 
     assert (
@@ -4801,8 +4158,6 @@ def test_arrow_group_multi_aggregate_reuses_one_value_and_widens_each_sum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Repeated value lanes must stay columnar without exposing int64 sum overflow."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
@@ -4823,12 +4178,9 @@ def test_arrow_group_multi_aggregate_reuses_one_value_and_widens_each_sum(
     def import_backend(name: str) -> object:
         return TrackingCompute() if name == "pyarrow.compute" else imported(name)
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("wide Arrow multi-aggregation opened Python rows")
-
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
     monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     maximum = 2**63 - 1
     table = pa.table(
         {
@@ -4866,8 +4218,6 @@ def test_arrow_group_multi_aggregate_keeps_dictionary_key_safety_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Dictionary keys retain their validated logical-key path instead of index matching."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
@@ -4883,9 +4233,6 @@ def test_arrow_group_multi_aggregate_keeps_dictionary_key_safety_path(
     def import_backend(name: str) -> object:
         return GuardedCompute() if name == "pyarrow.compute" else imported(name)
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("dictionary grouping must not materialize input rows")
-
     dictionary_keys = pa.DictionaryArray.from_arrays(
         pa.array([2, 0, 2, 1, 0], type=pa.int8()),
         pa.array(["a", "b", "c"]),
@@ -4893,7 +4240,7 @@ def test_arrow_group_multi_aggregate_keeps_dictionary_key_safety_path(
     table = pa.table({"key": dictionary_keys, "value": [4, 7, 3, -2, 5]})
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
     monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert (
         fpstreams.rows.from_arrow(table)
@@ -4916,7 +4263,6 @@ def test_arrow_group_multi_aggregate_preserves_nonexact_output_name_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Arrow schema names must not erase observable ``str`` subclass identities."""
-    from fpstreams.execution import relational as relational_execution
 
     class OutputName(str):
         pass
@@ -4948,8 +4294,6 @@ def test_arrow_group_multi_aggregate_extension_key_keeps_canonical_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Extension keys remain on row execution instead of entering scalar Arrow grouping."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     class WrappedIntType(pa.ExtensionType):
         def __init__(self) -> None:
@@ -4968,19 +4312,13 @@ def test_arrow_group_multi_aggregate_extension_key_keeps_canonical_rows(
         WrappedIntType(),
         pa.array([2, 1, 2], type=pa.int64()),
     )
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
 
     def forbidden_arrays(*_arguments: object, **_options: object) -> list[object]:
         raise AssertionError("extension keys must not reach grouped Arrow materialization")
 
     monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
     monkeypatch.setattr(relational_execution, "_arrow_group_lane_arrays", forbidden_arrays)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
 
     assert (
         fpstreams.rows.from_arrow(pa.table({"key": keys, "value": [4, 7, 3]}))
@@ -4998,16 +4336,8 @@ def test_arrow_group_multi_aggregate_rejects_non_i64_values_before_compute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Float lanes retain canonical Python arithmetic rather than Arrow semantics."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     table = pa.table({"key": [1, 1], "value": [2.5, 3.5]})
 
     assert (
@@ -5028,16 +4358,8 @@ def test_arrow_group_multi_aggregate_rejects_null_values_before_compute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A null int64 lane must use the canonical selected-value state machine."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     table = pa.table({"key": [1], "value": pa.array([None], type=pa.int64())})
 
     assert (
@@ -5095,17 +4417,14 @@ def test_arrow_group_multi_aggregate_planner_keeps_strict_source_and_lane_bounda
 @pytest.mark.parametrize(
     "error_type", [ArithmeticError, NotImplementedError, TypeError, ValueError]
 )
-def test_arrow_group_multi_aggregate_backend_decline_reopens_canonical_rows(
-    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+@pytest.mark.parametrize("multi_lane", [False, True])
+def test_arrow_group_backend_decline_reopens_canonical_rows(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception], multi_lane: bool
 ) -> None:
     """Expected Arrow rejections leave the retained source clean for row fallback."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
 
     class RejectingCompute:
         def min_max(self, _values: object) -> object:
@@ -5114,57 +4433,71 @@ def test_arrow_group_multi_aggregate_backend_decline_reopens_canonical_rows(
         def __getattr__(self, name: str) -> object:
             return getattr(actual_compute, name)
 
-    def import_backend(name: str) -> object:
-        return RejectingCompute() if name == "pyarrow.compute" else imported(name)
+    rejecting_compute = RejectingCompute()
 
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
+    def import_backend(name: str) -> object:
+        return (
+            (RejectingCompute() if multi_lane else rejecting_compute)
+            if name == "pyarrow.compute"
+            else imported(name)
+        )
 
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
 
+    collectors = {"total": fpstreams.agg.sum("value")}
+    expected = {"key": 1, "total": 5}
+    if multi_lane:
+        collectors = {"n": fpstreams.agg.count(), **collectors}
+        expected["n"] = 2
     assert (
         fpstreams.rows.from_arrow(pa.table({"key": [1, 1], "value": [2, 3]}))
         .group_by("key")
-        .aggregate(n=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        .aggregate(**collectors)
         .to_list()
-    ) == [{"key": 1, "n": 2, "total": 5}]
+    ) == [expected]
     assert converted == [2]
 
 
-def test_arrow_group_multi_aggregate_memory_error_never_reopens_rows(
+@pytest.mark.parametrize("multi_lane", [False, True])
+def test_arrow_group_memory_error_never_reopens_rows(
     monkeypatch: pytest.MonkeyPatch,
+    multi_lane: bool,
 ) -> None:
     """Allocation failure propagates instead of masquerading as an unsupported kernel."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
+    message = "multi-group allocation" if multi_lane else "group allocation"
     imported = relational_execution.import_module
     actual_compute = imported("pyarrow.compute")
 
     class FailingCompute:
         def min_max(self, _values: object) -> object:
-            raise MemoryError("multi-group allocation")
+            raise MemoryError(message)
 
         def __getattr__(self, name: str) -> object:
             return getattr(actual_compute, name)
 
-    def import_backend(name: str) -> object:
-        return FailingCompute() if name == "pyarrow.compute" else imported(name)
+    failing_compute = FailingCompute()
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("MemoryError must not reopen the canonical row source")
+    def import_backend(name: str) -> object:
+        return (
+            (FailingCompute() if multi_lane else failing_compute)
+            if name == "pyarrow.compute"
+            else imported(name)
+        )
 
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
+    collectors = {"total": fpstreams.agg.sum("value")}
+    if multi_lane:
+        collectors = {"n": fpstreams.agg.count(), **collectors}
     grouped = (
         fpstreams.rows.from_arrow(pa.table({"key": [1], "value": [2]}))
         .group_by("key")
-        .aggregate(n=fpstreams.agg.count(), total=fpstreams.agg.sum("value"))
+        .aggregate(**collectors)
     )
 
-    with pytest.raises(MemoryError, match="multi-group allocation"):
+    with pytest.raises(MemoryError, match=message):
         grouped.to_list()
 
 
@@ -5172,8 +4505,6 @@ def test_arrow_group_multi_aggregate_uses_named_columns_across_arrow_orders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A backend that returns aggregate columns before the key must remain correct."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     imported = relational_execution.import_module
     actual_arrow = imported("pyarrow")
@@ -5225,12 +4556,9 @@ def test_arrow_group_multi_aggregate_uses_named_columns_across_arrow_orders(
     def import_backend(name: str) -> object:
         return ReorderedArrow() if name == "pyarrow" else imported(name)
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("version-compatible Arrow grouping must not box rows")
-
     monkeypatch.setattr(relational_execution, "import_module", import_backend)
     monkeypatch.setattr(relational_execution, "_ARROW_GROUP_TABLE_MIN_GROUPS", 0)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     table = pa.table({"key": [2, 1, 2], "value": [4, 7, 3]})
 
     assert (
@@ -5257,12 +4585,8 @@ def test_arrow_i64_group_sum_uses_true_first_seen_order_not_hash_order(
     monkeypatch: pytest.MonkeyPatch, as_batch: bool
 ) -> None:
     """Retained Arrow grouping must not expose the hash table's output order."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("first-seen Arrow grouping must stay columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     table = pa.table({"key": ["k66", "k43", "k3"], "value": [1, 2, 3]})
     source = table.to_batches()[0] if as_batch else table
 
@@ -5304,12 +4628,8 @@ def test_arrow_i64_group_sum_uses_exact_bigints_when_a_sum_may_overflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The columnar path must not expose Arrow's wrapping int64 sum semantics."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    def reject_row_boxing(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("overflow-safe Arrow grouping must remain columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     maximum = 2**63 - 1
     minimum = -(2**63)
     table = pa.table(
@@ -5335,19 +4655,10 @@ def test_arrow_group_sum_declines_float_keys_null_values_and_failpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Protocol-sensitive cases reopen the canonical row executor without semantic drift."""
-    from math import isnan
 
     from fpstreams.runtime.failpoints import failpoint
-    from fpstreams.tabular import arrow as arrow_adapter
 
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted = _observe_row_batches(monkeypatch)
     nan_groups = (
         fpstreams.rows.from_arrow(pa.table({"key": [float("nan"), float("nan")], "value": [1, 2]}))
         .group_by("key")
@@ -5466,87 +4777,6 @@ def test_arrow_group_sum_closes_its_retained_batch_iterator() -> None:
 
     assert grouped.to_list() == [{"key": 1, "total": 5}]
     assert events == ["batch", "close"]
-
-
-@pytest.mark.parametrize(
-    "error_type", [ArithmeticError, NotImplementedError, TypeError, ValueError]
-)
-def test_arrow_group_sum_backend_decline_reopens_the_canonical_rows(
-    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
-) -> None:
-    """Expected backend rejections are speculative and leave a clean replayable fallback."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    imported = relational_execution.import_module
-    actual_compute = imported("pyarrow.compute")
-    converted: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
-
-    class RejectingCompute:
-        def min_max(self, _values: object) -> object:
-            raise error_type("decline")
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(actual_compute, name)
-
-    rejecting_compute = RejectingCompute()
-
-    def import_backend(name: str) -> object:
-        return rejecting_compute if name == "pyarrow.compute" else imported(name)
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
-
-    monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
-    result = (
-        fpstreams.rows.from_arrow(pa.table({"key": [1, 1], "value": [2, 3]}))
-        .group_by("key")
-        .aggregate(total=fpstreams.agg.sum("value"))
-        .to_list()
-    )
-
-    assert result == [{"key": 1, "total": 5}]
-    assert converted == [2]
-
-
-def test_arrow_group_sum_memory_error_propagates_without_row_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Allocation failure is never mistaken for an unsupported Arrow specialization."""
-    from fpstreams.execution import relational as relational_execution
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    imported = relational_execution.import_module
-    actual_compute = imported("pyarrow.compute")
-
-    class FailingCompute:
-        def min_max(self, _values: object) -> object:
-            raise MemoryError("group allocation")
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(actual_compute, name)
-
-    failing_compute = FailingCompute()
-
-    def import_backend(name: str) -> object:
-        return failing_compute if name == "pyarrow.compute" else imported(name)
-
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("MemoryError must not reopen the canonical row source")
-
-    monkeypatch.setattr(relational_execution, "import_module", import_backend)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
-    grouped = (
-        fpstreams.rows.from_arrow(pa.table({"key": [1], "value": [2]}))
-        .group_by("key")
-        .aggregate(total=fpstreams.agg.sum("value"))
-    )
-
-    with pytest.raises(MemoryError, match="group allocation"):
-        grouped.to_list()
 
 
 def test_arrow_reader_stays_one_shot_and_closes_after_short_circuit() -> None:
@@ -5823,7 +5053,6 @@ def test_arrow_c_stream_provider_closes_imported_reader_before_first_pull(
 ) -> None:
     """A source-open failure must release the reader imported from the C stream capsule."""
     from fpstreams.runtime.failpoints import failpoint
-    from fpstreams.tabular import arrow as arrow_adapter
 
     batch = pa.record_batch({"id": [1]})
 
@@ -5857,7 +5086,6 @@ def test_arrow_record_batches_honor_batch_size_before_row_conversion(
 ) -> None:
     """RecordBatch and reader sources bound first-row conversion just like Tables."""
     from fpstreams.planning.arrow.source import batch_to_rows as convert_rows
-    from fpstreams.tabular import arrow as arrow_adapter
 
     converted_sizes: list[int] = []
 
@@ -5900,24 +5128,17 @@ def test_arrow_identity_list_collects_batches_without_opening_the_row_iterator(
     """Identity list materialization should not forward every converted row through Flow."""
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source
-    from fpstreams.tabular import arrow as arrow_adapter
 
     table = pa.table({"id": list(range(5)), "value": list(range(10, 15))})
     source_value = table.to_batches()[0] if as_record_batch else table
-    converted_sizes: list[int] = []
-    convert_rows = arrow_adapter.batch_to_rows
     open_rows = Source.open
-
-    def tracked(batch: object) -> list[dict[str, object]]:
-        converted_sizes.append(batch.num_rows)  # type: ignore[attr-defined]
-        return convert_rows(batch)
 
     def reject_arrow_rows(source: Source[object]) -> Iterator[object]:
         if isinstance(source.native_data, ArrowBatchSource):
             raise AssertionError("identity Arrow to_list must not open the row iterator")
         return open_rows(source)
 
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", tracked)
+    converted_sizes = _observe_row_batches(monkeypatch)
     monkeypatch.setattr(Source, "open", reject_arrow_rows)
 
     assert fpstreams.rows.from_arrow(source_value, batch_size=2).to_list() == [
@@ -5963,7 +5184,6 @@ def test_arrow_identity_list_closes_batches_when_row_conversion_fails(
 ) -> None:
     """A conversion error must not leak the direct Arrow batch iterator."""
     from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.tabular import arrow as arrow_adapter
 
     events: list[str] = []
     batches = _TrackedArrowBatches([pa.record_batch({"id": [1]})], events)
@@ -6028,12 +5248,8 @@ def test_arrow_exact_select_projects_before_full_python_row_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Removing direct-select pushdown must expose the forbidden full-batch conversion."""
-    from fpstreams.execution import arrow as arrow_execution
 
-    def reject_full_batch(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("full Arrow rows must not be materialized before exact select")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_full_batch)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     result = (
         fpstreams.rows.from_arrow(
             pa.table(
@@ -6059,7 +5275,6 @@ def test_arrow_prefix_not_implemented_falls_back_per_batch(
     monkeypatch: pytest.MonkeyPatch, terminal: str
 ) -> None:
     """An unavailable Arrow kernel keeps ordinary and early terminals on Python semantics."""
-    from fpstreams.execution import arrow as arrow_execution
 
     def reject_lowering(_node: object, _batch: object) -> object:
         raise NotImplementedError("kernel unavailable")
@@ -6078,16 +5293,12 @@ def test_arrow_prefix_memory_error_still_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resource exhaustion is not reclassified as an unsupported Arrow kernel."""
-    from fpstreams.execution import arrow as arrow_execution
 
     def fail_lowering(_node: object, _batch: object) -> object:
         raise MemoryError("prefix allocation")
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("MemoryError must not fall back to rows")
-
     monkeypatch.setattr(arrow_execution, "lower_row_expression", fail_lowering)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     query = fpstreams.rows.from_arrow(pa.table({"value": [1]})).where(fpstreams.col("value") == 1)
 
     with pytest.raises(MemoryError, match="prefix allocation"):
@@ -6111,7 +5322,6 @@ def test_arrow_scalar_reductions_consume_a_safe_columnar_prefix(
     expected: object,
 ) -> None:
     """Full-scan scalar terminals should keep a proven Arrow map on its columnar path."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.compiler import compile_query
     from fpstreams.planning.source import Source
 
@@ -6134,12 +5344,9 @@ def test_arrow_scalar_reductions_consume_a_safe_columnar_prefix(
             raise AssertionError("safe scalar reduction opened Python Arrow rows")
         return source_open(candidate)
 
-    def reject_full_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe scalar reduction boxed full Arrow rows")
-
     if terminal != "mean":
         monkeypatch.setattr(Source, "open", reject_python_rows)
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_full_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
 
     if terminal == "mean":
         execution = query.run_with_report("mean")
@@ -6163,17 +5370,12 @@ def test_arrow_i64_scalar_reductions_do_not_stream_python_scalars(
     expected: int,
 ) -> None:
     """Exact i64 terminals should reduce Arrow batches without yielding each scalar."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     def reject_scalar_prefix(*_args: object) -> Iterator[object]:
         raise AssertionError("exact i64 reduction streamed a Python scalar prefix")
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("exact i64 reduction boxed Python rows")
-
     monkeypatch.setattr(arrow_execution, "_execute_batch_program", reject_scalar_prefix)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     query = fpstreams.flow.from_arrow(
         pa.table(
             {
@@ -6212,8 +5414,6 @@ def test_arrow_i64_scalar_reductions_cover_record_batches_and_readers(
     expected: int,
 ) -> None:
     """Record batches and one-shot readers should use the same exact i64 reduction."""
-    from fpstreams.execution import arrow as arrow_execution
-    from fpstreams.tabular import arrow as arrow_adapter
 
     batch = pa.record_batch({"value": pa.array([2, 3, -1], type=pa.int64())})
     source = (
@@ -6225,11 +5425,8 @@ def test_arrow_i64_scalar_reductions_cover_record_batches_and_readers(
     def reject_scalar_prefix(*_args: object) -> Iterator[object]:
         raise AssertionError("exact i64 reduction streamed a Python scalar prefix")
 
-    def reject_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("exact i64 reduction boxed Python rows")
-
     monkeypatch.setattr(arrow_execution, "_execute_batch_program", reject_scalar_prefix)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     query = fpstreams.flow.from_arrow(source, batch_size=1).map(fpstreams.col("value"))
 
     assert getattr(query, terminal)() == expected
@@ -6245,7 +5442,6 @@ def test_arrow_i64_scalar_reduction_backend_decline_reopens_retained_rows(
     expected: int,
 ) -> None:
     """A recoverable retained-table kernel error should use the canonical prefix once."""
-    from fpstreams.execution import arrow as arrow_execution
 
     pa_module, pc_module = arrow_execution._arrow_modules()
 
@@ -6270,7 +5466,6 @@ def test_arrow_i64_reader_reduction_propagates_after_claim_and_closes(
     terminal: str,
 ) -> None:
     """A claimed one-shot reader must close and expose its reduction backend error."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.planning.source import Source, SourceCapabilities
 
@@ -6356,7 +5551,6 @@ def test_direct_arrow_mean_preserves_cross_batch_compensation_without_row_execut
     expected: float,
 ) -> None:
     """A direct numeric field mean should retain one compensated state across batches."""
-    from fpstreams.execution import arrow as arrow_execution
 
     batches = [pa.record_batch({"value": pa.array([value], type=arrow_type)}) for value in items]
 
@@ -6377,7 +5571,6 @@ def test_direct_arrow_mean_preserves_empty_and_null_contracts(
     arrow_type: pa.DataType,
 ) -> None:
     """The batch kernel must retain the public empty and null-value outcomes."""
-    from fpstreams.execution import arrow as arrow_execution
 
     def reject_row_execution(*_args: object, **_kwargs: object) -> Iterator[object]:
         raise AssertionError("direct Arrow mean must not execute the row-oriented prefix")
@@ -6416,7 +5609,6 @@ def test_direct_arrow_mean_preserves_dynamic_compensated_mean_dependencies(
 ) -> None:
     """Replacing a Python mean dependency must deopt the direct Arrow kernel."""
     import builtins
-    from types import SimpleNamespace
 
     from fpstreams.collecting import statistics as statistics_module
 
@@ -6452,8 +5644,7 @@ def test_arrow_i64_reader_reduction_preserves_late_pull_value_error(
     error_type: type[Exception],
 ) -> None:
     """A later reader pull failure keeps its error, closure, and consumption."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource, batch_to_rows
-    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.planning.arrow.source import batch_to_rows
 
     batch = pa.record_batch({"value": pa.array([7], type=pa.int64())})
 
@@ -6478,26 +5669,11 @@ def test_arrow_i64_reader_reduction_preserves_late_pull_value_error(
             def close(self) -> None:
                 events.append("close")
 
-        descriptor = ArrowBatchSource(
+        source = _arrow_reader_source(
             LatePullFailure,
-            "reader",
-            65_536,
             batch.schema,
-            False,
-        )
-
-        def rows() -> Iterator[dict[str, object]]:
-            batches = descriptor.open_batches()
-            try:
-                for current in batches:
-                    yield from batch_to_rows(current)
-            finally:
-                batches.close()  # type: ignore[attr-defined]
-
-        source = Source(
-            rows,
-            SourceCapabilities(reiterable=False, exact_size=None),
-            native_data=descriptor,
+            batch_size=65536,
+            row_converter=lambda current: batch_to_rows(current),
         )
         return fpstreams.Flow(source).map(fpstreams.col("value")).with_engine(engine), events
 
@@ -6530,8 +5706,7 @@ def test_arrow_i64_reader_reduction_preserves_synchronous_opener_value_error(
     error_type: type[Exception],
 ) -> None:
     """A synchronous reader opener failure retains its error and spends the source once."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource, batch_to_rows
-    from fpstreams.planning.source import Source, SourceCapabilities
+    from fpstreams.planning.arrow.source import batch_to_rows
 
     schema = pa.schema([pa.field("value", pa.int64())])
 
@@ -6542,26 +5717,8 @@ def test_arrow_i64_reader_reduction_preserves_synchronous_opener_value_error(
             events.append("open")
             raise ValueError("reader opener failure")
 
-        descriptor = ArrowBatchSource(
-            open_batches,
-            "reader",
-            65_536,
-            schema,
-            False,
-        )
-
-        def rows() -> Iterator[dict[str, object]]:
-            batches = descriptor.open_batches()
-            try:
-                for batch in batches:
-                    yield from batch_to_rows(batch)
-            finally:
-                batches.close()  # type: ignore[attr-defined]
-
-        source = Source(
-            rows,
-            SourceCapabilities(reiterable=False, exact_size=None),
-            native_data=descriptor,
+        source = _arrow_reader_source(
+            open_batches, schema, batch_size=65536, row_converter=lambda batch: batch_to_rows(batch)
         )
         return fpstreams.Flow(source).map(fpstreams.col("value")).with_engine(engine), events
 
@@ -6673,12 +5830,8 @@ def test_arrow_direct_filter_then_select_stays_columnar_until_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A proven int64 comparison filters the batch before selected rows are boxed."""
-    from fpstreams.execution import arrow as arrow_execution
 
-    def reject_full_batch(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("filter/select must not materialize full Arrow rows")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_full_batch)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
     result = (
         fpstreams.rows.from_arrow(
             pa.table(
@@ -6900,8 +6053,6 @@ def test_arrow_projection_closes_and_claims_its_one_shot_batch_source_on_error()
 
 def test_arrow_select_iteration_and_early_terminals_keep_canonical_batch_pulls() -> None:
     """Iteration stays row-latency-owned, while first/take close before a second batch."""
-    from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.planning.source import Source, SourceCapabilities
     from fpstreams.streams.flow import Flow
 
     batches = (
@@ -6921,20 +6072,11 @@ def test_arrow_select_iteration_and_early_terminals_keep_canonical_batch_pulls()
             finally:
                 events.append("close")
 
-        descriptor = ArrowBatchSource(open_batches, "reader", 1, batches[0].schema, False)
-
-        def python_rows() -> Iterator[dict[str, int]]:
-            values = descriptor.open_batches()
-            try:
-                for batch in values:
-                    yield from batch.to_pylist()
-            finally:
-                values.close()
-
-        source = Source(
-            python_rows,
-            SourceCapabilities(reiterable=False, exact_size=None),
-            native_data=descriptor,
+        source = _arrow_reader_source(
+            open_batches,
+            batches[0].schema,
+            batch_size=1,
+            row_converter=lambda batch: batch.to_pylist(),
         )
         return fpstreams.Rows(Flow(source)).select("id"), events
 
@@ -6957,7 +6099,6 @@ def test_arrow_first_boxes_only_one_csv_or_parquet_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The specialized terminal slices its first surviving batch before Python conversion."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.arrow.source import batch_to_rows as convert_rows
 
     csv_path = tmp_path / "first.csv"
@@ -7035,7 +6176,6 @@ def test_arrow_first_preserves_memory_error_from_batch_safety(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resource exhaustion cannot be mistaken for an ordinary unsupported kernel."""
-    from fpstreams.execution import arrow as arrow_execution
 
     query = fpstreams.rows.from_arrow(pa.table({"id": [1]})).where(fpstreams.col("id") == 1)
 
@@ -7052,7 +6192,6 @@ def test_arrow_first_keeps_equality_projection_and_python_fallback_semantics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Exact equality may stay columnar, while null and cross-type cases remain Python-owned."""
-    from fpstreams.execution import arrow as arrow_execution
 
     path = tmp_path / "equality-first.parquet"
     pq.write_table(
@@ -7258,9 +6397,7 @@ def test_parquet_source_keeps_batches_columnar_through_filter_and_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A chainable scan must not box every unselected Parquet field into Python rows."""
-    from fpstreams.execution import arrow as arrow_execution
     from fpstreams.planning.arrow.source import ArrowBatchSource
-    from fpstreams.tabular import arrow as arrow_adapter
 
     target = tmp_path / "columnar.parquet"
     pq.write_table(
@@ -7278,11 +6415,8 @@ def test_parquet_source_keeps_batches_columnar_through_filter_and_projection(
     assert isinstance(descriptor, ArrowBatchSource)
     assert descriptor.kind == "parquet"
 
-    def reject_full_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("Parquet filter/select must stay columnar until projection")
-
-    monkeypatch.setattr(arrow_execution, "batch_to_rows", reject_full_rows)
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", reject_full_rows)
+    monkeypatch.setattr(arrow_execution, "batch_to_rows", _forbid_row_boxing)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     assert source.where(fpstreams.col("id") >= 1).select("payload").to_list() == [
         {"payload": "one"},
@@ -7294,7 +6428,6 @@ def test_parquet_identity_count_uses_scanner_count_rows_without_batches(
     tmp_path: Path,
 ) -> None:
     """An identity count should use Parquet metadata instead of opening scan batches."""
-    from dataclasses import replace
 
     from fpstreams.planning.arrow.source import ArrowBatchSource
 
@@ -7327,7 +6460,6 @@ def test_parquet_identity_count_uses_scanner_count_rows_without_batches(
 
 def test_parquet_transformed_count_keeps_batch_semantic_guards(tmp_path: Path) -> None:
     """A query filter must not be replaced by the source-only metadata terminal."""
-    from dataclasses import replace
 
     from fpstreams.planning.arrow.source import ArrowBatchSource
 
@@ -7350,7 +6482,6 @@ def test_parquet_transformed_count_keeps_batch_semantic_guards(tmp_path: Path) -
 
 def test_parquet_count_callback_decline_falls_back_to_batches(tmp_path: Path) -> None:
     """An unavailable scanner terminal should retain the established batch count."""
-    from dataclasses import replace
 
     from fpstreams.planning.arrow.source import ArrowBatchSource
 
@@ -7381,7 +6512,6 @@ def test_parquet_count_callback_decline_falls_back_to_batches(tmp_path: Path) ->
 
 def test_parquet_metadata_count_respects_failpoints(tmp_path: Path) -> None:
     """Instrumentation forces the canonical source boundary before metadata counting."""
-    from dataclasses import replace
 
     from fpstreams.planning.arrow.source import ArrowBatchSource
     from fpstreams.runtime.failpoints import failpoint
@@ -7426,7 +6556,6 @@ def test_parquet_query_projection_keeps_filter_dependencies_at_executor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Validated scan outputs retain filter fields and drop unrelated Parquet columns."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "wide.parquet"
     pq.write_table(
@@ -7466,7 +6595,6 @@ def test_parquet_exact_equality_narrows_batches_and_keeps_the_python_residual(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A proven equality narrows validated batches while the original filter still executes."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "equality.parquet"
     pq.write_table(
@@ -7550,7 +6678,6 @@ def test_parquet_conversion_validation_skips_only_safe_unused_fields(
 ) -> None:
     """One scan retains all fallible fields in source order and every query dependency."""
     from fpstreams.planning.arrow.source import ArrowScanRequest
-    from fpstreams.tabular import arrow as adapter
 
     target = tmp_path / "validation-columns.parquet"
     table = pa.table(
@@ -7732,8 +6859,6 @@ def test_parquet_consumption_preserves_delivered_prefixes_and_source_failures(
     """Do not pull beyond a delivered prefix or replay a source that failed before it."""
     from types import SimpleNamespace
 
-    from fpstreams.tabular import arrow as adapter
-
     events = []
     failure = pa.ArrowInvalid("source cast failed")
     schema = pa.schema([("id", pa.int64()), ("value", pa.int64())])
@@ -7817,7 +6942,6 @@ def test_parquet_supplied_dataset_schema_keeps_its_cast_boundary(
 
 @pytest.mark.parametrize("count", [0, 1, 2, 3])
 def test_parquet_single_fragment_probe_bounds_and_closes_enumeration(count: int) -> None:
-    from fpstreams.tabular import arrow as adapter
 
     events = []
 
@@ -7926,7 +7050,6 @@ def test_parquet_invalidated_projection_also_discards_automatic_predicate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replaced_opener: bool
 ) -> None:
     from fpstreams.planning.arrow.source import ArrowScanRequest
-    from fpstreams.tabular import arrow as adapter
 
     target = tmp_path / "invalidated-hints.parquet"
     pq.write_table(pa.table({"id": [0, 1], "value": [10, 20]}), target, row_group_size=1)
@@ -7950,7 +7073,6 @@ def test_parquet_filter_chain_projection_keeps_only_leading_scan_hint(
     tmp_path, monkeypatch, third_filter
 ):
     """A longer safe prefix reads required fields, using only the original first range."""
-    from fpstreams.execution import arrow as execution
 
     target = tmp_path / "prefix.parquet"
     pq.write_table(
@@ -7985,7 +7107,6 @@ def test_parquet_filter_chain_projection_keeps_only_leading_scan_hint(
 
 
 def test_retained_arrow_filter_chain_projection_stays_columnar_with_explicit_schema(monkeypatch):
-    from fpstreams.execution import arrow as execution
 
     table = pa.table({"id": [0, 1, 2, 3], "value": [10, 20, 30, 40]}).replace_schema_metadata(
         {b"origin": b"test"}
@@ -8035,7 +7156,6 @@ def test_parquet_exact_i64_range_narrows_batches_before_the_python_residual(
     expected: list[int],
 ) -> None:
     """Four direct ranges, including literal-left forms, narrow validated scan outputs."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "range.parquet"
     pq.write_table(
@@ -8066,7 +7186,6 @@ def test_parquet_range_hint_keeps_null_rows_for_python_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The scan hint is a superset: a leading null still reaches and fails in Python."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "nullable-range.parquet"
     pq.write_table(
@@ -8104,7 +7223,6 @@ def test_parquet_range_hint_preserves_i64_boundaries_without_adjustment(
     expected: list[int],
 ) -> None:
     """Strict and inclusive bounds at both i64 extremes need no overflow-prone +/- 1."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "range-boundaries.parquet"
     pq.write_table(
@@ -8207,7 +7325,6 @@ def test_parquet_equality_narrows_validated_batches_across_multiple_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The bounded metadata probe considers every fragment before enabling its hint."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "multi-file"
     target.mkdir()
@@ -8248,7 +7365,6 @@ def test_parquet_equality_pushdown_handles_hive_partition_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A virtual partition field may eliminate whole files without changing the residual."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "partitioned"
     for group in ("alpha", "beta"):
@@ -8284,7 +7400,6 @@ def test_parquet_equality_pushdown_declines_without_pruning_statistics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Absent row-group statistics retain the ordinary residual scan."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "no-statistics.parquet"
     pq.write_table(
@@ -8317,9 +7432,6 @@ def test_parquet_equality_pushdown_declines_without_pruning_statistics(
 
 def test_parquet_equality_metadata_probe_declines_on_unknown_local_layout() -> None:
     """A speculative metadata failure cannot become a new scanner failure mode."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
 
     class Fragment:
         num_row_groups = 1
@@ -8345,9 +7457,6 @@ def test_parquet_first_equality_probe_only_consults_the_leading_fragment(
     first_kept: int, expected: bool
 ) -> None:
     """A multi-file first() pushes only when the first fragment is proven impossible."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
 
     calls: list[str] = []
 
@@ -8383,20 +7492,26 @@ def test_parquet_first_equality_probe_only_consults_the_leading_fragment(
     assert calls == ["first"]
 
 
-def test_parquet_first_equality_probe_does_not_pull_a_tail_after_proven_pruning() -> None:
-    """A leading impossible fragment decides the safe first() hint before tail access."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
-
+@pytest.mark.parametrize(
+    ("row_groups", "retained_groups", "single_fragment", "expected"),
+    [
+        pytest.param(1, 0, False, True, id="proven-pruning"),
+        pytest.param(1, 1, False, False, id="possible-match"),
+        pytest.param(2, 1, True, True, id="single-file-partial-pruning"),
+    ],
+)
+def test_parquet_first_equality_probe_does_not_pull_fragment_tail(
+    row_groups: int, retained_groups: int, single_fragment: bool, expected: bool
+) -> None:
+    """A leading fragment decides the first() hint without requesting tail metadata."""
     calls: list[str] = []
 
     class Fragment:
-        num_row_groups = 1
+        num_row_groups = row_groups
 
         def split_by_row_group(self, *_args: object, **_options: object) -> list[object]:
             calls.append("split:first")
-            return []
+            return [object() for _ in range(retained_groups)]
 
     def fragments() -> Iterator[Fragment]:
         calls.append("next:first")
@@ -8411,92 +7526,16 @@ def test_parquet_first_equality_probe_does_not_pull_a_tail_after_proven_pruning(
             return fragments()
 
     dataset_module = SimpleNamespace(ParquetFileFragment=Fragment)
-
-    assert arrow_adapter._parquet_predicate_can_prune(
-        Dataset(),
-        object(),
-        dataset_module,
-        probe_statistics=True,
-        first_only=True,
-    )
-    assert calls == ["next:first", "split:first"]
-
-
-def test_parquet_first_equality_probe_does_not_pull_a_tail_after_possible_match() -> None:
-    """A retained leading row group also decides before inaccessible tail metadata."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    calls: list[str] = []
-
-    class Fragment:
-        num_row_groups = 1
-
-        def split_by_row_group(self, *_args: object, **_options: object) -> list[object]:
-            calls.append("split:first")
-            return [object()]
-
-    def fragments() -> Iterator[Fragment]:
-        calls.append("next:first")
-        yield Fragment()
-        calls.append("next:tail")
-        raise MemoryError("tail metadata must stay cold")
-
-    class Dataset:
-        schema = object()
-
-        def get_fragments(self) -> Iterator[Fragment]:
-            return fragments()
-
-    dataset_module = SimpleNamespace(ParquetFileFragment=Fragment)
-
-    assert not arrow_adapter._parquet_predicate_can_prune(
-        Dataset(),
-        object(),
-        dataset_module,
-        probe_statistics=True,
-        first_only=True,
-    )
-    assert calls == ["next:first", "split:first"]
-
-
-def test_parquet_first_equality_probe_keeps_known_single_file_partial_pruning() -> None:
-    """A proven single fragment can prune row groups without consulting an iterator tail."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
-
-    calls: list[str] = []
-
-    class Fragment:
-        num_row_groups = 2
-
-        def split_by_row_group(self, *_args: object, **_options: object) -> list[object]:
-            calls.append("split:first")
-            return [object()]
-
-    def fragments() -> Iterator[Fragment]:
-        calls.append("next:first")
-        yield Fragment()
-        calls.append("next:tail")
-        raise MemoryError("a known single file cannot have a fragment tail")
-
-    class Dataset:
-        schema = object()
-
-        def get_fragments(self) -> Iterator[Fragment]:
-            return fragments()
-
-    dataset_module = SimpleNamespace(ParquetFileFragment=Fragment)
-
-    assert arrow_adapter._parquet_predicate_can_prune(
-        Dataset(),
-        object(),
-        dataset_module,
-        probe_statistics=True,
-        first_only=True,
-        single_fragment=True,
+    assert (
+        arrow_adapter._parquet_predicate_can_prune(
+            Dataset(),
+            object(),
+            dataset_module,
+            probe_statistics=True,
+            first_only=True,
+            single_fragment=single_fragment,
+        )
+        is expected
     )
     assert calls == ["next:first", "split:first"]
 
@@ -8505,7 +7544,6 @@ def test_parquet_first_known_single_file_prunes_late_row_groups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The no-tail metadata policy retains selective first() scans for one local file."""
-    from fpstreams.execution import arrow as arrow_execution
 
     target = tmp_path / "first-late.parquet"
     pq.write_table(
@@ -8537,9 +7575,6 @@ def test_parquet_first_known_single_file_prunes_late_row_groups(
 
 def test_parquet_pruning_probe_bounds_zero_row_group_fragments() -> None:
     """The speculative metadata buffer is bounded even when row-group counts stay zero."""
-    from types import SimpleNamespace
-
-    from fpstreams.tabular import arrow as arrow_adapter
 
     pulls = 0
 
@@ -8573,10 +7608,8 @@ def test_parquet_first_scanner_disables_arrow_readahead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A first-only request must not ask Arrow to prefetch later batches or files."""
-    from types import SimpleNamespace
 
     from fpstreams.planning.arrow.source import ArrowScanRequest
-    from fpstreams.tabular import arrow as arrow_adapter
 
     options: list[dict[str, object]] = []
     schema = pa.schema([("id", pa.int64())])
@@ -8838,7 +7871,6 @@ def test_retained_arrow_unique_join_keeps_left_order_without_boxing_inputs(
     expected: list[dict[str, object]],
 ) -> None:
     """A direct m:1 join keeps distinct key names and canonical field order."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     left_table = pa.table({"left_id": [2, 1, 3, 4], "left_value": [20, 10, 30, 11]})
     unused = list(range(1_000, 1_125))
@@ -8851,10 +7883,7 @@ def test_retained_arrow_unique_join_keeps_left_order_without_boxing_inputs(
     left = left_table.to_batches()[0] if as_record_batch else left_table
     right = right_table.to_batches()[0] if as_record_batch else right_table
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded retained Arrow join must not box either input")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     result = (
         fpstreams.rows.from_arrow(left)
@@ -8875,7 +7904,6 @@ def test_retained_arrow_unique_join_mints_suffix_keys_per_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Generated right-column keys retain canonical per-output string identity."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     left = pa.table({"id": [1, 1], "value": [10, 11]})
     unused = list(range(1_000, 1_125))
@@ -8891,10 +7919,7 @@ def test_retained_arrow_unique_join_mints_suffix_keys_per_output(
         .to_list()
     )
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("safe suffix joins must stay columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     automatic = (
         fpstreams.rows.from_arrow(left)
         .join(fpstreams.rows.from_arrow(right), on="id", validate="m:1")
@@ -8919,7 +7944,6 @@ def test_retained_arrow_unique_join_preserves_source_batch_key_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Left keys keep source batch boundaries while right target keys stay global."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     left = pa.table({"left_id": [1, 2, 99, 3], "left_value": [10, 20, 990, 30]})
     unused = list(range(1_000, 1_125))
@@ -8930,10 +7954,7 @@ def test_retained_arrow_unique_join_preserves_source_batch_key_identity(
         }
     )
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("guarded retained Arrow join must not box either input")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
     result = (
         fpstreams.rows.from_arrow(left, batch_size=2)
         .join(
@@ -8957,7 +7978,6 @@ def test_retained_arrow_unique_join_repeated_match_reuses_right_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Repeated matches retain canonical right-row payload object identity."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     payload = "right-payload-that-is-long-enough-to-avoid-interning"
     left = pa.table({"left_id": [1, 1], "left_value": [10, 11]})
@@ -8969,10 +7989,7 @@ def test_retained_arrow_unique_join_repeated_match_reuses_right_payload(
         }
     )
 
-    def forbidden_rows(_batch: object) -> list[dict[str, object]]:
-        raise AssertionError("repeated retained Arrow matches must stay columnar")
-
-    monkeypatch.setattr(arrow_adapter, "batch_to_rows", forbidden_rows)
+    monkeypatch.setattr(arrow_adapter, "batch_to_rows", _forbid_row_boxing)
 
     result = (
         fpstreams.rows.from_arrow(left)
@@ -9038,7 +8055,6 @@ def test_retained_arrow_unique_join_small_tables_use_the_python_crossover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Arrow kernel setup stays off the measured losing side of the crossover."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     converted = 0
     original = arrow_adapter.batch_to_rows
@@ -9069,7 +8085,6 @@ def test_retained_arrow_unique_join_falls_back_for_unproven_arrow_semantics(
     case: str,
 ) -> None:
     """Unsupported equality and mutable payload families retain canonical row behavior."""
-    from fpstreams.tabular import arrow as arrow_adapter
 
     filler = list(range(1_000, 1_130))
     if case == "float_nan":
@@ -9186,7 +8201,6 @@ def test_retained_arrow_unique_join_kernel_decline_and_memory_error_boundaries(
 ) -> None:
     """Expected Arrow errors replay canonically; allocation failure propagates unchanged."""
     from fpstreams.execution import relational
-    from fpstreams.tabular import arrow as arrow_adapter
 
     left = pa.table({"left_id": list(range(130)), "left": list(range(130))})
     right = pa.table({"right_id": list(range(130)), "right": list(range(130))})
@@ -9287,7 +8301,6 @@ def test_retained_arrow_unique_join_invalid_utf8_keeps_canonical_error_priority(
 
 
 def test_parquet_error_publish_does_not_overwrite_racing_creator(tmp_path, monkeypatch):
-    from fpstreams.tabular import arrow
 
     target = tmp_path / "race.parquet"
     sentinel = b"created by another writer"
@@ -9312,7 +8325,6 @@ def test_parquet_error_publish_does_not_overwrite_racing_creator(tmp_path, monke
 @pytest.mark.parametrize("primary", [False, True])
 @pytest.mark.parametrize("sink", ["arrow", "parquet"])
 def test_arrow_owned_source_close_failure_is_not_silent(tmp_path, primary, sink):
-    from fpstreams.tabular import arrow
 
     error = ValueError("source failed")
     cleanup = OSError("source close failed")
@@ -9347,7 +8359,6 @@ def test_arrow_owned_source_close_failure_is_not_silent(tmp_path, primary, sink)
 
 
 def test_arrow_cleanup_attempts_all_resources_and_preserves_ambient_exception():
-    from fpstreams.tabular import arrow
 
     events = []
     first, second = OSError("first close"), ValueError("second close")
@@ -9371,7 +8382,6 @@ def test_arrow_cleanup_attempts_all_resources_and_preserves_ambient_exception():
 
 
 def test_arrow_cleanup_keeps_primary_and_closes_all_resources():
-    from fpstreams.tabular import arrow
 
     primary = ValueError("primary query failure")
     closed = []
@@ -9407,7 +8417,6 @@ def test_parquet_error_rejects_dangling_symlink_before_consuming(tmp_path):
 
 
 def test_parquet_writer_close_failure_prevents_publish_and_removes_temporary(tmp_path, monkeypatch):
-    from fpstreams.tabular import arrow
 
     real = pq.ParquetWriter
     failure = OSError("writer finalization failed")
@@ -9526,7 +8535,6 @@ def test_explicit_arrow_batch_schema_preserves_conversion_and_callback_semantics
 def test_explicit_arrow_batch_schema_executes_safe_prefix_columnarly(
     operation, source_kind, monkeypatch
 ):
-    from fpstreams.execution import arrow as execution
 
     table = pa.table({"id": [1, 2, 3, 4], "value": [None, 8, 9, 10]})
     data = table if source_kind == "table" else table.to_batches()[0]
@@ -9553,7 +8561,6 @@ def test_explicit_arrow_batch_schema_executes_safe_prefix_columnarly(
 
 
 def test_explicit_arrow_prefix_observes_midstream_conversion_hook(monkeypatch):
-    from fpstreams.tabular import arrow as adapter
 
     table = pa.table({"id": [1, 2, 3, 4], "value": [5, 6, 7, 8]})
     source = fpstreams.rows.from_arrow(table, batch_size=2).select("value")
@@ -9576,7 +8583,6 @@ def test_explicit_arrow_prefix_observes_midstream_conversion_hook(monkeypatch):
 
 @pytest.mark.parametrize("operation", ["select", "where_select"])
 def test_explicit_arrow_prefix_does_not_hide_invalid_dropped_values(operation):
-    import struct
 
     invalid = pa.Array.from_buffers(
         pa.string(),
@@ -9699,7 +8705,6 @@ def test_zero_column_parquet_write_fails_without_publishing_or_replacing(existin
 
 @pytest.mark.parametrize("late", [False, True])
 def test_explicit_arrow_batch_schema_does_not_skip_invalid_utf8_errors(late) -> None:
-    import struct
 
     payload = bytearray(b"a" if late else b"\xff")
     invalid = pa.Array.from_buffers(
@@ -9719,7 +8724,6 @@ def test_explicit_arrow_batch_schema_does_not_skip_invalid_utf8_errors(late) -> 
 def test_explicit_arrow_batch_schema_keeps_changed_row_conversion_observable(
     late, monkeypatch
 ) -> None:
-    from fpstreams.tabular import arrow as adapter
 
     table = pa.table({"value": [1, 2, 3]})
     source = fpstreams.rows.from_arrow(table)
@@ -9822,7 +8826,6 @@ def test_explicit_arrow_batch_schema_matches_python_conversion_for_scalar_famili
 def test_explicit_arrow_batch_schema_observes_conversion_changes_between_source_batches(
     monkeypatch,
 ) -> None:
-    from fpstreams.tabular import arrow as adapter
 
     table = pa.table({"value": [1, 2, 3]})
     batches = fpstreams.rows.from_arrow(table, batch_size=1).arrow_batches(
@@ -9843,7 +8846,6 @@ def test_explicit_arrow_batch_schema_observes_conversion_changes_between_source_
 
 
 def test_explicit_arrow_batch_schema_validates_mutable_buffers_between_source_batches() -> None:
-    import struct
 
     payload = bytearray(b"ab")
     array = pa.Array.from_buffers(
@@ -9869,7 +8871,6 @@ def test_explicit_arrow_batch_schema_validates_mutable_buffers_between_source_ba
 def test_arrow_shared_masks_preserve_results_without_repeated_payload_filters(
     monkeypatch, retained
 ):
-    from fpstreams.execution import arrow as execution
 
     values = list(range(2048))
     table = pa.table({f"v{column}": [value + column for value in values] for column in range(12)})
@@ -9903,7 +8904,6 @@ def test_arrow_shared_masks_preserve_results_without_repeated_payload_filters(
 
 
 def test_arrow_shared_mask_thresholds_keep_empty_batches_and_unsafe_callbacks_safe(monkeypatch):
-    from fpstreams.execution import arrow as execution
 
     monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_ROWS", 0)
     monkeypatch.setattr(execution, "_COMBINED_FILTER_MIN_COLUMNS", 0)
@@ -9940,7 +8940,6 @@ def test_arrow_transformed_list_collects_prefix_once_and_preserves_batch_observe
 ):
     from contextlib import contextmanager
 
-    from fpstreams.execution import arrow as execution
     from fpstreams.planning.source import Source
 
     table = pa.table({"x": [1, 2, 3], "unused": [4, 5, 6]})
@@ -10009,7 +9008,6 @@ def test_arrow_transformed_lists_keep_alias_identity_and_independent_replays(nes
 
 
 def test_arrow_transformed_list_keeps_conversion_error_identity(monkeypatch):
-    from fpstreams.tabular import arrow as adapter
 
     query = fpstreams.rows.from_arrow(pa.table({"x": [{"a": 1}]})).select("x")
     error = ValueError("conversion observer")

@@ -7,6 +7,9 @@ the runtime downloads. The status line identifies whether the wheel came from a
 clean release-tag checkout or a development checkout. A development build can
 contain changes absent from the PyPI wheel.
 
+The browser wheel uses the pure-Python 2.5.0 build. It does not include the
+native extension.
+
 Run code you trust. Browser Python can make network requests through browser APIs;
 the worker keeps execution off the page's main thread, but does not make pasted
 code safe or suitable for secrets.

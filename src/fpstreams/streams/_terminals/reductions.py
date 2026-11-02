@@ -20,7 +20,7 @@ from ...physical.plan import BackendPayload, PhysicalPlan
 from ...planning.logical import Pipeline
 from ...planning.native import EngineDecision
 from ...planning.source import Source
-from ...runtime._distinct import reraise_key_type_error
+from ...runtime._distinct import dict_get, dict_set, reraise_key_type_error
 from ...runtime.iterators import close_iterators, closing_iterators
 from ...runtime.report import _record_direct_strategy
 
@@ -409,13 +409,12 @@ def _update_identity_frequency_counts(
     values: Iterable[Any],
     counts: dict[Any, int],
 ) -> dict[Any, int]:
-    get_count = counts.get
     for selected in values:
         try:
-            count = get_count(selected, 0)
+            count = dict_get(counts, selected, 0)
         except TypeError:
             reraise_key_type_error(selected, "reduce_by() keys must be hashable")
-        counts[selected] = count + 1
+        dict_set(counts, selected, count + 1)
     return counts
 
 

@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import builtins
+import math
+import signal
+import struct
 import sys
+import weakref
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
+from types import FunctionType
 
 import pytest
 
@@ -14,13 +22,16 @@ from fpstreams.collecting import Collector, Collectors
 from fpstreams.collecting.aggregate_program import NativeAggregateField, compile_aggregations
 from fpstreams.collecting.aggregation import prepare_aggregations
 from fpstreams.collecting.program import compile_collectors, run_collector_program
+from fpstreams.execution import physical
 from fpstreams.execution import physical as physical_executor
+from fpstreams.execution.pairs import dictionary as _pair_dict
 from fpstreams.execution.physical import (
     PhysicalExecutionError,
     execute_physical,
     operations_from_physical_nodes,
 )
 from fpstreams.expressions import program as program_module
+from fpstreams.expressions import scalar
 from fpstreams.expressions.program import ExprEvaluator, ExprProgram, compile_expression
 from fpstreams.expressions.row_ir import (
     Binary,
@@ -137,6 +148,7 @@ def test_native_frequency_iterator_stops_before_custom_key_protocols(raises: boo
 def test_numpy_frequency_iterator_preserves_runtime_error_ownership(
     dtype: str, failure_kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+
     import numpy as np
 
     from fpstreams.execution import native
@@ -191,6 +203,7 @@ def test_numpy_frequency_iterator_preserves_runtime_error_ownership(
 def test_numpy_frequency_iterator_reports_only_selected_automatic_native_counting(
     dtype: str, engine: str
 ) -> None:
+
     import numpy as np
 
     result = (
@@ -208,6 +221,7 @@ def test_numpy_frequency_iterator_reports_only_selected_automatic_native_countin
 def test_numpy_frequency_iterator_old_wheel_does_not_consume_twice(
     unavailable: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+
     import numpy as np
 
     from fpstreams import _native
@@ -236,6 +250,7 @@ def test_numpy_frequency_iterator_old_wheel_does_not_consume_twice(
 def test_numpy_frequency_iterator_keeps_automatic_source_fallback(
     error_type: type[Exception], dtype: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+
     import numpy as np
 
     from fpstreams.execution import native
@@ -261,7 +276,6 @@ def test_numpy_frequency_iterator_keeps_automatic_source_fallback(
 
 @pytest.mark.parametrize("engine", ["python", "auto", "native"])
 def test_numpy_frequency_iterator_keeps_nan_payloads_and_signed_zero(engine: str) -> None:
-    import struct
 
     import numpy as np
 
@@ -280,7 +294,6 @@ def test_numpy_frequency_iterator_keeps_nan_payloads_and_signed_zero(engine: str
 def test_physical_forwarding_preserves_error_conversion_and_delegate_release(
     engine: str, failure_kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from fpstreams.execution import physical
     from fpstreams.runtime.query import QueryRuntime
 
     failure = StopIteration("factory") if failure_kind.endswith("stop") else RuntimeError("next")
@@ -486,7 +499,6 @@ def test_compiler_binds_cached_expression_template_to_the_current_source() -> No
 
 def test_consume_physical_directly_owns_streaming_python_iteration(monkeypatch) -> None:
     """A sink can consume a selected Python plan without iterator forwarding layers."""
-    from fpstreams.execution import physical
     from fpstreams.planning.compiler import compile_iteration
 
     closed = False
@@ -537,7 +549,6 @@ def test_consume_physical_falls_back_for_a_non_python_backend(monkeypatch) -> No
     """A non-Python decision remains owned by the canonical physical executor."""
     from dataclasses import replace
 
-    from fpstreams.execution import physical
     from fpstreams.physical.plan import BackendPayload
     from fpstreams.planning.compiler import compile_iteration
     from fpstreams.planning.native import EngineDecision
@@ -562,7 +573,6 @@ def test_consume_physical_falls_back_for_a_non_python_backend(monkeypatch) -> No
 
 def test_consume_physical_preserves_source_open_stop_iteration_boundary() -> None:
     """Direct sinks retain the generator boundary around a failing source opener."""
-    from fpstreams.execution import physical
     from fpstreams.planning.compiler import compile_iteration
     from fpstreams.planning.source import Source
 
@@ -616,7 +626,6 @@ def test_rows_where_keeps_a_pure_row_expression_visible_to_the_compiler() -> Non
 
 def test_rows_exact_map_stages_retain_query_bound_structural_descriptors() -> None:
     """with_columns/select metadata must retain this query's exact selector identities."""
-    from types import FunctionType
 
     from fpstreams import rows
     from fpstreams.planning import arrow as arrow_planning
@@ -653,7 +662,6 @@ def test_rows_exact_map_stages_retain_query_bound_structural_descriptors() -> No
 
 def test_pair_side_maps_retain_trusted_query_bound_descriptors() -> None:
     """Internal pair wrappers expose their exact side and original callback by identity."""
-    import fpstreams
     from fpstreams.planning.pairs import PairMapDescriptor
 
     def map_key(value: str) -> str:
@@ -744,7 +752,6 @@ def test_pair_side_expressions_compile_once_per_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pair-side scalar expressions resolve one evaluator instead of one per input row."""
-    import fpstreams
     from fpstreams.expressions.scalar import Expr, FExpr
 
     integer_compilations = 0
@@ -815,9 +822,7 @@ def test_pair_value_expression_map_uses_native_sink_across_supported_shapes(
     expression_kind: str,
 ) -> None:
     """Both scalar families preserve pair policies for exact retained lists and tuples."""
-    import fpstreams
     from fpstreams import _native, fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     endpoint_name = (
         "pair_i64_value_map_to_dict_exact_prefix_v1"
@@ -859,9 +864,7 @@ def test_pair_value_map_declines_known_first_row_boundaries_before_native(
     boundary: str,
 ) -> None:
     """An O(1) exact-row probe avoids a native transition known to stop immediately."""
-    import fpstreams
     from fpstreams import _native, fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     class Pair(tuple[object, object]):
         pass
@@ -901,9 +904,7 @@ def test_pair_value_map_declines_replaced_first_row_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Replacing the internal capability probe cannot authorize native execution."""
-    import fpstreams
     from fpstreams import _native
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     def unexpected(*_arguments: object) -> object:
         raise AssertionError("a replaced capability probe must disable the native sink")
@@ -925,7 +926,6 @@ def test_pair_value_map_resumes_canonical_protocol_at_nonexact_boundary(
 ) -> None:
     """A nonexact row reaches Python before indexing, hashing, or equality can be observed."""
     import fpstreams
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     monkeypatch.setattr(_pair_dict, "_PAIR_VALUE_MAP_MIN_ROWS", 0)
 
@@ -960,9 +960,7 @@ def test_pair_value_map_preserves_identity_overflow_and_live_source_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Identity maps retain objects while an i64 boundary and opener mutation resume in Python."""
-    import fpstreams
     from fpstreams import fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     monkeypatch.setattr(_pair_dict, "_PAIR_VALUE_MAP_MIN_ROWS", 0)
     integer = int("1000000")
@@ -992,9 +990,7 @@ def test_pair_value_map_native_boundary_preserves_numeric_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Native evaluation failures resume at the untouched row and raise canonically."""
-    import fpstreams
     from fpstreams import _native, fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     endpoint_names = (
         "pair_i64_value_map_to_dict_exact_prefix_v1",
@@ -1029,9 +1025,7 @@ def test_pair_value_map_fexpr_boolean_arithmetic_preserves_python_result_types(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Float expressions that canonically produce integers must remain in Python."""
-    import fpstreams
     from fpstreams import _native, fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     endpoint = _native.pair_f64_value_map_to_dict_exact_prefix_v1
     calls = 0
@@ -1071,9 +1065,7 @@ def test_pair_value_map_fexpr_safe_float_and_boolean_results_stay_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal booleans and unambiguous float arithmetic retain native execution."""
-    import fpstreams
     from fpstreams import _native, fitem
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     endpoint = _native.pair_f64_value_map_to_dict_exact_prefix_v1
     calls = 0
@@ -1106,9 +1098,7 @@ def test_pair_value_map_declines_native_sink_for_failpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Failpoints retain the established Python value-map loop."""
-    import fpstreams
     from fpstreams import _native
-    from fpstreams.execution.pairs import dictionary as _pair_dict
     from fpstreams.runtime.failpoints import failpoint
 
     endpoint = _native.pair_i64_value_map_to_dict_exact_prefix_v1
@@ -1133,9 +1123,7 @@ def test_pair_value_map_rechecks_live_guards_after_source_open(
     guard: str,
 ) -> None:
     """Source opening cannot leave a stale native endpoint or scalar expression snapshot."""
-    import fpstreams
     from fpstreams import _native
-    from fpstreams.execution.pairs import dictionary as _pair_dict
     from fpstreams.planning.pairs import PairMapDescriptor
 
     monkeypatch.setattr(_pair_dict, "_PAIR_VALUE_MAP_MIN_ROWS", 0)
@@ -1170,9 +1158,7 @@ def test_pair_value_map_explicitly_declines_duplicate_error_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The native first/last sink cannot pre-empt canonical duplicate errors."""
-    import fpstreams
     from fpstreams import _native
-    from fpstreams.execution.pairs import dictionary as _pair_dict
 
     calls = 0
 
@@ -1193,9 +1179,7 @@ def test_pair_value_map_explicitly_declines_duplicate_error_policy(
 @pytest.mark.skipif(sys.platform == "win32", reason="setitimer is Unix-only")
 def test_pair_value_map_native_signal_mutation_reaches_the_open_list_iterator() -> None:
     """A signal-time append remains visible to the already-open native iterator."""
-    import signal
 
-    import fpstreams
     from fpstreams.execution.pairs.dictionary import try_consume_pair_value_map_to_dict_opened
 
     values: list[tuple[object, int]] = [(index % 8, 0) for index in range(500_000)]
@@ -1228,9 +1212,7 @@ def test_pair_value_map_native_signal_mutation_reaches_the_open_list_iterator() 
 @pytest.mark.parametrize("engine", ["auto", "python"])
 def test_pair_value_map_propagates_signal_keyboard_interrupt(engine: str) -> None:
     """Both native and canonical map sinks propagate asynchronous interruption."""
-    import signal
 
-    import fpstreams
     from fpstreams.execution.pairs.dictionary import (
         _consume_mapped_values,
         try_consume_pair_value_map_to_dict_opened,
@@ -1275,7 +1257,6 @@ def test_pair_value_map_propagates_signal_keyboard_interrupt(engine: str) -> Non
 def test_native_range_kernels_poll_pending_signals(endpoint: str, extra: tuple[int, ...]) -> None:
     """A bounded subprocess prevents an uninterruptible native regression hanging pytest."""
     import subprocess
-    from pathlib import Path
 
     source = str(Path(fpstreams.__file__).resolve().parent.parent)
     code = f"""
@@ -1309,9 +1290,7 @@ def test_pair_value_map_post_open_failpoint_closes_the_source_once(
     """A post-open deopt retains exactly one cleanup owner for the live source."""
     from contextlib import AbstractContextManager
 
-    import fpstreams
     from fpstreams import _native
-    from fpstreams.execution.pairs import dictionary as _pair_dict
     from fpstreams.runtime.failpoints import failpoint
 
     values = [(1, 2), (2, 3)]
@@ -1423,7 +1402,6 @@ def test_pair_flat_map_retains_trusted_descriptor_and_skips_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pair flat-map expands arguments directly on its exact internal fast path."""
-    import fpstreams
     from fpstreams.execution.sync import open_operations
     from fpstreams.planning.pairs import PairFlatMapDescriptor
     from fpstreams.planning.sync import FlatMapOp
@@ -1527,7 +1505,6 @@ def test_pair_filters_retain_targets_and_preserve_access_order() -> None:
 
 def test_pair_filter_accepts_a_row_expression_over_key_and_value() -> None:
     """A RowExpr receives the complete pair while ordinary callables keep two arguments."""
-    import fpstreams
     from fpstreams.planning.pairs import PairFilterDescriptor
 
     expression = (fpstreams.col(0) + fpstreams.col(1)) % 2 == 0
@@ -1626,7 +1603,6 @@ def test_pair_filter_truth_error_does_not_retain_its_input_pair() -> None:
 def test_direct_planned_row_function_preserves_mapping_and_selector_order() -> None:
     """Removing the wrapper cannot change Mapping copy or sibling selector semantics."""
     from collections.abc import Mapping
-    from types import FunctionType
 
     from fpstreams import rows
 
@@ -1683,7 +1659,6 @@ def test_direct_planned_row_function_preserves_mapping_and_selector_order() -> N
 
 def test_direct_planned_row_function_does_not_add_an_exception_frame() -> None:
     """A selector failure should pass directly through the generated transform function."""
-    from pathlib import Path
 
     from fpstreams import rows
 
@@ -2014,7 +1989,6 @@ def test_direct_row_filter_uses_filter_truth_semantics_when_bool_is_replaced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The generated sink truth-tests results instead of resolving the live bool name."""
-    import builtins
 
     from fpstreams import rows
 
@@ -2033,7 +2007,6 @@ def test_native_row_filter_preserves_live_abs_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An abs expression stays in Python while its captured builtin is noncanonical."""
-    import builtins
 
     from fpstreams import rows
 
@@ -2096,7 +2069,6 @@ def test_large_row_filter_preserves_truth_testing_and_stop_iteration_prefix() ->
 
 def test_large_row_filter_preserves_selector_and_operator_error_boundaries() -> None:
     """Lookup failures are translated, while exceptions owned by operators stay untouched."""
-    import fpstreams
 
     missing = [{"value": 0}, {}, *({"value": 1} for _index in range(16_382))]
     with pytest.raises(fpstreams.SelectionError) as selection_error:
@@ -2119,7 +2091,6 @@ def test_large_row_filter_preserves_selector_and_operator_error_boundaries() -> 
 def test_large_row_filter_error_releases_accepted_prefix() -> None:
     """A later operator error clears the eager prefix and releases its accepted rows."""
     import gc
-    import weakref
 
     from fpstreams import rows
 
@@ -2789,7 +2760,6 @@ def test_row_fallback_shared_results_survive_lazy_and_zero_argument_children() -
 
 def test_row_fallback_shared_expression_is_independent_across_threads() -> None:
     """One lazy evaluator keeps per-occurrence values local to each concurrent call."""
-    from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, get_ident, local
 
     state = local()
@@ -2968,7 +2938,6 @@ def test_program_fingerprint_is_structural_and_address_free() -> None:
 )
 def test_scalar_fingerprint_keeps_the_framed_binary_format(case: str, expected: str) -> None:
     """Stable fingerprints preserve integer width and each floating-point payload bit."""
-    import struct
 
     from fpstreams.expressions.scalar import Expr, FExpr, fitem
 
@@ -3053,7 +3022,6 @@ def test_program_fingerprint_frames_row_literals_without_delimiter_collisions() 
 
 
 def test_program_cache_isolates_float_nan_payloads_and_large_integer_constants() -> None:
-    import struct
 
     from fpstreams.expressions.scalar import Expr, FExpr
 
@@ -3081,7 +3049,6 @@ def test_program_cache_isolates_float_nan_payloads_and_large_integer_constants()
 
 
 def test_explicit_python_nan_payload_is_stable_across_scalar_fusion_boundary() -> None:
-    import struct
 
     from fpstreams.expressions.scalar import FExpr
 
@@ -3109,7 +3076,6 @@ def test_explicit_python_nan_payload_is_stable_across_scalar_fusion_boundary() -
 def test_float_constant_sign_survives_instruction_and_evaluator_caches(
     first_negative: bool, depth: int
 ) -> None:
-    import math
 
     from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
 
@@ -3135,7 +3101,6 @@ def test_float_constant_sign_survives_instruction_and_evaluator_caches(
 def test_float_constant_sign_is_independent_of_previously_compiled_plan(
     engine: str, first_negative: bool
 ) -> None:
-    import math
 
     from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
 
@@ -3152,10 +3117,8 @@ def test_float_constant_sign_is_independent_of_previously_compiled_plan(
 def test_pair_float_constant_sign_keeps_the_native_value_map(
     monkeypatch: pytest.MonkeyPatch, first_negative: bool, policy: str
 ) -> None:
-    import math
 
     from fpstreams import _native, fitem, pairs
-    from fpstreams.execution.pairs import dictionary as _pair_dict
     from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
 
     _compile_float_evaluator.cache_clear()
@@ -3180,7 +3143,6 @@ def test_pair_float_constant_sign_keeps_the_native_value_map(
 
 
 def test_float_evaluator_cache_distinguishes_explicit_signed_zero_instructions() -> None:
-    import math
 
     from fpstreams.expressions.scalar import FExpr, _compile_float_evaluator
 
@@ -3268,7 +3230,6 @@ def isolated_scalar_caches():
 def test_scalar_evaluator_cache_keeps_direct_constant_types(
     isolated_scalar_caches, family, first, second, reverse, depth
 ) -> None:
-    from fpstreams.expressions import scalar
 
     expression_type = scalar.Expr if family == "integer" else scalar.FExpr
     values = (second, first, second) if reverse else (first, second, first)
@@ -3298,7 +3259,6 @@ def test_scalar_evaluator_cache_keeps_direct_constant_types(
 def test_scalar_program_cache_keeps_direct_constant_types(
     isolated_scalar_caches, family, first, second, reverse, engine, size
 ) -> None:
-    from fpstreams.expressions import scalar
 
     expression_type = scalar.Expr if family == "integer" else scalar.FExpr
     values = (second, first, second) if reverse else (first, second, first)
@@ -3316,7 +3276,6 @@ def test_native_rejects_direct_constants_that_change_numeric_representation(
     isolated_scalar_caches, family, value
 ) -> None:
     from fpstreams.errors import NativeUnsupportedError
-    from fpstreams.expressions import scalar
 
     expression_type = scalar.Expr if family == "integer" else scalar.FExpr
     expression = expression_type("const", value=value)
@@ -3328,7 +3287,6 @@ def test_native_rejects_direct_constants_that_change_numeric_representation(
 def test_scalar_cache_does_not_hide_invalid_custom_constants(
     isolated_scalar_caches, family
 ) -> None:
-    from fpstreams.expressions import scalar
 
     numeric_type = int if family == "integer" else float
     expression_type = scalar.Expr if family == "integer" else scalar.FExpr
@@ -3351,7 +3309,6 @@ def test_scalar_cache_does_not_hide_invalid_custom_constants(
 def test_scalar_cache_keeps_custom_constant_identity_in_flat_programs(
     isolated_scalar_caches, family, route
 ) -> None:
-    from fpstreams.expressions import scalar
 
     numeric_type = int if family == "integer" else float
     expression_type = scalar.Expr if family == "integer" else scalar.FExpr
@@ -3381,7 +3338,6 @@ def test_scalar_cache_keeps_custom_constant_identity_in_flat_programs(
 
 @pytest.mark.parametrize("family", ["integer", "float"])
 def test_scalar_fingerprint_declines_custom_numeric_protocols(family) -> None:
-    from fpstreams.expressions import scalar
 
     calls = []
 
@@ -3424,7 +3380,6 @@ def test_cache_capacity_rejects_noninteger_values(cache_type, capacity) -> None:
 @pytest.mark.parametrize("cache_type", [KernelCache, PlanCache], ids=["kernel", "plan"])
 def test_cache_capacity_snapshots_and_releases_an_integer_protocol_object(cache_type) -> None:
     """A caller's later mutation cannot enlarge the cache or keep its config alive."""
-    import weakref
 
     calls = []
 
@@ -3474,7 +3429,6 @@ def test_kernel_cache_is_structural_and_bounded() -> None:
 @pytest.mark.parametrize("fail_first", [False, True], ids=["shared-result", "retry-after-failure"])
 def test_kernel_cache_coordinates_concurrent_compilation(fail_first: bool) -> None:
     """Concurrent callers share a compiled value; a failed attempt stays retryable."""
-    from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, Event, get_ident
 
     cache = KernelCache()

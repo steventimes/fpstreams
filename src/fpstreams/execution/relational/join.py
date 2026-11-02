@@ -16,7 +16,7 @@ from ...physical.relational import (
     SourcePhysicalNode,
 )
 from ...planning.arrow.source import ArrowBatchSource
-from ...runtime._distinct import reraise_key_type_error
+from ...runtime._distinct import dict_get, dict_set, reraise_key_type_error
 from ...runtime.iterators import closing_iterators
 from ...runtime.query import QueryRuntime
 from ...tabular.join import (
@@ -245,7 +245,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
             )
             _remember_columns(record, columns, seen_columns)
             try:
-                existing = index.get(key)
+                existing = dict_get(index, key, None)
             except TypeError:
                 reraise_key_type_error(key, "join keys must be hashable")
             if existing is not None:
@@ -254,7 +254,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
                     f"found duplicate {key!r}"
                 )
             try:
-                index[key] = record
+                dict_set(index, key, record)
             except TypeError:
                 reraise_key_type_error(key, "join keys must be hashable")
 
@@ -291,7 +291,7 @@ def _unique_right_join(  # noqa: C901 - keep guarded mapping snapshots inline in
             if seen_left is not None:
                 _check_unique_key(seen_left, key, validate=validate, side="left")
             try:
-                right = index.get(key)
+                right = dict_get(index, key, None)
             except TypeError:
                 reraise_key_type_error(key, "join keys must be hashable")
             if right is None and how != "left":

@@ -355,8 +355,10 @@ def test_join_mapping_classification_cache_keeps_abc_guard_boundaries(  # noqa: 
         assert classified == [row_type, row_type, row_type]
 
 
+@pytest.mark.parametrize("validate", ["m:m", "m:1"])
 def test_plain_field_join_reuses_proven_nominal_mapping_classification(
     monkeypatch: pytest.MonkeyPatch,
+    validate: str,
 ) -> None:
     """A proven nominal Mapping should not repeat the selector's Mapping ABC check."""
     from fpstreams.expressions import selectors
@@ -383,45 +385,10 @@ def test_plain_field_join_reuses_proven_nominal_mapping_classification(
 
     left = [DirectMapping(id=1, left="a"), DirectMapping(id=2, left="b")]
     right = [DirectMapping(id=1, right="x"), DirectMapping(id=2, right="y")]
-    joined = fpstreams.rows(left).join(right, on="id", how="inner").with_engine("python")
-    monkeypatch.setattr(selectors, "Mapping", RejectingMapping)
-
-    assert joined.to_list() == [
-        {"id": 1, "left": "a", "right": "x"},
-        {"id": 2, "left": "b", "right": "y"},
-    ]
-
-
-def test_unique_right_plain_field_join_reuses_proven_nominal_mapping_classification(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The m:1 strategy should share the proven nominal-Mapping field fast path."""
-    from fpstreams.expressions import selectors
-
-    class DirectMapping(Mapping[str, object]):
-        def __init__(self, **values: object) -> None:
-            self.values = values
-
-        def __iter__(self) -> Iterator[str]:
-            return iter(self.values)
-
-        def __len__(self) -> int:
-            return len(self.values)
-
-        def __getitem__(self, key: str) -> object:
-            return self.values[key]
-
-    class RejectingMeta(type):
-        def __instancecheck__(cls, instance: object) -> bool:
-            raise AssertionError(f"repeated Mapping check for {type(instance).__name__}")
-
-    class RejectingMapping(metaclass=RejectingMeta):
-        pass
-
-    left = [DirectMapping(id=1, left="a"), DirectMapping(id=2, left="b")]
-    right = [DirectMapping(id=1, right="x"), DirectMapping(id=2, right="y")]
     joined = (
-        fpstreams.rows(left).join(right, on="id", how="inner", validate="m:1").with_engine("python")
+        fpstreams.rows(left)
+        .join(right, on="id", how="inner", validate=validate)
+        .with_engine("python")
     )
     monkeypatch.setattr(selectors, "Mapping", RejectingMapping)
 
@@ -1500,3 +1467,43 @@ def test_sorted_join_many_to_many_limits(how) -> None:
             next(limited)
     else:
         assert list(limited) == []
+
+
+@pytest.mark.parametrize("how,validate", [("inner", "m:m"), ("inner", "m:1"), ("full", "m:m")])
+def test_join_preserves_hash_failure_at_build_and_probe(how: str, validate: str) -> None:
+    failure = TypeError("join hash failed")
+    for phase in ("build_get", "build_set", "probe"):
+        closed: list[str] = []
+
+        class Key:
+            calls = 0
+            fail_at = 2 if phase == "build_set" else 1
+
+            def __hash__(self) -> int:
+                self.calls += 1
+                if self.calls == self.fail_at:
+                    raise failure
+                return 0
+
+        key = Key()
+
+        def source(side: str, value: object, close_log=closed):
+            try:
+                yield {"key": value}
+            finally:
+                close_log.append(side)
+
+        left = source("left", key if phase == "probe" else 0)
+        right = source("right", 0 if phase == "probe" else key)
+        query = (
+            fpstreams.rows(left)
+            .with_engine("python")
+            .join(right, left_on="key", right_on="key", how=how, validate=validate)
+        )
+        with pytest.raises(TypeError) as caught:
+            query.to_list()
+        assert caught.value is failure
+        assert key.calls == key.fail_at
+        assert "right" in closed
+        if phase == "probe":
+            assert "left" in closed

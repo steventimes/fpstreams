@@ -8,7 +8,7 @@ from typing import Any
 
 from ...collecting._collector_base import Collector, _never_done
 from ...physical.relational import GroupAggregatePhysicalNode
-from ...runtime._distinct import reraise_key_type_error
+from ...runtime._distinct import dict_get, dict_set, reraise_key_type_error
 from ..sync_ops import close_iterators
 
 
@@ -93,7 +93,7 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle mutation boundari
             # after lookup so the cache does not extend that transient hook's life.
             try:
                 (hooks.namespace["hash"] if "hash" in hooks.namespace else hash)(key)  # noqa: SIM401
-                entry = groups.get(key)
+                entry = dict_get(groups, key, None)
             except TypeError:
                 reraise_key_type_error(key, "group_by keys must be hashable")
             live_revision = collector._lifecycle_revision
@@ -109,7 +109,7 @@ def _execute_single_collector_group(  # noqa: C901 - lifecycle mutation boundari
                 live_revision = collector._lifecycle_revision
                 if live_revision != revision:
                     revision, initializer, step, done = _single_collector_lifecycle(collector)
-                groups[key] = entry
+                dict_set(groups, key, entry)
                 live_revision = collector._lifecycle_revision
                 if live_revision != revision:
                     revision, initializer, step, done = _single_collector_lifecycle(collector)
@@ -179,12 +179,12 @@ def execute_collector_group(
             key = node.select_key(row)
             try:
                 (hooks.namespace["hash"] if "hash" in hooks.namespace else hash)(key)  # noqa: SIM401
-                entry = groups.get(key)
+                entry = dict_get(groups, key, None)
             except TypeError:
                 reraise_key_type_error(key, "group_by keys must be hashable")
             if entry is None:
                 state = program.initialize()
-                groups[key] = (key, state)
+                dict_set(groups, key, (key, state))
                 if instrumented:
                     hit("group.state.create.after")
             else:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import gc
 import math
 import signal
 import sys
 import traceback
+import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any
@@ -161,67 +163,39 @@ def test_compiled_numpy_mean_revalidates_statistics_globals(
     )
 
 
-@pytest.mark.parametrize("changed_dtype", ["int32", ">i8"])
-def test_compiled_numpy_global_mean_revalidates_live_dtype(
-    changed_dtype: str,
-) -> None:
-    """A retained matrix must still satisfy the planner's exact mean layout at execution."""
-    import warnings
-
+@pytest.mark.parametrize(
+    ("changed_dtype", "extrema"), [("int32", False), (">i8", False), ("float64", True)]
+)
+def test_compiled_numpy_aggregates_revalidate_live_dtype(changed_dtype: str, extrema: bool) -> None:
+    """Retained plans recheck dtype, including Python extrema semantics after float mutation."""
     np = pytest.importorskip("numpy")
     from fpstreams.execution.physical import execute_physical
     from fpstreams.planning.compiler import compile_query
 
     matrix = np.arange(32, dtype=np.int64).reshape(-1, 1)
     source = fpstreams.rows.from_numpy(matrix, columns=("value",))
-    automatic = source.aggregate(
-        total=fpstreams.agg.sum("value"),
-        mean=fpstreams.agg.mean("value"),
+    collectors = (
+        {"low": fpstreams.agg.min("value"), "high": fpstreams.agg.max("value")}
+        if extrema
+        else {"total": fpstreams.agg.sum("value"), "mean": fpstreams.agg.mean("value")}
     )
-    canonical = source.with_engine("python").aggregate(
-        total=fpstreams.agg.sum("value"),
-        mean=fpstreams.agg.mean("value"),
-    )
+    automatic = source.aggregate(**collectors)
+    canonical = source.with_engine("python").aggregate(**collectors)
     automatic_plan = compile_query(automatic._flow._query("list"))
     canonical_plan = compile_query(canonical._flow._query("list"))
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         matrix.dtype = np.dtype(changed_dtype)
-        matrix.shape = (-1, 1)
+        if not extrema:
+            matrix.shape = (-1, 1)
+    if extrema:
+        matrix[:4, 0] = [1.0, np.nan, -0.0, 2.0]
+        matrix[4:, 0] = 1.0
 
-    assert list(execute_physical(automatic_plan)) == list(execute_physical(canonical_plan))
-
-
-def test_compiled_numpy_integer_extrema_revalidate_float_dtype() -> None:
-    """Integer min/max lanes must deopt instead of acquiring NumPy's NaN semantics."""
-    import warnings
-
-    np = pytest.importorskip("numpy")
-    from fpstreams.execution.physical import execute_physical
-    from fpstreams.planning.compiler import compile_query
-
-    matrix = np.arange(32, dtype=np.int64).reshape(-1, 1)
-    source = fpstreams.rows.from_numpy(matrix, columns=("value",))
-    automatic = source.aggregate(
-        low=fpstreams.agg.min("value"),
-        high=fpstreams.agg.max("value"),
-    )
-    canonical = source.with_engine("python").aggregate(
-        low=fpstreams.agg.min("value"),
-        high=fpstreams.agg.max("value"),
-    )
-    automatic_plan = compile_query(automatic._flow._query("list"))
-    canonical_plan = compile_query(canonical._flow._query("list"))
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        matrix.dtype = np.float64
-    matrix[:4, 0] = [1.0, np.nan, -0.0, 2.0]
-    matrix[4:, 0] = 1.0
-
-    expected = [{"low": -0.0, "high": 2.0}]
-    assert list(execute_physical(canonical_plan)) == expected
+    expected = list(execute_physical(canonical_plan))
+    if extrema:
+        assert expected == [{"low": -0.0, "high": 2.0}]
     assert list(execute_physical(automatic_plan)) == expected
 
 
@@ -264,7 +238,6 @@ def test_numpy_global_endpoint_probe_does_not_observe_live_callable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Internal Rust endpoint validation must not expose a new builtin callback boundary."""
-    import builtins
 
     np = pytest.importorskip("numpy")
     from fpstreams import _native
@@ -1003,9 +976,27 @@ def test_numpy_identity_sinks_deopt_on_free_threaded_python(
     assert execution.report.strategy == "planned:python"
 
 
-@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires POSIX interval timers")
-def test_numpy_direct_row_paths_deopt_while_an_interval_timer_is_active() -> None:
-    """Identity, safe-prefix, and grouped sinks share one conservative timer gate."""
+@pytest.mark.parametrize(
+    ("active_timer", "strategy"),
+    [
+        pytest.param(
+            True,
+            "planned:python",
+            marks=pytest.mark.skipif(
+                not hasattr(signal, "setitimer"), reason="requires POSIX interval timers"
+            ),
+        ),
+        pytest.param(
+            False,
+            "numpy_direct",
+            marks=pytest.mark.skipif(
+                not hasattr(signal, "SIGUSR1"), reason="requires a user signal"
+            ),
+        ),
+    ],
+)
+def test_numpy_direct_row_paths_respect_signal_state(active_timer: bool, strategy: str) -> None:
+    """Active timers deopt all three sinks; an unrelated idle handler leaves them columnar."""
     np = pytest.importorskip("numpy")
 
     source = fpstreams.rows.from_numpy(
@@ -1017,55 +1008,25 @@ def test_numpy_direct_row_paths_deopt_while_an_interval_timer_is_active() -> Non
         source.where(fpstreams.col("value") >= 2).select("key"),
         source.group_by("key").aggregate(total=fpstreams.agg.sum("value")),
     )
-    previous_timer = signal.getitimer(signal.ITIMER_REAL)
-    signal.setitimer(signal.ITIMER_REAL, 60.0)
+    if active_timer:
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        signal.setitimer(signal.ITIMER_REAL, 60.0)
+    else:
+        previous_handler = signal.signal(signal.SIGUSR1, lambda *_arguments: None)
     try:
         executions = tuple(query.run_with_report("to_list") for query in queries)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        if active_timer:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        else:
+            signal.signal(signal.SIGUSR1, previous_handler)
 
     assert [execution.value for execution in executions] == [
         [{"key": 1, "value": 2}, {"key": 1, "value": 3}],
         [{"key": 1}, {"key": 1}],
         [{"key": 1, "total": 5}],
     ]
-    assert [execution.report.strategy for execution in executions] == [
-        "planned:python",
-        "planned:python",
-        "planned:python",
-    ]
-
-
-@pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="requires a user signal")
-def test_numpy_direct_row_paths_ignore_an_idle_custom_signal_handler() -> None:
-    """Installing an unrelated handler alone must not disable columnar execution."""
-    np = pytest.importorskip("numpy")
-
-    source = fpstreams.rows.from_numpy(
-        np.asarray([[1, 2], [1, 3]], dtype=np.int64),
-        columns=("key", "value"),
-    )
-    queries = (
-        source,
-        source.where(fpstreams.col("value") >= 2).select("key"),
-        source.group_by("key").aggregate(total=fpstreams.agg.sum("value")),
-    )
-    previous_handler = signal.signal(signal.SIGUSR1, lambda *_arguments: None)
-    try:
-        executions = tuple(query.run_with_report("to_list") for query in queries)
-    finally:
-        signal.signal(signal.SIGUSR1, previous_handler)
-
-    assert [execution.value for execution in executions] == [
-        [{"key": 1, "value": 2}, {"key": 1, "value": 3}],
-        [{"key": 1}, {"key": 1}],
-        [{"key": 1, "total": 5}],
-    ]
-    assert [execution.report.strategy for execution in executions] == [
-        "numpy_direct",
-        "numpy_direct",
-        "numpy_direct",
-    ]
+    assert [execution.report.strategy for execution in executions] == [strategy] * 3
 
 
 def test_identity_numpy_to_list_reports_its_real_direct_strategy() -> None:
@@ -1178,7 +1139,6 @@ def test_identity_numpy_to_list_declines_python_operations_and_failpoints() -> N
 @pytest.mark.parametrize("name", ["min", "max"])
 def test_numpy_identity_rows_keep_internal_extrema_stable(name: str) -> None:
     """Batch bounds use canonical helpers that the Python row source never resolves."""
-    import builtins
 
     np = pytest.importorskip("numpy")
     rows = fpstreams.rows.from_numpy(
@@ -1630,47 +1590,23 @@ def test_flow_from_numpy_i64_supports_exact_native_full_scan_terminals() -> None
     assert captured.value is failure
 
 
+@pytest.mark.parametrize(
+    "engine", [None, "auto", "native"], ids=["identity", "auto-map", "native-map"]
+)
 @pytest.mark.parametrize("dtype", ["int64", "float64"])
-def test_flow_from_numpy_terminal_planning_classifies_buffer_once(
+def test_flow_from_numpy_planning_classifies_buffer_once(
     monkeypatch: pytest.MonkeyPatch,
-    dtype: str,
-) -> None:
-    """One engine decision should not repeatedly revalidate one retained buffer."""
-    np = pytest.importorskip("numpy")
-    from fpstreams.planning import native
-
-    pipeline = fpstreams.flow.from_numpy(np.arange(32, dtype=dtype))
-    original = native._numpy_buffer_kind
-    calls = 0
-
-    def counted_buffer_kind(source: object) -> object:
-        nonlocal calls
-        calls += 1
-        return original(source)
-
-    monkeypatch.setattr(native, "_numpy_buffer_kind", counted_buffer_kind)
-
-    decision = native.select_terminal_engine(pipeline._pipeline, "sum")
-
-    assert decision.engine == "native"
-    assert calls == 1
-
-
-@pytest.mark.parametrize("engine", ["auto", "native"])
-@pytest.mark.parametrize("dtype", ["int64", "float64"])
-def test_flow_from_numpy_operation_planning_classifies_buffer_once(
-    monkeypatch: pytest.MonkeyPatch,
-    engine: str,
+    engine: str | None,
     dtype: str,
 ) -> None:
     """A fused decision should reuse its validated buffer kind throughout planning."""
     np = pytest.importorskip("numpy")
     from fpstreams.planning import native
 
-    expression = fpstreams.item + 1 if dtype == "int64" else fpstreams.fitem + 1.0
-    pipeline = (
-        fpstreams.flow.from_numpy(np.arange(32, dtype=dtype)).map(expression).with_engine(engine)
-    )
+    pipeline = fpstreams.flow.from_numpy(np.arange(32, dtype=dtype))
+    if engine is not None:
+        expression = fpstreams.item + 1 if dtype == "int64" else fpstreams.fitem + 1.0
+        pipeline = pipeline.map(expression).with_engine(engine)
     original = native._numpy_buffer_kind
     calls = 0
 
@@ -3063,7 +2999,6 @@ def test_numpy_group_keeps_internal_list_checks_stable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An implementation-only list lookup must not change public grouped results or routing."""
-    import builtins
 
     np = pytest.importorskip("numpy")
     maximum = 2**63 - 1
@@ -3744,7 +3679,6 @@ def test_numpy_row_prefix_conjunction_preserves_reachable_missing_rhs(
 
 def test_numpy_row_prefix_rechecks_filter_dtype_at_execution_boundary() -> None:
     """A retained dtype changed after compilation must deopt before NumPy comparison."""
-    import warnings
 
     np = pytest.importorskip("numpy")
     from fpstreams.execution.numpy_prefix import try_numpy_prefix_list
@@ -4149,7 +4083,6 @@ def test_numpy_row_prefix_preserves_live_matrix_boundaries(
     action: str,
 ) -> None:
     """Each bounded prefix chunk revalidates live length, width, dimensions, and dtype."""
-    import warnings
 
     np = pytest.importorskip("numpy")
     from fpstreams.execution import numpy_prefix
@@ -4282,7 +4215,6 @@ def test_numpy_group_deopts_before_replaced_hash_is_observed(
     replacement: str,
 ) -> None:
     """Columnar grouping cannot bypass either dynamic lookup tier of canonical hash()."""
-    import builtins
 
     np = pytest.importorskip("numpy")
     from fpstreams.execution import relational

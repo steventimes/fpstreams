@@ -10,6 +10,7 @@ from typing import Any, Literal, NoReturn, TypeAlias, cast
 
 from ..errors import SelectionError
 from ..expressions.selectors import Selector, _normalize_direct_row_selector, compile_selector
+from ..runtime._distinct import dict_get, dict_set
 from ..runtime.iterators import close_iterators
 from .records import _as_record, _remember_columns
 
@@ -465,9 +466,9 @@ def _join_record_index(
                 else select(row)
             )
             _remember_columns(record, columns, seen_columns)
-            position = index.get(key)
+            position = dict_get(index, key, None)
             if position is None:
-                index[key] = len(slots)
+                dict_set(index, key, len(slots))
                 slots.append(record)
                 if instrumented:
                     hit("join.build.insert.after")
@@ -528,9 +529,9 @@ def _join_position_index(
             position = len(records)
             records.append(record)
             _remember_columns(record, columns, seen_columns)
-            positions = index.get(key)
+            positions = dict_get(index, key, None)
             if positions is None:
-                index[key] = [position]
+                dict_set(index, key, [position])
             elif unique:
                 raise ValueError(
                     f"join validate={validate!r} requires unique right keys; "
@@ -791,7 +792,7 @@ def execute_left_join(  # noqa: C901 - keep guarded record snapshots inline in t
             )
             if seen_left is not None:
                 _check_unique_key(seen_left, key, validate=validate, side="left")
-            position = record_index.get(key)
+            position = dict_get(record_index, key, None)
             if position is not None:
                 record_match = record_slots[position]
                 plan = (
@@ -910,7 +911,7 @@ def execute_right_or_full_join(
     )
     matched_right = bytearray(len(right_records))
     for left, key in left_records:
-        position_matches = position_index.get(key, ())
+        position_matches = dict_get(position_index, key, ())
         if position_matches:
             for right_position in position_matches:
                 matched_right[right_position] = 1

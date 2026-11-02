@@ -33,8 +33,11 @@ for batch and executor examples. The
 [roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
 lists the next optimization candidates and their acceptance criteria.
 
-Version [2.5.0](CHANGELOG.md#250) includes a static averaging type correction
-with an explicit migration path. It adds
+Version 2.5.0 preserves custom-key hash errors in per-key reductions, Pair
+collection, and in-memory Python joins and grouping on Python 3.14 and 3.15.
+
+The [2.5.0 changes](CHANGELOG.md#250) include a static averaging type correction
+with an explicit migration path. This version adds
 [typed asynchronous folds](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
 [explicit averaging operations](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250),
 and an opt-in [strict lookup policy for null filtering](fpstreams/docs/reference/rows.md#null-filtering-and-lookup-failures-250).
@@ -44,7 +47,7 @@ for migration examples and [contributor checks](CONTRIBUTING.md#run-the-checks) 
 
 ## Install
 
-Install the latest stable release:
+Install fpstreams from PyPI:
 
 ~~~bash
 python -m pip install fpstreams
@@ -139,9 +142,8 @@ standard Arrow/dataframe protocol routing, retained NumPy execution, and new
 async queue, prefetch, window, and numeric terminal APIs. See the
 [changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for the release summary.
 
-The source CI matrix targets standard CPython 3.11 through 3.15. Python 3.15
-compatibility is included in 2.5.0; the 2.4.1 release matrix covered
-3.11 through 3.14. Free-threaded CPython 3.14t and 3.15t are included in an
+The CI matrix targets standard CPython 3.11 through 3.15.
+Free-threaded CPython 3.14t and 3.15t are included in an
 experimental, non-blocking CI matrix that builds the native extension and checks
 core concurrency contracts. These builds are not release-wheel targets;
 optional adapter compatibility is outside this matrix.
@@ -456,9 +458,9 @@ The [Flow](fpstreams/docs/reference/flow.md#reduce-types),
 and [Collector](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250)
 references describe entry points, typed reductions, and migration contracts.
 An independently supplied fpstreams usage skill must match the installed library
-version and its API documentation. The local 2.5.0 candidate skill is separate
-from the PyPI wheel and sdist; neither a package install nor its presence in a
-checkout registers it with an agent. Released 2.4.1 does not include that skill.
+version and its API documentation. The skill is distributed separately from
+the PyPI wheel and sdist. Neither a package install nor its presence in a
+checkout registers it with an agent.
 
 ## v1 compatibility
 

@@ -1321,7 +1321,7 @@ def test_ci_smoke_selection_covers_cache_coordination_and_cleanup(job: str) -> N
         assert sum(node.startswith(separate_traversal) for node in selected) == 2
         assert (
             "tests/streams/test_async.py::"
-            "test_async_root_cleanup_continues_without_retaining_closed_source"
+            "test_async_root_cleanup_continues_without_retaining_closed_source[append]"
         ) in selected
         sync_controls = (
             "tests/streams/test_async.py::"

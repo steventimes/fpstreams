@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import io
 import json
 from collections.abc import Iterator, Sequence
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 import pytest
 
@@ -399,7 +401,6 @@ def test_text_opener_close_failure_is_a_note_on_the_parse_error(
 
 def test_scan_csv_is_reusable_typed_and_keeps_from_csv_string_semantics(tmp_path: Path) -> None:
     """The Arrow scanner is explicit, so the established CSV adapter stays compatible."""
-    import pyarrow.csv as pacsv
 
     path = tmp_path / "typed.csv"
     path.write_text("id,name,active\n1,Ada,true\n2,Lin,false\n", encoding="utf-8")
@@ -602,7 +603,6 @@ def test_scan_csv_closes_early_terminal_and_projected_streams(
 
 def test_scan_csv_does_not_repeat_invalid_row_callbacks_for_projection(tmp_path: Path) -> None:
     """Projection retains one typed scan and calls each invalid-row callback once."""
-    import pyarrow.csv as pacsv
 
     path = tmp_path / "invalid.csv"
     path.write_text("id,value\n1,one\n2,two,extra\n3,three\n", encoding="utf-8")
@@ -626,7 +626,6 @@ def test_scan_csv_does_not_repeat_invalid_row_callbacks_for_projection(tmp_path:
 
 def test_scan_csv_parse_options_mutation_cannot_enable_duplicate_callbacks(tmp_path: Path) -> None:
     """A supplied mutable ParseOptions keeps the query on the one-open batch projection path."""
-    import pyarrow.csv as pacsv
 
     path = tmp_path / "mutable-invalid.csv"
     path.write_text("id,value\n1,one\n2,two,extra\n3,three\n", encoding="utf-8")
@@ -646,7 +645,6 @@ def test_scan_csv_parse_options_mutation_cannot_enable_duplicate_callbacks(tmp_p
 
 def test_scan_csv_keeps_arrow_empty_ragged_and_missing_column_contracts(tmp_path: Path) -> None:
     """The typed scanner intentionally exposes Arrow's stricter structural CSV semantics."""
-    import pyarrow.csv as pacsv
 
     empty = tmp_path / "empty.csv"
     empty.write_bytes(b"")
@@ -706,7 +704,6 @@ def test_borrowed_jsonl_signature_is_only_consumed_at_stream_start(
     tmp_path, source_kind, record_limit, signature_after
 ) -> None:
     """Binary and text path readers agree on UTF-8 signatures and handle ownership."""
-    import codecs
 
     first = b'{"id":1}\n'
     if signature_after == "start":
@@ -901,7 +898,6 @@ def test_borrowed_wide_jsonl_requires_explicit_byte_order_without_bom(
     tmp_path, codec, byte_order, source_kind, record_limit
 ) -> None:
     """Generic stream codecs require signatures; explicit byte-order codecs need none."""
-    import codecs
 
     encoding = f"{codec}-{byte_order}"
     payload = '{"id":1}\n'.encode(encoding)

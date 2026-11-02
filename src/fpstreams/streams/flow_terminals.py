@@ -80,7 +80,7 @@ from ..planning.source import _function_code as _function_code_no_audit
 from ..planning.sync import DropOp, Operation, SortOp, TakeOp
 from ..primitives.result import Err, Ok
 from ..runtime import failpoints as _failpoints
-from ..runtime._distinct import reraise_key_type_error
+from ..runtime._distinct import dict_get, dict_set, reraise_key_type_error
 from ..runtime.failpoints import has_active_failpoints
 from ..runtime.iterators import closing_iterators
 from ..runtime.report import (
@@ -2270,12 +2270,12 @@ class FlowTerminalsMixin(Generic[T]):
             for item in iterator:
                 group = select(item)
                 try:
-                    state = states.get(group, missing)
+                    state = dict_get(states, group, missing)
                 except TypeError:
                     reraise_key_type_error(group, "reduce_by() keys must be hashable")
                 if state is missing:
                     state = initializer()
-                states[group] = function(state, item)
+                dict_set(states, group, function(state, item))
         return states
 
     fold_by = reduce_by
@@ -2327,14 +2327,13 @@ class FlowTerminalsMixin(Generic[T]):
                 return _update_identity_frequency_counts(iterator, {})
 
             counts: dict[Any, int] = {}
-            get_count = counts.get
             for item in iterator:
                 selected = select(item)
                 try:
-                    count = get_count(selected, 0)
+                    count = dict_get(counts, selected, 0)
                 except TypeError:
                     reraise_key_type_error(selected, "reduce_by() keys must be hashable")
-                counts[selected] = count + 1
+                dict_set(counts, selected, count + 1)
             return counts
 
     count_by = frequencies

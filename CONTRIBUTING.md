@@ -7,6 +7,8 @@ easier to review and safer to release than broad rewrites.
 
 Python 3.11 or newer, Rust, and [uv](https://docs.astral.sh/uv/) are required for
 the complete development environment.
+Use a complete Python installation with the standard-library `_ctypes` and
+`_contextvars` modules. Native Rust tests embed this interpreter.
 
 ```bash
 uv sync --extra arrow --extra data --extra polars --extra sketch \
@@ -23,8 +25,7 @@ use prebuilt wheels. The base library and other checks remain available without 
 
 - Keep public behavior compatible within the current major release line. Describe
   intentional incompatibilities and migration paths in the changelog. The 2.5.0
-  release includes the documented static averaging type correction.
-  A local build alone does not establish publication.
+  changes include the documented static averaging type correction.
 - Preserve ordering, object identity, errors, source ownership, and cleanup when
   adding an optimized path. Unsupported shapes must retain the canonical fallback.
 - Keep modules organized by one clear responsibility. Prefer an existing domain
