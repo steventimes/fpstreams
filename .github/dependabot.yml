@@ -1,11 +1,13 @@
 version: 2
 updates:
   - package-ecosystem: npm
+    open-pull-requests-limit: 0
     directory: /tests/typing
     schedule:
       interval: monthly
 
   - package-ecosystem: uv
+    open-pull-requests-limit: 0
     directory: /
     schedule:
       interval: monthly
@@ -15,6 +17,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: cargo
+    open-pull-requests-limit: 0
     directory: /rust
     schedule:
       interval: monthly
@@ -24,6 +27,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: github-actions
+    open-pull-requests-limit: 0
     directory: /
     schedule:
       interval: monthly
