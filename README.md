@@ -23,28 +23,6 @@ work, and explicit resource cleanup.
 
 Python 3.11 or newer is required.
 
-[Version 2.4.1](https://github.com/steventimes/fpstreams/releases/tag/v2.4.1)
-reorganizes planner and execution internals with no public API changes.
-Version 2.4.0 added stateful pipeline operations, composed aggregation, shared execution
-limits, file recovery, and versioned execution metadata. See the
-[changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for its scope and the
-[performance guide](https://steventimes.github.io/fpstreams/user-guide/performance/#process-mapping-and-explicit-batches)
-for batch and executor examples. The
-[roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
-lists the next optimization candidates and their acceptance criteria.
-
-Version 2.5.0 preserves custom-key hash errors in per-key reductions, Pair
-collection, and in-memory Python joins and grouping on Python 3.14 and 3.15.
-
-The [2.5.0 changes](CHANGELOG.md#250) include a static averaging type correction
-with an explicit migration path. This version adds
-[typed asynchronous folds](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-250),
-[explicit averaging operations](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250),
-and an opt-in [strict lookup policy for null filtering](fpstreams/docs/reference/rows.md#null-filtering-and-lookup-failures-250).
-These APIs are not in 2.4.1. `Flow.reduce` still returns `Any` to type checkers,
-including with an annotated callback. See the [reduce guide](fpstreams/docs/reference/flow.md#reduce-types)
-for migration examples and [contributor checks](CONTRIBUTING.md#run-the-checks) for validation.
-
 ## Install
 
 Install fpstreams from PyPI:
@@ -136,11 +114,6 @@ options when the input may not fit in memory.
   native Rust kernels for supported scalar plans and guarded relational
   subpaths, and hybrid execution when only part of a plan is native.
 - Configured memory and output limits for external sort and partitioned joins/grouping.
-
-Version 2.1 adds execution reports, direct record operations from `flow()`,
-standard Arrow/dataframe protocol routing, retained NumPy execution, and new
-async queue, prefetch, window, and numeric terminal APIs. See the
-[changelog](https://github.com/steventimes/fpstreams/blob/master/CHANGELOG.md) for the release summary.
 
 The CI matrix targets standard CPython 3.11 through 3.15.
 Free-threaded CPython 3.14t and 3.15t are included in an
@@ -350,30 +323,28 @@ assert python_result == native_result == [2, 4, 6]
 
 Use `run_with_report()` to get a terminal's value, recorded route, and query-owned
 resource counts in one execution. Pairs supports terminals such as
-`flow([("a", 1)]).pairs().run_with_report("group_values")`. Version 2.4.0 also
-includes up to 64 child plan and route observations in `report.events`. See the
+`flow([("a", 1)]).pairs().run_with_report("group_values")`.
+Reports include up to 64 child plan and route observations in `report.events`. See the
 [execution report guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/)
 for supported terminals and the limits of route reporting.
 
-In 2.4.0, `report.to_dict()` exports versioned metadata with metric units,
+`report.to_dict()` exports versioned metadata with metric units,
 resource scope, and event limits. It excludes the terminal value and does not
 rerun the query. See the
 [metadata export guide](https://steventimes.github.io/fpstreams/user-guide/execution-reports/#metadata-export-unreleased)
-for JSON storage and caller-managed OpenLineage integration. Report export
-requires 2.4.0 or newer.
+for JSON storage and caller-managed OpenLineage integration.
 
-Version 2.4.0 also includes `BoundedExecutor` for a shared submission limit
-across queries and `FileCheckpoint` for verified file-partition recovery. See
+Use `BoundedExecutor` for a shared submission limit across queries and
+`FileCheckpoint` for verified file-partition recovery. See
 the [resource controls](https://steventimes.github.io/fpstreams/user-guide/performance/#share-a-submission-budget-unreleased)
 and [file-partition recipe](https://steventimes.github.io/fpstreams/user-guide/analytics/#resume-file-partitions-unreleased)
-for ownership, memory, and retry semantics. These additions require 2.4.0 or newer.
+for ownership, memory, and retry semantics.
 
-In 2.4.0, `flow.unfold` / `aflow.unfold` generate values from explicit state
+`flow.unfold` / `aflow.unfold` generate values from explicit state
 transitions. `Flow.map_accum` and `AsyncFlow.map_accum` update state while mapping
 each input to one output. See the
 [state examples](https://steventimes.github.io/fpstreams/reference/flow/#state-driven-generation-and-mapping-unreleased)
-for termination, tuple ordering, and mutable-state ownership. These APIs require
-2.4.0 or newer.
+for termination, tuple ordering, and mutable-state ownership.
 
 A forced native plan raises `NativeUnsupportedError` if its complete types or
 operations cannot run natively. In particular, the presence of an internal
@@ -447,9 +418,23 @@ fpstreams includes inline type annotations, docstrings, and the `py.typed` marke
 Select the Python interpreter where fpstreams is installed in your editor to get
 method completions, parameter hints, and hover documentation.
 
-Version 2.2.1 fixes `rows` factory completion and keeps core
-iterable element types when optional data adapters are absent. For example,
+Core iterable element types are preserved when optional data adapters are absent. For example,
 `flow([1, 2, 3])` is inferred as `Flow[int]`.
+
+### Type contracts and migration
+
+`Flow.reduce()` returns `Any` to type checkers, even with an annotated callback.
+The [reduce guide](fpstreams/docs/reference/flow.md#reduce-types) shows typed accumulator alternatives,
+including [asynchronous folds](fpstreams/docs/reference/async_flow.md#explicit-asynchronous-accumulator-contract-250).
+
+The result of collecting with `Collectors.averaging()` is typed as `object`. Use the
+[explicit averaging contracts](fpstreams/docs/reference/collecting.md#explicit-averaging-operations-250)
+when a caller needs a specific result type. See the [2.5.0 migration notes](CHANGELOG.md#250)
+before updating existing type-checked code.
+
+Release history and compatibility changes are in the [changelog](CHANGELOG.md).
+The [roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
+lists development candidates and their acceptance criteria.
 
 ## Coding-agent guidance
 
@@ -487,7 +472,7 @@ uv run coverage report
 uv run ruff check src tests scripts
 uv run ruff format --check src tests scripts
 uv run mypy src/fpstreams
-cargo test --manifest-path rust/Cargo.toml
+uv run --no-sync cargo test --manifest-path rust/Cargo.toml
 uv run python scripts/build_browser_wheel.py
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 ~~~
