@@ -9172,7 +9172,11 @@ requested.</p>
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">compact</span><span class="p">(</span><span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">compact</span><span class="p">(</span><span class="n">selector</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">U</span><span class="p">]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">compact</span><span class="p">(</span><span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">compact</span><span class="p">(</span><span class="n">selector</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Flow</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -9223,12 +9227,13 @@ value is checked for <code>None</code>; without one, each item is checked direct
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="fpstreams.streams.flow.T">T</span>]</code>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.Flow (fpstreams.streams.flow.Flow)" href="#fpstreams.Flow">Flow</a>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>A flow excluding items whose own or selected value is <code>None</code>. Other falsey
-values, such as <code>0</code> and <code>False</code>, are kept.</p>
+values, such as <code>0</code> and <code>False</code>, are kept. Without a selector, an optional
+item type is narrowed; non-optional item types remain unchanged.</p>
               </div>
             </td>
           </tr>

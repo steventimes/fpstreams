@@ -886,6 +886,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bounded-ranking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded ranking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#methods" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1122,6 +1133,28 @@
     <span class="md-ellipsis">
       
         aggregate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.top" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        top
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.bottom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bottom
       
     </span>
   </a>
@@ -2424,6 +2457,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bounded-ranking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded ranking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#methods" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2660,6 +2704,28 @@
     <span class="md-ellipsis">
       
         aggregate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.top" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        top
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fpstreams.AsyncFlow.bottom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bottom
       
     </span>
   </a>
@@ -3920,6 +3986,15 @@ retain the first item encountered.</p>
 </code></pre></div>
 <p>The extreme-value terminals raise <code>EmptyFlowError</code> on an empty source. <code>sum</code> returns <code>start</code> for an
 empty source. Exceptions and cancellation close the owned upstream iterator before propagating.</p>
+<h2 id="bounded-ranking">Bounded ranking</h2>
+<p><code>top(count, key=...)</code> and <code>bottom(count, key=...)</code> return up to <code>count</code> original items in
+descending or ascending key order. They retain at most <code>count</code> items, preserve encounter order for
+equal keys, and evaluate the synchronous selector once per consumed item. A zero count returns an
+empty list without pulling the source or calling the selector.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">ranked</span> <span class="o">=</span> <span class="k">await</span> <span class="n">aflow</span><span class="p">(</span><span class="n">events</span><span class="p">)</span><span class="o">.</span><span class="n">top</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;metrics.latency_ms&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>The selector follows the same rules as <code>agg.top</code> and <code>agg.bottom</code>. Source and selector errors close
+the owned async iterator before propagating.</p>
 <h2 id="methods">Methods</h2>
 
 
@@ -5565,6 +5640,60 @@ containing the entire consumed flow.</p>
           </tr>
       </tbody>
     </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncFlow.top" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">top</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">top</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return up to <code>count</code> items in descending key order using bounded state.</p>
+<p>Equal keys keep their encounter order. The optional selector is synchronous and
+follows the same rules as <code>agg.top</code>; zero count does not pull the source or call it.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="fpstreams.AsyncFlow.bottom" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">bottom</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">bottom</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="n">Selector</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return up to <code>count</code> items in ascending key order using bounded state.</p>
+<p>Equal keys keep their encounter order. The optional selector is synchronous and
+follows the same rules as <code>agg.bottom</code>; zero count does not pull the source or call it.</p>
 
 
     </div>
@@ -9555,7 +9684,11 @@ a selector, this drops <code>None</code>, <code>0</code>, <code>False</code>, an
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">filter_none</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">AsyncFlow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">filter_none</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">AsyncFlow</span><span class="p">[</span><span class="n">U</span><span class="p">]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">filter_none</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">AsyncFlow</span><span class="p">[</span><span class="n">T</span><span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">filter_none</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">AsyncFlow</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -9574,11 +9707,21 @@ a selector, this drops <code>None</code>, <code>0</code>, <code>False</code>, an
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="fpstreams.streams.async_flow.T">T</span>]</code>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="typing.Any">Any</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>An async flow containing every non-<code>None</code> source item.</p>
+                <p>An async flow containing every non-<code>None</code> source item. An optional item type is</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="fpstreams.AsyncFlow (fpstreams.streams.async_flow.AsyncFlow)" href="#fpstreams.AsyncFlow">AsyncFlow</a>[<span title="typing.Any">Any</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>narrowed; a non-optional item type remains unchanged.</p>
               </div>
             </td>
           </tr>

@@ -7,16 +7,23 @@ let activeId = null;
 let namespace = null;
 
 async function initialize() {
-  self.postMessage({ type: "status", message: "Loading CPython 3.14 and WebAssembly…" });
+  self.postMessage({
+    type: "status",
+    message: "Loading CPython 3.14 and WebAssembly…",
+  });
   const pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX });
 
-  self.postMessage({ type: "status", message: "Loading the fpstreams browser wheel…" });
+  self.postMessage({
+    type: "status",
+    message: "Loading the fpstreams browser wheel…",
+  });
   const response = await fetch(manifestUrl);
   if (!response.ok) {
     throw new Error(`Browser wheel manifest returned HTTP ${response.status}.`);
   }
   const manifest = await response.json();
-  const wheelUrl = new URL(`../packages/${manifest.wheel}`, import.meta.url).href;
+  const wheelUrl = new URL(`../packages/${manifest.wheel}`, import.meta.url)
+    .href;
   await pyodide.loadPackage("micropip");
   pyodide.globals.set("_fpstreams_wheel_url", wheelUrl);
   await pyodide.runPythonAsync(`
@@ -57,7 +64,9 @@ self.addEventListener("message", async (event) => {
   activeId = payload.id;
   try {
     const pyodide = await pyodidePromise;
-    const value = await pyodide.runPythonAsync(payload.code, { globals: namespace });
+    const value = await pyodide.runPythonAsync(payload.code, {
+      globals: namespace,
+    });
     let rendered = "";
     if (value !== null && value !== undefined) {
       namespace.set("__fpstreams_browser_result__", value);
