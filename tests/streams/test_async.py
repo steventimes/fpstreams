@@ -1828,6 +1828,85 @@ async def test_async_flow_streams_sum_and_extrema_with_selector_parity() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [("top", (3, 0, 1)), ("bottom", (2, 0, 1))],
+)
+async def test_async_ranked_terminals_keep_stable_ties_and_close(
+    terminal: str, expected: tuple[int, ...]
+) -> None:
+    records = [
+        {"name": "first-tie", "score": 5},
+        {"name": "second-tie", "score": 5},
+        {"name": "low", "score": 1},
+        {"name": "high", "score": 9},
+    ]
+    closed = 0
+
+    async def source():
+        nonlocal closed
+        try:
+            for record in records:
+                yield record
+        finally:
+            closed += 1
+
+    selected: list[dict[str, int | str]] = []
+
+    def score(record: dict[str, int | str]) -> int:
+        selected.append(record)
+        return int(record["score"])
+
+    ranked = await getattr(fpstreams.aflow(source()), terminal)(3, key=score)
+    assert [records.index(record) for record in ranked] == list(expected)
+    assert len(selected) == len(records)
+    assert closed == 1
+
+    pulls = 0
+
+    async def untouched_source():
+        nonlocal pulls
+        pulls += 1
+        yield records[0]
+
+    assert await getattr(fpstreams.aflow(untouched_source()), terminal)(0, key=score) == []
+    assert pulls == 0
+    assert len(selected) == len(records)
+
+    with pytest.raises(ValueError, match="count must be non-negative"):
+        await getattr(fpstreams.aflow(untouched_source()), terminal)(-1, key=score)
+    assert pulls == 0
+
+    failure = TypeError("ranking key failed")
+    failed_source_closed = False
+
+    async def failing_source():
+        nonlocal failed_source_closed
+        try:
+            yield records[0]
+            yield records[1]
+        finally:
+            failed_source_closed = True
+
+    def failing_score(record: dict[str, int | str]) -> int:
+        if record is records[1]:
+            raise failure
+        return int(record["score"])
+
+    with pytest.raises(TypeError) as captured:
+        await getattr(fpstreams.aflow(failing_source()), terminal)(2, key=failing_score)
+    assert captured.value is failure
+    assert failed_source_closed
+
+    execution = await fpstreams.aflow(records).run_with_report(terminal, 2, key="score")
+    assert execution.report.terminal == terminal
+    assert fpstreams.aflow(records).explain(terminal).to_dict()["terminal"] == terminal
+    assert [record["name"] for record in execution.value] == (
+        ["high", "first-tie"] if terminal == "top" else ["low", "first-tie"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_async_extrema_close_the_source_on_key_failure_and_cancellation() -> None:
     failure_closed = False
 
@@ -5513,3 +5592,104 @@ async def test_fold_async_step_failure_closes_source_and_preserves_error(failure
         await fpstreams.aflow(source()).fold_async(initial, step).first()
     assert captured.value is failure
     assert events == ["closed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True])
+async def test_async_collect_observes_hooks_across_pull_and_close(named: bool) -> None:
+    events: list[str] = []
+    value = asyncio.get_running_loop().create_future()
+    value.set_result(7)
+
+    def initialize():
+        events.append("initialize")
+        return []
+
+    def before_pull(state):
+        events.append("done-before")
+        return False
+
+    def after_pull(state):
+        events.append(f"done-after:{len(state)}")
+        return bool(state)
+
+    def step(state, item):
+        events.append("step")
+        state.append(item)
+        return state
+
+    def finish(state):
+        events.append("finish")
+        return state
+
+    collector = fpstreams.Collector(initialize, lambda state, item: state, done=before_pull)
+
+    async def source():
+        try:
+            events.append("pull")
+            await asyncio.sleep(0)
+            object.__setattr__(collector, "done", after_pull)
+            object.__setattr__(collector, "step", step)
+            yield value
+            raise AssertionError("completed collector must not pull again")
+        finally:
+            events.append("close")
+            object.__setattr__(collector, "finish", finish)
+
+    stream = fpstreams.aflow(source())
+    result = await stream.collect(result=collector) if named else await stream.collect(collector)
+    items = result["result"] if named else result
+    assert items == [value]
+    assert items[0] is value
+    assert events == [
+        "initialize",
+        "done-before",
+        "pull",
+        "done-after:0",
+        "step",
+        "done-after:1",
+        "close",
+        "finish",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hook", ["done", "step", "close", "finish", "stop"])
+async def test_async_single_collect_preserves_lifecycle_error_identity(hook: str) -> None:
+    failure = StopIteration(hook) if hook == "stop" else ValueError(hook)
+    events: list[str] = []
+
+    def done(state):
+        if hook in {"done", "stop"} and state:
+            raise failure
+        return False
+
+    def step(state, value):
+        if hook == "step":
+            raise failure
+        return state + value
+
+    def finish(state):
+        events.append("finish")
+        if hook == "finish":
+            raise failure
+        return state
+
+    async def source():
+        try:
+            yield 1
+        finally:
+            events.append("close")
+            if hook == "close":
+                raise failure
+
+    with pytest.raises(RuntimeError if hook == "stop" else ValueError) as captured:
+        await fpstreams.aflow(source()).collect(
+            fpstreams.Collector(lambda: 0, step, finish, done=done)
+        )
+    if hook == "stop":
+        assert str(captured.value) == "generator raised StopIteration"
+        assert captured.value.__cause__ is failure
+    else:
+        assert captured.value is failure
+    assert events == (["close", "finish"] if hook == "finish" else ["close"])

@@ -137,6 +137,8 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
             "last",
             "any",
             "all",
+            "top",
+            "bottom",
         }:
             raise ValueError(f"unknown async terminal: {terminal!r}")
         return AsyncPlanExplanation(self._logical_plan, terminal)
@@ -893,11 +895,18 @@ class AsyncFlow(AsyncFlowTerminalsMixin[T], Generic[T]):
         select = bool if selector is None else compile_selector(selector)
         return self.filter(select)
 
-    def filter_none(self) -> AsyncFlow[T]:
+    @overload
+    def filter_none(self: AsyncFlow[U | None]) -> AsyncFlow[U]: ...
+
+    @overload
+    def filter_none(self) -> AsyncFlow[T]: ...
+
+    def filter_none(self) -> AsyncFlow[Any]:
         """Drop only items equal to `None`, retaining every other falsey value.
 
         Returns:
-            An async flow containing every non-`None` source item.
+            An async flow containing every non-`None` source item. An optional item type is
+            narrowed; a non-optional item type remains unchanged.
         """
         return self.filter(lambda item: item is not None)
 

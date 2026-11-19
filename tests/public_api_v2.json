@@ -925,7 +925,7 @@
               "name": "self"
             }
           ],
-          "return": "AsyncFlow[T]"
+          "return": "AsyncFlow[Any]"
         },
         "find": {
           "parameters": [
@@ -3018,6 +3018,70 @@
             }
           ],
           "return": "AsyncFlow[tuple[int, T]]"
+        },
+        "top": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "count"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "list[T]"
+        },
+        "bottom": {
+          "parameters": [
+            {
+              "annotation": null,
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "annotation": "int",
+              "default": {
+                "required": true,
+                "value": null
+              },
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "count"
+            },
+            {
+              "annotation": "Selector | None",
+              "default": {
+                "required": false,
+                "value": null
+              },
+              "kind": "KEYWORD_ONLY",
+              "name": "key"
+            }
+          ],
+          "return": "list[T]"
         }
       },
       "kind": "class",
@@ -4988,7 +5052,7 @@
               "name": "selector"
             }
           ],
-          "return": "Flow[T]"
+          "return": "Flow[Any]"
         },
         "concat": {
           "parameters": [
@@ -5542,7 +5606,7 @@
               "name": "selector"
             }
           ],
-          "return": "Flow[T]"
+          "return": "Flow[Any]"
         },
         "find": {
           "parameters": [

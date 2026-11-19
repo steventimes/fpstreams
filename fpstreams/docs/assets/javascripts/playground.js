@@ -91,18 +91,22 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
   }
 
   function readyMessage(payload) {
-    const engine = !payload.engine || payload.engine === "python"
-      ? "Python engine"
-      : `${payload.engine} engine`;
+    const engine =
+      !payload.engine || payload.engine === "python"
+        ? "Python engine"
+        : `${payload.engine} engine`;
     if (payload.build === "release") {
       return `Release build · fpstreams ${payload.version} · ${engine}`;
     }
     const commit = /^[0-9a-f]{7,64}$/i.test(payload.commit || "")
       ? payload.commit.slice(0, 12)
       : "unknown commit";
-    const changes = payload.dirty === true
-      ? " · local changes"
-      : payload.dirty === false ? "" : " · working tree unknown";
+    const changes =
+      payload.dirty === true
+        ? " · local changes"
+        : payload.dirty === false
+          ? ""
+          : " · working tree unknown";
     return `Development build · fpstreams ${payload.version} · ${commit}${changes} · ${engine}`;
   }
 
@@ -214,9 +218,11 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
   function chooseExample(name) {
     code.value = examples[name];
     for (const button of exampleButtons) {
-      button.setAttribute("aria-pressed", String(button.dataset.example === name));
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.example === name),
+      );
     }
-    code.focus();
   }
 
   runButton.addEventListener("click", runCode);
@@ -240,7 +246,10 @@ await aflow(range(6)).map_async(enrich, concurrency=3).to_list()`,
     }
   });
   for (const button of exampleButtons) {
-    button.addEventListener("click", () => chooseExample(button.dataset.example));
+    button.addEventListener("click", () => {
+      chooseExample(button.dataset.example);
+      code.focus();
+    });
   }
 
   chooseExample("flow");

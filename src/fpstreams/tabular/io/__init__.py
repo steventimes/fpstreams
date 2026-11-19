@@ -137,6 +137,40 @@ def _numpy_matrix_values(
         return _numpy_matrix_values_from_iterator(iterator, selectors)
 
 
+def _arrow_identity_columns(descriptor: Any) -> dict[str, list[Any]]:
+    """Collect retained batches and close their reader after merging columns."""
+    columns: dict[str, list[Any]] = {}
+    row_count = 0
+    batches = descriptor.open_batches()
+    try:
+        for batch in batches:
+            if batch.num_rows == 0:
+                continue
+            converted = cast(dict[str, list[Any]], batch.to_pydict())
+            if row_count == 0:
+                columns = converted
+            else:
+                for name, values in converted.items():
+                    columns[name].extend(values)
+            row_count += batch.num_rows
+    finally:
+        _close(batches)
+    return columns if row_count else {}
+
+
+def _try_arrow_columns(pipeline: Any) -> tuple[bool, dict[str, list[Any]]]:
+    """Convert a complete guarded Arrow prefix, preserving empty Rows output."""
+    if not pipeline.operations:
+        return False, {}
+    from ...execution.arrow import try_arrow_table
+
+    handled, result = try_arrow_table(pipeline, batch_size=65_536)
+    if not handled:
+        return False, {}
+    table = cast(Any, result)
+    return True, cast(dict[str, list[Any]], table.to_pydict()) if table.num_rows else {}
+
+
 class RowsIOMixin(Generic[T]):
     """Collection and streaming sink operations mixed into Rows; calls consume the pipeline."""
 
@@ -152,15 +186,17 @@ class RowsIOMixin(Generic[T]):
         Returns:
             A field-to-list mapping with one aligned entry for every consumed row.
         """
-        from ..rows import Rows
+        from ..rows import Rows, _row_iteration_is_current
 
-        direct_flow = type(self) is Rows and type(self._flow) is Flow
+        direct_flow = (
+            type(self) is Rows and type(self._flow) is Flow and _row_iteration_is_current()
+        )
         if not direct_flow:
             iterator = iter(self)
             with closing_iterators((iterator,)):
                 return _collect_columns(_as_record(row) for row in iterator)
 
-        def collect_python_rows() -> dict[str, list[Any]]:
+        def collect_rows() -> dict[str, list[Any]]:
             return self._flow._consume(
                 lambda iterator: _collect_columns(_as_record(row) for row in iterator)
             )
@@ -169,15 +205,17 @@ class RowsIOMixin(Generic[T]):
             pipeline = self._flow._pipeline
         except TypeError:
             pipeline = None
-        if direct_flow and pipeline is not None:
+        if pipeline is not None:
             from ...execution.numpy_prefix import try_numpy_prefix_columns
 
             handled, numpy_columns = try_numpy_prefix_columns(pipeline)
             if handled:
                 return cast(dict[str, list[Any]], numpy_columns)
+            handled, arrow_columns = _try_arrow_columns(pipeline)
+            if handled:
+                return arrow_columns
         if (
-            direct_flow
-            and pipeline is not None
+            pipeline is not None
             and pipeline.engine == "auto"
             and pipeline.parallel is None
             and not pipeline.operations
@@ -193,7 +231,7 @@ class RowsIOMixin(Generic[T]):
             if isinstance(descriptor, NumpyRowSource):
                 guarded = guarded_numpy_identity_source(pipeline.source)
                 if guarded is None:
-                    return collect_python_rows()
+                    return collect_rows()
                 opened = pipeline.source.open_native(NumpyRowSource)
                 hit("source.open.after")
                 return numpy_identity_columns(opened)
@@ -201,30 +239,14 @@ class RowsIOMixin(Generic[T]):
             from ...planning.arrow.source import ArrowBatchSource
 
             if has_active_failpoints():
-                return collect_python_rows()
+                return collect_rows()
             if (
                 isinstance(descriptor, ArrowBatchSource)
                 and descriptor.materialized_data is not None
             ):
                 pipeline.source.open_native(ArrowBatchSource)
-                columns: dict[str, list[Any]] = {}
-                row_count = 0
-                batches = descriptor.open_batches()
-                try:
-                    for batch in batches:
-                        if batch.num_rows == 0:
-                            continue
-                        converted = cast(dict[str, list[Any]], batch.to_pydict())
-                        if row_count == 0:
-                            columns = converted
-                        else:
-                            for name, values in converted.items():
-                                columns[name].extend(values)
-                        row_count += batch.num_rows
-                finally:
-                    _close(batches)
-                return columns if row_count else {}
-        return collect_python_rows()
+                return _arrow_identity_columns(descriptor)
+        return collect_rows()
 
     def to_pandas(self, *, batch_size: int = 65_536, schema: Any = None) -> Any:
         """Materialize all rows as a pandas DataFrame through bounded Arrow conversion.

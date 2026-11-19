@@ -9,7 +9,8 @@ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, I
 from time import perf_counter_ns
 from typing import Any, Generic, TypeVar, cast, overload
 
-from ..collecting.aggregation import prepare_aggregations
+from ..collecting import collector as _collector_runtime
+from ..collecting.aggregation import agg, prepare_aggregations
 from ..collecting.collector import (
     Collector,
     CollectorItems,
@@ -74,6 +75,8 @@ _REPORTABLE_ASYNC_TERMINALS = frozenset(
         "to_list",
         "to_set",
         "to_tuple",
+        "top",
+        "bottom",
         "variance",
     }
 )
@@ -568,8 +571,20 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         if collector is not None and collectors:
             raise TypeError("collect accepts either one collector or named collectors, not both")
         if isinstance(collector, Collector):
-            result = await _run_async_collectors(self, (("result", collector),))
-            return cast(C, result["result"])
+            state = collector.initializer()
+            iterator = self.__aiter__()
+            async with closing_async_iterators((iterator,)):
+                # Keep the generator boundary for StopIteration raised by done.
+                while not all(collector.done(state) for _ in (None,)):
+                    try:
+                        value = await anext(iterator)
+                    except StopAsyncIteration:
+                        break
+                    if collector.done is _collector_runtime._never_done or not collector.done(
+                        state
+                    ):
+                        state = collector.step(state, value)
+            return collector.finish(state)
         if collector is not None:
             return cast(C, await _resolve(collector(await self.to_list())))
         return await _run_async_collectors(self, prepare_collectors(cast(Any, collectors)))
@@ -587,6 +602,22 @@ class AsyncFlowTerminalsMixin(Generic[T]):
         """
         items = prepare_aggregations(aggregations)
         return await _run_async_collectors(self, items)
+
+    async def top(self, count: int, *, key: Selector | None = None) -> list[T]:
+        """Return up to `count` items in descending key order using bounded state.
+
+        Equal keys keep their encounter order. The optional selector is synchronous and
+        follows the same rules as `agg.top`; zero count does not pull the source or call it.
+        """
+        return cast(list[T], (await self.aggregate(_ranked=agg.top(count, key=key)))["_ranked"])
+
+    async def bottom(self, count: int, *, key: Selector | None = None) -> list[T]:
+        """Return up to `count` items in ascending key order using bounded state.
+
+        Equal keys keep their encounter order. The optional selector is synchronous and
+        follows the same rules as `agg.bottom`; zero count does not pull the source or call it.
+        """
+        return cast(list[T], (await self.aggregate(_ranked=agg.bottom(count, key=key)))["_ranked"])
 
     summarize = aggregate
 

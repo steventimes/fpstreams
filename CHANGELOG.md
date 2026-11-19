@@ -3,6 +3,16 @@
 This file records user-visible and compatibility-relevant changes in fpstreams,
 including changed defaults.
 
+## Unreleased
+
+- Collect supported transformed Arrow pipelines into column lists without boxing
+  each row. Custom iteration and unsupported operations retain their row path.
+- Narrow optional element types after no-selector `Flow.compact()`,
+  `Flow.filter_none()`, and `AsyncFlow.filter_none()` calls. Non-optional inputs
+  keep their item type. Runtime filtering semantics and order are unchanged.
+- Show how the exported `retry` decorator composes with bounded async requests.
+- Add bounded `AsyncFlow.top()` and `AsyncFlow.bottom()` terminals with stable tie ordering.
+
 ## 2.5.0
 
 Version 2.5.0 includes an intentional static typing incompatibility: `Collectors.averaging()` now

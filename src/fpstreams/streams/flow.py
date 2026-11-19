@@ -532,7 +532,13 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
         """
         return self._append(FilterOp(predicate, negate=True))
 
-    def compact(self, selector: Selector | None = None) -> Flow[T]:
+    @overload
+    def compact(self: Flow[U | None], selector: None = None) -> Flow[U]: ...
+
+    @overload
+    def compact(self, selector: Selector | None = None) -> Flow[T]: ...
+
+    def compact(self, selector: Selector | None = None) -> Flow[Any]:
         """Drop None values, optionally selected from each item.
 
         Args:
@@ -541,7 +547,8 @@ class Flow(FlowTerminalsMixin[T], Generic[T]):
 
         Returns:
             A flow excluding items whose own or selected value is `None`. Other falsey
-                values, such as `0` and `False`, are kept.
+                values, such as `0` and `False`, are kept. Without a selector, an optional
+                item type is narrowed; non-optional item types remain unchanged.
         """
         if selector is None:
             return self.filter(lambda item: item is not None)

@@ -9023,3 +9023,46 @@ def test_arrow_transformed_list_cannot_discard_invalid_dropped_utf8(operation):
         query = query.where(fpstreams.col("x") > 9)
     with pytest.raises(UnicodeDecodeError):
         query.select("x").to_list()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("mode", ["select", "filter", "fallback"])
+def test_transformed_arrow_columns_match_row_output(mode: str, empty: bool) -> None:
+    from fpstreams import col, rows
+
+    source = pa.table({"x": [1, None, 3], "y": ["a", "b", "c"]})
+
+    def query():
+        result = rows.from_arrow(source)
+        if mode == "filter":
+            result = result.where(col("y") == "c")
+        elif mode == "fallback":
+            result = result.where(lambda row: row["x"] is not None)
+        if empty:
+            result = result.take(0)
+        return result.select("y", "x")
+
+    expected_rows = query().to_list()
+    expected = (
+        {key: [row[key] for row in expected_rows] for key in ("y", "x")} if expected_rows else {}
+    )
+    assert query().to_columns() == expected
+
+
+def test_transformed_arrow_columns_honor_replaced_rows_iterator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fpstreams import Rows, rows
+
+    closed = []
+
+    def replacement(self):
+        try:
+            yield {"x": 99}
+        finally:
+            closed.append(True)
+
+    query = rows.from_arrow(pa.table({"x": [1, 2]})).select("x")
+    monkeypatch.setattr(Rows, "__iter__", replacement)
+    assert query.to_columns() == {"x": [99]}
+    assert closed == [True]

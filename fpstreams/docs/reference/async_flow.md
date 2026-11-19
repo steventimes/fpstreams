@@ -448,6 +448,20 @@ total = await aflow(amounts).sum(start=opening_balance)
 The extreme-value terminals raise `EmptyFlowError` on an empty source. `sum` returns `start` for an
 empty source. Exceptions and cancellation close the owned upstream iterator before propagating.
 
+## Bounded ranking
+
+`top(count, key=...)` and `bottom(count, key=...)` return up to `count` original items in
+descending or ascending key order. They retain at most `count` items, preserve encounter order for
+equal keys, and evaluate the synchronous selector once per consumed item. A zero count returns an
+empty list without pulling the source or calling the selector.
+
+```python
+ranked = await aflow(events).top(10, key="metrics.latency_ms")
+```
+
+The selector follows the same rules as `agg.top` and `agg.bottom`. Source and selector errors close
+the owned async iterator before propagating.
+
 ## Methods
 
 ::: fpstreams.AsyncFlow

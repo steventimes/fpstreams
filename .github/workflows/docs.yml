@@ -4,10 +4,12 @@ on:
   push:
     branches: [master]
     paths:
-      - 'fpstreams/**'
-      - 'scripts/build_browser_wheel.py'
-      - '*.md'
-      - 'LICENSE'
+      - "fpstreams/**"
+      - "src/fpstreams/**"
+      - "pyproject.toml"
+      - "scripts/build_browser_wheel.py"
+      - "*.md"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:

@@ -4301,6 +4301,24 @@ def test_pythonic_combinators_cover_common_stream_bookkeeping() -> None:
     assert flow([1]).concat([2, 3], (4,)).to_list() == [1, 2, 3, 4]
 
 
+def test_filter_none_is_lazy_and_keeps_falsey_values_in_order() -> None:
+    consumed = []
+
+    def source():
+        try:
+            for value in [None, 0, False, "", None, 1]:
+                consumed.append(value)
+                yield value
+        finally:
+            consumed.append("closed")
+
+    values = flow.defer(source).filter_none()
+
+    assert consumed == []
+    assert values.take(3).to_list() == [0, False, ""]
+    assert consumed == [None, 0, False, "", "closed"]
+
+
 @pytest.mark.parametrize("left_values,limit", [([1, 2], 1), ([], 1), ([1, 2], None)])
 def test_concat_closes_each_opened_source_once(left_values, limit) -> None:
     events = []

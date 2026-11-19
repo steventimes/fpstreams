@@ -622,35 +622,53 @@ def try_retained_arrow_unique_join(plan: PhysicalPlan) -> list[dict[str, Any]] |
     return _try_retained_arrow_unique_join(plan, import_module)
 
 
+def _record_native_join_fallback(plan: PhysicalPlan, reason: str) -> None:
+    """Record an observed shortcut refusal without inspecting or replaying input rows."""
+    from ...runtime.report import _record_direct_strategy
+
+    _record_direct_strategy(plan, "native_join_fallback", reason)
+
+
 def try_native_record_join(plan: PhysicalPlan) -> list[dict[str, Any]] | None:
     """Materialize one guarded top-level exact-record join without opening either source."""
     from ...runtime.failpoints import has_active_failpoints
 
     root = plan.root
+    if not isinstance(root, JoinPhysicalNode):
+        return None
+    if plan.terminal.name != "list" or plan.engine != "auto":
+        _record_native_join_fallback(plan, "native join requires an automatic list terminal")
+        return None
+    if has_active_failpoints():
+        _record_native_join_fallback(plan, "active failpoints require canonical join execution")
+        return None
     if (
-        plan.terminal.name != "list"
-        or plan.engine != "auto"
-        or has_active_failpoints()
-        or not isinstance(root, JoinPhysicalNode)
-        or (
-            root.native_direct_fields is None
-            and not root.native_callable_unique
-            and not root.native_callable_many
-        )
-        or not isinstance(root.left, SourcePhysicalNode)
+        root.native_direct_fields is None
+        and not root.native_callable_unique
+        and not root.native_callable_many
+    ):
+        _record_native_join_fallback(plan, "join plan has no eligible native record specialization")
+        return None
+    if (
+        not isinstance(root.left, SourcePhysicalNode)
         or not isinstance(root.right, SourcePhysicalNode)
         or not root.left.source.capabilities.reiterable
         or not root.right.source.capabilities.reiterable
     ):
+        _record_native_join_fallback(plan, "native join requires two reiterable leaf sources")
         return None
     left = root.left.source.native_data
     right = root.right.source.native_data
     if type(left) not in (list, tuple) or type(right) not in (list, tuple):
+        _record_native_join_fallback(
+            plan, "native join requires retained exact list or tuple inputs"
+        )
         return None
 
     try:
         from fpstreams import _native
     except ImportError:
+        _record_native_join_fallback(plan, "native extension could not be imported")
         return None
 
     direct = root.native_direct_fields
@@ -672,7 +690,7 @@ def try_native_record_join(plan: PhysicalPlan) -> list[dict[str, Any]] | None:
         )
         if direct_rows is not None:
             return direct_rows
-        return _try_native_hashable_record_join(
+        joined = _try_native_hashable_record_join(
             _native,
             root,
             left,
@@ -682,17 +700,23 @@ def try_native_record_join(plan: PhysicalPlan) -> list[dict[str, Any]] | None:
             many=root.spec.logical.validate == "m:m",
             allow_namedtuple=False,
         )
-
-    return _try_native_hashable_record_join(
-        _native,
-        root,
-        left,
-        right,
-        root.spec.left_key,
-        root.spec.right_key,
-        many=root.native_callable_many,
-        allow_namedtuple=True,
-    )
+    else:
+        joined = _try_native_hashable_record_join(
+            _native,
+            root,
+            left,
+            right,
+            root.spec.left_key,
+            root.spec.right_key,
+            many=root.native_callable_many,
+            allow_namedtuple=True,
+        )
+    if joined is None:
+        _record_native_join_fallback(
+            plan,
+            "native join adapters declined; the specific rejection reason is unknown",
+        )
+    return joined
 
 
 def _try_direct_python_group_list(

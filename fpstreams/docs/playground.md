@@ -51,7 +51,7 @@ code safe or suitable for secrets.
         <span data-elapsed>idle</span>
       </div>
       <div class="fp-playground__channel" data-channel="stdout" hidden>
-        <span>stdout</span>
+        <span>stdout and stderr</span>
         <pre data-stdout></pre>
       </div>
       <div class="fp-playground__channel fp-playground__channel--result" data-channel="result">
@@ -63,6 +63,7 @@ code safe or suitable for secrets.
         <pre data-error></pre>
       </div>
     </section>
+
   </div>
 
   <div class="fp-playground__controls">

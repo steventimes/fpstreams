@@ -292,6 +292,8 @@ AsyncTerminalName = Literal[
     "last",
     "any",
     "all",
+    "top",
+    "bottom",
 ]
 
 

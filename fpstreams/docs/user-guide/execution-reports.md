@@ -173,6 +173,15 @@ An Arrow join materialized directly from retained columns reports `arrow_direct`
 The outer relational plan can still have `compiler_engine="python"`; use
 `strategy` to distinguish these terminal routes.
 
+A top-level record join that falls back from the native shortcut records a
+`native_join_fallback` event before `python_join`. Its reason describes the
+observed eligibility gate or an unavailable extension. When the adapters return
+`None`, the event states that the specific rejection reason is unknown. The
+current native ABI does not return that detail. An explicit Python engine records
+that native execution was not selected. This event does not imply that a Rust
+kernel ran or identify which guard inside an adapter declined. The final
+`strategy` still describes the route that returned the result.
+
 `Pairs.aggregate_values()` also records a successful Rust shortcut. Child plans
 do not replace the outer route, and the report does not trace every kernel or
 fallback inside a compound query. The direct join route labels above were added

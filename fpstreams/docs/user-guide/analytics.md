@@ -5,6 +5,71 @@ Normalize identifiers, dates, units, and
 duplicate-record policy before aggregation. Keep the record grain explicit:
 a player-match row and a player-season row answer different questions.
 
+## Review and replay normalized names
+
+This follows OpenRefine's [cluster-and-edit workflow](https://openrefine.org/docs/manual/cellediting#cluster-and-edit):
+normalized keys suggest records to review, but they do not approve a merge. This
+recipe uses only the Python standard library and fpstreams.
+
+```python
+import unicodedata
+
+from fpstreams import agg, rows
+
+
+def normalize_name(value):
+    return unicodedata.normalize("NFKC", value).strip().casefold()
+
+
+records = [
+    {"id": 1, "name": " Acme "},
+    {"id": 2, "name": "ＡＣＭＥ"},
+    {"id": 3, "name": "Unknown Co"},
+]
+
+preview = (
+    rows(records)
+    .with_columns(normalized_name=lambda record: normalize_name(record["name"]))
+    .group_by("normalized_name")
+    .aggregate(rows=agg.count(), names=agg.collect("name"))
+    .to_list()
+)
+conflicts = [group for group in preview if group["rows"] > 1]
+assert conflicts == [{
+    "normalized_name": "acme",
+    "rows": 2,
+    "names": [" Acme ", "ＡＣＭＥ"],
+}]
+
+# Add only mappings approved after reviewing the preview.
+approved = [{"normalized_name": "acme", "approved_name": "Acme, Inc."}]
+cleaned = (
+    rows(records)
+    .with_columns(normalized_name=lambda record: normalize_name(record["name"]))
+    .join(approved, on="normalized_name", how="left", validate="m:1")
+    .with_columns(
+        clean_name=lambda record: (
+            record["approved_name"]
+            if record["approved_name"] is not None
+            else record["name"]
+        )
+    )
+    .select("id", "name", "clean_name")
+    .to_list()
+)
+assert cleaned == [
+    {"id": 1, "name": " Acme ", "clean_name": "Acme, Inc."},
+    {"id": 2, "name": "ＡＣＭＥ", "clean_name": "Acme, Inc."},
+    {"id": 3, "name": "Unknown Co", "clean_name": "Unknown Co"},
+]
+```
+
+The preview keeps the original spellings and their normalized key. Review each
+group before adding an entry to `approved`; `validate="m:1"` rejects duplicate
+approved keys. The left join preserves every source row. The original `name`
+remains available, and a key without an approved mapping keeps that value in
+`clean_name`. Choose a normalization rule that fits the identifiers in your data.
+
 ## Select records by version (2.4.0) {#select-records-by-version-unreleased}
 
 `agg.max_by` retains the whole record with the largest selected key. This lets
@@ -347,8 +412,24 @@ totals = (
 Repeat the same invocation after a failure. Completed partitions are verified
 and reused; partitions without a committed result run again. The existing
 `attempt()` operation can collect individual failures while allowing other
-partitions to finish. Async `retry()` already provides attempt limits, backoff,
-jitter, and exception filtering for async callbacks.
+partitions to finish. The exported `retry` decorator wraps an async callback.
+It provides attempt limits, backoff, jitter, and exception filtering. Combine it
+with rate limiting before starting concurrent requests:
+
+```python
+from fpstreams import aflow, retry
+
+@retry(attempts=3, delay=0.1, exceptions=(OSError,))
+async def send_request(request):
+    return await request.send()
+
+# Inside an async function:
+# results = await (aflow(requests).throttle(5, per=1.0)
+#                  .map_async(send_request, concurrency=3).to_list())
+```
+
+`retry` is a function decorator, not an `AsyncFlow` method. Cancellation still
+requires the callback to cooperate.
 
 The final aggregation sums each partition's counts because the same team can
 appear in several files. `flat_map(rows.from_jsonl)` reads the result files

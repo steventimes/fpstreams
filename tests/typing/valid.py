@@ -3,6 +3,7 @@
 from asyncio import Future
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Never, TypeVar, assert_type
@@ -21,6 +22,14 @@ assert_type(flow(flow([1, 2])), Flow[int])
 assert_type(flow([1, 2]).map_batches(lambda batch: batch[0] + 1, size=2), Flow[int])
 assert_type(flow([1, 2]).chunk(2, strict=True), Flow[tuple[int, ...]])
 assert_type(aflow([1, 2]).batch(2, strict=True), AsyncFlow[tuple[int, ...]])
+
+
+@dataclass
+class Record:
+    value: int
+
+
+assert_type(flow([Record(1)]).map(lambda record: record.value).to_list(), list[int])
 
 
 def unfold_step(state: int) -> tuple[str, int] | None:
@@ -338,6 +347,8 @@ async def terminal_default_types() -> None:
     assert_type(await aflow([1, 2]).nth(-1), int)
     assert_type(await aflow([1, 2]).nth(-1, default=None), int | None)
     assert_type(await aflow([1, 2]).nth(-1, default="missing"), int | str)
+    assert_type(await aflow([1, 2]).top(1), list[int])
+    assert_type(await aflow([1, 2]).bottom(1), list[int])
 
 
 async def forward_async_terminal_default(
@@ -475,3 +486,14 @@ complex_average = Collectors.averaging_with(
     complex_item, zero=complex, add=complex_add, divide=complex_divide, empty=complex
 )
 assert_type(complex_average([1j]), complex)
+
+optional_values: list[int | None] = [1, None, 2]
+non_optional_values: list[int] = [1, 2]
+assert_type(flow(non_optional_values).compact(), Flow[int])
+assert_type(flow(non_optional_values).filter_none(), Flow[int])
+assert_type(aflow(non_optional_values).filter_none(), AsyncFlow[int])
+assert_type(flow(optional_values).compact(), Flow[int])
+assert_type(flow(optional_values).filter_none(), Flow[int])
+assert_type(aflow(optional_values).filter_none(), AsyncFlow[int])
+assert_type(flow(optional_values).compact("value"), Flow[int | None])
+assert_type(flow(optional_values).filter_none("value"), Flow[int | None])

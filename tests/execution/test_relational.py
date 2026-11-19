@@ -3767,6 +3767,52 @@ def test_native_join_and_declined_join_report_distinct_successful_routes(monkeyp
     assert _current_recorder() is None
 
 
+@pytest.mark.parametrize("route", ["declined", "missing_extension", "python"])
+def test_native_join_fallback_reports_observed_gate_or_unknown_reason(monkeypatch, route) -> None:
+    from types import SimpleNamespace
+
+    class Record(dict):
+        pass
+
+    if route == "missing_extension":
+        monkeypatch.delattr(fpstreams, "_native", raising=False)
+        monkeypatch.setitem(sys.modules, "fpstreams._native", None)
+        reason = "native extension could not be imported"
+    else:
+        # An available extension without a supported join ABI declines at the adapter boundary.
+        extension = SimpleNamespace()
+        monkeypatch.setattr(fpstreams, "_native", extension, raising=False)
+        monkeypatch.setitem(sys.modules, "fpstreams._native", extension)
+        reason = (
+            "native join requires an automatic list terminal"
+            if route == "python"
+            else "native join adapters declined; the specific rejection reason is unknown"
+        )
+
+    left = [Record(id=1, value="left")]
+    right = [Record(id=1, label="right")]
+    query = (
+        fpstreams.rows(left)
+        .join(right, on="id", validate="m:1")
+        .with_engine("python" if route == "python" else "auto")
+    )
+    execution = query.run_with_report("to_list")
+    assert execution.value == [{"id": 1, "value": "left", "label": "right"}]
+    assert execution.report.strategy == "python_join"
+    fallbacks = [
+        event for event in execution.report.events if event.strategy == "native_join_fallback"
+    ]
+    assert len(fallbacks) == 1
+    assert fallbacks[0].kind == "strategy"
+    assert fallbacks[0].compiler_engine == execution.report.compiler_engine
+    assert fallbacks[0].reason == reason
+    assert execution.report.events.index(fallbacks[0]) < next(
+        index
+        for index, event in enumerate(execution.report.events)
+        if event.strategy == "python_join"
+    )
+
+
 def test_child_join_report_does_not_replace_outer_terminal_strategy() -> None:
     joined = fpstreams.rows([{"id": 1}]).join([{"id": 1}], on="id", validate="m:1")
     execution = joined.select("id").run_with_report("to_list")
