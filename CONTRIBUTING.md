@@ -35,8 +35,7 @@ use prebuilt wheels. The base library and other checks remain available without 
 - Write public docstrings with Google sections and Markdown references. Indent
   continuation lines within a `Returns:` item by four extra spaces; name tuple
   elements when describing them separately. Check the rendered tables after editing.
-- Do not add a fast path that recognizes benchmark fixtures or only wins at one
-  fixed size, type, or cardinality.
+- Preserve behavior across input sizes, types, and cardinalities.
 
 ## Internal execution code
 
@@ -91,9 +90,7 @@ complete matrix. A manual `tests` suite and reusable release qualification keep
 all supported interpreter, platform, and adapter checks. Pages settings are a
 separate authorization; these local workflow changes do not enable any workflow.
 
-Performance measurements and their tools remain local. GitHub Actions has no
-benchmark job, schedule, or manual benchmark suite. The manual `all` suite runs
-all non-benchmark checks, including the experimental free-threaded lane.
+The manual `all` suite includes the experimental free-threaded lane.
 
 Choose checks based on what the change affects; CI defines the complete matrix.
 For a local internal Python or Rust change, check the affected contracts and use
@@ -104,7 +101,7 @@ path or makes a performance claim. Preserve cancellation, cleanup, and transacti
 error contracts when simplifying code.
 
 Guidance or progress-record edits alone need consistency and link checks, not
-full test suites, matrices, benchmarks, or package builds. Reuse evidence for
+full test suites, matrices, or package builds. Reuse evidence for
 unchanged code within its original scope; record updates do not invalidate it.
 
 The publishing workflow calls the reusable CI workflow for release qualification
@@ -212,33 +209,9 @@ The checker must report that category on that line; an unrelated failure or
 missing tool cannot satisfy a negative case. These fixtures are static inputs,
 not programs to execute.
 
-Measure locally when the affected performance path or a performance claim needs
-evidence. Select workloads that cover that impact. The benchmark tools and raw
-reports are not included in the public source distribution. Before an
-expensive formal performance confirmation, run known low-cost compatibility
-counterexamples for that path, such as foreign-loop rejection for async task
-changes, together with its cancellation and cleanup contracts. Resolve failures
-before timing. For the selected workloads, compare more than one input size,
-and include different data types or key cardinalities where they change the
-algorithm. Report the environment and raw result rather than a standalone
-speedup claim.
-
-Before an optimization experiment, fix its workload, sample budget, and retention
-rule. Measure complete consumption and cleanup, and keep the raw results with
-the loaded source and native-extension identities. Record rejected attempts so
-later work can reuse the decision. A paused or unverified prototype belongs in
-recoverable work records; its changelog entry should wait until validation.
-
-Use a patched interpreter for allocation measurements. CPython 3.12.3 can
-segfault when `tracemalloc.stop()` overlaps native thread initialization
-([CPython #128679](https://github.com/python/cpython/issues/128679)). The local
-file-scan stress check passes on CPython 3.12.13 with the same dependencies.
-Keep tracing enabled, record the full Python version, and rerun both baseline
-and candidate after changing interpreters.
-
 ## Open a pull request
 
 Describe the user-visible problem, the chosen boundary, and how you verified the
-change. Keep generated benchmark output and local build artifacts out of the
+change. Keep local build artifacts out of the
 commit. By participating, you agree to communicate respectfully and focus review
 comments on the work.

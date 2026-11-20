@@ -39,13 +39,10 @@ retained-list chunks and exact generator, map, and filter cursors. Custom cursor
 and Python 3.11 keep the canonical iterator path. Strict batches still reject a
 short tail during consumption; early termination retains source cleanup.
 
-Rolling statistics can use a Rust window state while the plan and its callbacks
-execute in Python. Configured selectors execute in Python, and non-null values
-are converted once before Rust updates the shifted moments and compensated mean. Use
-`with_engine("python")` on a Flow to select the reference state. Missing native
-capabilities and Python-sized configuration values beyond the native range also
-use that implementation. These routes have local measurements; throughput,
-startup cost, and total process memory still depend on the workload and platform.
+Rolling statistics can use a Rust window state while selectors execute in Python.
+Non-null values are converted once before Rust updates the state.
+`with_engine("python")` selects the reference state. Unsupported native
+capabilities and configuration values retain the Python implementation.
 
 Arrow's Parquet execution plan can read, cast, and fail before delivering a
 batch. `first()` and limited queries stop once they receive enough output, but
@@ -116,12 +113,9 @@ the Python collector program.
 
 ## Computed-column setup in development
 
-Supported single-stage Python `with_columns()` queries now reuse a loop template
-with separate callback bindings for each execution. The selectors stay in a live
-list and receive the original row after its shallow copy is made. This development
-change reduces fixed setup cost, which matters most for smaller inputs. See the
-[local measurements](../roadmap.md#computed-column-setup-after-221) for the tested
-sizes and limits.
+Supported single-stage Python `with_columns()` queries reuse a loop template
+with separate callback bindings for each execution. Selectors remain live and
+receive the original row after its shallow copy is made.
 
 ## Projection setup in development
 
@@ -129,8 +123,6 @@ Supported single-stage Python `select()` queries use the same loop template as
 computed columns, with separate callback bindings for each execution. Each row
 still takes its selector snapshot before running the first selector. The
 existing small direct-field route and native/Arrow routes keep their boundaries.
-See the [local projection measurements](../roadmap.md#projection-setup-after-computed-columns)
-for the measured input sizes and controls.
 
 ## Keep pipelines fused
 
@@ -385,212 +377,6 @@ including cleanup, and measure cancellation until the cancelled task finishes.
 Keep Python allocation peaks, native allocations, and process RSS separate;
 bounded item counts alone do not establish a byte-level memory bound.
 
-## Measure representative work
-
-A useful benchmark includes construction and conversions that the user actually
-pays for, proves equivalent outputs, and samples more than one size and data
-shape. At minimum record:
-
-- Python and dependency versions, platform, and processor architecture;
-- Git commit, dirty status, source and native-extension fingerprints;
-- source type, input size, cardinality, skew, and null distribution;
-- requested engine and observed execution route, including gaps in that evidence;
-- warmup policy and multiple timing samples;
-- peak memory or bounded-resource counters where relevant;
-- output equivalence and exception behavior;
-- both common and adversarial shapes.
-
-Compare tasks with equivalent results and source-consumption rules.
-Pandas and NumPy begin with columnar or contiguous storage; an fpstreams pipeline
-may begin with arbitrary Python objects. Include input preparation consistently
-or state that the comparison begins after preparation.
-
-The frequency comparison cases start with prepared inputs: lists for fpstreams
-and `collections.Counter`, arrays for NumPy, and Series for pandas. Every timed
-task returns a dictionary; NumPy converts its result arrays in bulk, and pandas
-uses `to_dict()`. The cases cover low and high cardinality for integers,
-strings, large integers, and floats, plus a string distribution in which one key
-accounts for 90% of the input. They compare counts using dictionary equality;
-fpstreams' key identity and encounter order are checked separately in parity
-tests. Input conversion is outside timing, and other distributions can change
-the ranking.
-
-Eight additional frequency cases start from NumPy int64 or float64 arrays. They
-separate identity counting from a callable key, with repeated and distinct keys
-in each group. All implementations return complete dictionaries in first-key
-order. The Python reference converts the array to a list inside its timed task;
-the NumPy and pandas references use equivalent array operations for the key.
-
-The `io.arrow.csv.select` and `io.arrow.parquet.select` cases start with files
-and query objects created outside timing. Each measured call reads the file,
-selects two columns, and returns Python records. The pandas reference reads the
-same file independently. These cases measure file reading and projection;
-fixture creation and query construction are excluded.
-
-Computed-column cases separate field, row-expression, and callable selectors.
-They cover five- and 32-column records, dict and MappingProxyType inputs, and
-explicit Python controls. Every task returns a complete list of copied records;
-NumPy remains a separate control. Query and input construction are outside
-competitive timing, while terminal planning and execution are included.
-
-The join cases also start with prepared records and return complete lists.
-Twelve Python controls vary record type (dict or Mapping) and key selection
-(field or callable). They cover inner and left joins with unique right keys,
-plus inner joins with repeated right keys. Use these controls to assess changes
-to Python execution, and check the observed route: auto-engine cases can run
-in Rust.
-Six further cases use eight or 32 left fields to measure wider record layouts.
-Callable-key comparisons retain both key columns and copy records before calling
-the selector. Left joins include unmatched rows and their missing right values.
-
-## A practical tuning loop
-
-Native, Arrow, and NumPy execution does not emit the same per-row Python trace
-or profile events as the Python engine. When a debugger or Python profiler needs
-those frames, run the pipeline with `with_engine("python")` while investigating
-it.
-
-1. Use `explain()` and a profiler to find the dominant stage.
-2. Record a correctness-checked baseline across representative shapes.
-3. Change one mechanism shared by the workloads that show the bottleneck.
-4. Re-run correctness, resource, and performance gates.
-5. Keep the change only when the improvement is stable and the complexity is
-   justified; revert neutral or noisy changes.
-
-Further local candidates start from the verified development source; a separate
-comparison with released `v2.2.1` checks the combined changes. Earlier profiles
-suggest collector loops and process submission, but those costs need to be
-reproduced on the chosen reference source. The
-[roadmap](../roadmap.md#next-development-steps) records the candidate order and
-the callback, lifetime, and cleanup requirements for each stage.
-
-The following measurement methodology describes locally retained benchmark tools
-and historical reports. Those tools, fixtures, baselines, and raw reports are
-not part of the public source distribution. GitHub Actions does not run them.
-The local engine and cross-library suites compare Python, NumPy, and pandas
-paths with selected input shapes and correctness checks. Scenario selection
-itself collects no timing, allocation, or execution reports.
-
-Both suites emit versioned reports with dependency versions, Git state, source
-and native hashes, and a workload fingerprint. They also record CPU affinity,
-NumPy CPU features and a fingerprint of selected kernel targets, plus SIMD,
-thread-count, Python hash-seed, and allocator settings.
-Read the format version from the generated report's top-level `schema_version` field.
-The allocator fields include `PYTHONMALLOC`, `PYTHONMALLOCSTATS`, `GLIBC_TUNABLES`,
-and an allowlist of `MALLOC_*` environment controls. These are requested settings;
-the report does not prove which allocator is active or reconstruct its allocation
-history. The runners recheck that evidence after measurement and reject a run if it changes.
-An unavailable Git repository is recorded explicitly with `git_available=false`
-and null revision and dirty fields. Runtime configuration must match on both
-sides; older reports need to be regenerated.
-
-For CPU-bound Python thread benchmarks, compare a single-CPU placement with a
-broader CPU mask and include a standard-library allocation control. Record the
-worker count and CPU placement on both sides. The same allowed CPU mask does
-not guarantee the same worker placement, clock frequency, or socket locality.
-A slowdown shared by the control does not establish a cache or lock bottleneck.
-Keep placement controls separate from native parallel-throughput measurements.
-
-The engine suite can enforce ratios against its Python references from the same
-run. Composite count/sum groups and NamedTuple callable joins apply their extra
-speedup requirements from 1,000 rows. Smaller inputs still produce timing and
-allocation records, with `maximum_ratio=null` for these cases.
-
-Competitive reports describe cross-library timings without enforcing those
-ratios. For comparisons across versions, the local regression checker checks each
-task's timing and allocation against the baseline; this includes reference tasks
-and small-input cases without a same-run speedup requirement.
-
-The engine runner warms each task while calibrating a block to at least 5ms,
-then uses the same call count for every timed sample. Sample times are block
-elapsed time divided by the call count. Reports retain raw blocks and separate
-calibration records for both full execution and first-row latency. These are
-warmed measurements of the existing tasks. Identity cases reuse prepared
-pipelines; operation cases retain their construction and cleanup work. They do
-not measure first-call startup. The runner does not disable GC. Different sampling methods
-cannot share a baseline, so regenerate references made with single-call timing.
-Keep all reference runs locally for diagnosis.
-
-The competitive runner rotates peer order, collects garbage, then warms the
-next task for at least 1ms before timing one call. Each result records the number
-of warmup calls. This measures warmed execution; first-call latency needs a
-separate measurement. Local checks found that one warmup call left short NumPy
-tasks with two timing ranges. Longer warmup removed that pattern, though other
-full-matrix outliers still require investigation. Matching allocator settings
-also does not reproduce process allocation history: local same-code checks
-still found different timing bands under fixed mmap and trim thresholds. Check
-stability with independent runs before evaluating a candidate. Keep failed runs;
-a passing replay does not invalidate them, and hidden priming allocations can
-change what the benchmark measures.
-
-For sensitive cases, use an exact `--include` case ID and launch the CLI in a
-new process for each run. This avoids allocations left by other cases in the
-same suite process. Local checks of five affected tasks passed at 100,000 items
-with this approach and matching allocator settings. Later candidate comparisons
-still failed at smaller sizes, sometimes across several implementations in the
-same run. Isolation alone does not prove stability. Check other sizes and
-compare reports produced with the same invocation pattern; do not mix isolated
-case runs with results from a shared suite process.
-
-After timing, each implementation runs once more under `tracemalloc` to record
-`resources.peak_allocation_bytes`. One-shot tasks create a fresh source for this
-call too. The measurement includes temporary allocations and the result, while
-prepared inputs remain outside its scope. Rust and other native allocations may
-be invisible to `tracemalloc`; this is not process RSS or total memory usage.
-
-Run these measurements on a patched interpreter. Older CPython builds can crash
-when tracing stops while a native thread initializes; see
-[CPython #128679](https://github.com/python/cpython/issues/128679). Local file-scan
-stress checks passed on CPython 3.12.13 with the same dependencies that reproduced
-the crash on 3.12.3. Record the full version and rerun both sides of a comparison
-after changing interpreters.
-
-Keep first-call startup separate from the warmed runner. Before measuring a
-candidate, stop other heavy checks and record both reference and candidate runs
-with the same filters, shapes, and process layout. Retain at least three
-independent reference runs and repeat the candidate with the existing seven-sample
-comparison setup. After a shared-loop change, include the full engine matrix and
-the unaffected reference tasks. A local comparison does not create a reviewed
-CI historical baseline.
-
-Reports with missing or invalid resource values are rejected. Schema 4 competitive
-reports did not measure allocation, so their timing results cannot establish a
-memory gain or a passed allocation threshold.
-
-NumPy's [runtime CPU dispatch](https://numpy.org/doc/stable/reference/simd/how-it-works.html)
-can select different kernels on different processors or with different feature
-settings. Do not disable those features just to make a comparison pass. Record
-the actual configuration and compare equivalent runs.
-
-Each fpstreams task runs once outside timing to observe its execution route.
-This uses the same callable as the timed task; one-shot cases create a fresh
-source for every call. `execution.status="unknown"` means that the task did not
-record a plan. An `observed` outer route still has the limits described in
-[execution reports](execution-reports.md).
-
-To compare another checkout locally, use the same runner and Python environment
-for both sides. Build the release extension for each checkout first. Keep size,
-filters, domain, quick mode, and process layout identical, and verify the
-imported source fingerprint. Retain three independent reference reports and
-write their baseline to a separate file.
-
-Compare each current run against that baseline, then repeat at another size.
-The baseline retains each run's provenance. Its three reference runs must use
-the same Python source fingerprint, native binary fingerprint, and fpstreams
-version. Candidate code hashes, Git revisions, and fpstreams versions may differ
-from the reference; workload settings and other dependency versions must match.
-Report schema 7 also records the `typing_extensions` version or its explicit
-absence. Regenerate older reports before comparing this dependency's environment.
-Malformed timing or dispersion values are rejected, including nonfinite or
-nonpositive first-row latency. Old reports that lack the required fields need
-to be regenerated.
-
-Historical same-checkout comparisons used three reference runs and a fourth
-comparison run, with 21 samples per scenario. They checked timing consistency
-within one revision. Engine timing blocks also recorded process CPU time for
-diagnosis, while comparisons used wall time and the existing limits. These
-local results do not establish a reviewed cross-commit CI baseline.
-
 ## Caller-owned executors
 
 Version 2.3.0 accepts `executor=` in `map_parallel()` and `parallel()`.
@@ -758,24 +544,6 @@ live, and type/order validation and lookahead are unchanged. A tuple-valued
 single key uses this route; grouping by multiple selectors keeps the existing
 path. Callback `StopIteration` retains its `RuntimeError` wrapper and cause.
 
-Local October 11 comparisons used CPython 3.12.13, the same release native
-extension, CPU 2, and single-thread settings. Each side ran three independent
-processes at each size, with seven samples per implementation. Nine comparisons
-passed the existing time and Python-allocation limits.
-
-| Prepared rows | Integer key time saved | String key time saved | Bytes key time saved | Tuple-valued key time saved |
-| --- | --- | --- | --- | --- |
-| 1,000 | 20.0% | 19.5% | 19.4% | 10.8% |
-| 10,000 | 19.2% | 18.5% | 20.2% | 13.1% |
-| 100,000 | 18.0% | 18.3% | 18.6% | 12.4% |
-
-These are complete-consumption sorted-group measurements against the preceding
-development implementation. Merge and join controls stayed within about 1%.
-They do not establish an advantage over ordinary hash grouping or an application
-speedup. Prepared inputs and native allocations are excluded from Python
-allocation tracing; the measurements are not RSS or a reviewed CI baseline.
-Raw reports and comparisons are in `artifacts/next-api-feedback-20261011/`.
-
 The sorted group holds current collector state and one lookahead row; collectors
 that retain values can still grow. A merge holds one lookahead per input. A join
 holds the current right key group and lookahead, with finite row budgets. Rows
@@ -783,84 +551,10 @@ can contain large objects, so row limits are not byte limits. Large duplicate
 right groups delay the first joined row. Checks apply to the consumed prefix;
 short-circuiting does not validate an unread tail.
 
-The September 29 measurements on CPython 3.12.13 compared these APIs with ordinary grouping,
-concatenation plus stable sorting, and hash joins in the same checkout, using the
-Python engine. Inputs were prepared records in lists or fresh generator views,
-with duplicate and skewed keys, at 1,000, 10,000, and 100,000 rows. Three sequential
-workers recorded seven samples per task. Data construction, route observation,
-complete-content assertions, and allocation tracing were outside timing. Each
-sample ran the actual Flow/Rows operation, including construction and planning.
-
-Across these cases, complete consumption took about 4.93 times as long for sorted
-grouping, 12.38 times for sorted merging, and 3.71 times for sorted joins. First-row
-and early-stop cases were faster overall, but skewed joins could still regress.
-The worst individual case was a complete sorted merge at about 14.94 times its
-ordinary counterpart. All three workers agreed on the overall direction within
-each operation/consumption group. These results do not establish a universal
-speed advantage. Prefer ordinary operations when full-consumption throughput is
-the priority, and measure your actual data before choosing a sorted path.
-
-Measured Python allocation peaks were lower in aggregate. Those peaks exclude
-prepared input objects and untracked native allocations, and are not RSS. The
-raw local reports and worker summaries are under
-`artifacts/next-releases/20260929T210456Z/D03/`; generated reports are ignored and
-are not published as a CI baseline.
-
-The local competitive runner used 54 `sorted.*` cases for full consumption,
-first output, and stopping after 16 outputs. It validated complete ordered
-values before timing, including full-consumption tasks whose timed terminal
-was `count()`. For larger sizes, join row budgets scaled to cover the fixture;
-library defaults remained unchanged.
-
-## Measure a complete database consumer
-
-The locally retained consumer helper compares a standard-library cursor, fpstreams with
-its Python engine, SQL pushdown, and optionally installed Polars. It reads the
-same frozen SQLite file, normalizes status, filters missing values, removes
-duplicate event identities, aggregates or exports records, and encodes JSON.
-Each output is checked against an independent oracle that includes valid zeros
-and Unicode text. The local helper prepares a new frozen fixture and measures
-export or aggregation with the selected backend. It is not included in the
-public source distribution.
-Polars requires its optional dependency. Fixture generation, file hashing,
-imports, output validation, and garbage collection are outside steady timing;
-timing includes database connection, reads, transformations, JSON encoding, and
-resource closure. First-query time is reported separately. It follows file
-hashing and does not represent a cold filesystem cache.
-
-Run each memory command in a fresh process. On Linux it reports current RSS
-before consumption, retained and released RSS, and the process high-water mark;
-the high-water mark can include earlier imports or hashing. The peak comes
-from Linux `VmHWM`, avoiding the earlier parent-process memory that
-`ru_maxrss` can retain across process creation. These are process measurements,
-not Python allocation peaks. Other platforms report unavailable
-RSS fields as null. Batch size bounds cursor fetches, while deduplication,
-sorting, exported rows, and serialized output can still grow with input size.
-
-This fixture gives duplicate identities identical business fields. Its SQL
-`DISTINCT` query is not a general replacement for first-record selection when
-duplicate identities carry conflicting values. SQL pushdown and materialized
-Polars perform different amounts of Python object work. Compare these complete
-consumer paths for your task; their timings do not rank equivalent engine
-kernels or establish service capacity, cache hit rates, or network latency.
-
 ## 2.5.0 materialization changes
 
 For retained primitive Arrow Tables and RecordBatches, `to_list()` can collect a
 complete compatible columnar prefix directly. Streaming, unsupported conversion,
 and incomplete-prefix plans retain their existing paths and cleanup contracts.
-In a local CPython 3.12.13 experiment with 10,000 rows, projection, aliasing, and
-filter-plus-projection took 42.6%, 28.4%, and 33.9% less time respectively.
-These measurements include query construction, planning, and consumption with
-prepared input. They do not establish gains for other schemas or platforms.
 
-Opt-in field-dependency export reuses computed-column analyses within each
-step. For prebuilt explanations with 32 computed-column steps, measured export
-time fell by 30.3% with two columns and 37.4% with sixteen columns. These figures
-cover export only, excluding query construction and consumption.
-
-Both experiments used seven alternating process pairs and five timing samples
-per process. Their controls stayed within the predeclared 10% regression limit,
-and separate Python allocation peaks met the recorded limit. These are Python
-allocation results, not native-heap or RSS measurements. The RowExpr template
-cache was rejected because a control regressed by 60.8%; it is not enabled.
+Opt-in field-dependency export reuses computed-column analyses within each step.

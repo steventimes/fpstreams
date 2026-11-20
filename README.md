@@ -433,8 +433,6 @@ when a caller needs a specific result type. See the [2.5.0 migration notes](CHAN
 before updating existing type-checked code.
 
 Release history and compatibility changes are in the [changelog](CHANGELOG.md).
-The [roadmap](https://steventimes.github.io/fpstreams/roadmap/#next-development-steps)
-lists development candidates and their acceptance criteria.
 
 ## Coding-agent guidance
 
@@ -476,9 +474,6 @@ uv run --no-sync cargo test --manifest-path rust/Cargo.toml
 uv run python scripts/build_browser_wheel.py
 uv run mkdocs build --strict -f fpstreams/mkdocs.yml
 ~~~
-
-Performance measurements are maintained locally. Benchmark tools and raw reports
-are not part of the public source distribution or GitHub Actions.
 
 The source tree is organized by domain under `src/fpstreams/`: `streams`,
 `planning`, `execution`, `collecting`, `tabular`, `expressions`, and `primitives`.

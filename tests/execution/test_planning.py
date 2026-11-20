@@ -1897,7 +1897,7 @@ def test_native_row_filter_stops_before_wide_dictionary_scan(
     width: int,
     strategy: str,
 ) -> None:
-    """The i64 prefix is limited to record widths with a measured generic speedup."""
+    """The i64 prefix is limited to supported record widths."""
     from fpstreams import rows
 
     extras = tuple(f"extra_{index}" for index in range(width - 1))

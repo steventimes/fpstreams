@@ -14,5 +14,4 @@ Mark checks that do not apply to the change as N/A.
 - [ ] Ruff format/check and mypy pass when Python code changed.
 - [ ] Rust fmt, tests, and clippy pass when Rust code changed.
 - [ ] Public API, docs, and changelog are updated when user-visible behavior changed.
-- [ ] Performance claims cover more than one size or data shape and include raw results.
-- [ ] No generated benchmark output, caches, or local build artifacts are included.
+- [ ] No caches or local build artifacts are included.

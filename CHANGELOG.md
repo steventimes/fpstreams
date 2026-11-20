@@ -199,9 +199,6 @@ The migration examples are in the collecting and async flow reference pages;
 - Optional field-dependency export reuses each computed-column analysis within
   its step while preserving opaque-expression short circuiting.
 
-- Keep performance runners and their regression fixtures local to maintainers.
-  Public source distributions and CI retain library checks without benchmark
-  components or hosted timing jobs.
 - Consolidate internal async execution, pair execution, semantic analysis,
   relational planning, terminal helpers, Arrow planning/execution, pair planning,
   and I/O into domain packages. Public
@@ -480,18 +477,6 @@ The migration examples are in the collecting and async flow reference pages;
   cleanup diagnostics to an existing query error. Cleanup attempts every owned
   resource. This also changes Arrow `first()`, which previously ignored close errors.
 
-- Engine benchmarks calibrate warmed timing blocks for short tasks and first-row
-  latency, retaining elapsed time and call counts in their reports. Rebuild
-  single-call baselines before comparing. Timing and resource regression limits
-  are unchanged; scheduled CI now uploads the three raw reference reports.
-
-- Benchmark report schema 6 records Python and glibc allocator environment
-  settings. Baseline creation and comparison reject missing or mismatched
-  settings; regenerate older reports. The runners do not change allocator defaults.
-
-- NumPy frequency benchmarks check key types, integer counts, first-key order,
-  and floating-point bit patterns. Separate NaN entries, their signs, and their
-  payloads remain distinct when comparing independently computed outputs.
 - Generated Python `with_columns` loops call the live enrichment function.
   Changes to captured accessors, expression evaluators, or the selector list
   remain visible after plan caching and while reading the source. The transform
@@ -518,14 +503,6 @@ The migration examples are in the collecting and async flow reference pages;
 - `frequencies(key=...)` uses the Python pipeline for sequential `auto` plans,
   so key callbacks can affect subsequent input reads. Native materialization
   could hide those changes. Reports identify this route as `python_frequency`.
-- Benchmark speedup requirements for composite count/sum groups and NamedTuple
-  callable joins now apply from 1,000 rows. Smaller inputs still emit timing and
-  allocation data for cross-run checks. The original ratios and CI workloads
-  are unchanged; small runs no longer inherit speedup requirements validated
-  for larger inputs.
-- The engine benchmark CLI lists scenarios without running their tasks, timing,
-  allocation tracking, or execution observation. Listing and measurement share
-  filtering and fixture cleanup, including when a later scenario builder fails.
 - Single-collector grouping preserves the general collector program's state
   release order, including when output is closed early. Unused input keys are
   released before reading the current finisher, so changes made by their release
@@ -564,34 +541,8 @@ The migration examples are in the collecting and async flow reference pages;
   their length hints. Grouping retains custom key and serialization calls.
 - Execution reports distinguish successful top-level Rust and Arrow record
   joins from Python joins. Native pair aggregation also records its direct route.
-- Benchmark comparisons reject missing provenance and mismatched workloads.
-  Both suites record dependencies, Git state, code and workload fingerprints,
-  and an untimed observation of the task. Median baselines retain each run's
-  provenance. Older reports need to be regenerated for report schema 6.
-- Reports include CPU affinity, NumPy CPU dispatch, and an allowlist of runtime
-  settings. Comparisons reject mismatched configurations; both runners also
-  reject configuration changes during measurement.
-- Join benchmarks honor the requested engine. Twelve Python controls separate
-  dict and Mapping records, field and callable keys, and inner, left, and repeated
-  matches. References preserve callable-key columns and snapshots taken before
-  key selection, including unmatched left rows.
-- NumPy frequency benchmarks cover integer and float arrays, with and without
-  a callable key, at low and high cardinality. All references preserve first-key
-  order; Python array-to-list conversion is included in its timed task.
-- Competitive samples warm each task for at least 1ms after GC and record the
-  number of warmup calls. One warmup call left inconsistent timings for short
-  NumPy tasks in local measurements.
-- Competitive benchmarks now record peak Python allocation in a separate,
-  untimed call for every implementation, using the engine suite's shared helper.
-  Schema 6 rejects missing or invalid resource measurements, and baseline
-  creation rejects inconsistent resource sets instead of substituting zero.
-  Earlier competitive reports contain no allocation evidence.
-- Regression checks accept zero allocated bytes when both runs report zero.
 - `frequencies()` on retained lists and tuples falls back to Python when the
   optional Rust extension is unavailable, including in the browser wheel.
-- Frequency benchmarks use bulk conversion for NumPy dictionaries and pandas'
-  `to_dict()`, avoiding per-key normalization overhead in the reference tasks.
-
 ### Changed
 
 - Automatic NumPy `frequencies()` without a key can count a selected native
@@ -632,10 +583,7 @@ The migration examples are in the collecting and async flow reference pages;
   in addition to Python/native integer sums.
 
 - Single-collector groups write step results directly to their stored entries
-  and avoid reading stored state for completed groups. Group benchmarks now
-  include `agg.first()` with repeated and distinct keys.
-- Group benchmarks now cover custom completion predicates with repeated and
-  distinct keys, alongside collectors that cannot finish early.
+  and avoid reading stored state for completed groups.
 - Generated scalar expressions, row expressions, and fused loops share a smaller
   AST location pass. It preserves traversal order and the existing synthetic
   source positions used in tracebacks.
@@ -644,20 +592,12 @@ The migration examples are in the collecting and async flow reference pages;
 - Scalar fingerprint encoding reuses fixed instruction headers instead of
   rebuilding their bytes for every query. Expression reads and type checks are
   unchanged; the table retains no expressions or source data.
-- Planning benchmarks separate compilation from execution for integer and float
-  expressions and a callable control, using the same pipeline for each pair.
 - Python grouped output uses one fewer forwarding generator. The collector
   iterator still starts lazily and retains its existing cleanup path.
 - Collector lifecycle properties read their original slots directly, removing
   an extra Python wrapper. Frozen assignment, explicit replacement, and deletion
   errors are preserved. The API manifest now classifies those existing fields
   as properties; their names and constructor signatures are unchanged.
-- Add Python dict-group benchmarks for field and callable selectors with repeated
-  and distinct keys. Execution observations record the case's requested engine.
-- Include nominal Mapping and mappingproxy field-group cases with repeated and
-  distinct keys when measuring Python selector changes.
-- Extend the two-key count/sum benchmarks to repeated keys. Keep the original
-  direct-versus-callable timing threshold and report any regression against it.
 - Move the narrow integer-key record-join ABI adapter into the existing join
   executor module. Kernel order, shape guards, and fallback behavior are unchanged.
 
@@ -670,9 +610,6 @@ The migration examples are in the collecting and async flow reference pages;
   `Rows.skip()` and `Rows.drop()` in the API index.
 - Explain the difference between a compiled outer plan and a recorded direct
   terminal route, including the limits of reports for compound queries.
-- Revise the website's introductory and performance text and document the next
-  benchmark and refactoring steps in the roadmap.
-
 ## 2.1.0 - 2026-09-01
 
 ### Added
@@ -702,9 +639,6 @@ The migration examples are in the collecting and async flow reference pages;
   kernels where they preserve Python ordering, identity, errors, and cleanup.
 - `rows.from_csv()` and `rows.from_jsonl()` now accept caller-owned open handles
   and replayable zero-argument opener functions in addition to paths.
-- The benchmark runner now compares fpstreams with Python, NumPy, and pandas and
-  reports the percentage difference for each comparable case.
-
 ### Fixed
 
 - Fast paths now revalidate cached row expressions, collector programs, NumPy

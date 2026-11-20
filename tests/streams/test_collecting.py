@@ -2409,7 +2409,7 @@ def test_pair_row_expression_filter_matches_python_across_general_shapes(
     observe_native: Callable[[str], list[int]],
     expression_factory: Callable[[], Any],
 ) -> None:
-    """Native pair filtering is not tied to the competitive benchmark expression."""
+    """Native pair filtering supports different predicate expressions."""
     calls = observe_native("pair_i64_row_filter_to_dict_exact_prefix_v1")
 
     values = [(index - 128, index - 192) for index in range(257)]
